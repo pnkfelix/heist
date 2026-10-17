@@ -379,6 +379,80 @@ second, and it stays resident for hours.
   can already express. Not requested.
 - Multiple values: products serve. Not requested.
 
+### R10. Flow analysis, shared by the editor and the compiler (library, on the checker's output)
+
+**Yank:** Yank's largest research investment was flow analysis.
+- It runs k-CFA and m-CFA over Scheme desugared to a core language,
+  idly and time-sliced (`analysis/cfa.sld` and its support, about 55%
+  of the source).
+- It shows the values reaching the variable at point, the callees at a
+  call, inferred signatures in eldoc, find-uses (`M-?`), and calls that
+  cannot work.
+- Measured (Yank `DONE.md` and `TODO.md`, 2026-10-12 to -15):
+  - All of Yank analyzes in 5.4 s from nothing at m-CFA depth 2, and
+    1.9 s after an edit, by a warm run that matches definitions across
+    the edit.
+  - m-CFA gave k-CFA's precision at a half to a seventh of the cost.
+    Depth beyond 1 bought no precision in k-CFA.
+  - Splitting on records only where they hold procedures (CPA-style)
+    took depth 2 from 220 s to 11 s, with the same precision.
+  - The cost was in data structures: interning, hash-consed intsets,
+    `eq?`-compared value ids. A memo table was abandoned for lack of
+    weak tables. Heaps reached 0.3–1.9 GB.
+  - Precision died wherever "unknown" entered: `eval`, `guard`
+    handlers, foreign procedures, vector contents.
+
+**A statically typed FX-26 still needs flow analysis.** Polymorphic
+and structural types say what *may* flow, not what *does*. Flow
+analysis answers:
+- which closures reach a call made through a variable or a
+  structurally typed field (for `M-.`, find-uses, and direct calls);
+- which variants reach a `tagcase` (dead arms);
+- which instantiations reach a polymorphic parameter at a site;
+- which effects happen, against the declared `maxeff`.
+
+The compiler wants the same answers: kayak's roadmap has Twobit's
+optimizations in KFX and a uniform `Value` beside unboxed generics
+(its TODO §24). **Build it once, as a library, and use it for both.**
+
+**Requests to FX-26 (Fixpt first):**
+- **The elaborated program as data:** a type at every node, every
+  instantiation (`proj`, and those that inference fills in), resolved
+  names, and effects, each with a span. Fixpt keeps effect summaries by
+  span but not types (its TODO §25). This extends §8 of the kayak list:
+  the checker as a library.
+- **R4's bridge stays typed.** If evaluated code enters as `datum`,
+  the analysis meets Scheme's "unknown" again. Under `(eval-at T src)`
+  it meets only "any value of T".
+- **R6 and R8's runtime pieces are what the analysis runs on:**
+  records as `eqtable` keys, stable identity hashes, weak tables for
+  memos, and a collector that copes with hundreds of MB live.
+
+**Requests to kayak:**
+- **The analysis on the incremental query substrate** (`lib/query.kfx`,
+  after Coopt's query-based compiler), with node identities that stay
+  stable across edits, so that warm reanalysis is the design rather
+  than a correspondence made after the fact.
+- **One analysis run per region, in a cancellable process.**
+  - The run's state is in a `letrena` or the process's reap, dropped
+    whole when the next run starts; on kayak-rt this needs no collector.
+  - Results go out as immutable summaries.
+  - An edit cancels the run (`race`, and R1's cleanups).
+- **Fixpt's corpus as the benchmark:** its 653 programs and its 41k-line
+  front end. Measure precision by spurious callees and by warnings
+  found in deliberately broken code, which Yank's `TODO.md` asks for.
+
+**Staging:**
+1. Closure flow, bounded by types: which lambdas reach which calls.
+   That alone serves `M-.`, find-uses, and direct calls.
+2. Then data flow over unions and sums.
+3. Then effects.
+
+**Done when (stage 1):** for all of Fixpt's front end, the callees at
+every call through a variable are found, with no spurious ones where a
+type rules them out. A one-definition edit is reanalyzed in under a
+second, while typing stays responsive.
+
 ## Kayak: implementation, not language
 
 These are kayak's own work, apart from following Fixpt on R1–R9.
@@ -451,6 +525,34 @@ making `exn:break` not an `exn:fail`. In FX-26, R3's interrupt should
 escape to a tag the program installed. It must not `raise`, since a
 handler installed by `with-handler` would run first and could
 swallow it.
+
+### Flow analysis with types: what changes
+
+Yank's analysis was written for an untyped language. Four things
+differ for FX-26:
+
+- **"Unknown" is bounded.** In Scheme an unknown value poisoned every
+  set it reached; Yank's fix (31916f0) was to make an unknown set hold
+  no data at all. In FX-26 the worst case is "any value of type T", a
+  much smaller hole. `datum` and unions are where the Scheme problem
+  returns, which is why R4's bridge should stay typed.
+- **Polymorphism supplies the context.** Yank found that the useful
+  context was what kind of value came in, not which call chain came
+  before: m-CFA at depth 2 matched k-CFA, and splitting on records
+  that hold procedures paid. In FX-26 the type arguments at an
+  instantiation are exactly that, and they are in the elaborated
+  program. Type-argument polyvariance should be the default context,
+  with call-site depth added only where measurements say it pays.
+- **Effects and regions split the store.** Abstract garbage collection
+  fit Yank poorly, because its analysis had one global store. FX-26
+  says which regions a procedure reads and writes, and
+  `letregion`/`letrena` say when a region dies. A pure procedure needs
+  no store modeling at all, and a region's addresses can be dropped
+  when it ends.
+- **Uniqueness would allow strong updates.** If FX-26 gains
+  substructural types, a unique reference can be updated strongly,
+  which is a well-known gain in precision. This is one argument for
+  ranking substructural types above GADTs.
 
 ### What Yank asks that this document does not
 
