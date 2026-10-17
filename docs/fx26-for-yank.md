@@ -419,8 +419,9 @@ optimizations in KFX and a uniform `Value` beside unboxed generics
 - **The elaborated program as data:** a type at every node, every
   instantiation (`proj`, and those that inference fills in), resolved
   names, and effects, each with a span. Fixpt keeps effect summaries by
-  span but not types (its TODO §25). This extends §8 of the kayak list:
-  the checker as a library.
+  span but not types (its TODO §25). The editor needs the same thing
+  for type-at-point and eldoc: the reader and the checker as libraries,
+  with diagnostics as data.
 - **R4's bridge stays typed.** If evaluated code enters as `datum`,
   the analysis meets Scheme's "unknown" again. Under `(eval-at T src)`
   it meets only "any value of T".
