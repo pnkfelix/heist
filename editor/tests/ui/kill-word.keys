@@ -1,0 +1,6 @@
+(say b "Beginning of buffer")
+\x13"Beginning
+\x1b\x7f
+@200
+Start
+@300

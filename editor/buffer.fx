@@ -208,21 +208,60 @@ long enough."
   (lambda (c) (or (char-alphabetic? c) (char-numeric? c))))
 
 "Over the next word (the one before, if `dir` is -1)."
+"Where the next word ends from `p` (the one before begins, if `dir` is -1)."
+(define* word-from (subr spin (rope int int) int)
+  (lambda (t p dir)
+    (let ((n (rope-length t)))
+      (letrec ((at (subr spin (int) bool)                   ; a word character at the step from q?
+                 (lambda (q) (let ((i (if (> dir 0) q (- q 1))))
+                               (and (>= i 0) (< i n) (word-char? (rope-ref t i))))))
+               (in-range (subr pure (int) bool)
+                 (lambda (q) (if (> dir 0) (< q n) (> q 0))))
+               (skip-non (subr spin (int) int)
+                 (lambda (q) (if (and (in-range q) (not (at q))) (skip-non (+ q dir)) q)))
+               (skip-word (subr spin (int) int)
+                 (lambda (q) (if (and (in-range q) (at q)) (skip-word (+ q dir)) q))))
+        (skip-word (skip-non p))))))
+
 (define* move-word (subr pure (int) command)
   (lambda (dir)
+    (lambda ((b buffer)) (done (with-point b (word-from (extract b text) (extract b point) dir))))))
+
+"M-d, M-DEL: the word after point (before it, `dir` -1) killed."
+(define* kill-word (subr pure (int) command)
+  (lambda (dir)
     (lambda ((b buffer))
-      (let* ((t (extract b text))
-             (n (rope-length t)))
-        (letrec ((at (subr spin (int) bool)                   ; a word character at the step from p?
-                   (lambda (p) (let ((i (if (> dir 0) p (- p 1))))
-                                 (and (>= i 0) (< i n) (word-char? (rope-ref t i))))))
-                 (in-range (subr pure (int) bool)
-                   (lambda (p) (if (> dir 0) (< p n) (> p 0))))
-                 (skip-non (subr spin (int) int)
-                   (lambda (p) (if (and (in-range p) (not (at p))) (skip-non (+ p dir)) p)))
-                 (skip-word (subr spin (int) int)
-                   (lambda (p) (if (and (in-range p) (at p)) (skip-word (+ p dir)) p))))
-          (done (with-point b (skip-word (skip-non (extract b point))))))))))
+      (let* ((t (extract b text)) (p (extract b point)) (q (word-from t p dir))
+             (from (min p q)) (to (max p q)))
+        (if (= from to)
+            (say b (if (> dir 0) "End of buffer" "Beginning of buffer"))
+            (product (buffer (with-text b (rope-delete t from to) from))
+                     (cmds (list (kill-push (rope-substring t from to))))
+                     (message "")))))))
+
+"C-o: a newline after point, point staying."
+(define* open-line (subr pure () command)
+  (lambda ()
+    (lambda ((b buffer))
+      (let ((p (extract b point)))
+        (done (with-text b (rope-insert (extract b text) p "\n") p))))))
+
+"M-g g: point to the start of line `n` (from 1)."
+(define* goto-line (subr pure (int) command)
+  (lambda (n)
+    (lambda ((b buffer))
+      (let ((t (extract b text)))
+        (done (with-point b (rope-line-start t (max 0 (min (- n 1) (- (rope-line-count t) 1))))))))))
+
+"`b` visiting `file` from now on: its name and file changed (C-x C-w)."
+(define* set-visited-file (subr spin (string) command)
+  (lambda (file)
+    (lambda ((b buffer))
+      (done (product (name (base-name file)) (file file) (text (extract b text)) (point (extract b point))
+                     (mark (extract b mark)) (revision (extract b revision)) (modified #t) (undo (extract b undo))
+                     (subscribers (extract b subscribers)) (highlight-start (extract b highlight-start))
+                     (highlight-end (extract b highlight-end)) (origin (extract b origin))
+                     (annotation (extract b annotation)) (marks (extract b marks)))))))
 
 "Set the mark at point."
 (define* set-mark (subr pure () command)

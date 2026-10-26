@@ -361,6 +361,16 @@ known by name and shown in the selected window."
         (reply-with (extract r state)
                     (append (attach-syntax b name) (append (index-directory-of file) (extract r cmds))))))))
 
+"File name `name` as typed in the minibuffer, resolved against `dir` (a
+buffer's directory) unless it is absolute, as Emacs's default-directory
+does. (No `~`: FX-26 reads no environment, so no HOME; Heist's
+fx26-for-yank.md, R7.)"
+(define* expand-file-name (subr spin (string string) string)
+  (lambda (name dir)
+    (if (and (> (string-length name) 0) (char=? (string-ref name 0) #\/))
+        name
+        (string-append dir name))))
+
 "The text of `file`: its contents; empty, and whether it was found."
 (define* file-text (subr (maxeff (io fs-read) spin) (string) (productof (text rope) (found bool)))
   (lambda (file)
@@ -382,7 +392,8 @@ known by name and shown in the selected window."
                                       (else (dir-of (cdr bs)))))))
                      (dir-of (extract f buffers))))))
         (read-string f "Find file: " dir
-                     (lambda ((fr (actor frame)) (f frame) (file string))
+                     (lambda ((fr (actor frame)) (f frame) (typed string))
+                       (let ((file (expand-file-name typed dir)))
                        (tagcase (find-file-buffer (extract f buffers) file)
                          (found info (show-buffer fr f (extract info actor)))
                          (none u
@@ -393,7 +404,7 @@ known by name and shown in the selected window."
                                                         (b (spawn-actor name (new-buffer name file (extract got text)))))
                                                    (begin
                                                      (tell! fr (buffer-made fr name file b))
-                                                     (if (extract got found) #u (tell! fr (echo "(New file)")))))))))))))))))
+                                                     (if (extract got found) #u (tell! fr (echo "(New file)"))))))))))))))))))
 
 (define* switch-to-buffer (subr pure () frame-action)
   (lambda ()
@@ -764,7 +775,7 @@ names of their commands."
         (product (keys "C-k") (command "paredit-kill"))))
 
 "The prefixes: key sequences that are the start of longer bindings."
-(define prefixes strings (list "C-x" "C-c"))
+(define prefixes strings (list "C-x" "C-c" "M-g"))
 
 "What `ks` does: a command, more keys to come, or nothing."
 (define* binding (subr (maxeff (read @ed) spin) (keys string) (sumof (command action) (prefix unit) (undefined unit)))
@@ -956,3 +967,102 @@ names of their commands."
 (define-key! "M-s" "paredit-splice-sexp")
 (define-key! "M-r" "paredit-raise-sexp")
 (define-key! "M-(" "paredit-wrap-round")
+
+;;; ------------------------------------------------------------ lines, files, buffers
+
+"The number `s` writes in decimal, or -1 (FX-26 has no string->int yet:
+Fixpt's TODO §75)."
+(define* digits-value (subr spin (string) int)
+  (lambda (s)
+    (letrec ((go (subr spin (int int) int)
+               (lambda (i acc)
+                 (cond ((>= i (string-length s)) acc)
+                       ((char-numeric? (string-ref s i)) (go (+ i 1) (+ (* 10 acc) (- (char->integer (string-ref s i)) 48))))
+                       (else -1)))))
+      (if (= (string-length s) 0) -1 (go 0 0)))))
+
+(define* goto-line-command (subr pure () frame-action)
+  (lambda ()
+    (lambda ((fr (actor frame)) (f frame))
+      (read-string f "Goto line: " ""
+                   (lambda ((fr (actor frame)) (f frame) (s string))
+                     (let ((n (digits-value s)))
+                       (if (< n 1)
+                           (draw (with-echo f "Not a line number"))
+                           (reply-with f (list (tell (extract (selected-window f) buffer) (in-buffer fr (goto-line n))))))))))))
+
+"C-x C-w: the buffer written to another file, which it visits from then on."
+(define* write-file-command (subr pure () frame-action)
+  (lambda ()
+    (lambda ((fr (actor frame)) (f frame))
+      (let ((b (extract (selected-window f) buffer)))
+        (read-string f "Write file: " (directory-of (extract (actor-state b) file))
+                     (lambda ((fr (actor frame)) (f frame) (typed string))
+                       (let ((file (expand-file-name typed (directory-of (extract (actor-state b) file)))))
+                       (reply-with (frame-of f (extract f windows) (extract f selected)
+                                             (letrec ((go (subr spin (buffer-infos) buffer-infos)
+                                                        (lambda (bs) (cond ((null? bs) nil)
+                                                                           ((same-actor? (extract (car bs) actor) b)
+                                                                            (cons (product (name (base-name file)) (file file) (actor b)) (cdr bs)))
+                                                                           (else (cons (car bs) (go (cdr bs))))))))
+                                               (go (extract f buffers)))
+                                             (extract f next-id) (extract f echo) (extract f prefix) (extract f mini))
+                                   (list (tell b (in-buffer fr (set-visited-file file)))
+                                         (tell b (in-buffer fr (save-buffer))))))))))))
+
+"C-x k: a buffer killed (the selected one, by default): no longer listed,
+and the windows that show it showing another, or *scratch* made anew."
+(define* kill-buffer-command (subr pure () frame-action)
+  (lambda ()
+    (lambda ((fr (actor frame)) (f frame))
+      (let ((current (extract (actor-state (extract (selected-window f) buffer)) name)))
+        (read-string f (string-append "Kill buffer (default " current "): ") ""
+                     (lambda ((fr (actor frame)) (f frame) (name string))
+                       (let ((name (if (string=? name "") current name)))
+                         (tagcase (find-buffer (extract f buffers) name)
+                           (none u (draw (with-echo f (string-append "No buffer named " name))))
+                           (found info
+                             (let* ((gone (extract info actor))
+                                    (rest (letrec ((go (subr spin (buffer-infos) buffer-infos)
+                                                     (lambda (bs) (cond ((null? bs) nil)
+                                                                        ((same-actor? (extract (car bs) actor) gone) (go (cdr bs)))
+                                                                        (else (cons (car bs) (go (cdr bs))))))))
+                                            (go (extract f buffers))))
+                                    (f2 (frame-of f (extract f windows) (extract f selected) rest (extract f next-id)
+                                                  (string-append "Killed " name) (extract f prefix) (extract f mini))))
+                               (if (null? rest)
+                                   ;; The last: *scratch* made, then shown where it was.
+                                   (let ((b (spawn-actor "*scratch*" (new-buffer "*scratch*" "" empty-rope))))
+                                     (reply-with f2 (list (lambda () (tell! fr (buffer-made fr "*scratch*" "" b))))))
+                                   ;; Each window that showed it shows the first other buffer.
+                                   (let ((other (extract (car rest) actor)))
+                                     (letrec ((swap (subr turn-eff (frame windows) (reply frame))
+                                                (lambda (f ws)
+                                                  (cond ((null? ws) (draw f))
+                                                        ((same-actor? (extract (car ws) buffer) gone)
+                                                         (let* ((sel (frame-of f (extract f windows) (extract (car ws) id) (extract f buffers)
+                                                                               (extract f next-id) (extract f echo) (extract f prefix) (extract f mini)))
+                                                                (r (show-buffer fr sel other))
+                                                                (back (frame-of (extract r state) (extract (extract r state) windows)
+                                                                                (if (= (extract (car ws) id) (extract f selected))
+                                                                                    (extract (extract r state) selected) (extract f selected))
+                                                                                (extract f buffers) (extract (extract r state) next-id)
+                                                                                (extract f echo) (extract f prefix) (extract f mini)))
+                                                                (more (swap back (cdr ws))))
+                                                           (reply-with (extract more state) (append (extract r cmds) (extract more cmds)))))
+                                                        (else (swap f (cdr ws)))))))
+                                       (swap f2 (extract f2 windows)))))))))))))))
+
+(define-command! "kill-word" (sum on-buffer (kill-word 1)))
+(define-command! "backward-kill-word" (sum on-buffer (kill-word -1)))
+(define-command! "open-line" (sum on-buffer (open-line)))
+(define-command! "goto-line" (sum on-frame (goto-line-command)))
+(define-command! "write-file" (sum on-frame (write-file-command)))
+(define-command! "kill-buffer" (sum on-frame (kill-buffer-command)))
+(define-key! "M-d" "kill-word")
+(define-key! "M-DEL" "backward-kill-word")
+(define-key! "C-o" "open-line")
+(define-key! "M-g g" "goto-line")
+(define-key! "M-g M-g" "goto-line")
+(define-key! "C-x C-w" "write-file")
+(define-key! "C-x k" "kill-buffer")
