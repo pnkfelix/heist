@@ -265,3 +265,34 @@ compiling the actor core adds 0.05 s. An `attempt` costs about 1.7 µs.
 - Tabs laid out as columns (`(yank actor columns)`).
 - Then the parties outside: a syntax actor that reads FX-26 with
   Fixpt's own reader, as a process sent snapshots.
+
+## Dogfooding (2026-10-26)
+
+The editor was used, through `editor/tests/drive.py`, to edit its own
+source.
+
+**What worked:**
+- **Saving.** A file containing `λ` opened and saved unchanged is the
+  same bytes.
+- **Editing itself.** With paredit on, it added a key binding to its own
+  `frame.fx`, and the editor run from that copy has the binding.
+
+**What was missing or wrong, each fixed:**
+- **M-DEL was unbound:** the keys typed into the middle of a word. Now
+  bound, with M-d, C-o, M-g g, C-x C-w and C-x k.
+- **M-g was not a prefix:** M-g g's keys went in as text. A file was then
+  written with them, and that showed the next problem.
+- **C-x C-w took a relative name against the editor's working
+  directory** (`editor/`, where `bin/heist-edit` runs it), not the
+  buffer's. It wrote into the repository; the stray file was removed.
+  C-x C-f and C-x C-w now resolve names against the buffer's directory.
+- **C-/ after a word undid one character.** A run of typing (up to 20) is
+  now one undo, as in Emacs.
+- **C-x C-c quit with unsaved files.** Now it asks.
+- **TAB inserted a tab, and RET did not indent.** FX-26 buffers are now
+  indented as Lisp. The rules were found from the editor's own 5,576
+  lines: 243 differed at first, and the last 76 were edits of mine never
+  re-indented. The sources were then re-indented by the editor's
+  indenter (whitespace only).
+- **Keys typed during C-x C-f went to the old buffer.** Activities now
+  finish one key before the next (`tests/ui/type-ahead`).
