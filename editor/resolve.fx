@@ -271,3 +271,61 @@ everywhere in it."
     (letrec ((rev (subr pure (references references) references)
                (lambda (l acc) (if (null? l) acc (rev (cdr l) (cons (car l) acc))))))
       (rev (resolve-all xs (items-binders xs nil) nil) nil))))
+
+"The file a module expression loads: the string of the first
+`(load-module \"f\")` or `(load-input \"f\")` in it, or \"\"."
+(define* loaded-file (subr spin (syn) string)
+  (lambda (x)
+    (let ((is (items-of x)))
+      (if (and (pair? is) (member-name? (atom-symbol (car is)) (list "load-module" "load-input"))
+               (pair? (cdr is)))
+          (tagcase (car (cdr is))
+            (atom (d a b) (typecase d (string s s) (else y "")))
+            (else y ""))
+          (letrec ((go (subr spin ((listof syn acyclic)) string)
+                     (lambda (xs)
+                       (if (null? xs) ""
+                           (let ((f (loaded-file (car xs)))) (if (string=? f "") (go (cdr xs)) f))))))
+            (go is))))))
+
+"The names a text's top-level `import`s bring in from modules it defines
+by loading a file, `(define m (… (load-module \"f\") …))`: each name's
+place, and the file."
+(define* import-links (subr spin ((listof syn acyclic)) links)
+  (lambda (xs)
+    (letrec ((modules (subr spin ((listof syn acyclic) (listof (productof (name string) (file string)) acyclic))
+                                (listof (productof (name string) (file string)) acyclic))
+               (lambda (xs acc)
+                 (if (null? xs) acc
+                     (let ((is (items-of (car xs))))
+                       (modules (cdr xs)
+                                (if (and (pair? is) (string=? (atom-symbol (car is)) "define")
+                                         (pair? (cdr is)) (pair? (cdr (cdr is))))
+                                    (let ((f (loaded-file (car (cdr (cdr is))))))
+                                      (if (string=? f "") acc
+                                          (cons (product (name (atom-symbol (car (cdr is)))) (file f)) acc)))
+                                    acc))))))
+             (file-of (subr spin (string (listof (productof (name string) (file string)) acyclic)) string)
+               (lambda (m ms) (cond ((null? ms) "")
+                                    ((string=? (extract (car ms) name) m) (extract (car ms) file))
+                                    (else (file-of m (cdr ms))))))
+             (names (subr spin ((listof syn acyclic) string links) links)
+               (lambda (xs f acc)
+                 (if (null? xs) acc
+                     (names (cdr xs) f
+                            (tagcase (car xs)
+                              (lst (is d a b) (names (if (pair? is) (cdr is) nil) f acc))
+                              (atom (d a b)
+                                (let ((n (atom-symbol (car xs))))
+                                  (if (string=? n "") acc (cons (product (name n) (start a) (end b) (file f)) acc))))
+                              (else y acc))))))
+             (imports (subr spin ((listof syn acyclic) (listof (productof (name string) (file string)) acyclic) links) links)
+               (lambda (xs ms acc)
+                 (if (null? xs) acc
+                     (let ((is (items-of (car xs))))
+                       (imports (cdr xs) ms
+                                (if (and (pair? is) (string=? (atom-symbol (car is)) "import") (pair? (cdr is)))
+                                    (let ((f (file-of (atom-symbol (car (cdr is))) ms)))
+                                      (if (string=? f "") acc (names (cdr (cdr is)) f acc)))
+                                    acc)))))))
+      (imports xs (modules xs nil) nil))))

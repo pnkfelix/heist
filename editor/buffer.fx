@@ -20,11 +20,15 @@ problem (a read error), each by position in the text."
 "A use of a name, and where its binder is (-1: not in this text)."
 (define-type reference (productof (start int) (end int) (binder-start int) (binder-end int)))
 (define-type references (listof reference acyclic))
+"A name imported from a module loaded from a file: where the name is in
+the `import`, and the file (as `load-module` names it)."
+(define-type link (productof (name string) (start int) (end int) (file string)))
+(define-type links (listof link acyclic))
 (define-type annotation
   (productof (revision int) (faces text-faces) (definitions definitions)
-             (references references) (problem string) (problem-at int)))
+             (references references) (links links) (problem string) (problem-at int)))
 (define no-annotation annotation
-  (product (revision -1) (faces nil) (definitions nil) (references nil) (problem "") (problem-at -1)))
+  (product (revision -1) (faces nil) (definitions nil) (references nil) (links nil) (problem "") (problem-at -1)))
 
 "What a buffer's subscribers (its views) are sent after each command."
 (define-type snapshot

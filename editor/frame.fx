@@ -511,52 +511,94 @@ and point there."
       (reply-with (extract r state)
                   (append (extract r cmds) (list (tell b (in-buffer fr (goto-position (extract pl point))))))))))
 
-"M-.: the definition of the name at point, in the buffers read."
+"Where Fixpt's built-in module files are, from the editor's directory:
+`fx26:name` is this directory's `name`."
+(define fixpt-sources string "../fixpt/crates/fixpt-fx26/src/")
+
+"The file a `load-module` in `from` names as `f`: a built-in one in Fixpt's
+sources, another beside `from`."
+(define* linked-file (subr spin (string string) string)
+  (lambda (from f)
+    (if (and (> (string-length f) 5) (string=? (substring f 0 5) "fx26:"))
+        (string-append fixpt-sources (substring f 5 (string-length f)))
+        (string-append (directory-of from) f))))
+
+(define* definition-in (subr spin (definitions string) int)
+  (lambda (ds name)
+    (cond ((null? ds) -1)
+          ((string=? (extract (car ds) name) name) (extract (car ds) start))
+          (else (definition-in (cdr ds) name)))))
+
+"Visit `file` at the definition of `name` there (its start if there is
+none): in the buffer that visits it, or, read and analysed in a command,
+in a new one."
+(define* visit-definition (subr turn-eff ((actor frame) frame string string) (reply frame))
+  (lambda (fr f file name)
+    (tagcase (find-file-buffer (extract f buffers) file)
+      (found info
+        (let ((st (actor-state (extract info actor))))
+          (go-to-place fr f (product (buffer (extract info actor))
+                                     (point (max 0 (definition-in (extract (extract st annotation) definitions) name)))))))
+      (none u
+        (let ((bname (unique-name (extract f buffers) (base-name file))))
+          (reply-with f
+                      (list (lambda ()
+                              (let* ((got (file-text file))
+                                     (at (if (extract got found)
+                                             (definition-in (extract (analyze (rope->string (extract got text)) 0) definitions) name)
+                                             -1))
+                                     (b (spawn-actor bname (new-buffer bname file (extract got text)))))
+                                (begin
+                                  (tell! fr (buffer-made fr bname file b))
+                                  (tell! b (in-buffer fr (goto-position (max 0 at))))
+                                  (if (extract got found) #u
+                                      (tell! fr (echo (string-append "No file " file))))))))))))))
+
+"Go to place `pl`; or, if a name imported from a file is there, on to its
+definition in that file."
+(define* land (subr turn-eff ((actor frame) frame place) (reply frame))
+  (lambda (fr f pl)
+    (let* ((st (actor-state (extract pl buffer)))
+           (lk (letrec ((go (subr spin (links) string)
+                          (lambda (ls) (cond ((null? ls) "")
+                                             ((= (extract (car ls) start) (extract pl point)) (extract (car ls) file))
+                                             (else (go (cdr ls)))))))
+                 (go (extract (extract st annotation) links)))))
+      (if (string=? lk "")
+          (go-to-place fr f pl)
+          (visit-definition fr f (linked-file (extract st file) lk) (symbol-at (extract st text) (+ 1 (extract pl point))))))))
+
+"M-.: the definition of the name at point. Its binder in this text, if it
+is here; else a definition in a buffer, else in the index; through an
+`import`, on to the file the name comes from."
 (define* find-definition-at-point (subr pure () frame-action)
   (lambda ()
     (lambda ((fr (actor frame)) (f frame))
       (let* ((current (extract (selected-window f) buffer))
              (st (actor-state current))
-             (name (symbol-at (extract st text) (extract st point))))
-        (let ((bound (tagcase (reference-at st) (found r (extract r binder-start)) (none u -1))))
-          (if (>= bound 0)
-              ;; A use whose binder is in this text: there, exactly.
-              (let ((r (go-to-place fr f (product (buffer current) (point bound)))))
-                (reply-with (extract r state)
-                            (cons (lambda () (set places (cons (product (buffer current) (point (extract st point)))
-                                                               (get places))))
-                                  (extract r cmds))))
-              (if (string=? name "")
-            (draw (with-echo f "No name at point"))
-            (tagcase (find-definition f current name)
-              (none u
-                (tagcase (index-lookup name)
-                  (none u2 (draw (with-echo f (string-append "No definition of " name " found"))))
-                  (found where
-                    (let ((back (lambda () (set places (cons (product (buffer current) (point (extract st point)))
-                                                             (get places))))))
-                      (tagcase (find-file-buffer (extract f buffers) (extract where file))
-                        (found info
-                          (let ((r (go-to-place fr f (product (buffer (extract info actor)) (point (extract where at))))))
-                            (reply-with (extract r state) (cons back (extract r cmds)))))
-                        (none u3
-                          (let* ((file (extract where file))
-                                 (at (extract where at))
-                                 (name (unique-name (extract f buffers) (base-name file))))
-                            (reply-with f
-                                        (list back
-                                              (lambda ()
-                                                (let* ((got (file-text file))
-                                                       (b (spawn-actor name (new-buffer name file (extract got text)))))
-                                                  (begin
-                                                    (tell! fr (buffer-made fr name file b))
-                                                    (tell! b (in-buffer fr (goto-position at)))))))))))))))
-              (found pl
-                (let ((r (go-to-place fr f pl)))
-                  (reply-with (extract r state)
-                              (cons (lambda () (set places (cons (product (buffer current) (point (extract st point)))
-                                                                 (get places))))
-                                    (extract r cmds)))))))))))))
+             (name (symbol-at (extract st text) (extract st point)))
+             (bound (tagcase (reference-at st) (found r (extract r binder-start)) (none u -1)))
+             (from (lambda ((r (reply frame)))
+                     ;; Where M-. was from, kept for M-,.
+                     (reply-with (extract r state)
+                                 (cons (lambda () (set places (cons (product (buffer current) (point (extract st point)))
+                                                                    (get places))))
+                                       (extract r cmds))))))
+        (cond
+          ((string=? name "") (draw (with-echo f "No name at point")))
+          ((>= bound 0) (from (land fr f (product (buffer current) (point bound)))))
+          (else
+           (tagcase (find-definition f current name)
+             (found pl (from (land fr f pl)))
+             (none u
+               (tagcase (index-lookup name)
+                 (found hit
+                   (from (visit-definition fr f
+                                           (if (string=? (extract hit link) "")
+                                               (extract hit file)
+                                               (linked-file (extract hit file) (extract hit link)))
+                                           name)))
+                 (none u2 (draw (with-echo f (string-append "No definition of " name " found")))))))))))))
 
 "M-,: back to where the last M-. was from."
 (define* pop-definition (subr pure () frame-action)

@@ -215,6 +215,17 @@ the same before it."
                (lambda (l acc) (if (null? l) acc (go (cdr l) (cons (car l) acc))))))
       (go l nil))))
 
+(define* append-definitions (subr spin (definitions links) definitions)
+  (lambda (ds ls)
+    (if (null? ds)
+        (letrec ((go (subr spin (links) definitions)
+                   (lambda (ls) (if (null? ls) nil
+                                    (cons (product (name (extract (car ls) name)) (start (extract (car ls) start))
+                                                   (end (extract (car ls) end)))
+                                          (go (cdr ls)))))))
+          (go ls))
+        (cons (car ds) (append-definitions (cdr ds) ls)))))
+
 "What text `s` of revision `rev` is, from the reader's state `st` at its
 end."
 (define* annotation-of (subr (maxeff reader-eff spin) (string int state) annotation)
@@ -230,11 +241,15 @@ end."
                  ((incomplete) (max 0 (open-start (eager-context st))))
                  (else -1)))
            (tree (reverse-faces (extract found faces)))
+           (links (import-links (eager-state-syntax st)))
            (marked (if (< at 0) tree
                        (merge-faces tree (list (product (start at) (end (+ at 1)) (face 'error)))))))
       (product (revision rev) (faces (merge-faces (lexical-faces s) marked))
-               (definitions (reverse-definitions (extract found definitions)))
+               ;; The names imported count as definitions too: M-. from another
+               ;; file lands on the import, and goes on from there.
+               (definitions (append-definitions (reverse-definitions (extract found definitions)) links))
                (references (resolve-text (eager-state-syntax st)))
+               (links links)
                (problem problem) (problem-at at)))))
 
 "Text `s`, of revision `rev`, read -- from the last checkpoint before where
