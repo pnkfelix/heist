@@ -913,7 +913,7 @@ names of their commands."
         (product (keys "C-k") (command "paredit-kill"))))
 
 "The prefixes: key sequences that are the start of longer bindings."
-(define prefixes strings (list "C-x" "C-c" "M-g"))
+(define prefixes strings (list "C-x" "C-c" "M-g" "ESC" "C-x ESC" "C-c ESC"))
 
 "What `ks` does: a command, more keys to come, or nothing."
 (define* binding (subr (maxeff (read @ed) spin) (keys string) (sumof (command action) (prefix unit) (undefined unit)))
@@ -1052,10 +1052,18 @@ in a command; a sole completion that is a directory gets a `/`."
                                                                       (extract c hint)))))))))
             (else (same f))))))))
 
+"Keys `ks` then `k`: after ESC, `k` with Meta instead (ESC x is M-x, as
+in Emacs, for terminals without a Meta key)."
+(define* keys-then (subr spin (keys key) keys)
+  (lambda (ks k)
+    (cond ((null? ks) (list k))
+          ((and (null? (cdr ks)) (key=? (car ks) 'ESC)) (list (meta-key k)))
+          (else (cons (car ks) (keys-then (cdr ks) k))))))
+
 "A key typed with no minibuffer or search: looked up, with any prefix."
 (define* dispatch-key (subr turn-eff ((actor frame) frame key) (reply frame))
   (lambda (fr f k)
-    (let* ((ks (append (extract f prefix) (list k)))
+    (let* ((ks (keys-then (extract f prefix) k))
            (cleared (with-echo (with-prefix f nil) "")))
       (tagcase (binding ks (extract (actor-state (extract (selected-window f) buffer)) name))
         (command a (let ((r (run-action fr cleared a)))

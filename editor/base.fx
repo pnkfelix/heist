@@ -20,7 +20,7 @@
 (import rope-m empty-rope string->rope rope->string rope-length rope-insert rope-delete rope-ref
         rope-substring rope-line-start rope-line-end rope-line-of rope-line-count (type rope))
 (define keys-m (load-module "keys.fx"))
-(import keys-m read-key key->string keys->string kbd key=? (type key keys byte-source))
+(import keys-m read-key key->string keys->string kbd key=? meta-key (type key keys byte-source))
 (define screen-m (load-module "screen.fx"))
 (import screen-m no-screen make-row face-row blank-row make-screen screen-update
         (type row rows screen span spans face))
