@@ -358,7 +358,8 @@ known by name and shown in the selected window."
                            (append (extract f buffers) (list (product (name name) (file file) (actor b))))
                            (extract f next-id) (extract f echo) (extract f prefix) (extract f mini)))
              (r (show-buffer fr f2 b)))
-        (reply-with (extract r state) (append (attach-syntax b name) (extract r cmds)))))))
+        (reply-with (extract r state)
+                    (append (attach-syntax b name) (append (index-directory-of file) (extract r cmds))))))))
 
 "The text of `file`: its contents; empty, and whether it was found."
 (define* file-text (subr (maxeff (io fs-read) spin) (string) (productof (text rope) (found bool)))
@@ -520,7 +521,28 @@ and point there."
         (if (string=? name "")
             (draw (with-echo f "No name at point"))
             (tagcase (find-definition f current name)
-              (none u (draw (with-echo f (string-append "No definition of " name " in the buffers read"))))
+              (none u
+                (tagcase (index-lookup name)
+                  (none u2 (draw (with-echo f (string-append "No definition of " name " found"))))
+                  (found where
+                    (let ((back (lambda () (set places (cons (product (buffer current) (point (extract st point)))
+                                                             (get places))))))
+                      (tagcase (find-file-buffer (extract f buffers) (extract where file))
+                        (found info
+                          (let ((r (go-to-place fr f (product (buffer (extract info actor)) (point (extract where at))))))
+                            (reply-with (extract r state) (cons back (extract r cmds)))))
+                        (none u3
+                          (let* ((file (extract where file))
+                                 (at (extract where at))
+                                 (name (unique-name (extract f buffers) (base-name file))))
+                            (reply-with f
+                                        (list back
+                                              (lambda ()
+                                                (let* ((got (file-text file))
+                                                       (b (spawn-actor name (new-buffer name file (extract got text)))))
+                                                  (begin
+                                                    (tell! fr (buffer-made fr name file b))
+                                                    (tell! b (in-buffer fr (goto-position at)))))))))))))))
               (found pl
                 (let ((r (go-to-place fr f pl)))
                   (reply-with (extract r state)
@@ -798,4 +820,4 @@ names of their commands."
              (f2 (frame-of f (list (extract made window)) id
                            (list (product (name name) (file file) (actor b)))
                            (+ id 1) (extract f echo) (extract f prefix) (extract f mini))))
-        (reply-with f2 (append (attach-syntax b name) (extract made cmds)))))))
+        (reply-with f2 (append (attach-syntax b name) (append (index-directory-of file) (extract made cmds))))))))

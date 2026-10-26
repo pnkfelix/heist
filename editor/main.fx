@@ -72,6 +72,9 @@ Whether any came."
                                      (prefix (the keys nil)) (mini no-mini) (painter painter)))))
       (begin
         (set-class! painter display)
+        (let ((ix (spawn-actor "index" (product (directories (the strings nil)) (pending (the strings nil))
+                                                (files (the (listof indexed acyclic) nil))))))
+          (begin (set-class! ix idle) (set the-index (list ix))))
         (on-turn-failure! (lambda ((who string) (why string)) (tell! fr (echo (string-append who ": " why)))))
         (terminal-raw)
         (write-out "\x1b;[?1049h")

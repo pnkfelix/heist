@@ -8,4 +8,4 @@ fixpt="$heist/fixpt/target/release/fixpt"
 # and a file named relative to here is made absolute first.
 set --  $(for f in "$@"; do case "$f" in /*) echo "$f";; *) echo "$PWD/$f";; esac; done)
 cd "$heist/editor" || exit 2
-exec "$fixpt" run base.fx buffer.fx view.fx frame.fx main.fx -- "$@"
+exec "$fixpt" run base.fx buffer.fx syntax.fx index.fx view.fx frame.fx main.fx -- "$@"
