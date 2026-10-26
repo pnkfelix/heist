@@ -1,0 +1,13 @@
+second file                             |
+here                                    |
+                                        |
+                                        |
+                                        |
+---- b.txt   L2                         |
+                                        |
+grep -nH -e here *.txt                  |
+b.txt:2:here                            |
+                                        |
+---- *grep*   L5                        |
+                                        |
+cursor 1,0

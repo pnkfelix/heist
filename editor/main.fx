@@ -1,12 +1,13 @@
 ;;; main.fx: the terminal, and the scheduler between keys (cahoots'
-;;; `(yank actor main)`, c337e2a). Run after base.fx, buffer.fx, view.fx
-;;; and frame.fx, by `bin/heist-edit FILE`.
+;;; `(yank actor main)`, c337e2a). Run last of the files `program` lists,
+;;; by `bin/heist-edit FILE`.
 ;;;
 ;;; Turns run while any wait, a batch at a time, keys typed meanwhile read
 ;;; between batches and sent to the frame. A batch stops after a turn of a
 ;;; view or the painter (display class), so a key waits for at most one
 ;;; such turn. With none waiting, it waits for a key, and every half second
-;;; looks at the terminal's size.
+;;; looks at the terminal's size; with processes running (process.fx), it
+;;; looks for their output every 50 ms.
 
 "The next byte typed, or #f if none comes within `timeout` ms (0: only
 one already there)."
@@ -67,12 +68,13 @@ queue; C-g at once. Whether any came."
 
 (define* run-loop (subr (maxeff cmd-eff (io stdin) (io clock) (io terminal)) ((actor frame) int int) unit)
   (lambda (fr rows columns)
-    (begin
+    (let ((polling (poll-processes!)))
       (pump-keys! fr)
       (run-turns! 100)
       (cond ((not (get running)) #u)
             ((or (turns-waiting?) (pair? (get pending-keys))) (begin (send-keys! fr 0) (run-loop fr rows columns)))
-            ((send-keys! fr 500) (run-loop fr rows columns))
+            ;; Processes' output looked for every 50 ms while any runs.
+            ((send-keys! fr (if polling 50 500)) (run-loop fr rows columns))
             ((not (get running)) #u)
             (else
              (let ((now (terminal-dimensions)))
@@ -107,6 +109,7 @@ queue; C-g at once. Whether any came."
         (tell! fr (first-window fr name file b))
         (if (extract got found) #u (tell! fr (echo "(New file)")))
         (run-loop fr h w)
+        (signal-processes! 1)
         (write-out "\x1b;[?1049l")
         (terminal-restore)
         0))))

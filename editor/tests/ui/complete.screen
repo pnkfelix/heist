@@ -1,0 +1,13 @@
+second file                             |
+here                                    |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+---- b.txt   L1                         |
+M-x shell-command                       |
+cursor 11,17

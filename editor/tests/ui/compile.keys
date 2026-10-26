@@ -1,0 +1,13 @@
+alpha\nbeta
+\x03c
+\x01\x0b
+echo b.txt:2:3: oops; echo a.txt:2: two; exit 2
+\r
+@600
+\x18`
+@300
+\x18`
+@300
+X
+\x18`
+@300

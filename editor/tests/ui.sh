@@ -20,7 +20,8 @@ for k in "$here"/ui/*.keys; do
   while IFS= read -r line; do set -- "$@" "$line"; done <<KEYS
 $(tail -n +2 "$k")
 KEYS
-  got=$(cd "$tmp/$name" && "$here/drive.py" --rows 12 --cols 40 $faces --file "$file" "$@")
+  # The scenario's directory, which listings show, as TMP.
+  got=$(cd "$tmp/$name" && "$here/drive.py" --rows 12 --cols 40 $faces --file "$file" "$@" | sed "s|$tmp/$name|TMP|g")
   if [ "$1" = "--update" ] || [ "${UPDATE:-}" = 1 ]; then
     printf '%s\n' "$got" > "$here/ui/$name.screen"; echo "wrote $name.screen"
   elif [ "$got" = "$(cat "$here/ui/$name.screen")" ]; then

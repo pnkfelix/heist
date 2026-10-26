@@ -19,7 +19,13 @@ for t in "$here"/*-test.fx; do
   # The notes of globals redefined across the files, dropped.
   out=$(printf '%s\n' "$out" | grep -v '^; ' || true)
   if [ $code -ne 0 ] || echo "$out" | grep -q '^FAIL'; then
-    echo "FAIL $(basename "$t") (exit $code)"; echo "$out" | sed 's/^/  /'; status=1
+    # Where the test ran, as make says it, for M-x compile's next-error.
+    if [ -n "$needs" ]; then dir="$here/.."; else dir="$here"; fi
+    echo "FAIL $(basename "$t") (exit $code)"
+    echo "run.sh: Entering directory '$(cd "$dir" && pwd)'"
+    echo "$out" | sed 's/^/  /'
+    echo "run.sh: Leaving directory '$(cd "$dir" && pwd)'"
+    status=1
   else
     echo "ok   $(basename "$t")"
   fi

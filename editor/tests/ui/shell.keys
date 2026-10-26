@@ -1,0 +1,12 @@
+alpha
+\x1bx
+shell\r
+@500
+echo hi there\r
+@400
+sleep 30\r
+@300
+\x03\x03
+@400
+echo after\r
+@400

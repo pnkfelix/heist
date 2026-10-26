@@ -15,10 +15,15 @@
 (define-type windows (listof window acyclic))
 (define-type buffer-info (productof (name string) (file string) (actor (actor buffer))))
 (define-type buffer-infos (listof buffer-info acyclic))
+"What TAB completes the minibuffer's text from: nothing, the names of
+files, or names given."
+(define-type completion (sumof (nothing unit) (files unit) (names (listof string acyclic))))
 "The minibuffer while it reads: its prompt, the text so far and point in
-it, and what to do with the text when RET is typed."
+it, and what to do with the text when RET is typed; what TAB completes
+from, and what the last TAB said (shown after the text)."
 (define-type minibuffer
-  (productof (prompt string) (text string) (point int) (then frame-action-of-string)))
+  (productof (prompt string) (text string) (point int) (then frame-action-of-string)
+             (complete completion) (hint string)))
 "An incremental search: its direction, its text, and whether it fails."
 (define-type isearch (productof (forward bool) (text string) (failing bool)))
 "What the bottom line is doing: showing the echo area, reading in the
@@ -127,8 +132,11 @@ or minibuffer; and the command that has the painter show it."
                    (go (extract f windows) 0)))
            (last-row (- (extract f height) 1))
            (bottom (tagcase (extract f mini)
-                     (reading m (product (text (string-append (extract m prompt) (extract m text)))
-                                         (column (+ (string-length (extract m prompt)) (extract m point)))))
+                     (reading m (let* ((all (string-append (extract m prompt) (extract m text) (extract m hint)))
+                                       (column (+ (string-length (extract m prompt)) (extract m point)))
+                                       ;; Its start left off, if point would be past the right edge.
+                                       (skip (max 0 (- column (- w 2)))))
+                                  (product (text (substring all skip (string-length all))) (column (- column skip)))))
                      (searching i (product (text (string-append (if (extract i failing) "Failing " "")
                                                                 (if (extract i forward) "I-search: " "I-search backward: ")
                                                                 (extract i text)))
@@ -246,14 +254,15 @@ unsubscribed."
 
 ;;; ------------------------------------------------------------ frame commands
 
-(define* split-window (subr pure () frame-action)
-  (lambda ()
-    (lambda ((fr (actor frame)) (f frame))
-      (let ((old (selected-window f)))
+"The selected window split, the new window below showing buffer `b`,
+the selected one staying selected."
+(define* split-showing (subr turn-eff ((actor frame) frame (actor buffer)) (reply frame))
+  (lambda (fr f b)
+    (let ((old (selected-window f)))
         (if (< (quotient (extract old height) 2) 2)
             (draw (with-echo f "Window too small for splitting"))
             (let* ((id (extract f next-id))
-                   (made (new-window fr f (extract old buffer) id (quotient (extract old height) 2)))
+                   (made (new-window fr f b id (quotient (extract old height) 2)))
                    (ws (letrec ((go (subr spin (windows) windows)
                                   (lambda (ws)
                                     (cond ((null? ws) nil)
@@ -264,7 +273,12 @@ unsubscribed."
                    (laid (relayout f ws)))
               (reply-with (frame-of f (extract laid windows) (extract f selected) (extract f buffers) (+ id 1)
                                     (extract f echo) (extract f prefix) (extract f mini))
-                          (append (extract made cmds) (extract laid cmds)))))))))
+                          (append (extract made cmds) (extract laid cmds))))))))
+
+(define* split-window (subr pure () frame-action)
+  (lambda ()
+    (lambda ((fr (actor frame)) (f frame))
+      (split-showing fr f (extract (selected-window f) buffer)))))
 
 (define* other-window (subr pure () frame-action)
   (lambda ()
@@ -320,13 +334,20 @@ unsubscribed."
       (let ((win (selected-window f)))
         (reply-with f (list (tell (extract win buffer) (in-buffer fr (make (max 1 (- (extract win height) 3)))))))))))
 
+"Read a string in the minibuffer, after `prompt`, starting as `initial`,
+TAB completing it from `c`; then `then` of it."
+(define* read-completing (subr turn-eff (frame string string completion frame-action-of-string) (reply frame))
+  (lambda (f prompt initial c then)
+    (draw (with-mini (with-echo f "")
+                     (sum reading (product (prompt prompt) (text initial) (point (string-length initial))
+                                           (then then) (complete c) (hint "")))))))
+
+(define no-completion completion (sum nothing #u))
+
 "Read a string in the minibuffer, after `prompt`, starting as `initial`;
 then `then` of it."
 (define* read-string (subr turn-eff (frame string string frame-action-of-string) (reply frame))
-  (lambda (f prompt initial then)
-    (draw (with-mini (with-echo f "")
-                     (sum reading (product (prompt prompt) (text initial) (point (string-length initial))
-                                           (then then)))))))
+  (lambda (f prompt initial then) (read-completing f prompt initial no-completion then)))
 
 (define* find-buffer (subr spin (buffer-infos string) (sumof (none unit) (found buffer-info)))
   (lambda (bs name)
@@ -380,6 +401,77 @@ fx26-for-yank.md, R7.)"
                 (else y (product (text empty-rope) (found #t)))))
       (else y (product (text empty-rope) (found #f))))))
 
+"What kind of buffer one named `name` is, for its keys: a directory's
+listing (its name ends in `/`), or none."
+(define* buffer-kind (subr spin (string) string)
+  (lambda (name)
+    (let ((n (string-length name)))
+      (if (and (> n 0) (char=? (string-ref name (- n 1)) #\/)) "<listing>" ""))))
+
+"Directory `dir` (ending in `/`) with `..` and `.` steps taken out."
+(define* simplify-directory (subr spin (string) string)
+  (lambda (dir)
+    (letrec ((parts (subr spin (int int strings) strings)
+                    ;; The names between slashes, from `i`, the current from `start`, last first.
+                    (lambda (i start acc)
+                      (cond ((>= i (string-length dir)) acc)
+                            ((char=? (string-ref dir i) #\/)
+                             (let ((p (substring dir start i)))
+                               (parts (+ i 1) (+ i 1)
+                                      (cond ((or (string=? p "") (string=? p ".")) acc)
+                                            ((and (string=? p "..") (pair? acc) (not (string=? (car acc) ".."))) (cdr acc))
+                                            (else (cons p acc))))))
+                            (else (parts (+ i 1) start acc)))))
+             (join (subr spin (strings string) string)
+                   (lambda (l s) (if (null? l) s (join (cdr l) (string-append (car l) "/" s))))))
+      (string-append (if (and (> (string-length dir) 0) (char=? (string-ref dir 0) #\/)) "/" "")
+                     (join (parts 0 0 nil) "")))))
+
+"The listing of directory `dir`: its path, then a line a name, a
+directory's with a `/`."
+(define* listing-text (subr (maxeff (io fs-read) spin) (string) string)
+  (lambda (dir)
+    (tagcase (the (sumof (names (listof string @pf)) (failed io-error)) (list-dir dir))
+      (names ns
+        (letrec ((go (->* ((listof string @pf)) strings)
+                   (lambda (l)
+                     (if (null? l) nil
+                         (cons (string-append "  " (car l)
+                                              (tagcase (the (sumof (names (listof string @pf)) (failed io-error))
+                                                            (list-dir (string-append dir (car l))))
+                                                (names x "/") (failed e ""))
+                                              "\n")
+                               (go (cdr l)))))))
+          (apply string-append (the strings (cons (string-append "  " dir ":\n  ../\n") (go ns))))))
+      (failed e (string-append "  " dir ":\n  " (extract e detail) "\n")))))
+
+"Visit `file`: the buffer that visits it, shown; else, in a command, the
+file read into a new buffer -- or, if it is a directory, its listing."
+(define* visit-file (subr turn-eff ((actor frame) frame string) (reply frame))
+  (lambda (fr f file)
+    (tagcase (find-file-buffer (extract f buffers) file)
+      (found info (show-buffer fr f (extract info actor)))
+      (none u
+        (tagcase (find-file-buffer (extract f buffers) (string-append file "/"))
+          (found info (show-buffer fr f (extract info actor)))
+          (none u2
+            (reply-with f
+                        (list (lambda ()
+                                (if (tagcase (the (sumof (names (listof string @pf)) (failed io-error)) (list-dir file))
+                                      (names ns #t) (failed e #f))
+                                    (let* ((dir (simplify-directory (string-append file "/")))
+                                           (name (string-append (base-name (substring dir 0 (- (string-length dir) 1))) "/"))
+                                           (t (string->rope (listing-text dir)))
+                                           ;; Point at the first name after `../`.
+                                           (b (spawn-actor name (with-point (new-buffer name dir t) (+ 2 (rope-line-start t 2))))))
+                                      (tell! fr (buffer-made fr name dir b)))
+                                    (let* ((name (unique-name (extract f buffers) (base-name file)))
+                                           (got (file-text file))
+                                           (b (spawn-actor name (new-buffer name file (extract got text)))))
+                                      (begin
+                                        (tell! fr (buffer-made fr name file b))
+                                        (if (extract got found) #u (tell! fr (echo "(New file)")))))))))))))))
+
 (define* find-file (subr pure () frame-action)
   (lambda ()
     (lambda ((fr (actor frame)) (f frame))
@@ -391,20 +483,14 @@ fx26-for-yank.md, R7.)"
                                        (directory-of (extract (car bs) file)))
                                       (else (dir-of (cdr bs)))))))
                      (dir-of (extract f buffers))))))
-        (read-string f "Find file: " dir
+        (read-completing f "Find file: " dir (sum files #u)
                      (lambda ((fr (actor frame)) (f frame) (typed string))
-                       (let ((file (expand-file-name typed dir)))
-                         (tagcase (find-file-buffer (extract f buffers) file)
-                           (found info (show-buffer fr f (extract info actor)))
-                           (none u
-                             (let ((name (unique-name (extract f buffers) (base-name file))))
-                               (reply-with f
-                                           (list (lambda ()
-                                                   (let* ((got (file-text file))
-                                                          (b (spawn-actor name (new-buffer name file (extract got text)))))
-                                                     (begin
-                                                       (tell! fr (buffer-made fr name file b))
-                                                       (if (extract got found) #u (tell! fr (echo "(New file)"))))))))))))))))))
+                       (let* ((file (expand-file-name typed dir))
+                              (n (string-length file)))
+                         ;; A directory's name with or without its last `/`.
+                         (visit-file fr f (if (and (> n 1) (char=? (string-ref file (- n 1)) #\/))
+                                              (substring file 0 (- n 1))
+                                              file)))))))))
 
 (define* switch-to-buffer (subr pure () frame-action)
   (lambda ()
@@ -416,8 +502,11 @@ fx26-for-yank.md, R7.)"
                                        ((same-actor? (extract (car bs) actor) current) (go (cdr bs)))
                                        (else (extract (car bs) name))))))
                       (go (extract f buffers)))))
-        (read-string f (string-append "Switch to buffer" (if (string=? other "") "" (string-append " (default " other ")")) ": ")
+        (read-completing f (string-append "Switch to buffer" (if (string=? other "") "" (string-append " (default " other ")")) ": ")
                      ""
+                     (sum names (letrec ((go (subr spin (buffer-infos) strings)
+                                               (lambda (bs) (if (null? bs) nil (cons (extract (car bs) name) (go (cdr bs)))))))
+                                  (go (extract f buffers))))
                      (lambda ((fr (actor frame)) (f frame) (name string))
                        (let ((name (if (string=? name "") other name)))
                          (tagcase (find-buffer (extract f buffers) name)
@@ -449,11 +538,14 @@ fx26-for-yank.md, R7.)"
                                                             (if (< (string-length name) 24)
                                                                 (substring "                        " 0 (- 24 (string-length name)))
                                                                 " ")
-                                                            (int->string (rope-length (extract st text))) "\t"
+                                                            (let ((size (int->string (rope-length (extract st text)))))
+                                                              (string-append size (if (< (string-length size) 8)
+                                                                                      (substring "        " 0 (- 8 (string-length size)))
+                                                                                      " ")))
                                                             (extract info file) "\n")
                                              (go (cdr bs))))))))
                       (go (extract f buffers))))
-             (text (string->rope (apply string-append (the strings (cons " M Name                    Size\tFile\n" lines)))))
+             (text (string->rope (apply string-append (the strings (cons " M Name                    Size    File\n" lines)))))
              (name "*Buffer List*"))
         (tagcase (find-buffer (extract f buffers) name)
           (found info (reply-with f (list (tell (extract info actor) (replace-text text))
@@ -667,13 +759,36 @@ is here; else a definition in a buffer, else in the index; through an
 
 ;;; ------------------------------------------------------------ commands by name, and keys
 
+"Message for buffer `self`: its text written to its file, in a command;
+then the buffer marked saved and the frame told so -- or, if the write
+failed, told why, and the buffer left modified."
+(define* save-buffer-to (subr pure ((actor frame) (actor buffer)) (msg buffer))
+  (lambda (fr self)
+    (lambda ((b buffer))
+      (let ((file (extract b file)) (rev (extract b revision)) (text (rope->string (extract b text))))
+        (if (string=? file "")
+            (reply-with b (list (tell fr (echo "This buffer has no file"))))
+            (reply-with b (list (lambda ()
+                                  (tagcase (write-file file (string->utf8 text))
+                                    (done u (begin (tell! self (marked-saved rev))
+                                              (tell! fr (echo (string-append "Wrote " file)))))
+                                    (failed e (tell! fr (echo (string-append "Could not write " file ": "
+                                                                             (extract e detail))))))))))))))
+
+"C-x C-s: the selected buffer saved."
+(define* save-buffer (subr pure () frame-action)
+  (lambda ()
+    (lambda ((fr (actor frame)) (f frame))
+      (let ((b (extract (selected-window f) buffer))) (reply-with f (list (tell b (save-buffer-to fr b))))))))
+
 (define-type named (productof (name string) (action action)))
 "Commands and keys that files after this one add (`define-command!`,
 `define-key!`), looked up after the built-in ones: how the editor is
 extended, as Emacs's is, by tables it consults each time."
 (define more-commands (ref (listof named acyclic) @ed) (new nil))
 (define more-keys (ref (listof (productof (keys string) (command string)) acyclic) @ed) (new nil))
-"Keys bound in buffers of one name only (*xref*'s RET), looked up first."
+"Keys bound in buffers of one name only (*xref*'s RET), or of one kind
+(`buffer-kind`), looked up first."
 (define buffer-keys (ref (listof (productof (buffer string) (keys string) (command string)) acyclic) @ed) (new nil))
 
 (define* buffer-command (subr pure (string command) named)
@@ -710,7 +825,7 @@ extended, as Emacs's is, by tables it consults each time."
             (buffer-command "yank" (yank))
             (buffer-command "undo" (undo))
             (buffer-command "keyboard-quit" (keyboard-quit))
-            (buffer-command "save-buffer" (save-buffer))
+            (frame-command "save-buffer" (save-buffer))
             (buffer-command "fail-on-purpose" (fail-on-purpose))
             (frame-command "isearch-forward" (isearch #t))
             (frame-command "isearch-backward" (isearch #f))
@@ -740,7 +855,10 @@ extended, as Emacs's is, by tables it consults each time."
   (execute-extended-command (->* () frame-action)
     (lambda ()
       (lambda ((fr (actor frame)) (f frame))
-        (read-string f "M-x " ""
+        (read-completing f "M-x " ""
+                     (sum names (letrec ((go (subr spin ((listof named acyclic)) strings)
+                                               (lambda (cs) (if (null? cs) nil (cons (extract (car cs) name) (go (cdr cs)))))))
+                                  (go (append (commands) (get more-commands)))))
                      (lambda ((fr (actor frame)) (f frame) (name string))
                        (tagcase (command-named name)
                          (found a (run-action fr f a))
@@ -809,7 +927,8 @@ names of their commands."
                  (lambda (ps) (and (pair? ps) (or (string=? (car ps) s) (prefix? (cdr ps)))))))
         (let ((name (let ((n (letrec ((local (subr spin ((listof (productof (buffer string) (keys string) (command string)) acyclic)) string)
                                         (lambda (m) (cond ((null? m) "")
-                                                          ((and (string=? (extract (car m) buffer) buffer-name)
+                                                          ((and (or (string=? (extract (car m) buffer) buffer-name)
+                                                                    (string=? (extract (car m) buffer) (buffer-kind buffer-name)))
                                                                 (string=? (extract (car m) keys) s))
                                                            (extract (car m) command))
                                                           (else (local (cdr m)))))))
@@ -832,13 +951,84 @@ names of their commands."
 
 ;;; ------------------------------------------------------------ keys
 
+"`m` with text `t`, point at `q`, and hint `h`."
+(define* mini-with (subr pure (minibuffer string int string) minibuffer)
+  (lambda (m t q h)
+    (product (prompt (extract m prompt)) (text t) (point q) (then (extract m then))
+             (complete (extract m complete)) (hint h))))
+
+"Whether `s` starts with `pre`."
+(define* starts-with? (subr spin (string string) bool)
+  (lambda (s pre)
+    (and (<= (string-length pre) (string-length s)) (string=? (substring s 0 (string-length pre)) pre))))
+
+"TAB on `typed`, among `names`: the longest start that all the names
+starting with it share, and what to say after it -- nothing, or no
+match, the sole completion, or the names it could be."
+(define* complete-among (subr spin (string strings) (productof (text string) (hint string)))
+  (lambda (typed names)
+    (let ((ms (letrec ((go (subr spin (strings) strings)
+                         (lambda (l) (cond ((null? l) nil)
+                                           ((starts-with? (car l) typed) (cons (car l) (go (cdr l))))
+                                           (else (go (cdr l)))))))
+                (go names))))
+      (if (null? ms)
+          (product (text typed) (hint " [No match]"))
+          (let ((shared (letrec ((common (subr spin (string strings) string)
+                                   (lambda (pre l)
+                                     (if (null? l) pre
+                                         (let ((s (car l)))
+                                           (letrec ((upto (subr spin (int) int)
+                                                      (lambda (i) (if (and (< i (string-length pre)) (< i (string-length s))
+                                                                           (char=? (string-ref pre i) (string-ref s i)))
+                                                                      (upto (+ i 1)) i))))
+                                             (common (substring pre 0 (upto 0)) (cdr l))))))))
+                          (common (car ms) (cdr ms)))))
+            (cond ((> (string-length shared) (string-length typed)) (product (text shared) (hint "")))
+                  ((null? (cdr ms)) (product (text typed) (hint " [Sole completion]")))
+                  (else (product (text typed)
+                                 (hint (string-append " {" (letrec ((join (subr spin (strings) string)
+                                                                        (lambda (l) (if (null? (cdr l)) (car l)
+                                                                                        (string-append (car l) " | " (join (cdr l)))))))
+                                                             (join ms))
+                                                      "}"))))))))))
+
+"Message for the frame: TAB's completion of `typed` in the minibuffer,
+`text` and `hint`, if it still reads `typed`."
+(define* mini-completed (subr pure (string string string) (msg frame))
+  (lambda (typed text hint)
+    (lambda ((f frame))
+      (tagcase (extract f mini)
+        (reading m (if (string=? (extract m text) typed)
+                       (draw (with-mini f (sum reading (mini-with m text (string-length text) hint))))
+                       (same f)))
+        (else y (same f))))))
+
+"TAB on file name `typed`: completed among the names in its directory,
+in a command; a sole completion that is a directory gets a `/`."
+(define* complete-file (subr pure ((actor frame) string) cmd)
+  (lambda (fr typed)
+    (lambda ()
+      (let* ((dir (directory-of typed))
+             (base (substring typed (string-length dir) (string-length typed)))
+             (names (tagcase (the (sumof (names (listof string @pf)) (failed io-error)) (list-dir (if (string=? dir "") "." dir)))
+                      (names ns (letrec ((copy (->* ((listof string @pf)) strings)
+                                           (lambda (l) (if (null? l) nil (cons (car l) (copy (cdr l)))))))
+                                  (copy ns)))
+                      (failed e nil)))
+             (c (complete-among base names))
+             (text (string-append dir (extract c text)))
+             (dir? (and (member? (extract c text) names)
+                        (tagcase (the (sumof (names (listof string @pf)) (failed io-error)) (list-dir text))
+                          (names ns #t) (failed e #f)))))
+        (tell! fr (mini-completed typed (if dir? (string-append text "/") text)
+                                  (if dir? "" (extract c hint))))))))
+
 "A key typed while the minibuffer reads."
 (define* minibuffer-key (subr turn-eff ((actor frame) frame minibuffer key) (reply frame))
   (lambda (fr f m k)
     (let* ((text (extract m text)) (p (extract m point)) (n (string-length text))
-           (edit (lambda ((t string) (q int))
-                   (draw (with-mini f (sum reading (product (prompt (extract m prompt)) (text t) (point q)
-                                                            (then (extract m then))))))))
+           (edit (lambda ((t string) (q int)) (draw (with-mini f (sum reading (mini-with m t q ""))))))
            (name (key->string k)))
       (typecase k
         (char c (edit (string-append (substring text 0 p) (char->string c) (substring text p n)) (+ p 1)))
@@ -853,6 +1043,13 @@ names of their commands."
             (("C-b" "<left>") (edit text (max 0 (- p 1))))
             (("C-f" "<right>") (edit text (min n (+ p 1))))
             (("C-k") (edit (substring text 0 p) p))
+            (("TAB")
+             (tagcase (extract m complete)
+               (nothing u (same f))
+               (files u (reply-with f (list (complete-file fr text))))
+               (names ns (let ((c (complete-among text ns)))
+                           (draw (with-mini f (sum reading (mini-with m (extract c text) (string-length (extract c text))
+                                                                      (extract c hint)))))))))
             (else (same f))))))))
 
 "A key typed with no minibuffer or search: looked up, with any prefix."
@@ -1016,7 +1213,7 @@ Fixpt's TODO §75)."
   (lambda ()
     (lambda ((fr (actor frame)) (f frame))
       (let ((b (extract (selected-window f) buffer)))
-        (read-string f "Write file: " (directory-of (extract (actor-state b) file))
+        (read-completing f "Write file: " (directory-of (extract (actor-state b) file)) (sum files #u)
                      (lambda ((fr (actor frame)) (f frame) (typed string))
                        (let ((file (expand-file-name typed (directory-of (extract (actor-state b) file)))))
                          (reply-with (frame-of f (extract f windows) (extract f selected)
@@ -1028,7 +1225,7 @@ Fixpt's TODO §75)."
                                                  (go (extract f buffers)))
                                                (extract f next-id) (extract f echo) (extract f prefix) (extract f mini))
                                      (list (tell b (in-buffer fr (set-visited-file file)))
-                                           (tell b (in-buffer fr (save-buffer))))))))))))
+                                           (tell b (save-buffer-to fr b)))))))))))
 
 "C-x k: a buffer killed (the selected one, by default): no longer listed,
 and the windows that show it showing another, or *scratch* made anew."

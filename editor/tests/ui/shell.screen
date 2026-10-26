@@ -1,0 +1,13 @@
+/bin/sh: 0: can't access tty; job contro|
+$ echo hi there                         |
+hi there                                |
+$ sleep 30                              |
+                                        |
+$ echo after                            |
+after                                   |
+$                                       |
+                                        |
+                                        |
+-**- *shell*   L8                       |
+                                        |
+cursor 7,2

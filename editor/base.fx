@@ -2,14 +2,14 @@
 ;;; the effect of what commands do outside. The editor is one program in
 ;;; several files, run in one session (`bin/heist-edit`), each file seeing
 ;;; the globals of those before it:
-;;;   base.fx buffer.fx syntax.fx view.fx frame.fx main.fx
+;;;   base.fx buffer.fx … frame.fx calls.fx process.fx main.fx (as `program` lists them)
 
 ;; What Fixpt's own reader does to its regions: it keeps its state there,
 ;; and leaves a form it cannot read by an escape.
 (define-effect reader-eff
   (maxeff (read @s) (write @s) (alloc @s) (read @m) (write @m) (alloc @m)
           (read @c) (write @c) (alloc @c) (read @e) (goto @e) (comefrom @e)))
-(define-effect world (maxeff (io stdout) (io terminal) (io fs-read) (io fs-write) reader-eff
+(define-effect world (maxeff (io stdout) (io terminal) (io fs-read) (io fs-write) (io process) reader-eff
                              (read @fl) (write @fl) (alloc @fl)      ; the flow analysis's state
                              (read @pf) (alloc @pf)))                ; the files of a program, listed
 (define core ((proj (load-module "core.fx") @ed world)))

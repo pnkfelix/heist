@@ -1,0 +1,13 @@
+alpha                                   |
+                                        |
+                                        |
+                                        |
+                                        |
+---- a.txt   L1                         |
+hello                                   |
+a.txt                                   |
+b.txt                                   |
+                                        |
+---- *Shell Command Output*   L4        |
+                                        |
+cursor 0,0

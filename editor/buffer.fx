@@ -358,18 +358,6 @@ long enough."
                  "Undo"))))))
 
 "Save: the buffer's text to its file, after the turn."
-(define* save-buffer (subr pure () command)
-  (lambda ()
-    (lambda ((b buffer))
-      (let ((file (extract b file)))
-        (if (string=? file "")
-            (say b "This buffer has no file")
-            (let ((text (rope->string (extract b text))))
-              (product
-               (buffer (buffer-of b (extract b text) (extract b point) (extract b mark) (extract b revision)
-                                  #f (extract b undo) (extract b subscribers)))
-               (cmds (list (lambda () (begin (write-file file (string->utf8 text)) #u))))
-               (message (string-append "Wrote " file)))))))))
 
 (define* keyboard-quit (subr pure () command)
   (lambda () (lambda ((b buffer)) (say (with-marks (with-mark b -1) nil) "Quit"))))
@@ -570,5 +558,16 @@ changed since, and the party will be sent the new text)."
                              (subscribers (extract b subscribers))
                              (highlight-start (extract b highlight-start)) (highlight-end (extract b highlight-end))
                              (origin (extract b origin)) (annotation a) (marks (extract b marks)))))
+            (reply-with b2 (notify b2)))
+          (same b)))))
+
+"Message for a buffer: its text as of revision `rev` is in its file now;
+not modified, if it has not changed since."
+(define* marked-saved (subr pure (int) (msg buffer))
+  (lambda (rev)
+    (lambda ((b buffer))
+      (if (= (extract b revision) rev)
+          (let ((b2 (buffer-of b (extract b text) (extract b point) (extract b mark) rev #f
+                               (extract b undo) (extract b subscribers))))
             (reply-with b2 (notify b2)))
           (same b)))))

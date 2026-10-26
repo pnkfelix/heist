@@ -1,0 +1,13 @@
+alpha                                   |
+Xbeta                                   |
+                                        |
+                                        |
+                                        |
+-**- a.txt   L2                         |
+                                        |
+echo b.txt:2:3: oops; echo a.txt:2: two;|
+b.txt:2:3: oops                         |
+a.txt:2: two                            |
+---- *compilation*   L6                 |
+No more errors                          |
+cursor 1,1
