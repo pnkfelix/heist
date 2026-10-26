@@ -96,3 +96,56 @@ So the editor's resolver and its CFA have to be written. That was R10 of
    - **What it serves:** type at point and eldoc, and type arguments as
      the flow analysis's context. Yank found the context that mattered was
      what kind of value comes in, which is what a type argument says.
+
+## Status (2026-10-26)
+
+**Stage 1, names (`editor/resolve.fx`): done.**
+- **What it resolves:** each use goes to its binder by scope: lambda,
+  `vlambda` and `plambda` parameters, `let`, `let*`, `letrec`, the
+  `letregion` family, `tagcase` arm names, `typecase` names, and a
+  module's items over the file's definitions. Quoted data, `case` data,
+  labels and tags are not uses. It takes 1.4 ms for 2,000 to 3,000
+  references.
+- **Links:** imports are followed. Each annotation records, for every
+  name a top-level `import` brings in from a module defined by
+  `load-module` or `load-input`, the file it comes from (`fx26:name` being
+  Fixpt's sources).
+- **M-.** goes to the binder, and through an import on into the file the
+  name comes from. From the editor's own `syntax.fx` it reaches Fixpt's
+  `eager-reader.fx`.
+- **M-?** marks a binder's uses, and M-n and M-p move among them. This is
+  a syntactic find-uses, which yank never had.
+
+**Stage 2, closure flow (`editor/flow.fx`, `editor/calls.fx`): first
+version.**
+- **What it computes:** at 0CFA, the lambdas, sites (product, sum, ref,
+  pair) and unknown that reach each variable, field and lambda's result,
+  in whole passes until the store stops growing.
+- **What it serves:** C-c e (what a call can call) and C-c r (what can
+  call this lambda), listed in `*xref*`.
+- **The editor itself:** 14 files, 1,169 calls and 456 lambdas, in 8
+  passes and about 20 ms. No call may reach unknown code. `in-buffer`'s
+  `(c b)` reaches exactly the 28 commands `buffer.fx` makes, plus
+  `goto-position`, and C-c r on `move-by`'s command lambda finds that one
+  call.
+- **Fixpt's front end:** 174 files and 41,000 lines, read in 0.45 s and
+  analysed in 0.2 s, in 11 passes. It was 4 s before the global names
+  were hashed and the numbering stopped being quadratic.
+- **What it does not do yet:**
+  - **Contexts.** Small procedures are not analysed per call site, so
+    the results of a helper used everywhere merge.
+  - **Constructors made by `define-datatype`,** which only Fixpt's parser
+    expands. Their values are not tracked.
+  - **Calls made by the runtime.** The handlers of `attempt` and the
+    branches of `race` are not calls in the text. Code they call looks
+    unreached, though its body is analysed.
+  - **Standard procedures that keep or call what they are given,**
+    besides the few named. `fx26:table.fx`'s hash and equality are an
+    example: closures given to them do not escape, which is unsound for
+    callers. The standard environment's types would say which these are.
+  - **Names merged across files.** Globals are merged by name across the
+    files of a directory. That is right for a program in several files,
+    such as the editor, and wrong for unrelated module files that reuse
+    names. That is the case in Fixpt's sources, where the merge makes
+    results imprecise.
+  - **Warm starts after an edit.** The analysis runs whole, on demand.
