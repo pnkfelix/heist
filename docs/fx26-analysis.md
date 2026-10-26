@@ -268,3 +268,23 @@ What follows from the corrected numbers:
 - **Small procedures by call site** cost 2.2 times for 3.1 times the
   tasks. That is what whole passes cost; a worklist that re-runs only
   the tasks whose inputs grew, as yank's does, is the next saving.
+
+## Stage 3, types: a first piece (2026-10-26)
+
+**C-c t** marks the expression at point and shows its type in the echo
+area, or why the program does not check there.
+- **How:** it asks Fixpt's checker through a new primitive, `type-at`
+  (FIXPT-CHANGES.md F3). The checker written in Rust checks the program's
+  text, keeping each expression's type, up to the form at point.
+- **What "the program" is:** a directory with a file named `program`
+  (one file a line, in order) is checked as that program. That is how
+  `bin/heist-edit` runs the editor too. Any other file is checked alone.
+- **Measured:** 21 ms near the start of the editor's 220 KB program,
+  0.44 s near its end.
+
+**Not yet:**
+- **Types by name.** They are printed expanded, so a command's type is
+  hundreds of characters.
+- **Hovering** (eldoc-style signatures as point moves).
+- **Instantiations at a site,** as context for the flow analysis.
+- **Checking past an error** before point.

@@ -222,3 +222,87 @@ texts: a message for the frame."
 (define-key! "C-c e" "flow-callees")
 (define-key! "C-c r" "flow-callers")
 (define-buffer-key! "*xref*" "RET" "xref-visit")
+
+;;; ------------------------------------------------------------ the type at point (C-c t)
+
+(define* reverse-strings (subr pure (strings) strings)
+  (lambda (l) (letrec ((go (subr pure (strings strings) strings) (lambda (l acc) (if (null? l) acc (go (cdr l) (cons (car l) acc))))))
+                (go l nil))))
+
+"The files of the program `file` is part of, in order: those its
+directory's `program` file lists (one a line), if it has one, and `file`
+among them; else `file` alone."
+(define* program-files-of (subr (maxeff (io fs-read) spin) (string) strings)
+  (lambda (file)
+    (let* ((dir (directory-of file))
+           (listing (text-of-file (string-append dir "program")))
+           (names (letrec ((lines (subr spin (int int strings) strings)
+                             ;; The lines of `listing` from `i`, the current one from `start`.
+                             (lambda (i start acc)
+                               (cond ((>= i (string-length listing))
+                                      (reverse-strings (if (> i start) (cons (string-append dir (substring listing start i)) acc) acc)))
+                                     ((char=? (string-ref listing i) #\newline)
+                                      (lines (+ i 1) (+ i 1) (if (> i start) (cons (string-append dir (substring listing start i)) acc) acc)))
+                                     (else (lines (+ i 1) start acc))))))
+                    (lines 0 0 nil))))
+      (if (member? file names) names (list file)))))
+
+"Message for a buffer: `a`..`e` marked, in face `face`, alone."
+(define* mark-span (subr pure (int int face) command)
+  (lambda (a e fc) (lambda ((b buffer)) (done (with-marks b (list (product (start a) (end e) (face fc))))))))
+
+"C-c t: the type the checker gives the expression at point, shown and
+said; or why the program does not check."
+(define* type-at-point (subr pure () frame-action)
+  (lambda ()
+    (lambda ((fr (actor frame)) (f frame))
+      (let* ((b (extract (selected-window f) buffer))
+             (st (actor-state b))
+             (file (extract st file))
+             (p (extract st point))
+             (texts (buffer-texts (extract f buffers))))
+        (if (not (fx26-file? file))
+            (draw (with-echo f "Not an FX-26 file"))
+            (reply-with f
+              (list (lambda ()
+                      (let* ((files (program-files-of file))
+                             (text-for (lambda ((name string))
+                                         (letrec ((go (->* ((listof (productof (file string) (text string)) acyclic)) string)
+                                                        (lambda (ts) (cond ((null? ts) (text-of-file name))
+                                                                           ((string=? (extract (car ts) file) name) (extract (car ts) text))
+                                                                           (else (go (cdr ts)))))))
+                                           (go texts))))
+                             ;; The program's text, each file's after a newline, and where this file starts in it.
+                             (joined (letrec ((go (->* (strings int strings int)
+                                                        (productof (pieces strings) (offset int)))
+                                                (lambda (fs at acc offset)
+                                                  (if (null? fs)
+                                                      (product (pieces (reverse-strings acc)) (offset offset))
+                                                      (let ((t (string-append (text-for (car fs)) "\n")))
+                                                        (go (cdr fs) (+ at (string-length t)) (cons t acc)
+                                                            (if (string=? (car fs) file) at offset)))))))
+                                       (go files 0 nil 0)))
+                             (offset (extract joined offset))
+                             (answer (type-at (apply string-append (extract joined pieces)) (+ offset p)))
+                             (sp1 (string-search answer " " 0))
+                             (sp2 (string-search answer " " (+ sp1 1)))
+                             (sp3 (string-search answer " " (+ sp2 1)))
+                             (num (lambda ((from int) (to int))
+                                    (letrec ((go (subr spin (int int) int)
+                                                   (lambda (i acc) (if (>= i to) acc
+                                                                       (go (+ i 1) (+ (* 10 acc) (- (char->integer (string-ref answer i)) 48)))))))
+                                      (go from 0)))))
+                        (if (string=? (substring answer 0 (max 0 sp1)) "error")
+                            (let ((a (- (num (+ sp1 1) sp2) offset)) (e (- (num (+ sp2 1) sp3) offset))
+                                  (why (substring answer (+ sp3 1) (string-length answer))))
+                              (if (and (>= a 0) (<= e (string-length (text-for file))))
+                                  (begin (tell! b (in-buffer fr (mark-span a e 'error)))
+                                         (tell! fr (echo (string-append "Does not check: " why))))
+                                  (tell! fr (echo (string-append "The program does not check (another file): " why)))))
+                            (let ((a (- (num 0 sp1) offset)) (e (- (num (+ sp1 1) sp2) offset))
+                                  (ty (substring answer (+ sp2 1) (string-length answer))))
+                              (begin (tell! b (in-buffer fr (mark-span a e 'use)))
+                                     (tell! fr (echo ty))))))))))))))
+
+(define-command! "type-at-point" (sum on-frame (type-at-point)))
+(define-key! "C-c t" "type-at-point")

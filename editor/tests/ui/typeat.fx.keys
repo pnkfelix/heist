@@ -1,0 +1,5 @@
+(define* f (subr pure (int) int)\n  (lambda (x) (+ x 1)))\n(define s string (f 2))
+@500
+\x0e\x05\x02\x02
+\x03t
+@1500

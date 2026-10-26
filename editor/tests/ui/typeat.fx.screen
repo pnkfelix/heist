@@ -1,0 +1,25 @@
+(define* f (subr pure (int) int)        |
+  (lambda (x) (+ x 1)))                 |
+(define s string (f 2))                 |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+---- a.fx   L2                          |
+int                                     |
+cursor 1,21
+ kkkkkkk f  tttt                        |
+   kkkkkk     uuuuuuu                   |
+ kkkkkk f                               |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm|
+                                        |
