@@ -1,0 +1,104 @@
+== screen 1
+(define x int (let ((y 1)) (car (list y)|
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+---- a.fx   L1                          |
+define is a special form of FX-26, so ha|
+cursor 0,1
+ kkkkkk f      kkk                      |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm|
+                                        |
+== screen 2
+(define x int (let ((y 1)) (car (list y)|
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+---- a.fx   L1                          |
+let is a special form of FX-26, so has n|
+cursor 0,17
+ kkkkkk f      kkk                      |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm|
+                                        |
+== screen 3
+(define x int (let ((y 1)) (car (list y)|
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+---- a.fx   L1                          |
+int is type syntax of FX-26, so has no d|
+cursor 0,12
+ kkkkkk f      kkk                      |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm|
+                                        |
+== at the end
+(define x int (let ((y 1)) (car (list y)|
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+---- a.fx   L1                          |
+car is built in to FX-26, so has no defi|
+cursor 0,30
+ kkkkkk f      kkk                      |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm|
+                                        |

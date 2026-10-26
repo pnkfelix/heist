@@ -1,0 +1,25 @@
+(define x int (let ((y 1)) (car (list y))))
+\x06
+\x1b.
+@600
+=
+\x1b<
+\x13(let
+\r
+\x02
+\x1b.
+@600
+=
+\x1b<
+\x13 int
+\r
+\x02
+\x1b.
+@600
+=
+\x1b<
+\x13(car
+\r
+\x02
+\x1b.
+@800

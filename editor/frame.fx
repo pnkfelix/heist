@@ -677,21 +677,53 @@ in a new one."
                                   (if (extract got found) #u
                                       (tell! fr (echo (string-append "No file " file))))))))))))))
 
-"M-. on a name the program does not define: said to be one of FX-26's
-standard names, with its type, if Fixpt's table of them (standard.rs,
-where the checker learns their types) has it. Read in a command."
+"FX-26's special forms: what the checker reads itself, as expressions,
+definitions and declarations, not procedures (Fixpt's parse.rs, the heads
+its expressions are told by; top.rs, KEYWORDS; syn.rs)."
+(define special-forms strings
+  (list "lambda" "vlambda" "rlambda" "plambda" "dlambda" "proj" "if" "cond" "case" "else" "=>" "and" "or"
+        "let" "let*" "letrec" "letrena" "letreap" "begin" "the" "quote" "quasiquote" "tagcase" "typecase"
+        "product" "extract" "sum" "with" "select" "prompt" "goto" "comefrom" "await"
+        "confirm-length" "confirm-nat" "acyclic" "convention" "extend"
+        "spawn" "spawn-monitored" "send" "receive" "self" "par" "race" "attempt" "pselect"
+        "define" "define*" "define-rec" "define-type" "define-generative"
+        "define-effect" "define-convention" "define-datatype" "module" "module-parameters"
+        "load-module" "import" "make-bloblet" "rmake-bloblet" "bloblet-ref" "bloblet-set!"
+        "bloblet-freeze" "bloblet-byte" "bloblet-set-byte!" "bloblet-bytes" "blobref-at" "blobref+"
+        "blobref-owner" "blobref-offset" "blobref-get" "blobref-set!" "blobref-index" "blobref-length"
+        "blobref-variant!"))
+
+"FX-26's type syntax: the forms a type is written with, its effects, and
+its base types (parse.rs, TYPE_FORMS and its effect atoms; check.rs)."
+(define type-syntax strings
+  (list "subr" "vsubr" "->" "->*" "poly" "mu" "listof" "nlist" "pairof" "arrayof" "narrayof" "productof"
+        "sumof" "union" "ref" "icell" "bloblet" "place" "moduleof" "proves" "items" "composable"
+        "oneshot" "prompt-tag" "mark-key" "dletrec" "nat"
+        "pure" "spin" "maxeff" "read" "write" "alloc" "io" "region" "effect" "type" "init" "const"
+        "int" "bool" "string" "unit" "char" "symbol" "false" "f32" "f64" "i8" "u8" "i32" "u32" "i64" "u64"
+        "bytevector" "tword" "wcell" "wglobal"))
+
+"M-. on a name the program does not define: said to be a special form or
+type syntax of FX-26, if it is; else one of its standard names, with its
+type, if Fixpt's table of them (standard.rs, where the checker learns
+their types) has it. Read in a command."
 (define* say-standard (subr pure ((actor frame) string) cmd)
   (lambda (fr name)
     (lambda ()
-      (let* ((got (file-text (string-append fixpt-sources "standard.rs")))
-             (s (if (extract got found) (rope->string (extract got text)) ""))
-             (key (string-append "(\"" name "\", \""))
-             (at (string-search s key 0))
-             (to (if (< at 0) -1 (string-search s "\")," (+ at (string-length key))))))
-        (tell! fr (echo (if (< to 0)
-                            (string-append "No definition of " name " found")
-                            (string-append name " is built in to FX-26, so has no definition here: "
-                                           (substring s (+ at (string-length key)) to)))))))))
+      (cond ((member? name special-forms)
+             (tell! fr (echo (string-append name " is a special form of FX-26, so has no definition here"))))
+            ((member? name type-syntax)
+             (tell! fr (echo (string-append name " is type syntax of FX-26, so has no definition here"))))
+            (else
+             (let* ((got (file-text (string-append fixpt-sources "standard.rs")))
+                    (s (if (extract got found) (rope->string (extract got text)) ""))
+                    (key (string-append "(\"" name "\", \""))
+                    (at (string-search s key 0))
+                    (to (if (< at 0) -1 (string-search s "\")," (+ at (string-length key))))))
+               (tell! fr (echo (if (< to 0)
+                                   (string-append "No definition of " name " found")
+                                   (string-append name " is built in to FX-26, so has no definition here: "
+                                                  (substring s (+ at (string-length key)) to)))))))))))
 
 "Go to place `pl`; or, if a name imported from a file is there, on to its
 definition in that file."
