@@ -8,17 +8,6 @@
 ;;; such turn. With none waiting, it waits for a key, and every half second
 ;;; looks at the terminal's size.
 
-"Message for the frame: its first window, on buffer `b`."
-(define* first-window (subr pure ((actor frame) string string (actor buffer)) (msg frame))
-  (lambda (fr name file b)
-    (lambda ((f frame))
-      (let* ((made (new-window fr f b (extract f next-id) (- (extract f height) 1)))
-             (id (extract f next-id))
-             (f2 (frame-of f (list (extract made window)) id
-                           (list (product (name name) (file file) (actor b)))
-                           (+ id 1) (extract f echo) (extract f prefix) (extract f mini))))
-        (reply-with f2 (extract made cmds))))))
-
 "The next byte typed, or #f if none comes within `timeout` ms (0: only
 one already there)."
 (define* next-byte (subr (maxeff (io stdin) (io clock) (read @ed) (write @ed) nondet spin) (int) (union false int))

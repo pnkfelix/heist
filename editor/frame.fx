@@ -623,3 +623,14 @@ names of their commands."
              (f3 (frame-of f2 (extract laid windows) (extract f selected) (extract f buffers) (extract f next-id)
                            (extract f echo) (extract f prefix) (extract f mini))))
         (reply-with f3 (append (extract laid cmds) (extract (draw f3) cmds)))))))
+
+"Message for the frame: its first window, on buffer `b`."
+(define* first-window (subr pure ((actor frame) string string (actor buffer)) (msg frame))
+  (lambda (fr name file b)
+    (lambda ((f frame))
+      (let* ((made (new-window fr f b (extract f next-id) (- (extract f height) 1)))
+             (id (extract f next-id))
+             (f2 (frame-of f (list (extract made window)) id
+                           (list (product (name name) (file file) (actor b)))
+                           (+ id 1) (extract f echo) (extract f prefix) (extract f mini))))
+        (reply-with f2 (extract made cmds))))))
