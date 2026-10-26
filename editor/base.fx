@@ -13,7 +13,7 @@
                              (read @fl) (write @fl) (alloc @fl)      ; the flow analysis's state
                              (read @pf) (alloc @pf)))                ; the files of a program, listed
 (define core ((proj (load-module "core.fx") @ed world)))
-(import core spawn-actor set-class! interactive display idle tell tell-latest tell! run-turns!
+(import core spawn-actor set-class! interactive display idle tell tell-latest tell! start! activity-running? abort-activity! run-turns!
         turns-waiting? interactive-waiting? actor-state actor-name same reply-with
         on-turn-failure! turns-run (type actor msg reply cmd cmds) (effect turn-eff cmd-eff))
 (define rope-m (load-module "rope.fx"))

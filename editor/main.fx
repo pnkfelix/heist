@@ -23,16 +23,41 @@ one already there)."
           (pselect ((read-byte) r (of r))
                    ((sleep-until (i64+ (clock) (int->i64 (* timeout 1000000)))) u (the (union false int) #f)))))))
 
-"Send the frame the keys typed, waiting up to `timeout` ms for the first.
-Whether any came."
+"The keys typed and not yet sent, oldest first; and the activity of the
+one being handled (-1: none). A key is sent to the frame as an activity,
+the next only when its activity is done -- its commands, the buffers'
+turns, a file read -- so keys typed ahead apply in order to what the keys
+before them made (C-x C-f's buffer). C-g gives up the one being handled,
+and those waiting."
+(define pending-keys (ref keys @ed) (new nil))
+(define current-key (ref int @ed) (new -1))
+
+"Send the frame the next key waiting, if the last is done."
+(define* pump-keys! (subr cmd-eff ((actor frame)) unit)
+  (lambda (fr)
+    (let ((ks (get pending-keys)))
+      (if (or (null? ks) (and (>= (get current-key) 0) (activity-running? (get current-key))))
+          #u
+          (begin (set pending-keys (cdr ks))
+                 (set current-key (start! fr (key-typed fr (car ks)))))))))
+
+"Read the keys typed, waiting up to `timeout` ms for the first, into the
+queue; C-g at once. Whether any came."
 (define* send-keys! (subr (maxeff cmd-eff (io stdin) (io clock)) ((actor frame) int) bool)
   (lambda (fr timeout)
     (let ((k (read-key next-byte timeout)))
       (typecase k
         (bool f #f)
-        (else y (begin (tell! fr (key-typed fr y))
-                       (send-keys! fr 0)
-                       #t))))))
+        (else y
+          (begin
+            (if (key=? y 'C-g)
+                (begin
+                  (if (>= (get current-key) 0) (abort-activity! (get current-key)) #u)
+                  (set pending-keys (list y))
+                  (set current-key -1))
+                (set pending-keys (append (get pending-keys) (list y))))
+            (send-keys! fr 0)
+            #t))))))
 
 (define* terminal-dimensions (subr (io terminal) () (productof (rows int) (columns int)))
   (lambda ()
@@ -43,9 +68,10 @@ Whether any came."
 (define* run-loop (subr (maxeff cmd-eff (io stdin) (io clock) (io terminal)) ((actor frame) int int) unit)
   (lambda (fr rows columns)
     (begin
+      (pump-keys! fr)
       (run-turns! 100)
       (cond ((not (get running)) #u)
-            ((turns-waiting?) (begin (send-keys! fr 0) (run-loop fr rows columns)))
+            ((or (turns-waiting?) (pair? (get pending-keys))) (begin (send-keys! fr 0) (run-loop fr rows columns)))
             ((send-keys! fr 500) (run-loop fr rows columns))
             ((not (get running)) #u)
             (else

@@ -1,6 +1,6 @@
 ;;; core.fx: turns, sends between actors, and a failing turn rolled back.
 (define core ((proj (load-module "../core.fx") @ed (io stdout))))
-(import core spawn-actor tell tell-latest set-class! display tell! run-turns! actor-state same reply-with on-turn-failure! turns-run
+(import core spawn-actor tell tell-latest set-class! display tell! start! activity-running? abort-activity! run-turns! actor-state same reply-with on-turn-failure! turns-run
         (type actor msg reply cmd cmds) (effect turn-eff cmd-eff))
 
 (define log (ref (listof string acyclic) @ed) (new nil))
@@ -54,3 +54,20 @@
 (expect "one turn each" (= (- (turns-run) before) 2))
 (expect "interactive first" (and (pair? (get order)) (string=? (car (get order)) "show 3")
                                  (pair? (cdr (get order))) (string=? (car (cdr (get order))) "key")))
+;; Activities: a message started as one, and what its turn sends. It runs
+;; until both turns have run; given up, what of it waits is dropped.
+
+(define* add-on (subr pure (int) (msg int))
+  (lambda (n) (lambda ((st int)) (reply-with (+ st n) (list (tell total (add n)))))))
+(define a1 int (start! counter (add-on 1)))
+(expect "running before" (activity-running? a1))
+(run-turns! 1)
+(expect "running while total's turn waits" (activity-running? a1))
+(run-turns! 1)
+(expect "done after both" (not (activity-running? a1)))
+(define before-total int (actor-state total))
+(define a2 int (start! counter (add-on 100)))
+(run-turns! 1)
+(abort-activity! a2)
+(run-turns! -1)
+(expect "given up: total's message dropped" (= (actor-state total) before-total))

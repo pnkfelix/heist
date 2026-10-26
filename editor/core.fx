@@ -36,9 +36,10 @@ loop, and nothing another could see."
 (define-type (reply (s type)) (productof (state s) (cmds cmds)))
 "A message to an actor of state `s`."
 (define-type (msg (s type)) (subr turn-eff (s) (reply s)))
-"A message in a mailbox, with its key: a message told with a key
-(`tell-latest`) takes the place of any waiting with that key. \"\" for none."
-(define-type (envelope (s type)) (productof (key string) (msg (msg s))))
+"A message in a mailbox, with its key -- a message told with a key
+(`tell-latest`) takes the place of any waiting with that key; \"\" for none
+-- and its activity (-1 for none)."
+(define-type (envelope (s type)) (productof (key string) (msg (msg s)) (activity int)))
 (define-type (msgs (s type)) (listof (envelope s) acyclic))
 "An actor: its name, its state, its mailbox (a queue: `in` newest first,
 `out` oldest first), whether it is in the run queue, and its scheduling
@@ -66,6 +67,51 @@ keys is laid out once, at its end; idle actors only when neither waits."
   (define failed (ref (subr cmd-eff (string string) unit) ed)
     (new (lambda ((who string) (why string)) #u)))
   (define turn-count (ref int ed) (new 0))
+
+  ;; Activities (cahoots' start!): a message started as one, and all that
+  ;; follows from it -- what its turns send, and their commands send, but
+  ;; not what is told with a key (snapshots, paints: a command does not wait
+  ;; for its showing). Each running one's number, and how many of its
+  ;; messages wait or run; it is done at none. Those given up, their
+  ;; messages dropped.
+  (define-type running-activity (productof (id int) (count (ref int ed))))
+  (define activities (ref (listof running-activity acyclic) ed) (new nil))
+  (define given-up (ref (listof int acyclic) ed) (new nil))
+  (define now-activity (ref int ed) (new -1))
+  (define next-activity (ref int ed) (new 0))
+
+  (define activity-of (subr (maxeff (read ed) spin) (int) (listof running-activity acyclic))
+    (lambda (id)
+      (letrec ((go (subr (maxeff (read ed) spin) ((listof running-activity acyclic)) (listof running-activity acyclic))
+                 (lambda (l) (cond ((null? l) nil)
+                                   ((= (extract (car l) id) id) (list (car l)))
+                                   (else (go (cdr l)))))))
+        (go (get activities)))))
+
+  (define given-up? (subr (maxeff (read ed) spin) (int) bool)
+    (lambda (id)
+      (letrec ((go (subr spin ((listof int acyclic)) bool) (lambda (l) (and (pair? l) (or (= (car l) id) (go (cdr l)))))))
+        (go (get given-up)))))
+
+  (define forget-activity! (subr (maxeff (read ed) (write ed) spin) (int) unit)
+    (lambda (id)
+      (set activities
+           (letrec ((go (subr (maxeff (read ed) spin) ((listof running-activity acyclic)) (listof running-activity acyclic))
+                      (lambda (l) (cond ((null? l) nil)
+                                        ((= (extract (car l) id) id) (cdr l))
+                                        (else (cons (car l) (go (cdr l))))))))
+             (go (get activities))))))
+
+  ;; One more, or one fewer (`n`), of activity `id`'s messages; at none, it
+  ;; is done.
+  (define activity-add! (subr (maxeff (read ed) (write ed) spin) (int int) unit)
+    (lambda (id n)
+      (let ((a (activity-of id)))
+        (if (null? a)
+            #u
+            (let ((c (extract (car a) count)))
+              (begin (set c (+ (get c) n))
+                     (if (<= (get c) 0) (forget-activity! id) #u)))))))
 
   (define enqueue! (subr (maxeff (read ed) (write ed)) (int runner) unit)
     (lambda (c r) (array-set! qin c (cons r (array-ref qin c)))))
@@ -145,8 +191,11 @@ It takes messages at once, and runs once the scheduler gets to them."
   (deliver! (poly ((s type)) (subr cmd-eff ((actor s) (envelope s)) unit))
     (plambda ((s type))
       (lambda (a e)
-        (let ((k (extract e key)))
+        (let ((k (extract e key)) (act (extract e activity)))
+          (if (and (>= act 0) (given-up? act))
+              #u                                    ; given up: dropped
           (begin
+            (if (>= act 0) (activity-add! act 1) #u)
             (if (string=? k "")
                 #u
                 (begin (set (extract a in) ((proj without-key s) k (get (extract a in))))
@@ -155,8 +204,9 @@ It takes messages at once, and runs once the scheduler gets to them."
             (if (get (extract a queued))
                 #u
                 (begin (set (extract a queued) #t)
-                       (enqueue! (get (extract a class)) (lambda () ((proj run-one s) a))))))))))
-  ;; One turn of `a`: its oldest message, under `attempt`.
+                       (enqueue! (get (extract a class)) (lambda () ((proj run-one s) a)))))))))))
+  ;; One turn of `a`: its oldest message, under `attempt`, its activity the
+  ;; one what it sends belongs to.
   (run-one (poly ((s type)) (subr cmd-eff ((actor s)) unit))
     (plambda ((s type))
       (lambda (a)
@@ -168,16 +218,25 @@ It takes messages at once, and runs once the scheduler gets to them."
             (if (null? o)
                 (set (extract a queued) #f)
                 (let* ((m (extract (car o) msg))
+                       (act (extract (car o) activity))
+                       (skip (and (>= act 0) (given-up? act)))
                        (st (get (extract a state)))
-                       (outcome (attempt (the (sumof (ok (reply s)) (lost string)) (sum ok (m st)))
-                                         (lambda ((why string)) (the (sumof (ok (reply s)) (lost string)) (sum lost why))))))
+                       (outcome (if skip
+                                    (the (sumof (ok (reply s)) (lost string)) (sum ok (product (state st) (cmds nil))))
+                                    (attempt (the (sumof (ok (reply s)) (lost string)) (sum ok (m st)))
+                                             (lambda ((why string)) (the (sumof (ok (reply s)) (lost string)) (sum lost why))))))
+                       (outer (get now-activity)))
                   (begin
                     (set (extract a out) (cdr o))
                     (set turn-count (+ (get turn-count) 1))
+                    (set now-activity act)
                     (tagcase outcome
                       (ok r (begin (set (extract a state) (extract r state))
                                    (run-cmds (extract r cmds))))
                       (lost why ((get failed) (extract a name) why)))
+                    (set now-activity outer)
+                    ;; This message of its activity done with (a failed one too).
+                    (if (>= act 0) (activity-add! act -1) #u)
                     ;; Its turn again later, if it has more mail.
                     (if (and (null? (get (extract a in))) (null? (get (extract a out))))
                         (set (extract a queued) #f)
@@ -185,16 +244,41 @@ It takes messages at once, and runs once the scheduler gets to them."
 
 "A command: send `m` to `a`, once the turn that returns it ends well."
 (define tell (poly ((s type)) (subr pure ((actor s) (msg s)) cmd))
-  (plambda ((s type)) (lambda (a m) (lambda () ((proj deliver! s) a (product (key "") (msg m)))))))
+  (plambda ((s type)) (lambda (a m) (lambda () ((proj deliver! s) a (product (key "") (msg m) (activity (get now-activity))))))))
 
 "A command: send `m` to `a`, in place of any message waiting there that
 was told with key `k` -- for what only the latest of matters (a snapshot)."
 (define tell-latest (poly ((s type)) (subr pure ((actor s) string (msg s)) cmd))
-  (plambda ((s type)) (lambda (a k m) (lambda () ((proj deliver! s) a (product (key k) (msg m)))))))
+  (plambda ((s type)) (lambda (a k m) (lambda () ((proj deliver! s) a (product (key k) (msg m) (activity -1)))))))
 
-"Send `m` to `a` now, from outside any turn (the terminal's keys, say)."
+"Send `m` to `a` now, from outside any turn (the terminal's keys, say),
+or from a command, as part of its turn's activity."
 (define tell! (poly ((s type)) (subr cmd-eff ((actor s) (msg s)) unit))
-  (plambda ((s type)) (lambda (a m) ((proj deliver! s) a (product (key "") (msg m))))))
+  (plambda ((s type)) (lambda (a m) ((proj deliver! s) a (product (key "") (msg m) (activity (get now-activity)))))))
+
+"Send `m` to `a` as a new activity, from outside any turn: its number."
+(define start! (poly ((s type)) (subr cmd-eff ((actor s) (msg s)) int))
+  (plambda ((s type))
+    (lambda (a m)
+      (let ((id (get next-activity)))
+        (begin
+          (set next-activity (+ id 1))
+          (set activities (cons (product (id id) (count (new 0))) (get activities)))
+          ((proj deliver! s) a (product (key "") (msg m) (activity id)))
+          id)))))
+
+"Whether activity `id` has messages waiting or running."
+(define activity-running? (subr cmd-eff (int) bool)
+  (lambda (id) (pair? (activity-of id))))
+
+"Activity `id` given up: what of it waits is dropped, and what it sends
+from now on (C-g)."
+(define abort-activity! (subr cmd-eff (int) unit)
+  (lambda (id)
+    (begin (forget-activity! id)
+           (set given-up (cons id (letrec ((take (subr spin (int (listof int acyclic)) (listof int acyclic))
+                                                  (lambda (n l) (if (or (= n 0) (null? l)) nil (cons (car l) (take (- n 1) (cdr l)))))))
+                                     (take 63 (get given-up))))))))
 
 "Run turns until none wait, or `limit` have run, or, with a limit (not
 -1), one of a display or idle actor has run, so that the caller can see
