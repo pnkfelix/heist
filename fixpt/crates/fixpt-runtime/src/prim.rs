@@ -2719,6 +2719,19 @@ prims! {
     // not hold from an input that a harness does not take.
     "%fx26-assert", 1, Some(1), simple!(|rt, a| if a[0].is_false() { rt.fail("assertion failed", &[]) } else { Ok(rt.heap.intern_static("#u")) });
     "%fx26-assume", 1, Some(1), simple!(|rt, a| if a[0].is_false() { rt.fail("assumption not met", &[]) } else { Ok(rt.heap.intern_static("#u")) });
+    // FX-26's `type-at` (Heist's, `FIXPT-CHANGES.md` F3): program text
+    // `a[0]` checked, and the innermost expression at character `a[1]`:
+    // "START END TYPE", or "error START END MESSAGE", in characters. The
+    // checker is above this crate; the session installs it (`type_at`).
+    "%fx26-type-at", 2, Some(2), simple!(|rt, a| {
+        let text = get_string(rt, a[0])?;
+        let pos = int(rt, a[1])?;
+        let out = match rt.type_at {
+            Some(f) => f(&text, pos),
+            None => "error 0 0 no checker here".to_string(),
+        };
+        Ok(rt.heap.make_string(&out))
+    });
 }
 
 /// Promise states. `[state, payload]`.

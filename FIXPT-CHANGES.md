@@ -107,6 +107,48 @@ do it, and what it cost. Kayak will need the same changes later
 - **Kayak will need:** nothing, unless it grows an evaluator that runs
   a program's scheduler as its own values.
 
+### F3. `type-at`: the checker's type at a place in a program text (primitive)
+
+- **Needed for:** the editor's C-c t, the type of the expression at
+  point. This is the first piece of R10's "the elaborated program as
+  data", and of the "reader and checker as libraries" asked for in
+  `fx26-for-yank.md`.
+- **What changed:**
+  - **The primitive:** `type-at : (subr (io fs-read) (string int) string)`.
+    It checks a program text with the checker written in Rust, keeping
+    each expression's type (`record_types`, as the verifier does), up to
+    the form the place is in. It gives the innermost expression's span (in
+    characters) and type as `"START END TYPE"`, or `"error START END
+    MESSAGE"`. Its effect is reading the files the text loads.
+  - **The checking:** `crates/fixpt-fx26/src/typeat.rs`.
+  - **The runtime:** a hook, `Runtime::type_at`, which `Fx26Session`
+    installs, since the checker is above `fixpt-runtime`, and
+    `%fx26-type-at` in `prim.rs`.
+  - **Its names elsewhere:** `standard.rs` (its type), `lower.rs`,
+    `debts.rs` (it cannot fail), and `eval-prims.fx` (the evaluator
+    written in FX-26 calls the host's).
+  - **Regenerated** (`FIXPT_BLESS=1 cargo test -p fixpt-fx26 --test
+    layout`): `standard.fx` and `native-direct-x64-layout.fx`. I first
+    edited `standard.fx` by hand. It is generated from `lower.rs`, its
+    header says so, and `tests/layout.rs` checks it. The test caught it.
+- **Why a primitive:** the checker kept types by node already; what a
+  program lacked was a way to ask. Loading the checker written in FX-26
+  into a program would compile about 24,000 lines on every start. The
+  primitive uses the one the session has.
+- **Machines covered:** all twelve, with the same answers
+  (`programs/typeat/basic.fx`).
+- **Measured:** on the editor's own program (220 KB, seven files), 21 ms
+  near its start and 0.44 s near its end.
+- **Not done:**
+  - **Names in types.** Types are printed fully expanded, not by their
+    `define-type` names, so a command's type is several hundred
+    characters long.
+  - **Text past an error.** It stops at the first refusal before the
+    place.
+  - **Instantiations at a place** (`facts.insts`) and effects. These are
+    for R10's flow analysis.
+- **Kayak will need:** the same primitive, over its own checker.
+
 Each entry takes this form:
 
 ### Fn. Title (library | primitive | language)
