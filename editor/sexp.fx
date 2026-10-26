@@ -375,3 +375,107 @@ in if it closes first."
         (if (< e 0)
             (edit-text b p p "()" (+ p 1))
             (done (with-text b (rope-insert (rope-insert t e ")") p "(") (+ p 1))))))))
+
+;;; ------------------------------------------------------------ indentation
+
+"Forms whose body is indented by two, not aligned with their first
+argument: definitions, binders, and the forms with clauses."
+(define body-forms strings
+  (list "define" "define*" "define-rec" "define-type" "define-datatype" "define-effect" "define-generative"
+        "lambda" "plambda" "vlambda" "rlambda" "let" "let*" "letrec" "letregion" "letrena" "letreap" "letfreeze"
+        "module" "hide" "with" "begin" "case" "tagcase" "typecase" "when" "unless" "attempt" "race" "par"
+        "pselect" "spawn" "spawn-monitored" "prompt" "module-parameters" "dletrec"))
+
+(define* member-string? (subr spin (string strings) bool)
+  (lambda (s l) (and (pair? l) (or (string=? s (car l)) (member-string? s (cdr l))))))
+
+"The column of position `p` in `t` (characters since its line's start)."
+(define* column-at (subr spin (rope int) int)
+  (lambda (t p) (- p (rope-line-start t (rope-line-of t p)))))
+
+"The indentation line `n` of `t` should have, as Lisp is indented: -1 to
+leave it (in a string)."
+(define* line-indentation (subr spin (rope int) int)
+  (lambda (t n)
+    (let* ((ls (rope-line-start t n)) (st (scan-at t ls)))
+      (cond ((>= (extract st string-at) 0) -1)
+            ((null? (extract st opens)) 0)
+            (else
+             (let* ((o (car (extract st opens)))
+                    (col (column-at t o))
+                    (cs (children t (+ o 1) ls))
+                    (head (if (pair? cs) (rope-substring t (extract (car cs) start) (extract (car cs) end)) "")))
+               (cond ((null? cs) (+ col 1))
+                     ((member-string? head body-forms) (+ col 2))
+                     ;; An arm of a `tagcase` or `typecase`, `(tag x body …)`:
+                     ;; its body by two.
+                     ((and (pair? (cdr (extract st opens)))
+                           (let* ((po (car (cdr (extract st opens))))
+                                  (pcs (children t (+ po 1) o)))
+                             (and (pair? pcs) (pair? (cdr pcs))
+                                  (member-string? (rope-substring t (extract (car pcs) start) (extract (car pcs) end))
+                                                  (list "tagcase" "typecase")))))
+                      (+ col 2))
+                     ;; A binding with a type, `(go (subr …)` and its value
+                     ;; below: by two, as a definition's.
+                     ((and (pair? (cdr cs))
+                           (let* ((a (extract (car (cdr cs)) start))
+                                  (second (rope-substring t a (min (extract (car (cdr cs)) end) (+ a 7)))))
+                             (letrec ((starts (subr spin (strings) bool)
+                                        (lambda (l) (and (pair? l)
+                                                         (or (= (string-search second (car l) 0) 0) (starts (cdr l)))))))
+                               (starts (list "(subr " "(->* " "(-> " "(poly " "(vsubr ")))))
+                      (+ col 2))
+                     ;; `(cond` with its first clause on the next line: by two.
+                     ((and (string=? head "cond")
+                           (or (null? (cdr cs)) (not (= (rope-line-of t (extract (car (cdr cs)) start)) (rope-line-of t o)))))
+                      (+ col 2))
+                     ;; A head that is a symbol, its first argument on its
+                     ;; line: aligned with that argument.
+                     ((and (pair? (cdr cs)) (not (char=? (string-ref head 0) #\())
+                           (= (rope-line-of t (extract (car (cdr cs)) start)) (rope-line-of t o)))
+                      (column-at t (extract (car (cdr cs)) start)))
+                     ;; A list whose head is a list, or no argument after it on
+                     ;; its line: under the head.
+                     (else (column-at t (extract (car cs) start))))))))))
+
+(define* make-spaces (subr spin (int) string)
+  (lambda (n) (if (<= n 0) "" (string-append " " (make-spaces (- n 1))))))
+
+"`b`'s line `n` indented as `line-indentation` says; point kept with the
+text, or at the indentation if it was in the old."
+(define* indent-line-of (subr spin (buffer int) buffer)
+  (lambda (b n)
+    (let* ((t (extract b text)) (want (line-indentation t n)))
+      (if (< want 0)
+          b
+          (let* ((ls (rope-line-start t n)) (le (rope-line-end t n))
+                 (first (letrec ((go (subr spin (int) int)
+                                   (lambda (i) (if (and (< i le) (char-in? (rope-ref t i) " \t")) (go (+ i 1)) i))))
+                          (go ls)))
+                 (have (- first ls))
+                 (p (extract b point))
+                 (p2 (if (< p first) (+ ls want) (+ p (- want have)))))
+            (if (and (= have want) (not (char-in? #\tab (rope-substring t ls first))))
+                (if (< p first) (with-point b (+ ls want)) b)
+                (with-text b (rope-insert (rope-delete t ls first) ls (make-spaces want)) p2)))))))
+
+(define* fx26-buffer? (subr spin (buffer) bool)
+  (lambda (b) (let ((n (string-length (extract b name))))
+                (and (> n 3) (string=? (substring (extract b name) (- n 3) n) ".fx")))))
+
+"TAB: in an FX-26 buffer, the line indented; elsewhere, a tab."
+(define* indent-for-tab (subr pure () command)
+  (lambda ()
+    (lambda ((b buffer))
+      (if (fx26-buffer? b)
+          (done (indent-line-of b (rope-line-of (extract b text) (extract b point))))
+          (done (with-text b (rope-insert (extract b text) (extract b point) "\t") (+ 1 (extract b point))))))))
+
+"RET: a newline; in an FX-26 buffer, the new line indented."
+(define* newline-and-indent (subr pure () command)
+  (lambda ()
+    (lambda ((b buffer))
+      (let* ((p (extract b point))
+             (b2 (with-text b (rope-insert (extract b text) p "\n") (+ p 1))))
+        (done (if (fx26-buffer? b2) (indent-line-of b2 (rope-line-of (extract b2 text) (+ p 1))) b2))))))

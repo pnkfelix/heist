@@ -294,7 +294,7 @@ place, and the file."
 (define* import-links (subr spin ((listof syn acyclic)) links)
   (lambda (xs)
     (letrec ((modules (subr spin ((listof syn acyclic) (listof (productof (name string) (file string)) acyclic))
-                                (listof (productof (name string) (file string)) acyclic))
+                            (listof (productof (name string) (file string)) acyclic))
                (lambda (xs acc)
                  (if (null? xs) acc
                      (let ((is (items-of (car xs))))

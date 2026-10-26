@@ -280,7 +280,7 @@ to a lambda making `(sum tag (product (1 p1) … (n pn)))`."
              (let* ((name (sym-of (car rest)))
                     (value-syn (car (if (pair? (cdr (cdr rest))) (cdr (cdr rest)) (cdr rest))))
                     (value (begin (if (null? env) (set fl-definition name) #u)
-                                  (named-to-core file value-syn name env))))
+                             (named-to-core file value-syn name env))))
                (k-bind (global-var name) value))
              (k-none nil)))
         ((string=? head "define-rec")
@@ -290,7 +290,7 @@ to a lambda making `(sum tag (product (1 p1) … (n pn)))`."
                                               (if (and (pair? is) (pair? (cdr is)) (pair? (cdr (cdr is))))
                                                   (cons (k-bind (global-var (sym-of (car is)))
                                                                 (begin (if (null? env) (set fl-definition (sym-of (car is))) #u)
-                                                                       (named-to-core file (car (cdr (cdr is))) (sym-of (car is)) env)))
+                                                                  (named-to-core file (car (cdr (cdr is))) (sym-of (car is)) env)))
                                                         (go (cdr bs)))
                                                   (go (cdr bs))))))))
                   (go rest))))
@@ -385,15 +385,15 @@ to a lambda making `(sum tag (product (1 p1) … (n pn)))`."
                                      (let* ((tag (sym-of (car is)))
                                             (names (tagcase (car (cdr is))
                                                      (lst (ns d a b) (letrec ((g (->* ((listof syn acyclic)) strings)
-                                                                                   (lambda (l) (if (null? l) nil (cons (sym-of (car l)) (g (cdr l)))))))
+                                                                                (lambda (l) (if (null? l) nil (cons (sym-of (car l)) (g (cdr l)))))))
                                                                        (g ns)))
                                                      (else y (the strings (list (sym-of (car (cdr is))))))))
                                             (vars (letrec ((g (->* (strings) (listof int acyclic))
-                                                                (lambda (ns) (if (null? ns) nil (cons (new-var) (g (cdr ns)))))))
+                                                             (lambda (ns) (if (null? ns) nil (cons (new-var) (g (cdr ns)))))))
                                                     (g names)))
                                             (inner (letrec ((g (->* (strings (listof int acyclic) scope) scope)
-                                                                 (lambda (ns vs env) (if (null? ns) env
-                                                                                         (g (cdr ns) (cdr vs) (cons (product (name (car ns)) (var (car vs))) env))))))
+                                                              (lambda (ns vs env) (if (null? ns) env
+                                                                                      (g (cdr ns) (cdr vs) (cons (product (name (car ns)) (var (car vs))) env))))))
                                                      (g names vars env))))
                                        (cons (product (tag (if (string=? tag "else") "" tag)) (vars vars)
                                                       (fields (tagcase (car (cdr is)) (lst (ns d a b) #t) (else y #f)))
@@ -510,23 +510,23 @@ newest call and the contour of the rest, recursively."
           (if (>= id 0) id
               (let ((n (get fl-contour-count)))
                 (begin (set fl-contour-count (+ n 1))
-                       (table-set! (get fl-contour-ids) k n)
-                       (table-set! (get fl-contour-calls) n l)
-                       n)))))))
+                  (table-set! (get fl-contour-ids) k n)
+                  (table-set! (get fl-contour-calls) n l)
+                  n)))))))
 
 "The closure of lambda `l` made in contour `c`, its number made on first
 use: in the empty contour, the lambda's own number; else one past them."
 (define closure-of (subr flow-eff (int int) int)
   (lambda (l c)
     (if (= c 0) l
-    (let* ((k (pair-key l c)) (id (table-ref (get fl-closure-ids) k -1)))
-      (if (>= id 0) id
-          (let ((n (+ (get fl-closure-count) (array-length (get fl-lambda-array)))))
-            (begin (set fl-closure-count (+ (get fl-closure-count) 1))
-                   (table-set! (get fl-closure-ids) k n)
-                   (table-set! (get fl-closure-lambda) n l)
-                   (table-set! (get fl-closure-contour) n c)
-                   n)))))))
+        (let* ((k (pair-key l c)) (id (table-ref (get fl-closure-ids) k -1)))
+          (if (>= id 0) id
+              (let ((n (+ (get fl-closure-count) (array-length (get fl-lambda-array)))))
+                (begin (set fl-closure-count (+ (get fl-closure-count) 1))
+                  (table-set! (get fl-closure-ids) k n)
+                  (table-set! (get fl-closure-lambda) n l)
+                  (table-set! (get fl-closure-contour) n c)
+                  n)))))))
 (define closure-lambda (subr flow-eff (int) int)
   (lambda (cl) (if (< cl (array-length (get fl-lambda-array))) cl (table-ref (get fl-closure-lambda) cl -1))))
 (define closure-contour (subr flow-eff (int) int)
@@ -584,7 +584,7 @@ made in one, and the empty one else."
     (if (= (remainder k 1048576) 0)
         (join! (get fl-cell-array) (quotient k 1048576) s)
         (begin (if (and (pair? s) (null? (table-ref (get fl-cells) k nil))) (set fl-cell-keys (cons k (get fl-cell-keys))) #u)
-               (join-table! (get fl-cells) k s)))))
+          (join-table! (get fl-cells) k s)))))
 
 (define field-of (subr flow-eff (int string) vals)
   (lambda (site label)
@@ -655,7 +655,7 @@ and unknown if it may be code not known."
            (letrec ((go (->* (ints int) unit)
                       (lambda (vs i) (if (null? vs) #u
                                          (begin (join-cell! (cell-key (car vs) c) (fields-of payload (int->string i)))
-                                                (go (cdr vs) (+ i 1)))))))
+                                           (go (cdr vs) (+ i 1)))))))
              (go vars 1))))))
 "Arguments `as` given, in contour `c`, to parameters `ps` (and the rest,
 `rest`, if not -1)."
@@ -715,7 +715,7 @@ and unknown if it may be code not known."
             (letrec ((go (->* ((listof field-init acyclic)) unit)
                        (lambda (is) (if (null? is) #u
                                         (begin (field-join! site (extract (car is) label) (eval-core (extract (car is) value) c))
-                                               (go (cdr is)))))))
+                                          (go (cdr is)))))))
               (go inits))
             (list (+ 1 (* 4 site)))))
         (k-field (e label) (fields-of (eval-core e c) label))
@@ -765,7 +765,7 @@ and unknown if it may be code not known."
                  (letrec ((copy (->* (ints) unit)
                             (lambda (vs) (if (null? vs) #u
                                              (begin (join-cell! (cell-key (car vs) c1) (cell (cell-key (car vs) made)))
-                                                    (copy (cdr vs)))))))
+                                               (copy (cdr vs)))))))
                    (copy (array-ref (get fl-free) l)))
                  (pass-args (extract info params) (extract info rest) as c1)
                  (ensure-task! task)
@@ -865,7 +865,7 @@ not global."
                  (k-bind (v e) (node-count e (- limit 1)))
                  (k-alloc (site inits)
                    (node-count-all (letrec ((vs (subr flow-eff ((listof field-init acyclic)) cores)
-                                                  (lambda (is) (if (null? is) nil (cons (extract (car is) value) (vs (cdr is)))))))
+                                              (lambda (is) (if (null? is) nil (cons (extract (car is) value) (vs (cdr is)))))))
                                      (vs inits))
                                    (- limit 1)))
                  (k-field (e label) (node-count e (- limit 1)))
@@ -873,7 +873,7 @@ not global."
                  (k-escape (xs) (node-count-all xs (- limit 1)))
                  (k-case (e arms)
                    (node-count-all (cons e (letrec ((bs (subr flow-eff ((listof arm acyclic)) cores)
-                                                          (lambda (as) (if (null? as) nil (cons (extract (car as) body) (bs (cdr as)))))))
+                                                      (lambda (as) (if (null? as) nil (cons (extract (car as) body) (bs (cdr as)))))))
                                              (bs arms)))
                                    (- limit 1))))))))
   (node-count-all (subr flow-eff (cores int) int)
@@ -904,7 +904,7 @@ calling itself by its name, its body of `small-size` nodes or fewer."
                    (tagcase x
                      (k-lam (m) (if (= (array-ref (get fl-small) m) 0)
                                     (begin (array-set! (get fl-small) m 2)
-                                           (inner (extract (array-ref (get fl-lambda-array) m) body)))
+                                      (inner (extract (array-ref (get fl-lambda-array) m) body)))
                                     #u))
                      (k-none (xs) (each xs)) (k-seq (xs) (each xs)) (k-alt (xs) (each xs)) (k-escape (xs) (each xs))
                      (k-app (call f args) (begin (inner f) (each args)))
@@ -915,9 +915,9 @@ calling itself by its name, its body of `small-size` nodes or fewer."
                      (k-field (e label) (inner e))
                      (k-store (e label v) (begin (inner e) (inner v)))
                      (k-case (e arms) (begin (inner e)
-                                             (letrec ((go (subr flow-eff ((listof arm acyclic)) unit)
-                                                        (lambda (as) (if (null? as) #u (begin (inner (extract (car as) body)) (go (cdr as)))))))
-                                               (go arms))))
+                                        (letrec ((go (subr flow-eff ((listof arm acyclic)) unit)
+                                                   (lambda (as) (if (null? as) #u (begin (inner (extract (car as) body)) (go (cdr as)))))))
+                                          (go arms))))
                      (else y #u))))
                (each (subr flow-eff (cores) unit)
                  (lambda (xs) (if (null? xs) #u (begin (inner (car xs)) (each (cdr xs)))))))
@@ -1010,16 +1010,16 @@ contours, summed over the variables; and how many hold more than one."
     (let ((merged (the (arrayof vals @fl) (make-array (get fl-vars) nil))))
       (begin
         (begin
-            (letrec ((go (subr flow-eff (int) unit)
-                       (lambda (v) (if (>= v (get fl-vars)) #u
-                                       (begin (array-set! merged v (array-ref (get fl-cell-array) v)) (go (+ v 1)))))))
-              (go 0))
-            (letrec ((go (subr flow-eff (ints) unit)
-                       (lambda (ks) (if (null? ks) #u
-                                        (let ((v (quotient (car ks) 1048576)))
-                                          (begin (array-set! merged v (vals-union (array-ref merged v) (table-ref (get fl-cells) (car ks) nil)))
-                                                 (go (cdr ks))))))))
-              (go (get fl-cell-keys))))
+          (letrec ((go (subr flow-eff (int) unit)
+                     (lambda (v) (if (>= v (get fl-vars)) #u
+                                     (begin (array-set! merged v (array-ref (get fl-cell-array) v)) (go (+ v 1)))))))
+            (go 0))
+          (letrec ((go (subr flow-eff (ints) unit)
+                     (lambda (ks) (if (null? ks) #u
+                                      (let ((v (quotient (car ks) 1048576)))
+                                        (begin (array-set! merged v (vals-union (array-ref merged v) (table-ref (get fl-cells) (car ks) nil)))
+                                          (go (cdr ks))))))))
+            (go (get fl-cell-keys))))
         (letrec ((tally (subr flow-eff (int int int) (productof (total int) (several int)))
                    (lambda (v total several)
                      (if (>= v (get fl-vars)) (product (total total) (several several))

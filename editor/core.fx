@@ -111,7 +111,7 @@ keys is laid out once, at its end; idle actors only when neither waits."
             #u
             (let ((c (extract (car a) count)))
               (begin (set c (+ (get c) n))
-                     (if (<= (get c) 0) (forget-activity! id) #u)))))))
+                (if (<= (get c) 0) (forget-activity! id) #u)))))))
 
   (define enqueue! (subr (maxeff (read ed) (write ed)) (int runner) unit)
     (lambda (c r) (array-set! qin c (cons r (array-ref qin c)))))
@@ -194,17 +194,17 @@ It takes messages at once, and runs once the scheduler gets to them."
         (let ((k (extract e key)) (act (extract e activity)))
           (if (and (>= act 0) (given-up? act))
               #u                                    ; given up: dropped
-          (begin
-            (if (>= act 0) (activity-add! act 1) #u)
-            (if (string=? k "")
-                #u
-                (begin (set (extract a in) ((proj without-key s) k (get (extract a in))))
-                       (set (extract a out) ((proj without-key s) k (get (extract a out))))))
-            (set (extract a in) (cons e (get (extract a in))))
-            (if (get (extract a queued))
-                #u
-                (begin (set (extract a queued) #t)
-                       (enqueue! (get (extract a class)) (lambda () ((proj run-one s) a)))))))))))
+              (begin
+                (if (>= act 0) (activity-add! act 1) #u)
+                (if (string=? k "")
+                    #u
+                    (begin (set (extract a in) ((proj without-key s) k (get (extract a in))))
+                      (set (extract a out) ((proj without-key s) k (get (extract a out))))))
+                (set (extract a in) (cons e (get (extract a in))))
+                (if (get (extract a queued))
+                    #u
+                    (begin (set (extract a queued) #t)
+                      (enqueue! (get (extract a class)) (lambda () ((proj run-one s) a)))))))))))
   ;; One turn of `a`: its oldest message, under `attempt`, its activity the
   ;; one what it sends belongs to.
   (run-one (poly ((s type)) (subr cmd-eff ((actor s)) unit))
@@ -224,7 +224,7 @@ It takes messages at once, and runs once the scheduler gets to them."
                        (outcome (if skip
                                     (the (sumof (ok (reply s)) (lost string)) (sum ok (product (state st) (cmds nil))))
                                     (attempt (the (sumof (ok (reply s)) (lost string)) (sum ok (m st)))
-                                             (lambda ((why string)) (the (sumof (ok (reply s)) (lost string)) (sum lost why))))))
+                                      (lambda ((why string)) (the (sumof (ok (reply s)) (lost string)) (sum lost why))))))
                        (outer (get now-activity)))
                   (begin
                     (set (extract a out) (cdr o))
@@ -232,7 +232,7 @@ It takes messages at once, and runs once the scheduler gets to them."
                     (set now-activity act)
                     (tagcase outcome
                       (ok r (begin (set (extract a state) (extract r state))
-                                   (run-cmds (extract r cmds))))
+                              (run-cmds (extract r cmds))))
                       (lost why ((get failed) (extract a name) why)))
                     (set now-activity outer)
                     ;; This message of its activity done with (a failed one too).
@@ -276,9 +276,9 @@ from now on (C-g)."
 (define abort-activity! (subr cmd-eff (int) unit)
   (lambda (id)
     (begin (forget-activity! id)
-           (set given-up (cons id (letrec ((take (subr spin (int (listof int acyclic)) (listof int acyclic))
-                                                  (lambda (n l) (if (or (= n 0) (null? l)) nil (cons (car l) (take (- n 1) (cdr l)))))))
-                                     (take 63 (get given-up))))))))
+      (set given-up (cons id (letrec ((take (subr spin (int (listof int acyclic)) (listof int acyclic))
+                                        (lambda (n l) (if (or (= n 0) (null? l)) nil (cons (car l) (take (- n 1) (cdr l)))))))
+                               (take 63 (get given-up))))))))
 
 "Run turns until none wait, or `limit` have run, or, with a limit (not
 -1), one of a display or idle actor has run, so that the caller can see
@@ -295,7 +295,7 @@ to keys between them. The number run."
                            (let ((r (dequeue-of! c)))
                              (if (procedure? r)
                                  (begin (r)
-                                        (if (and (>= limit 0) (> c interactive)) (+ n 1) (go (+ n 1))))
+                                   (if (and (>= limit 0) (> c interactive)) (+ n 1) (go (+ n 1))))
                                  n))))))))
       (go 0))))
 

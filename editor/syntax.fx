@@ -81,7 +81,7 @@ with parameters, Scheme's procedure form), or nothing (\"\")."
   (lambda (x)
     (tagcase x
       (atom (d a b) (typecase d (symbol s (product (name (symbol->string s)) (start a) (end b)))
-                              (else y (product (name "") (start 0) (end 0)))))
+                      (else y (product (name "") (start 0) (end 0)))))
       (lst (items d a b) (if (pair? items) (defined-name (car items)) (product (name "") (start 0) (end 0))))
       (else y (product (name "") (start 0) (end 0))))))
 
@@ -98,39 +98,39 @@ with parameters, Scheme's procedure form), or nothing (\"\")."
 ;; last first.
 (define-rec
   (tree-faces (->* ((listof syn acyclic) int found) found)
-  (lambda (forms depth acc)
-    (if (null? forms)
-        acc
-        (tree-faces (cdr forms) depth (syn-faces (car forms) depth acc)))))
+    (lambda (forms depth acc)
+      (if (null? forms)
+          acc
+          (tree-faces (cdr forms) depth (syn-faces (car forms) depth acc)))))
 
   (syn-faces (->* (syn int found) found)
-  (lambda (x depth acc)
-    (tagcase x
-      (lst (items d a b)
-        (let ((head (if (pair? items)
-                        (tagcase (car items)
-                          (atom (hd ha hb)
-                            (typecase hd (symbol h (product (name (symbol->string h)) (start ha) (end hb)))
-                                         (else y (product (name "") (start 0) (end 0)))))
-                          (else y (product (name "") (start 0) (end 0))))
-                        (product (name "") (start 0) (end 0)))))
-          (let* ((name (extract head name))
-                 (acc (cond ((member? name keywords)
-                             (add-face acc (extract head start) (extract head end) 'keyword))
-                            ((member? name type-words)
-                             (add-face acc (extract head start) (extract head end) 'type))
-                            (else acc)))
-                 (acc (if (and (member? name definers) (pair? items) (pair? (cdr items)))
-                          (let ((defined (defined-name (car (cdr items)))))
-                            (if (string=? (extract defined name) "")
-                                acc
-                                (let ((acc (add-face acc (extract defined start) (extract defined end) 'function-name)))
-                                  (if (<= depth 1) (add-definition acc defined) acc))))
-                          acc)))
-            (tree-faces (if (pair? items) (cdr items) items) (+ depth 1) acc))))
-      (dotted (items tail d a b) (syn-faces tail (+ depth 1) (tree-faces items (+ depth 1) acc)))
-      (vec (items d a b) (tree-faces items (+ depth 1) acc))
-      (atom (d a b) acc)))))
+    (lambda (x depth acc)
+      (tagcase x
+        (lst (items d a b)
+          (let ((head (if (pair? items)
+                          (tagcase (car items)
+                            (atom (hd ha hb)
+                              (typecase hd (symbol h (product (name (symbol->string h)) (start ha) (end hb)))
+                                (else y (product (name "") (start 0) (end 0)))))
+                            (else y (product (name "") (start 0) (end 0))))
+                          (product (name "") (start 0) (end 0)))))
+            (let* ((name (extract head name))
+                   (acc (cond ((member? name keywords)
+                               (add-face acc (extract head start) (extract head end) 'keyword))
+                              ((member? name type-words)
+                               (add-face acc (extract head start) (extract head end) 'type))
+                              (else acc)))
+                   (acc (if (and (member? name definers) (pair? items) (pair? (cdr items)))
+                            (let ((defined (defined-name (car (cdr items)))))
+                              (if (string=? (extract defined name) "")
+                                  acc
+                                  (let ((acc (add-face acc (extract defined start) (extract defined end) 'function-name)))
+                                    (if (<= depth 1) (add-definition acc defined) acc))))
+                            acc)))
+              (tree-faces (if (pair? items) (cdr items) items) (+ depth 1) acc))))
+        (dotted (items tail d a b) (syn-faces tail (+ depth 1) (tree-faces items (+ depth 1) acc)))
+        (vec (items d a b) (tree-faces items (+ depth 1) acc))
+        (atom (d a b) acc)))))
 
 "Two sorted lists of faces as one, a face of `a` before one of `b` that
 starts where it does."
@@ -284,7 +284,7 @@ unless it is of the revision read last."
                           (list (lambda ()
                                   (let ((r (analyze-incremental (rope->string text) rev (get cell))))
                                     (begin (set cell (extract r memory))
-                                           (tell! b (annotate (extract r annotation))))))))))))))
+                                      (tell! b (annotate (extract r annotation))))))))))))))
 
 "Whether a file is FX-26: its name ends in `.fx`."
 (define* fx26-file? (subr pure (string) bool)

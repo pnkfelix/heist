@@ -1,0 +1,25 @@
+(define* f (subr pure (int) int)        |
+  (lambda (x) (+ x 1)                   |
+    y))                                 |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+-**- a.fx   L3                          |
+                                        |
+cursor 2,5
+ kkkkkkk f  tttt                        |
+   kkkkkk                               |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm|
+                                        |

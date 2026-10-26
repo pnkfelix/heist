@@ -122,12 +122,12 @@ modifiers (<f5>, C-<left>)."
     (typecase k
       (char c (if (char=? c #\space) "SPC" (char->string c)))
       (else y
-       (let* ((s (symbol->string y)) (m (modifiers-length s)) (base (substring s m (string-length s))))
-         (if (or (= 1 (string-length base))
-                 (string=? base "RET") (string=? base "TAB") (string=? base "DEL")
-                 (string=? base "ESC") (string=? base "SPC"))
-             s
-             (string-append (substring s 0 m) "<" base ">")))))))
+        (let* ((s (symbol->string y)) (m (modifiers-length s)) (base (substring s m (string-length s))))
+          (if (or (= 1 (string-length base))
+                  (string=? base "RET") (string=? base "TAB") (string=? base "DEL")
+                  (string=? base "ESC") (string=? base "SPC"))
+              s
+              (string-append (substring s 0 m) "<" base ">")))))))
 
 (define keys->string (subr spin (keys) string)
   (lambda (ks)
@@ -189,10 +189,10 @@ milliseconds."
                    (let ((b (next-byte escape-timeout)))
                      (typecase b
                        (int v (case (integer->char v)
-                              ((#\A) 'up) ((#\B) 'down) ((#\C) 'right) ((#\D) 'left)
-                              ((#\H) 'home) ((#\F) 'end)
-                              ((#\P) 'f1) ((#\Q) 'f2) ((#\R) 'f3) ((#\S) 'f4)
-                              (else 'M-O)))
+                                ((#\A) 'up) ((#\B) 'down) ((#\C) 'right) ((#\D) 'left)
+                                ((#\H) 'home) ((#\F) 'end)
+                                ((#\P) 'f1) ((#\Q) 'f2) ((#\R) 'f3) ((#\S) 'f4)
+                                (else 'M-O)))
                        (else z 'M-O)))))
                ;; Params so far, last first, and the number being read (-1: none).
                (csi (subr (maxeff e spin) ((listof int acyclic) int) key)

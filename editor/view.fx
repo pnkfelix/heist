@@ -78,19 +78,19 @@ where they overlap, `top`'s win, and `base`'s are cut around them."
 (define* overlay-faces (subr spin (text-faces text-faces) text-faces)
   (lambda (base top)
     (letrec ((cut (subr spin (text-face text-faces) text-faces)
-                    ;; `f`'s pieces outside every face of `top`.
-                    (lambda (f top)
-                      (cond ((null? top) (list f))
-                            ((<= (extract (car top) end) (extract f start)) (cut f (cdr top)))
-                            ((>= (extract (car top) start) (extract f end)) (list f))
-                            (else
-                             (append-faces
-                              (if (< (extract f start) (extract (car top) start))
-                                  (list (product (start (extract f start)) (end (extract (car top) start)) (face (extract f face))))
-                                  nil)
-                              (if (> (extract f end) (extract (car top) end))
-                                  (cut (product (start (extract (car top) end)) (end (extract f end)) (face (extract f face))) (cdr top))
-                                  nil))))))
+               ;; `f`'s pieces outside every face of `top`.
+               (lambda (f top)
+                 (cond ((null? top) (list f))
+                       ((<= (extract (car top) end) (extract f start)) (cut f (cdr top)))
+                       ((>= (extract (car top) start) (extract f end)) (list f))
+                       (else
+                        (append-faces
+                         (if (< (extract f start) (extract (car top) start))
+                             (list (product (start (extract f start)) (end (extract (car top) start)) (face (extract f face))))
+                             nil)
+                         (if (> (extract f end) (extract (car top) end))
+                             (cut (product (start (extract (car top) end)) (end (extract f end)) (face (extract f face))) (cdr top))
+                             nil))))))
              (all (subr spin (text-faces) text-faces)
                (lambda (bs) (if (null? bs) nil (append-faces (cut (car bs) top) (all (cdr bs)))))))
       (merge-by-start (all base) top))))

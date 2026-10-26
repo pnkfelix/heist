@@ -21,7 +21,7 @@ one already there)."
       (if (<= timeout 0)
           (if (stdin-ready?) (of (read-byte)) (the (union false int) #f))
           (pselect ((read-byte) r (of r))
-                   ((sleep-until (i64+ (clock) (int->i64 (* timeout 1000000)))) u (the (union false int) #f)))))))
+            ((sleep-until (i64+ (clock) (int->i64 (* timeout 1000000)))) u (the (union false int) #f)))))))
 
 "The keys typed and not yet sent, oldest first; and the activity of the
 one being handled (-1: none). A key is sent to the frame as an activity,
@@ -39,7 +39,7 @@ and those waiting."
       (if (or (null? ks) (and (>= (get current-key) 0) (activity-running? (get current-key))))
           #u
           (begin (set pending-keys (cdr ks))
-                 (set current-key (start! fr (key-typed fr (car ks)))))))))
+            (set current-key (start! fr (key-typed fr (car ks)))))))))
 
 "Read the keys typed, waiting up to `timeout` ms for the first, into the
 queue; C-g at once. Whether any came."
@@ -79,7 +79,7 @@ queue; C-g at once. Whether any came."
                (if (and (= (extract now rows) rows) (= (extract now columns) columns))
                    (run-loop fr rows columns)
                    (begin (tell! fr (resized (extract now rows) (extract now columns)))
-                          (run-loop fr (extract now rows) (extract now columns))))))))))
+                     (run-loop fr (extract now rows) (extract now columns))))))))))
 
 (define* main (subr (maxeff cmd-eff (io stdin) (io clock) (io terminal) (io args) (alloc @a)) () int)
   (lambda ()
