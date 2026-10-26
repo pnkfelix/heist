@@ -1,0 +1,1868 @@
+//! Cellular code: Forth's execution model over bloblets, and the Rust
+//! bootstrap inner interpreter that runs it. ("Cellular" would be called
+//! "threaded" in the Forth community: code as a sequence of cells,
+//! references to routines and their operands, run by an inner interpreter.
+//! This repository says "cellular" throughout.)
+//!
+//! A cellular word is a bloblet whose fields are its program (the layout is
+//! `layout::cellular`). This interpreter reads words directly from the heap
+//! and is the oracle for the native inner interpreters in `fixpt-native`,
+//! which run the same words. The machine is a data stack of Values; a
+//! frame pointer, where the running closure's frame (its arguments, then
+//! its locals) begins on the data stack; the running closure, whose free
+//! values are copied in (flat closures); and a return stack of
+//! `(word, fixnum k, fixnum frame pointer, closure)` entries. Every one of
+//! those is a Value, so both stacks are roots as they stand. The design
+//! for code compiled from FX-26 follows the MacScheme machine's (Larceny's
+//! `doc/LarcenyNotes/note13-malcode.html`), on a stack.
+//!
+//! Every word is made by `Heap::make_cellular_word`, which checks each cell
+//! and operand, and published with its fields frozen, so a cell is always a
+//! routine's number or a word. The native machines rely on that: they run a
+//! cell without looking at it twice.
+
+use fixpt_heap::layout::kind;
+use fixpt_heap::layout::cellular::{
+    CLOSURE_FREE0, CLOSURE_WORD, CONT_BASE, CONT_CLO, CONT_CUR, CONT_DS, CONT_FIELDS, CONT_FP, CONT_INNER, CONT_K, CONT_RS, CONT_REGIONS, CONT_RUN, CONT_SHOTS, CONT_WHOLE,
+    KIND, PRIMITIVES, ROUTINE_DOCOL, ROUTINES, WORD_CELL0, WORD_ENTRY, WORD_NAME, routine,
+};
+use fixpt_heap::{Heap, Shots, Value};
+use fixpt_runtime::crossing::{self, Crossed, Crossing};
+use fixpt_runtime::{NativeExit, PrimKind, Runtime};
+
+/// The most values the data stack may hold, and the most calls the return
+/// stack may hold, checked where a word is entered and where a branch is
+/// taken. Between those points a word runs straight-line code, at most one
+/// push per cell, so a machine needs only a word's worth of room beyond
+/// these (`fixpt-native` leaves that much, then a guard).
+pub const DS_LIMIT: usize = 1 << 17;
+pub const RS_LIMIT: usize = 1 << 16;
+
+/// A routine number as the fixnum a cell holds.
+pub fn prim(name: &str) -> Value {
+    Value::fixnum(routine(name) as i64)
+}
+
+/// Why a cellular program stopped short.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Trap {
+    /// A primitive was given a value of the wrong kind.
+    Type { routine: &'static str },
+    /// A fixnum result would not fit.
+    Overflow { routine: &'static str },
+    /// A primitive needed more values than the data stack held.
+    Underflow { routine: &'static str },
+    /// `field@` or `field!` named a field the bloblet does not have, or one
+    /// that cannot be written; or `slot` or `free` one that is not there.
+    Field { routine: &'static str },
+    /// A word's entry, or an executed fixnum, is no routine.
+    NoRoutine(i64),
+    /// `execute` was given something that is neither a word nor a primitive.
+    NotAWord,
+    /// The machine's fuel ran out: a program ran longer than it was allowed.
+    OutOfFuel,
+    /// More than `DS_LIMIT` values on the data stack.
+    StackOverflow,
+    /// More than `RS_LIMIT` calls deep.
+    TooDeep,
+    /// A runtime primitive failed, saying this; or there was no runtime to
+    /// call it in.
+    Prim(String),
+}
+
+/// A trap as a program's failure is said (`DONE.md` §85): in the native
+/// machine's words where it has the same trap, not Rust's debug form.
+impl std::fmt::Display for Trap {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Trap::Type { routine } if routine.starts_with("pair-") => write!(f, "car or cdr of a non-pair"),
+            Trap::Type { routine } => write!(f, "`{routine}` was given a value of the wrong kind"),
+            Trap::Overflow { routine } => write!(f, "`{routine}`'s result does not fit"),
+            Trap::Underflow { routine } => write!(f, "`{routine}` found too few values on the data stack"),
+            Trap::Field { routine } => write!(f, "`{routine}` named a field that is not there"),
+            Trap::NoRoutine(n) => write!(f, "no routine is numbered {n}"),
+            Trap::NotAWord => write!(f, "`execute` was given what is no word"),
+            Trap::OutOfFuel => write!(f, "evaluation step limit exceeded"),
+            Trap::StackOverflow | Trap::TooDeep => write!(f, "stack overflow"),
+            Trap::Prim(why) => write!(f, "{why}"),
+        }
+    }
+}
+
+impl Trap {
+    /// A trap as the number the native machine reports it by, and back.
+    pub fn code(&self) -> (u64, u64) {
+        let r = |n: &str| routine(n);
+        match self {
+            Trap::Type { routine } => (1, r(routine)),
+            Trap::Overflow { routine } => (2, r(routine)),
+            Trap::Underflow { routine } => (3, r(routine)),
+            Trap::Field { routine } => (4, r(routine)),
+            Trap::NoRoutine(n) => (5, *n as u64),
+            Trap::NotAWord => (6, 0),
+            Trap::OutOfFuel => (7, 0),
+            Trap::StackOverflow => (8, 0),
+            Trap::TooDeep => (9, 0),
+            Trap::Prim(_) => (10, 0),
+        }
+    }
+
+    pub fn from_code(code: u64, aux: u64) -> Trap {
+        let name = || ROUTINES.get(aux as usize).map(|r| r.0).unwrap_or("?");
+        match code {
+            1 => Trap::Type { routine: name() },
+            2 => Trap::Overflow { routine: name() },
+            3 => Trap::Underflow { routine: name() },
+            4 => Trap::Field { routine: name() },
+            5 => Trap::NoRoutine(aux as i64),
+            7 => Trap::OutOfFuel,
+            8 => Trap::StackOverflow,
+            9 => Trap::TooDeep,
+            10 => Trap::Prim("a runtime primitive failed".into()),
+            _ => Trap::NotAWord,
+        }
+    }
+}
+
+// ------------------------------------------------------------------ building
+
+enum Pending {
+    Value(Value),
+    Recurse,
+    /// A branch offset, to a label.
+    To(usize),
+}
+
+/// Builds one cellular word, cell by cell.
+///
+/// Values given to the builder must stay valid until [`WordBuilder::build`];
+/// building allocates but never collects, so any Value live when building
+/// starts is.
+#[derive(Default)]
+pub struct WordBuilder {
+    cells: Vec<Pending>,
+    labels: Vec<Option<usize>>,
+}
+
+/// A place in a word being built, to branch to.
+#[derive(Copy, Clone)]
+pub struct Label(usize);
+
+impl WordBuilder {
+    pub fn new() -> WordBuilder {
+        WordBuilder::default()
+    }
+
+    /// A primitive, by name.
+    pub fn prim(&mut self, name: &str) -> &mut Self {
+        let n = routine(name);
+        assert!(n != ROUTINE_DOCOL, "docol is an entry, not a cell");
+        self.cells.push(Pending::Value(Value::fixnum(n as i64)));
+        self
+    }
+
+    fn operand(&mut self, x: Value) -> &mut Self {
+        self.cells.push(Pending::Value(x));
+        self
+    }
+
+    /// Push `x` when run.
+    pub fn lit(&mut self, x: Value) -> &mut Self {
+        self.prim("lit").operand(x)
+    }
+
+    /// Run `word`, which must be a cellular word.
+    pub fn call(&mut self, heap: &Heap, word: Value) -> &mut Self {
+        assert!(is_word(heap, word), "{word:?} is not a cellular word");
+        self.operand(word)
+    }
+
+    /// Push the word being built, as a value.
+    pub fn lit_self(&mut self) -> &mut Self {
+        self.prim("lit");
+        self.cells.push(Pending::Recurse);
+        self
+    }
+
+    /// Run the word being built.
+    pub fn recurse(&mut self) -> &mut Self {
+        self.cells.push(Pending::Recurse);
+        self
+    }
+
+    pub fn label(&mut self) -> Label {
+        self.labels.push(None);
+        Label(self.labels.len() - 1)
+    }
+
+    /// The next cell is where `l` is.
+    pub fn place(&mut self, l: Label) -> &mut Self {
+        assert!(self.labels[l.0].is_none(), "label placed twice");
+        self.labels[l.0] = Some(self.cells.len());
+        self
+    }
+
+    pub fn branch(&mut self, l: Label) -> &mut Self {
+        self.prim("branch");
+        self.cells.push(Pending::To(l.0));
+        self
+    }
+
+    /// Branch if the popped flag is `#f`.
+    pub fn zbranch(&mut self, l: Label) -> &mut Self {
+        self.prim("0branch");
+        self.cells.push(Pending::To(l.0));
+        self
+    }
+
+    /// Push slot `i` of this frame.
+    pub fn slot(&mut self, i: usize) -> &mut Self {
+        self.prim("slot").operand(Value::fixnum(i as i64))
+    }
+
+    pub fn slot_set(&mut self, i: usize) -> &mut Self {
+        self.prim("slot!").operand(Value::fixnum(i as i64))
+    }
+
+    /// Push free value `i` of the closure running.
+    pub fn free(&mut self, i: usize) -> &mut Self {
+        self.prim("free").operand(Value::fixnum(i as i64))
+    }
+
+    /// Push what global `cell` (a one-field bloblet) holds.
+    pub fn global(&mut self, cell: Value) -> &mut Self {
+        self.prim("global").operand(cell)
+    }
+
+    pub fn global_set(&mut self, cell: Value) -> &mut Self {
+        self.prim("global!").operand(cell)
+    }
+
+    /// Push `word` closed over the `n` values on top of the stack.
+    pub fn closure(&mut self, word: Value, n: usize) -> &mut Self {
+        self.prim("closure").operand(word).operand(Value::fixnum(n as i64))
+    }
+
+    /// Leave this frame, keeping the value on top, and return.
+    pub fn ret(&mut self) -> &mut Self {
+        self.prim("return")
+    }
+
+    /// Call the closure on top with the `n` values below it.
+    pub fn call_closure(&mut self, n: usize) -> &mut Self {
+        self.prim("call").operand(Value::fixnum(n as i64))
+    }
+
+    pub fn tailcall(&mut self, n: usize) -> &mut Self {
+        self.prim("tailcall").operand(Value::fixnum(n as i64))
+    }
+
+    /// The runtime's primitive `name`, with `n` arguments.
+    pub fn runtime(&mut self, name: &str, n: usize) -> &mut Self {
+        let p = runtime_primitive(name).unwrap_or_else(|| panic!("no runtime primitive `{name}`"));
+        self.prim("prim").operand(Value::fixnum(p as i64)).operand(Value::fixnum(n as i64))
+    }
+
+    /// The word, or why these cells cannot be one.
+    pub fn try_build(&self, heap: &mut Heap, name: &str) -> Result<Value, String> {
+        let name = heap.intern(name);
+        let cells: Vec<Value> = self
+            .cells
+            .iter()
+            .enumerate()
+            .map(|(i, c)| match c {
+                Pending::Value(v) => *v,
+                Pending::Recurse => SELF,
+                Pending::To(l) => {
+                    let to = self.labels[*l].expect("label never placed");
+                    // Counted from the cell after the offset.
+                    Value::fixnum(to as i64 - (i as i64 + 1))
+                }
+            })
+            .collect();
+        heap.make_cellular_word(name, &cells)
+    }
+
+    /// The word, published with its fields frozen.
+    pub fn build(&self, heap: &mut Heap, name: &str) -> Value {
+        self.try_build(heap, name).unwrap_or_else(|e| panic!("`{name}` is no word: {e}"))
+    }
+}
+
+/// In a word's cells as given to `make_cellular_word`: the word itself.
+pub const SELF: Value = Value::DEFAULT;
+
+/// A runtime primitive's number, for `prim`, if it is one the machine can
+/// call: one that needs no engine.
+pub fn runtime_primitive(name: &str) -> Option<usize> {
+    fixpt_runtime::PRIMITIVES.iter().position(|p| p.name == name && matches!(p.kind, PrimKind::Simple(_)))
+}
+
+/// A word whose entry is primitive `name`: the way to pass a primitive to
+/// something that wants a word.
+pub fn primitive_word(heap: &mut Heap, name: &str) -> Value {
+    assert!(routine(name) != ROUTINE_DOCOL, "docol runs cells, and this word has none");
+    let sym = heap.intern(name);
+    let w = heap.make_bloblet(KIND, WORD_CELL0 - 2, 0, true);
+    heap.set_bloblet_slot(w, WORD_ENTRY, Value::fixnum(routine(name) as i64));
+    heap.set_bloblet_slot(w, WORD_NAME, sym);
+    heap.freeze_bloblet(w, true, false);
+    w
+}
+
+pub fn is_word(heap: &Heap, v: Value) -> bool {
+    heap.is_cellular_word(v)
+}
+
+pub fn word_name(heap: &Heap, w: Value) -> Value {
+    heap.bloblet_slot(w, WORD_NAME)
+}
+
+// --------------------------------------------------------------- running
+
+/// What the machine runs in: a heap alone, or a whole runtime, which the
+/// `prim` routine needs.
+enum Ctx<'a> {
+    Heap(&'a mut Heap),
+    Rt(&'a mut Runtime),
+}
+
+impl Ctx<'_> {
+    fn heap(&mut self) -> &mut Heap {
+        match self {
+            Ctx::Heap(h) => h,
+            Ctx::Rt(rt) => &mut rt.heap,
+        }
+    }
+}
+
+/// Where the machine is: the word, the next cell in it, where this frame
+/// begins on the data stack, and the closure running (`#f` outside one).
+struct Regs {
+    cur: Value,
+    k: usize,
+    fp: usize,
+    clo: Value,
+}
+
+/// In a return entry's first place, where a word would be: this entry is a
+/// prompt's marker `(PROMPT_MARK, tag, handler, height)`, just above the
+/// entry it resumes at when the prompt is left. Its height is a fixnum, the
+/// data stack's height (`prompt_height`) and, above it, how many regions
+/// were live (`prompt_regions`): an abort to the prompt ends any newer.
+pub const PROMPT_MARK: Value = Value::DEFAULT;
+
+/// A reinstated prompt's height: its data stack height moved by `delta`;
+/// and, composed onto these stacks, the regions live now (`live`), since
+/// every region live is older than it now is, and none entered in what was
+/// captured is live (the checker lets no body of a region be resumed). A
+/// whole continuation keeps its count: the regions entered since it was
+/// captured are abandoned with the stacks it replaces.
+pub fn reinstated_prompt(w: Value, delta: i64, whole: bool, live: usize) -> Value {
+    let regions = if whole { prompt_regions(w) } else { live };
+    prompt_word((prompt_height(w) as i64 + delta) as usize, regions)
+}
+
+/// A prompt's height, as its entry keeps it: the data stack's height, and
+/// the regions live.
+pub fn prompt_word(height: usize, regions: usize) -> Value {
+    Value::fixnum((height as u64 & 0xffff_ffff | (regions as u64) << 32) as i64)
+}
+pub fn prompt_height(w: Value) -> usize {
+    (w.as_fixnum() as u64 & 0xffff_ffff) as usize
+}
+pub fn prompt_regions(w: Value) -> usize {
+    (w.as_fixnum() as u64 >> 32) as usize
+}
+/// ... or a continuation mark, `(MARK_MARK, key, value, 0)`, just above the
+/// entry it resumes at.
+pub const MARK_MARK: Value = Value::UNSPECIFIED;
+
+/// The Rust inner interpreter's machine state.
+pub struct Machine {
+    pub ds: Vec<Value>,
+    rs: Vec<Value>,
+    /// Where this run's return stack begins: control never reaches below.
+    rs_floor: usize,
+    /// Cells run, for measurement.
+    pub steps: u64,
+    /// Cells left to run before the machine traps with `OutOfFuel`, so that
+    /// a program that runs away stops instead of hanging its host.
+    pub fuel: u64,
+    /// Fuel not yet given out: `fuel` is a time slice of it
+    /// (`fixpt_runtime::sched::slice()`), at whose end the scheduler may have
+    /// another task run (`poll`).
+    reserve: u64,
+    /// When profiling: cells run in each word, by the word's name.
+    pub profile: Option<Profile>,
+    /// Whether native code called this run (`call_value`): a whole
+    /// continuation given a value here is then `thrown`, for the machine
+    /// under the native code to go on from.
+    nested: bool,
+    thrown: Option<(Value, Value)>,
+    /// An abort that found no prompt here, where native code called this
+    /// machine: its tag and value, for that code to look further.
+    aborted: Option<(Value, Value)>,
+    /// Which run this is, for the continuations it takes: 0 unless native
+    /// code called it.
+    run: u64,
+}
+
+use std::collections::HashMap;
+
+/// Cells run per word, by name, and words allocated: what a cell
+/// allocates (by a primitive it calls too) is its word's. A word's name is
+/// looked up once per word and collection (a collection moves words).
+#[derive(Default)]
+pub struct Profile {
+    pub cells: HashMap<String, u64>,
+    pub allocated: HashMap<String, u64>,
+    names: HashMap<u64, String>,
+    gc_count: u64,
+    /// The heap's words allocated when the last cell began, and its word.
+    last: (u64, Option<String>),
+    /// Cells run by each word as entered from another: the word run before
+    /// it, the word, and how many cells it ran so entered (a callee's cells
+    /// by caller; a return's, by callee, which is noise to ignore).
+    pub edges: HashMap<(String, String), u64>,
+    from: Option<String>,
+    /// Each global read (`global`), by its name: how many times
+    /// (`TODO.md` §42, what folding constants would save).
+    pub globals: HashMap<String, u64>,
+}
+
+impl Profile {
+    fn count(&mut self, heap: &Heap, word: Value) {
+        // Keyed by address: any collection, minor too, may move a word.
+        if heap.collections() != self.gc_count {
+            self.names.clear();
+            self.gc_count = heap.collections();
+        }
+        let name = self.names.entry(word.raw()).or_insert_with(|| {
+            let sym = heap.bloblet_slot(word, WORD_NAME);
+            heap.symbol_name(sym)
+        });
+        *self.cells.entry(name.clone()).or_insert(0) += 1;
+        if self.last.1.as_ref() != Some(name) {
+            self.from = self.last.1.clone();
+        }
+        if let Some(from) = &self.from {
+            *self.edges.entry((from.clone(), name.clone())).or_insert(0) += 1;
+        }
+        let now = heap.allocated();
+        if let (before, Some(last)) = &self.last
+            && now > *before
+        {
+            *self.allocated.entry(last.clone()).or_insert(0) += now - before;
+        }
+        self.last = (now, Some(name.clone()));
+    }
+
+    /// The `n` words that allocated the most, with how many words.
+    pub fn top_allocating(&self, n: usize) -> Vec<(String, u64)> {
+        let mut all: Vec<(String, u64)> = self.allocated.iter().map(|(k, v)| (k.clone(), *v)).collect();
+        all.sort_by_key(|(_, v)| std::cmp::Reverse(*v));
+        all.truncate(n);
+        all
+    }
+
+    /// The `n` words that ran the most cells in `callee` on entering it,
+    /// with how many: its callers.
+    pub fn callers_of(&self, callee: &str, n: usize) -> Vec<(String, u64)> {
+        let mut all: Vec<(String, u64)> = self.edges.iter().filter(|((_, c), _)| c == callee).map(|((f, _), v)| (f.clone(), *v)).collect();
+        all.sort_by_key(|(_, v)| std::cmp::Reverse(*v));
+        all.truncate(n);
+        all
+    }
+
+    /// The `n` words that ran the most cells, with how many.
+    pub fn top(&self, n: usize) -> Vec<(String, u64)> {
+        let mut all: Vec<(String, u64)> = self.cells.iter().map(|(k, v)| (k.clone(), *v)).collect();
+        all.sort_by_key(|(_, v)| std::cmp::Reverse(*v));
+        all.truncate(n);
+        all
+    }
+}
+
+impl Default for Machine {
+    fn default() -> Machine {
+        Machine { ds: Vec::new(), rs: Vec::new(), rs_floor: 0, steps: 0, fuel: u64::MAX, reserve: 0, profile: None, nested: false, thrown: None, aborted: None, run: 0 }
+    }
+}
+
+impl Machine {
+    pub fn new() -> Machine {
+        Machine::default()
+    }
+
+    pub fn with_fuel(fuel: u64) -> Machine {
+        Machine { fuel, ..Machine::default() }
+    }
+
+    /// Run `word` on the data stack as it stands, until it returns. With no
+    /// runtime, `prim` traps.
+    pub fn run(&mut self, heap: &mut Heap, word: Value) -> Result<(), Trap> {
+        self.run_in(&mut Ctx::Heap(heap), word)
+    }
+
+    /// The same, in a runtime, whose primitives `prim` calls.
+    pub fn run_in_runtime(&mut self, rt: &mut Runtime, word: Value) -> Result<(), Trap> {
+        self.run_in(&mut Ctx::Rt(rt), word)
+    }
+
+    fn run_in(&mut self, cx: &mut Ctx, word: Value) -> Result<(), Trap> {
+        let base = self.rs.len();
+        self.rs_floor = base;
+        let mut r = Regs { cur: Value::FALSE, k: 0, fp: self.ds.len(), clo: Value::FALSE };
+        if !self.enter(cx, word, &mut r)? {
+            return Ok(());
+        }
+        let slice = fixpt_runtime::sched::slice();
+        if self.reserve == 0 && self.fuel > slice {
+            (self.fuel, self.reserve) = (slice, self.fuel - slice);
+        }
+        loop {
+            let cell = cx.heap().bloblet_slot(r.cur, r.k);
+            r.k += 1;
+            self.steps += 1;
+            if let Some(p) = &mut self.profile {
+                p.count(cx.heap(), r.cur);
+            }
+            if self.fuel == 0 {
+                if self.reserve == 0 {
+                    return Err(Trap::OutOfFuel);
+                }
+                if self.poll(cx, &mut r) {
+                    continue;
+                }
+            }
+            self.fuel -= 1;
+            if cell.is_fixnum() {
+                let flow = match self.prim(cx, cell.as_fixnum(), &mut r) {
+                    Ok(f) => f,
+                    Err(t) => {
+                        self.task_failed(cx, &mut r, t)?;
+                        continue;
+                    }
+                };
+                match flow {
+                    Flow::Next => {}
+                    Flow::Exit => {
+                        if self.rs.len() == base {
+                            return Ok(());
+                        }
+                        self.pop_return(&mut r);
+                    }
+                    Flow::Halt => return Ok(()),
+                }
+            } else if let Err(t) = self.enter(cx, cell, &mut r) {
+                self.task_failed(cx, &mut r, t)?;
+            }
+        }
+    }
+
+    /// A time slice's end, between fetching a cell and running it: the next
+    /// slice given out of the reserve, and, if the scheduler would have
+    /// another task run (`fixpt_runtime::sched::preempt_due_with`), its
+    /// `preempt` called first: the cell put back, a return to it pushed, and
+    /// the trampoline word entered with `preempt` on the data stack. Whether
+    /// it was.
+    fn poll(&mut self, cx: &mut Ctx, r: &mut Regs) -> bool {
+        let take = self.reserve.min(fixpt_runtime::sched::slice());
+        (self.fuel, self.reserve) = (take, self.reserve - take);
+        let Ctx::Rt(rt) = cx else { return false };
+        let (rs, floor) = (&self.rs, self.rs_floor);
+        // In a run native code called, the scheduler's prompt may be in the
+        // frames of the machines out from it, which a capture up to it
+        // reaches (`crossing`): asked first, as the question must not walk
+        // them.
+        let nested = self.nested;
+        let beyond = nested && fixpt_runtime::sched::prompt_tag(&rt.heap).is_some_and(|t| crossing::reachable(rt, t));
+        // One of this machine's own closures, or, native code having called
+        // it, a native one, which it calls as native code: another machine's
+        // program may have left its scheduler's (they share a runtime).
+        let own = |h: &fixpt_heap::Heap, f: Value| {
+            f.is_bloblet() && (h.bloblet_kind(f) == const { kind("cellular-closure") } || nested && h.bloblet_kind(f) == const { kind("native-closure") })
+        };
+        let due = fixpt_runtime::sched::preempt_due_with(rt, own, |_, tag| beyond || Self::find_marked(rs, floor, PROMPT_MARK, tag).is_some());
+        let Some((f, t)) = due else { return false };
+        if self.check_limits().is_err() {
+            rt.heap.quiet_leave();
+            rt.heap.take_grace();
+            return false;
+        }
+        r.k -= 1;
+        self.push_return(r);
+        (r.cur, r.k, r.fp, r.clo) = (t, WORD_CELL0, self.ds.len(), Value::FALSE);
+        self.ds.push(f);
+        true
+    }
+
+    /// Trap `t`, in a task: if of a monitored process, an abort to the
+    /// scheduler's prompt, the failure its watcher's
+    /// (`fixpt_runtime::sched::task_failed`), and on; else `t`, the form's.
+    /// Not running out of fuel, the form's budget, nor what passes native
+    /// code.
+    fn task_failed(&mut self, cx: &mut Ctx, r: &mut Regs, t: Trap) -> Result<(), Trap> {
+        if matches!(&t, Trap::OutOfFuel) || matches!(&t, Trap::Prim(m) if m == ABORTED || m == THROWN) {
+            return Err(t);
+        }
+        let Ctx::Rt(rt) = cx else { return Err(t) };
+        let (rs, floor) = (&self.rs, self.rs_floor);
+        let Some(tag) = fixpt_runtime::sched::task_failed(rt, &t.to_string(), |_, tag| Self::find_marked(rs, floor, PROMPT_MARK, tag).is_some()) else {
+            return Err(t);
+        };
+        let unit = rt.heap.intern_static("#u");
+        self.abort(cx, r, tag, unit, "abort")
+    }
+
+    fn push_return(&mut self, r: &Regs) {
+        self.rs.push(r.cur);
+        self.rs.push(Value::fixnum(r.k as i64));
+        self.rs.push(Value::fixnum(r.fp as i64));
+        self.rs.push(r.clo);
+    }
+
+    /// Return to the entry on top; a prompt's marker or a mark on the way
+    /// is left behind, as its body is returning through it.
+    fn pop_return(&mut self, r: &mut Regs) {
+        loop {
+            let n = self.rs.len();
+            let cur = self.rs[n - 4];
+            if cur == PROMPT_MARK || cur == MARK_MARK {
+                self.rs.truncate(n - 4);
+                continue;
+            }
+            r.clo = self.rs.pop().expect("an entry");
+            r.fp = self.rs.pop().expect("an entry").as_fixnum() as usize;
+            r.k = self.rs.pop().expect("an entry").as_fixnum() as usize;
+            r.cur = self.rs.pop().expect("an entry");
+            return;
+        }
+    }
+
+    /// Where the innermost entry marked `sentinel` for `key` starts, above
+    /// `floor`.
+    fn find_marked(rs: &[Value], floor: usize, sentinel: Value, key: Value) -> Option<usize> {
+        let mut i = rs.len();
+        while i >= floor + 4 {
+            i -= 4;
+            if rs[i] == sentinel && rs[i + 1] == key {
+                return Some(i);
+            }
+        }
+        None
+    }
+
+    /// Every value marked for `key` in `rs`, innermost first.
+    fn marks_in(rs: &[Value], floor: usize, key: Value) -> Vec<Value> {
+        let mut out = Vec::new();
+        let mut i = rs.len();
+        while i >= floor + 4 {
+            i -= 4;
+            if rs[i] == MARK_MARK && rs[i + 1] == key {
+                out.push(rs[i + 2]);
+            }
+        }
+        out
+    }
+
+    /// Run closure `thunk` with no arguments above a marker entry: its
+    /// frame, the marker's `(sentinel, a, b, c)`, and where to resume after.
+    fn enter_above(&mut self, heap: &mut Heap, r: &mut Regs, thunk: Value, marker: [Value; 4], routine: &'static str) -> Result<(), Trap> {
+        let thunk = as_cellular(heap, thunk, 0);
+        if !(thunk.is_bloblet() && heap.bloblet_kind(thunk) == const { kind("cellular-closure") }) {
+            return Err(Trap::Type { routine });
+        }
+        self.check_limits()?;
+        self.push_return(r);
+        self.rs.extend_from_slice(&marker);
+        (r.cur, r.k, r.fp, r.clo) = (heap.bloblet_slot(thunk, CLOSURE_WORD), WORD_CELL0, self.ds.len(), thunk);
+        Ok(())
+    }
+
+    /// A continuation of the stacks from `rs_from` and `ds_from` up, and of
+    /// `r`; `whole` when it is everything (`callcc`).
+    fn capture(&mut self, heap: &mut Heap, r: &mut Regs, rs_from: usize, ds_from: usize, whole: bool) -> Value {
+        continuation(heap, &self.ds[ds_from..], &self.rs[rs_from..], r, ds_from, whole, self.run, Value::FALSE)
+    }
+
+    /// Give continuation `k` the value `v`. A delimited one is composed: its
+    /// stacks go on top of these, frame pointers and prompts' heights moved
+    /// by the difference in depth, and it returns here; or, from a tail
+    /// call, to this frame's caller, this frame dropped, as a tail call of a
+    /// closure does. A whole one replaces these stacks.
+    fn reinstate(&mut self, heap: &mut Heap, r: &mut Regs, k: Value, v: Value, tail: bool) {
+        let ds = heap.bloblet_slot(k, CONT_DS);
+        let rs = heap.bloblet_slot(k, CONT_RS);
+        let whole = heap.bloblet_slot(k, CONT_WHOLE) == Value::TRUE;
+        let old_base = heap.bloblet_slot(k, CONT_BASE).as_fixnum();
+        if whole {
+            self.ds.clear();
+            self.rs.truncate(self.rs_floor);
+            // The regions entered since it was taken were the frames' it
+            // replaces: nothing left can resume their bodies, so they end,
+            // as an abort's do (`docs/research/soundness-findings.md`, F7).
+            heap.regions_exit_to(heap.bloblet_slot(k, CONT_REGIONS).as_fixnum() as usize);
+        } else if tail {
+            self.ds.truncate(r.fp);
+        } else {
+            self.push_return(r);
+        }
+        let delta = self.ds.len() as i64 - old_base;
+        let live = heap.live_regions();
+        let n = heap.obj_len(ds);
+        for i in 0..n {
+            self.ds.push(heap.obj_ref(ds, i));
+        }
+        let n = heap.obj_len(rs);
+        for e in 0..n / 4 {
+            let mut entry = [heap.obj_ref(rs, 4 * e), heap.obj_ref(rs, 4 * e + 1), heap.obj_ref(rs, 4 * e + 2), heap.obj_ref(rs, 4 * e + 3)];
+            if entry[0] == PROMPT_MARK {
+                entry[3] = reinstated_prompt(entry[3], delta, whole, live);
+            } else if entry[0] != MARK_MARK {
+                entry[2] = Value::fixnum(entry[2].as_fixnum() + delta);
+            }
+            self.rs.extend_from_slice(&entry);
+        }
+        r.cur = heap.bloblet_slot(k, CONT_CUR);
+        r.k = heap.bloblet_slot(k, CONT_K).as_fixnum() as usize;
+        r.fp = (heap.bloblet_slot(k, CONT_FP).as_fixnum() + delta) as usize;
+        r.clo = heap.bloblet_slot(k, CONT_CLO);
+        self.ds.push(v);
+    }
+
+    /// Run word `w` as a call from `r`: push the return entry and enter it
+    /// if it is made of cells (and say so), or run its routine.
+    fn enter(&mut self, cx: &mut Ctx, w: Value, r: &mut Regs) -> Result<bool, Trap> {
+        let entry = cx.heap().bloblet_slot(w, WORD_ENTRY).as_fixnum();
+        // A word compiled to machine code for a native machine is still its
+        // cells here.
+        if entry as u64 == ROUTINE_DOCOL || entry >= PRIMITIVES as i64 {
+            self.check_limits()?;
+            if r.cur.is_bloblet() {
+                self.push_return(r);
+            }
+            (r.cur, r.k) = (w, WORD_CELL0);
+            return Ok(true);
+        }
+        match self.prim(cx, entry, r)? {
+            Flow::Next => Ok(false),
+            Flow::Exit | Flow::Halt => Err(Trap::NoRoutine(entry)),
+        }
+    }
+
+    fn check_limits(&self) -> Result<(), Trap> {
+        if self.ds.len() > DS_LIMIT {
+            return Err(Trap::StackOverflow);
+        }
+        if self.rs.len() / 4 >= RS_LIMIT {
+            return Err(Trap::TooDeep);
+        }
+        Ok(())
+    }
+
+    fn pop(&mut self, routine: &'static str) -> Result<Value, Trap> {
+        self.ds.pop().ok_or(Trap::Underflow { routine })
+    }
+
+    fn fix(&mut self, routine: &'static str) -> Result<i64, Trap> {
+        let v = self.pop(routine)?;
+        if v.is_fixnum() { Ok(v.as_fixnum()) } else { Err(Trap::Type { routine }) }
+    }
+
+    /// The operand in the next cell.
+    fn operand(heap: &Heap, r: &mut Regs) -> Value {
+        let v = heap.bloblet_slot(r.cur, r.k);
+        r.k += 1;
+        v
+    }
+
+    /// A safepoint: everything live is on the stacks or in `r`.
+    fn safepoint(&mut self, heap: &mut Heap, r: &mut Regs) {
+        let mut regs = [r.cur, r.clo];
+        heap.maybe_collect(&mut [&mut self.ds, &mut self.rs, &mut regs]);
+        (r.cur, r.clo) = (regs[0], regs[1]);
+    }
+
+    /// Call the closure on top of the stack with the `n` values below it,
+    /// which become its frame; `tail` replaces this frame and call instead,
+    /// sliding the new frame down over the old, so the stacks do not grow.
+    /// No allocation: a call is stack work, as in the MacScheme machine.
+    fn call(&mut self, cx: &mut Ctx, r: &mut Regs, n: usize, tail: bool, routine: &'static str) -> Result<(), Trap> {
+        if self.ds.len() < r.fp + n + 1 {
+            return Err(Trap::Underflow { routine });
+        }
+        let heap = cx.heap();
+        let c = self.ds.pop().expect("counted");
+        if c.is_bloblet() && heap.bloblet_kind(c) == const { kind("cellular-continuation") } {
+            if n != 1 {
+                return Err(Trap::Prim(format!("a continuation takes one value, and was given {n}")));
+            }
+            let v = self.ds.pop().expect("counted");
+            self.check_limits()?;
+            spend(heap, c)?;
+            self.escape(heap, c, v)?;
+            self.reinstate(heap, r, c, v, tail);
+            return self.resume_inner(cx, r, c, routine);
+        }
+        let c = as_cellular(heap, c, n);
+        if !(c.is_bloblet() && heap.bloblet_kind(c) == const { kind("cellular-closure") }) {
+            return Err(Trap::Type { routine });
+        }
+        self.check_limits()?;
+        let word = heap.bloblet_slot(c, CLOSURE_WORD);
+        if tail {
+            let from = self.ds.len() - n;
+            self.ds.drain(r.fp..from);
+        } else {
+            self.push_return(r);
+            r.fp = self.ds.len() - n;
+        }
+        (r.cur, r.k, r.clo) = (word, WORD_CELL0, c);
+        Ok(())
+    }
+
+    /// In a run native code called, a whole continuation given a value
+    /// leaves it, thrown.
+    fn escape(&mut self, heap: &Heap, k: Value, v: Value) -> Result<(), Trap> {
+        let run = heap.bloblet_slot(k, CONT_RUN);
+        if self.nested && heap.bloblet_slot(k, CONT_WHOLE) == Value::TRUE && run != Value::fixnum(self.run as i64) {
+            self.thrown = Some((k, v));
+            return Err(Trap::Prim(THROWN.into()));
+        }
+        Ok(())
+    }
+
+    /// A capture up to `tag`, whose prompt is not on this machine's stacks:
+    /// in a run native code called, every frame of the run, and the frames
+    /// of the machines out from it up to the prompt (`crossing`), given to
+    /// `proc_`; else none to take.
+    #[allow(clippy::too_many_arguments)]
+    fn capture_across(&mut self, cx: &mut Ctx, r: &mut Regs, tag: Value, proc_: Value, native: bool, once: bool, name: &'static str) -> Result<(), Trap> {
+        let missing = || Trap::Prim("call-with-composable-continuation: no prompt for this tag".into());
+        let Ctx::Rt(rt) = cx else { return Err(missing()) };
+        if !self.nested || !crossing::crossed() {
+            return Err(missing());
+        }
+        // The tag too, which a collection there may move: the frames out
+        // from here are searched for its prompt by where it is after.
+        self.ds.push(tag);
+        self.ds.push(proc_);
+        self.safepoint(&mut rt.heap, r);
+        let proc_ = self.ds.pop().expect("pushed");
+        let tag = self.ds.pop().expect("pushed");
+        let from = nested_floor(&rt.heap, &self.rs, self.rs_floor);
+        let own = self.capture(&mut rt.heap, r, from, 0, false);
+        // Nothing allocated here collects, so `proc_` stays where it is.
+        let k = crossing::capture(rt, tag, own).ok_or_else(missing)?;
+        if once {
+            rt.heap.make_one_shot(k);
+        }
+        let k = if rt.heap.bloblet_kind(k) == const { kind("cellular-continuation") } { rt.heap.continuation_closure(k) } else { k };
+        let k = if native { as_native(cx, k)? } else { k };
+        self.ds.push(k);
+        self.ds.push(proc_);
+        self.call(cx, r, 1, false, name)
+    }
+
+    /// In a run native code called, the marks for `key` in the frames of the
+    /// machines out from it (`crossing`).
+    fn marks_beyond(&self, cx: &mut Ctx, key: Value) -> Vec<Value> {
+        match cx {
+            Ctx::Rt(rt) if self.nested => crossing::marks(rt, key),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Once continuation `k`'s frames are back, with the value on top: its
+    /// inner continuation, if it has one (`crossing`), called with the
+    /// value, as native code, which these frames had called there; or, the
+    /// native code's frames all gone in tail calls, as this machine's.
+    fn resume_inner(&mut self, cx: &mut Ctx, r: &mut Regs, k: Value, name: &'static str) -> Result<(), Trap> {
+        let inner = cx.heap().bloblet_slot(k, CONT_INNER);
+        if inner == Value::FALSE {
+            return Ok(());
+        }
+        self.ds.push(inner);
+        if cx.heap().bloblet_kind(inner) == const { kind("cellular-continuation") } {
+            return self.call(cx, r, 1, false, name);
+        }
+        let Ctx::Rt(rt) = cx else { return Err(Trap::Type { routine: name }) };
+        match self.call_native(rt, r, 1, false, name)? {
+            Back::Value(v) => self.ds.push(v),
+            Back::Moved => {}
+            Back::Abort(tag, v) => self.abort(cx, r, tag, v, name)?,
+        }
+        Ok(())
+    }
+
+    /// A call of the native closure on top with the `n` values below it,
+    /// by the runtime's `call_native`, on Rust's stack: its value. The call
+    /// may collect, so the stacks and registers are kept in a vector the
+    /// heap roots meanwhile, and taken back from it after, moved.
+    fn call_native(&mut self, rt: &mut Runtime, r: &mut Regs, n: usize, tail: bool, routine: &'static str) -> Result<Back, Trap> {
+        let Some(call) = rt.call_native else { return Err(Trap::Type { routine }) };
+        self.check_limits()?;
+        if !crossing::room() {
+            return Err(Trap::StackOverflow);
+        }
+        let c = self.ds.pop().expect("counted");
+        let args = self.ds.split_off(self.ds.len() - n);
+        let (nd, nr) = (self.ds.len(), self.rs.len());
+        let mut all = std::mem::take(&mut self.ds);
+        all.append(&mut self.rs);
+        all.extend([r.cur, r.clo]);
+        let kept = rt.heap.vector_from(&all);
+        let at = rt.heap.push_root(kept);
+        let held = Held { at, nd, nr, k: r.k, fp: r.fp, tail, floor: self.rs_floor, nested: self.nested, run: self.run };
+        let v = crossing::across(std::rc::Rc::new(held), || call(rt, c, &args));
+        let kept = rt.heap.root_at(at);
+        rt.heap.pop_roots_to(at);
+        let all: Vec<Value> = (0..rt.heap.obj_len(kept)).map(|i| rt.heap.obj_ref(kept, i)).collect();
+        self.ds = all[..nd].to_vec();
+        self.rs = all[nd..nd + nr].to_vec();
+        (r.cur, r.clo) = (all[nd + nr], all[nd + nr + 1]);
+        match v {
+            Ok(v) => Ok(Back::Value(v)),
+            Err(NativeExit::Failed(m)) => Err(Trap::Prim(m)),
+            // Thrown past native code: this machine goes on from `k`, or,
+            // itself called by native code, throws it on.
+            // A whole continuation of native code goes on out, to the
+            // machine at the bottom, which gives it its value: a cellular
+            // one only if it is this machine.
+            Err(NativeExit::Throw { k, v }) if rt.heap.bloblet_kind(k) != const { kind("cellular-continuation") } => {
+                if self.nested {
+                    self.thrown = Some((k, v));
+                    return Err(Trap::Prim(THROWN.into()));
+                }
+                Err(Trap::Prim("a whole continuation of native code, given a value under cellular code it did not take".into()))
+            }
+            Err(NativeExit::Throw { k, v }) => {
+                spend(&mut rt.heap, k)?;
+                self.escape(&rt.heap, k, v)?;
+                self.reinstate(&mut rt.heap, r, k, v, true);
+                self.resume_inner(&mut Ctx::Rt(rt), r, k, "call")?;
+                Ok(Back::Moved)
+            }
+            Err(NativeExit::Abort { tag, v }) => Ok(Back::Abort(tag, v)),
+        }
+    }
+
+    /// An abort to `tag` with `v`: to the innermost prompt for it on this
+    /// machine's return stack, whose handler gets `v`; or, none here but
+    /// this machine called by native code, on to that code.
+    fn abort(&mut self, cx: &mut Ctx, r: &mut Regs, tag: Value, v: Value, name: &'static str) -> Result<(), Trap> {
+        let Some(at) = Self::find_marked(&self.rs, self.rs_floor, PROMPT_MARK, tag) else {
+            if self.nested {
+                self.aborted = Some((tag, v));
+                return Err(Trap::Prim(ABORTED.into()));
+            }
+            return Err(Trap::Prim("abort: no prompt for this tag".into()));
+        };
+        let handler = self.rs[at + 2];
+        let (height, regions) = (prompt_height(self.rs[at + 3]), prompt_regions(self.rs[at + 3]));
+        self.rs.truncate(at);
+        self.pop_return(r);
+        self.ds.truncate(height);
+        // What the regions entered inside the prompt held is gone with what
+        // was cut: no frame left can resume their bodies.
+        cx.heap().regions_exit_to(regions);
+        self.ds.push(v);
+        self.ds.push(handler);
+        self.call(cx, r, 1, false, name)
+    }
+
+    fn prim(&mut self, cx: &mut Ctx, n: i64, r: &mut Regs) -> Result<Flow, Trap> {
+        if n < 0 || n as usize >= PRIMITIVES || n as u64 == ROUTINE_DOCOL {
+            return Err(Trap::NoRoutine(n));
+        }
+        let name = ROUTINES[n as usize].0;
+        match n {
+            EXIT => return Ok(Flow::Exit),
+            HALT => return Ok(Flow::Halt),
+            LIT => {
+                let v = Self::operand(cx.heap(), r);
+                self.ds.push(v);
+            }
+            BRANCH => {
+                let off = Self::operand(cx.heap(), r).as_fixnum();
+                r.k = (r.k as i64 + off) as usize;
+                self.check_limits()?;
+            }
+            ZBRANCH => {
+                let flag = self.pop(name)?;
+                let off = Self::operand(cx.heap(), r).as_fixnum();
+                if flag == Value::FALSE {
+                    r.k = (r.k as i64 + off) as usize;
+                    self.check_limits()?;
+                }
+            }
+            EXECUTE => {
+                let w = self.pop(name)?;
+                if w.is_fixnum() {
+                    return self.prim(cx, w.as_fixnum(), r);
+                }
+                if !is_word(cx.heap(), w) {
+                    return Err(Trap::NotAWord);
+                }
+                self.enter(cx, w, r)?;
+            }
+            DUP => {
+                let a = *self.ds.last().ok_or(Trap::Underflow { routine: name })?;
+                self.ds.push(a);
+            }
+            DROP => {
+                self.pop(name)?;
+            }
+            SWAP => {
+                let b = self.pop(name)?;
+                let a = self.pop(name)?;
+                self.ds.push(b);
+                self.ds.push(a);
+            }
+            OVER => {
+                let len = self.ds.len();
+                if len < 2 {
+                    return Err(Trap::Underflow { routine: name });
+                }
+                self.ds.push(self.ds[len - 2]);
+            }
+            // This machine is the oracle: the typed routines keep the
+            // checks their types make needless, so a wrong type traps here.
+            // `int`'s, on exact integers: a bignum past a fixnum (PLAN.md,
+            // Q2); anything else traps.
+            INT_ADD | INT_SUB | INT_LESS | INT_EQ => {
+                let b = self.pop(name)?;
+                let a = self.pop(name)?;
+                let fast = match n {
+                    _ if !(a.is_fixnum() && b.is_fixnum()) => None,
+                    INT_ADD => Value::try_fixnum(a.as_fixnum() + b.as_fixnum()),
+                    INT_SUB => Value::try_fixnum(a.as_fixnum() - b.as_fixnum()),
+                    INT_LESS => Some(Value::boolean(a.as_fixnum() < b.as_fixnum())),
+                    _ => Some(Value::boolean(a == b)),
+                };
+                let op = match n {
+                    INT_ADD => "add",
+                    INT_SUB => "sub",
+                    INT_LESS => "less",
+                    _ => "eq",
+                };
+                let v = match fast {
+                    Some(v) => v,
+                    None => fixpt_runtime::num::int_op(cx.heap(), op, a, b).ok_or(Trap::Type { routine: name })?,
+                };
+                self.ds.push(v);
+            }
+            ADD | SUB | LESS => {
+                let b = self.fix(name)?;
+                let a = self.fix(name)?;
+                let v = match n {
+                    ADD => Value::try_fixnum(a + b).ok_or(Trap::Overflow { routine: name })?,
+                    SUB => Value::try_fixnum(a - b).ok_or(Trap::Overflow { routine: name })?,
+                    _ => Value::boolean(a < b),
+                };
+                self.ds.push(v);
+            }
+            EQ => {
+                let b = self.pop(name)?;
+                let a = self.pop(name)?;
+                self.ds.push(Value::boolean(a == b));
+            }
+            FIELD_REF => {
+                let kf = self.pop(name)?;
+                let obj = self.pop(name)?;
+                if !kf.is_fixnum() || !obj.is_bloblet() {
+                    return Err(Trap::Type { routine: name });
+                }
+                let kf = usize::try_from(kf.as_fixnum()).map_err(|_| Trap::Field { routine: name })?;
+                let v = cx.heap().bloblet_field(obj, kf).map_err(|_| Trap::Field { routine: name })?;
+                self.ds.push(v);
+            }
+            FIELD_SET => {
+                let kf = self.pop(name)?;
+                let obj = self.pop(name)?;
+                let x = self.pop(name)?;
+                if !kf.is_fixnum() || !obj.is_bloblet() {
+                    return Err(Trap::Type { routine: name });
+                }
+                let kf = usize::try_from(kf.as_fixnum()).map_err(|_| Trap::Field { routine: name })?;
+                cx.heap().set_bloblet_field(obj, kf, x).map_err(|_| Trap::Field { routine: name })?;
+            }
+            CONS => {
+                if self.ds.len() < 2 {
+                    return Err(Trap::Underflow { routine: name });
+                }
+                self.safepoint(cx.heap(), r);
+                let b = self.pop(name)?;
+                let a = self.pop(name)?;
+                let p = cx.heap().cons(a, b);
+                self.ds.push(p);
+            }
+            CAR | CDR | PAIR_CAR | PAIR_CDR => {
+                let p = self.pop(name)?;
+                if !p.is_pair() {
+                    return Err(Trap::Type { routine: name });
+                }
+                let heap = cx.heap();
+                self.ds.push(if matches!(n, CAR | PAIR_CAR) { heap.car(p) } else { heap.cdr(p) });
+            }
+            FIELD => {
+                let k = Self::operand(cx.heap(), r).as_fixnum() as usize;
+                let obj = self.pop(name)?;
+                if !obj.is_bloblet() {
+                    return Err(Trap::Type { routine: name });
+                }
+                let v = cx.heap().bloblet_field(obj, k).map_err(|_| Trap::Field { routine: name })?;
+                self.ds.push(v);
+            }
+            SLOT => {
+                let i = Self::operand(cx.heap(), r).as_fixnum() as usize;
+                let v = *self.ds.get(r.fp + i).ok_or(Trap::Field { routine: name })?;
+                self.ds.push(v);
+            }
+            REST => {
+                let vs: Vec<Value> = self.ds.get(r.fp..).ok_or(Trap::Underflow { routine: name })?.to_vec();
+                let heap = cx.heap();
+                let l = heap.list_from(&vs);
+                self.ds.push(l);
+            }
+            SLOT_SET => {
+                let i = Self::operand(cx.heap(), r).as_fixnum() as usize;
+                let x = self.pop(name)?;
+                *self.ds.get_mut(r.fp + i).ok_or(Trap::Field { routine: name })? = x;
+            }
+            FREE => {
+                let heap = cx.heap();
+                let i = Self::operand(heap, r).as_fixnum() as usize;
+                if !r.clo.is_bloblet() {
+                    return Err(Trap::Field { routine: name });
+                }
+                let v = heap.bloblet_field(r.clo, CLOSURE_FREE0 + i).map_err(|_| Trap::Field { routine: name })?;
+                self.ds.push(v);
+            }
+            RETURN => {
+                let v = self.pop(name)?;
+                if self.ds.len() < r.fp {
+                    return Err(Trap::Underflow { routine: name });
+                }
+                self.ds.truncate(r.fp);
+                self.ds.push(v);
+                return Ok(Flow::Exit);
+            }
+            GLOBAL => {
+                let heap = cx.heap();
+                let g = Self::operand(heap, r);
+                let v = heap.bloblet_slot(g, 2);
+                if let Some(p) = &mut self.profile {
+                    *p.globals.entry(heap.symbol_name(heap.bloblet_slot(g, 3))).or_insert(0) += 1;
+                }
+                self.ds.push(v);
+            }
+            GLOBAL_SET => {
+                let g = Self::operand(cx.heap(), r);
+                let x = self.pop(name)?;
+                let heap = cx.heap();
+                heap.set_bloblet_slot(g, 2, x);
+                // One more write, for the guards (`global-guard`).
+                let w = fixpt_heap::layout::cellular::GLOBAL_WRITES;
+                let n = heap.bloblet_slot(g, w).as_fixnum();
+                heap.set_bloblet_slot(g, w, Value::fixnum(n + 1));
+            }
+            CLOSURE | NCLOSURE => {
+                self.safepoint(cx.heap(), r);
+                let heap = cx.heap();
+                let w = Self::operand(heap, r);
+                let count = Self::operand(heap, r).as_fixnum() as usize;
+                if self.ds.len() < r.fp + count {
+                    return Err(Trap::Underflow { routine: name });
+                }
+                let c = heap.make_bloblet(const { kind("cellular-closure") }, count + 1, 0, true);
+                heap.set_bloblet_slot(c, CLOSURE_WORD, w);
+                let free = self.ds.split_off(self.ds.len() - count);
+                for (i, v) in free.into_iter().enumerate() {
+                    heap.set_bloblet_slot(c, CLOSURE_FREE0 + i, v);
+                }
+                // In the native convention, the closure its type says.
+                let c = if n == NCLOSURE { as_native(cx, c)? } else { c };
+                self.ds.push(c);
+            }
+            // A typed call's callee's type says `cellular`: the native
+            // machines check nothing, and this one, the oracle, traps on
+            // anything but a cellular closure (`TODO.md` §97), which a
+            // well-typed program never calls so.
+            CALL | TAILCALL | TCALL | TTAILCALL => {
+                let count = Self::operand(cx.heap(), r).as_fixnum() as usize;
+                let tail = n == TAILCALL || n == TTAILCALL;
+                let mut callee = self.ds.last().copied().filter(|_| self.ds.len() > r.fp + count);
+                // An adapter cellular code made (`nclosure`), called by
+                // cellular code: what it calls, here, with no crossing.
+                if let Some(inner) = callee.and_then(|c| cx.heap().adapted(c)) {
+                    *self.ds.last_mut().expect("the callee") = inner;
+                    callee = Some(inner);
+                }
+                if (n == TCALL || n == TTAILCALL)
+                    && !callee.is_some_and(|c| c.is_bloblet() && cx.heap().bloblet_kind(c) == const { kind("cellular-closure") })
+                {
+                    return Err(Trap::Type { routine: name });
+                }
+                if let (Some(c), Ctx::Rt(rt)) = (callee, &mut *cx)
+                    && c.is_bloblet()
+                    && rt.heap.bloblet_kind(c) == const { kind("native-closure") }
+                {
+                    // A continuation was thrown past it, and is where this
+                    // machine now is; or an abort found no prompt in it, and
+                    // goes on here.
+                    let v = match self.call_native(rt, r, count, tail, name)? {
+                        Back::Value(v) => v,
+                        Back::Moved => return Ok(Flow::Next),
+                        Back::Abort(tag, v) => {
+                            self.abort(cx, r, tag, v, name)?;
+                            return Ok(Flow::Next);
+                        }
+                    };
+                    self.ds.push(v);
+                    if tail {
+                        // Returned from here, as `return` does.
+                        let v = self.pop(name)?;
+                        self.ds.truncate(r.fp);
+                        self.ds.push(v);
+                        return Ok(Flow::Exit);
+                    }
+                } else {
+                    self.call(cx, r, count, tail, name)?;
+                }
+            }
+            RESUME => {
+                let k = self.pop(name)?;
+                let v = self.pop(name)?;
+                let heap = cx.heap();
+                if !(k.is_bloblet() && heap.bloblet_kind(k) == const { kind("cellular-continuation") }) {
+                    return Err(Trap::Type { routine: name });
+                }
+                self.check_limits()?;
+                spend(heap, k)?;
+                self.escape(heap, k, v)?;
+                self.reinstate(heap, r, k, v, true);
+                self.resume_inner(cx, r, k, name)?;
+            }
+            UNDEFINED => return Err(Trap::Prim("a procedure was called before it was defined".into())),
+            PRIM => {
+                let p = Self::operand(cx.heap(), r).as_fixnum() as usize;
+                let count = Self::operand(cx.heap(), r).as_fixnum() as usize;
+                if self.ds.len() < count {
+                    return Err(Trap::Underflow { routine: name });
+                }
+                let Ctx::Rt(rt) = cx else { return Err(Trap::Prim("no runtime to call a primitive in".into())) };
+                let Some(def) = fixpt_runtime::PRIMITIVES.get(p) else { return Err(Trap::Prim(format!("no primitive {p}"))) };
+                let PrimKind::Simple(f) = def.kind else { return Err(Trap::Prim(format!("`{}` needs an engine", def.name))) };
+                if count < def.min || def.max.is_some_and(|m| count > m) {
+                    return Err(Trap::Prim(format!("`{}` given {count} argument(s)", def.name)));
+                }
+                // A primitive may allocate, and allocation never collects
+                // here, so this is a safepoint first.
+                let mut regs = [r.cur, r.clo];
+                rt.heap.maybe_collect(&mut [&mut self.ds, &mut self.rs, &mut regs]);
+                (r.cur, r.clo) = (regs[0], regs[1]);
+                let mut args = self.ds.split_off(self.ds.len() - count);
+                match f(rt, &mut args) {
+                    Ok(v) => self.ds.push(v),
+                    Err(t) => return Err(Trap::Prim(describe(rt, t.obj))),
+                }
+            }
+            PROMPT => {
+                let thunk = self.pop(name)?;
+                let handler = self.pop(name)?;
+                let tag = self.pop(name)?;
+                let heap = cx.heap();
+                let height = prompt_word(self.ds.len(), heap.live_regions());
+                self.enter_above(heap, r, thunk, [PROMPT_MARK, tag, handler, height], name)?;
+            }
+            WITHMARK => {
+                let thunk = self.pop(name)?;
+                let v = self.pop(name)?;
+                let key = self.pop(name)?;
+                self.enter_above(cx.heap(), r, thunk, [MARK_MARK, key, v, Value::fixnum(0)], name)?;
+            }
+            // Scheme's `with-continuation-mark` in tail position: this frame
+            // is left, as by a tail call, and the mark goes on the
+            // continuation it returns to, replacing a mark for the same key
+            // already on top. A loop that marks each iteration so runs in
+            // constant space.
+            WITHMARK_TAIL => {
+                let thunk = self.pop(name)?;
+                let v = self.pop(name)?;
+                let key = self.pop(name)?;
+                let heap = cx.heap();
+                let thunk = as_cellular(heap, thunk, 0);
+                if !(thunk.is_bloblet() && heap.bloblet_kind(thunk) == const { kind("cellular-closure") }) {
+                    return Err(Trap::Type { routine: name });
+                }
+                self.check_limits()?;
+                self.ds.truncate(r.fp);
+                let n = self.rs.len();
+                if n >= self.rs_floor + 4 && self.rs[n - 4] == MARK_MARK && self.rs[n - 3] == key {
+                    self.rs[n - 2] = v;
+                } else {
+                    self.rs.extend_from_slice(&[MARK_MARK, key, v, Value::fixnum(0)]);
+                }
+                (r.cur, r.k, r.fp, r.clo) = (heap.bloblet_slot(thunk, CLOSURE_WORD), WORD_CELL0, self.ds.len(), thunk);
+            }
+            ABORT => {
+                let v = self.pop(name)?;
+                let tag = self.pop(name)?;
+                self.abort(cx, r, tag, v, name)?;
+            }
+            // `ncallcomp` and `ncallcc`, in a program whose convention is
+            // native: the continuation given in it (`as_native`); `callone`
+            // and `ncallone`, `callcomp`'s, one-shot (`TODO.md` §98).
+            CALLCOMP | CALLCC | NCALLCOMP | NCALLCC | CALLONE | NCALLONE => {
+                let native = matches!(n, NCALLCOMP | NCALLCC | NCALLONE);
+                let once = matches!(n, CALLONE | NCALLONE);
+                let (proc_, at) = if matches!(n, CALLCOMP | NCALLCOMP | CALLONE | NCALLONE) {
+                    let tag = self.pop(name)?;
+                    let proc_ = self.pop(name)?;
+                    let Some(at) = Self::find_marked(&self.rs, self.rs_floor, PROMPT_MARK, tag) else {
+                        return self.capture_across(cx, r, tag, proc_, native, once, name).map(|()| Flow::Next);
+                    };
+                    (proc_, Some(at))
+                } else {
+                    (self.pop(name)?, None)
+                };
+                self.ds.push(proc_);
+                self.safepoint(cx.heap(), r);
+                let proc_ = self.ds.pop().expect("pushed");
+                // Native code called this run: every machine's frames out to
+                // the bottom one's (`crossing::capture_whole`), a native
+                // closure if the bottom machine is native code.
+                if let (None, true, Ctx::Rt(rt)) = (at, self.nested && crossing::crossed(), &mut *cx) {
+                    let from = nested_floor(&rt.heap, &self.rs, self.rs_floor);
+                    let own = self.capture(&mut rt.heap, r, from, 0, false);
+                    let k = crossing::capture_whole(rt, own);
+                    let k = if rt.heap.bloblet_kind(k) == const { kind("native-closure") } { k } else { rt.heap.continuation_closure(k) };
+                    let k = if native { as_native(cx, k)? } else { k };
+                    self.ds.push(k);
+                    self.ds.push(proc_);
+                    self.call(cx, r, 1, false, name)?;
+                    return Ok(Flow::Next);
+                }
+                let heap = cx.heap();
+                let k = match at {
+                    Some(at) => {
+                        let height = prompt_height(self.rs[at + 3]);
+                        self.capture(heap, r, at + 4, height, false)
+                    }
+                    None => self.capture(heap, r, self.rs_floor, 0, true),
+                };
+                if once {
+                    heap.make_one_shot(k);
+                }
+                // Given as a closure, so that everything callable is one.
+                let k = heap.continuation_closure(k);
+                let k = if native { as_native(cx, k)? } else { k };
+                self.ds.push(k);
+                self.ds.push(proc_);
+                self.call(cx, r, 1, false, name)?;
+            }
+            FIRSTMARK => {
+                let default = self.pop(name)?;
+                let key = self.pop(name)?;
+                let v = match Self::find_marked(&self.rs, self.rs_floor, MARK_MARK, key) {
+                    Some(at) => self.rs[at + 2],
+                    None => self.marks_beyond(cx, key).first().copied().unwrap_or(default),
+                };
+                self.ds.push(v);
+            }
+            CURRENTMARKS | MARKSOF => {
+                let key = self.pop(name)?;
+                let marks = if n == CURRENTMARKS {
+                    let mut marks = Self::marks_in(&self.rs, self.rs_floor, key);
+                    marks.extend(self.marks_beyond(cx, key));
+                    marks
+                } else {
+                    let k = self.pop(name)?;
+                    marks_of(cx.heap(), k, key).ok_or(Trap::Type { routine: name })?
+                };
+                let heap = cx.heap();
+                let list = heap.list_from(&marks);
+                self.ds.push(list);
+            }
+            _ => return Err(Trap::NoRoutine(n)),
+        }
+        Ok(Flow::Next)
+    }
+}
+
+/// Where a machine is between routines, as a native machine hands it over
+/// to have one routine run for it (`Machine::run_routine`): the word, the
+/// next cell (the routine's first operand, if it has one), the frame
+/// pointer, as an index into the data stack, and the closure running.
+#[derive(Copy, Clone, Debug)]
+pub struct Snapshot {
+    pub cur: Value,
+    pub k: usize,
+    pub fp: usize,
+    pub clo: Value,
+}
+
+impl Machine {
+    /// A machine over these stacks: the data stack bottom first, and the
+    /// return stack's entries oldest first, each `(word, fixnum k, fixnum
+    /// frame pointer, closure)` or a marker, as this machine keeps them.
+    pub fn from_stacks(ds: Vec<Value>, rs: Vec<Value>) -> Machine {
+        Machine { ds, rs, rs_floor: 0, steps: 0, fuel: u64::MAX, reserve: 0, profile: None, nested: false, thrown: None, aborted: None, run: 0 }
+    }
+
+    /// The stacks, as `from_stacks` takes them.
+    pub fn into_stacks(self) -> (Vec<Value>, Vec<Value>) {
+        (self.ds, self.rs)
+    }
+
+    /// `run_routine` on a bare heap: `prim` traps.
+    pub fn run_routine_on_heap(&mut self, heap: &mut Heap, n: i64, at: &mut Snapshot) -> Result<(), Trap> {
+        let mut r = Regs { cur: at.cur, k: at.k, fp: at.fp, clo: at.clo };
+        match self.prim(&mut Ctx::Heap(heap), n, &mut r)? {
+            Flow::Next => {}
+            Flow::Exit | Flow::Halt => return Err(Trap::NoRoutine(n)),
+        }
+        *at = Snapshot { cur: r.cur, k: r.k, fp: r.fp, clo: r.clo };
+        Ok(())
+    }
+
+    /// Run routine `n` once, from `at`, and leave `at` where the machine is
+    /// after it. This is how the native machines run the routines they have
+    /// no machine code for: this machine is their oracle, so those routines
+    /// mean exactly what they mean here.
+    pub fn run_routine(&mut self, rt: &mut Runtime, n: i64, at: &mut Snapshot) -> Result<(), Trap> {
+        let mut r = Regs { cur: at.cur, k: at.k, fp: at.fp, clo: at.clo };
+        match self.prim(&mut Ctx::Rt(rt), n, &mut r)? {
+            Flow::Next => {}
+            // A tail call of a native closure (`TODO.md` §97), which
+            // returns from the word, as the run's loop returns.
+            Flow::Exit if !self.rs.is_empty() => self.pop_return(&mut r),
+            Flow::Exit | Flow::Halt => return Err(Trap::NoRoutine(n)),
+        }
+        *at = Snapshot { cur: r.cur, k: r.k, fp: r.fp, clo: r.clo };
+        Ok(())
+    }
+}
+
+/// Run `word` with `args` on the data stack in `rt`: the value left on top.
+/// What the runtime's `%run-word` calls (`Runtime::run_word`).
+/// With `FIXPT_PROFILE` set, the words that ran the most cells are written
+/// to stderr after each run.
+pub fn run_word(rt: &mut Runtime, word: Value, args: &[Value]) -> Result<Value, String> {
+    let mut m = Machine::with_fuel(rt.word_fuel);
+    let profiling = std::env::var_os("FIXPT_PROFILE").is_some();
+    if profiling {
+        m.profile = Some(Profile::default());
+    }
+    m.ds.extend_from_slice(args);
+    let out = m.run_in_runtime(rt, word).map_err(|t| format!("{t}"));
+    if let Some(p) = &m.profile {
+        eprintln!("profile: {} cells", m.steps);
+        for (name, n) in p.top(40) {
+            eprintln!("profile: {n:>12} {name}");
+        }
+    }
+    out?;
+    m.ds.pop().ok_or_else(|| "the word left nothing".to_string())
+}
+
+thread_local! {
+    /// How many runs native code has called: each one's number.
+    static RUNS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// What a run native code called traps with when a whole continuation is
+/// thrown out of it (`Machine::thrown` says which).
+pub const THROWN: &str = "a continuation thrown past native code";
+
+/// What a run native code called traps with when an abort finds no prompt
+/// in it (`Machine::aborted` says to what).
+pub const ABORTED: &str = "an abort past native code";
+
+/// Where a run native code called keeps its frames for a continuation
+/// that crosses machines: above the return into the word `call_value`
+/// made, if that return goes to its `exit`, which the run that gives the
+/// continuation its value has of its own; else (a poll before that word's
+/// call, preempted) from its frame, whose `exit`, there, ends that run as
+/// that run's own would. Not both: each run's would pile up.
+fn nested_floor(heap: &Heap, rs: &[Value], floor: usize) -> usize {
+    let exits = rs.len() >= floor + 4 && {
+        let (w, k) = (rs[floor], rs[floor + 1]);
+        w.is_bloblet() && k.is_fixnum() && heap.bloblet_slot(w, k.as_fixnum() as usize) == Value::fixnum(const { routine("exit") } as i64)
+    };
+    if exits { floor + 4 } else { floor }
+}
+
+/// Continuation `k` about to be given a value: an error if it is one-shot
+/// and was given one (`Heap::take_shot`).
+fn spend(heap: &mut Heap, k: Value) -> Result<(), Trap> {
+    if heap.take_shot(k) { Ok(()) } else { Err(Trap::Prim(fixpt_heap::ONE_SHOT_TWICE.into())) }
+}
+
+/// A delimited or whole continuation of these stacks' values and return
+/// entries, at `r`, the data stack's taken from height `base`; `inner`
+/// inside it (`crossing`), or `#f`.
+#[allow(clippy::too_many_arguments)]
+fn continuation(heap: &mut Heap, ds: &[Value], rs: &[Value], r: &Regs, base: usize, whole: bool, run: u64, inner: Value) -> Value {
+    let ds = heap.vector_from(ds);
+    let rs = heap.vector_from(rs);
+    let k = heap.make_bloblet(const { kind("cellular-continuation") }, CONT_FIELDS, 0, true);
+    let fields = [
+        (CONT_DS, ds),
+        (CONT_RS, rs),
+        (CONT_CUR, r.cur),
+        (CONT_K, Value::fixnum(r.k as i64)),
+        (CONT_FP, Value::fixnum(r.fp as i64)),
+        (CONT_CLO, r.clo),
+        (CONT_BASE, Value::fixnum(base as i64)),
+        (CONT_WHOLE, Value::boolean(whole)),
+        (CONT_REGIONS, Value::fixnum(heap.live_regions() as i64)),
+        (CONT_RUN, Value::fixnum(run as i64)),
+        (CONT_INNER, inner),
+        (CONT_SHOTS, Shots::Many.value()),
+    ];
+    for (f, v) in fields {
+        heap.set_bloblet_slot(k, f, v);
+    }
+    k
+}
+
+/// The marks for `key` continuation `k` took, innermost first: those of
+/// the continuation inside it (`crossing`) first; a native continuation's,
+/// as `fixpt-native` reads them; none if `k` is no continuation.
+fn marks_of(heap: &Heap, k: Value, key: Value) -> Option<Vec<Value>> {
+    let Some(k) = heap.continuation_of(k) else {
+        return crossing::foreign_marks(heap, k, key);
+    };
+    let inner = heap.bloblet_slot(k, CONT_INNER);
+    let mut out = if inner != Value::FALSE { marks_of(heap, inner, key)? } else { Vec::new() };
+    let rs = heap.bloblet_slot(k, CONT_RS);
+    let entries: Vec<Value> = (0..heap.obj_len(rs)).map(|i| heap.obj_ref(rs, i)).collect();
+    out.extend(Machine::marks_in(&entries, 0, key));
+    Some(out)
+}
+
+/// A machine in a call of native code (`Machine::call_native`): its
+/// stacks and registers, kept in the vector rooted at `at` (`nd` values,
+/// `nr` return words, then the word and closure), the rest of its
+/// registers; whether the call was in tail position; its return stack's
+/// floor, and whether native code called it too, and its run.
+#[derive(Clone, Copy)]
+struct Held {
+    at: usize,
+    nd: usize,
+    nr: usize,
+    k: usize,
+    fp: usize,
+    tail: bool,
+    floor: usize,
+    nested: bool,
+    run: u64,
+}
+
+/// A held machine's frames, from its call of native code out to a prompt
+/// for `tag`, or to its first frame if native code called it, with `inner`
+/// inside: resumed, they take the call's value where it would have come
+/// back; or, from a tail call, return it.
+impl Crossing for Held {
+    fn capture(&self, rt: &mut Runtime, tag: Value, inner: Value) -> Crossed {
+        capture_held(rt, self, tag, inner)
+    }
+
+    /// All its frames (native code having called it, from `nested_floor`):
+    /// the bottom machine's, whole.
+    fn capture_whole(&self, rt: &mut Runtime, bottom: bool, inner: Value) -> Value {
+        let all = self.kept(&rt.heap);
+        let from = if self.nested { nested_floor(&rt.heap, &all[self.nd..self.nd + self.nr], self.floor) } else { self.floor };
+        held_piece(rt, self, &all, from, 0, bottom && !self.nested, inner)
+    }
+
+    fn has_prompt(&self, rt: &mut Runtime, tag: Value) -> (bool, bool) {
+        let all = self.kept(&rt.heap);
+        (Machine::find_marked(&all[self.nd..self.nd + self.nr], self.floor, PROMPT_MARK, tag).is_some(), self.nested)
+    }
+
+    fn marks(&self, rt: &mut Runtime, key: Value) -> (Vec<Value>, bool) {
+        let all = self.kept(&rt.heap);
+        (Machine::marks_in(&all[self.nd..self.nd + self.nr], self.floor, key), self.nested)
+    }
+}
+
+impl Held {
+    /// The values kept, as the heap has them now.
+    fn kept(&self, heap: &Heap) -> Vec<Value> {
+        let kept = heap.root_at(self.at);
+        (0..heap.obj_len(kept)).map(|i| heap.obj_ref(kept, i)).collect()
+    }
+}
+
+fn capture_held(rt: &mut Runtime, h: &Held, tag: Value, inner: Value) -> Crossed {
+    let all = h.kept(&rt.heap);
+    let rs = &all[h.nd..h.nd + h.nr];
+    let found = Machine::find_marked(rs, h.floor, PROMPT_MARK, tag);
+    let (rs_from, ds_from) = match found {
+        Some(at) => (at + 4, prompt_height(rs[at + 3])),
+        None if h.nested => (nested_floor(&rt.heap, rs, h.floor), 0),
+        None => return Crossed::Missing,
+    };
+    let k = held_piece(rt, h, &all, rs_from, ds_from, false, inner);
+    if found.is_some() { Crossed::Found(k) } else { Crossed::Beyond(k) }
+}
+
+/// A held machine's frames from return entry `rs_from` and data stack
+/// height `ds_from` up to its call of native code, a continuation (whole,
+/// if `whole`) with `inner` inside: resumed, they take the call's value
+/// where it would have come back; or, from a tail call, return it.
+fn held_piece(rt: &mut Runtime, h: &Held, all: &[Value], rs_from: usize, ds_from: usize, whole: bool, inner: Value) -> Value {
+    let heap = &mut rt.heap;
+    let (ds, rs) = (&all[..h.nd], &all[h.nd..h.nd + h.nr]);
+    let (cur, clo) = (all[h.nd + h.nr], all[h.nd + h.nr + 1]);
+    let r = if h.tail {
+        let cells = [Value::fixnum(const { routine("return") } as i64)];
+        let name = heap.intern("return");
+        let word = heap.make_cellular_word(name, &cells).expect("a well-formed word");
+        Regs { cur: word, k: WORD_CELL0, fp: h.fp, clo }
+    } else {
+        Regs { cur, k: h.k, fp: h.fp, clo }
+    };
+    continuation(heap, &ds[ds_from..], &rs[rs_from..], &r, ds_from, whole, h.run, inner)
+}
+
+/// How a call of native code came back: with a value; moved, a continuation
+/// thrown past it; or with an abort that found no prompt in it.
+enum Back {
+    Value(Value),
+    Moved,
+    Abort(Value, Value),
+}
+
+/// Call `f`, a cellular closure or continuation, with `args`, on a machine
+/// of its own, for native code (`fixpt-native`'s call-out): its value, or
+/// how it left. Every value the caller holds must be rooted, since the run
+/// may collect.
+pub fn call_value(rt: &mut Runtime, f: Value, args: &[Value]) -> Result<Value, NativeExit> {
+    let heap = &mut rt.heap;
+    let is = |k: &str| f.is_bloblet() && heap.bloblet_kind(f) == kind(k);
+    if !(is("cellular-closure") || is("cellular-continuation")) {
+        // The bytecode VM's primitive, a standard operation as a value
+        // there: a simple one runs as it is, needing no machine.
+        if heap.obj_type(f) == Some(fixpt_heap::ObjType::Primitive) {
+            let def = fixpt_runtime::prim::def(heap.obj_ref(f, 1).as_fixnum() as u16);
+            if let fixpt_runtime::prim::PrimKind::Simple(func) = def.kind {
+                if !def.accepts(args.len()) {
+                    return Err(NativeExit::Failed(format!("{} got {} argument(s)", def.name, args.len())));
+                }
+                return func(rt, &mut args.to_vec()).map_err(|t| NativeExit::Failed(describe(rt, t.obj)));
+            }
+        }
+        // The bytecode VM's procedures: a primitive cannot run the VM again
+        // (`fixpt-runtime`'s `prim.rs`), so native code cannot call them.
+        if heap.obj_type(f) == Some(fixpt_heap::ObjType::Closure) {
+            return Err(NativeExit::Failed("native code cannot call back a procedure of the bytecode VM".into()));
+        }
+        return Err(NativeExit::Failed("a call of what is not a procedure".into()));
+    }
+    // The arguments and `f` pushed, as the word's literals, and called.
+    let mut w = WordBuilder::new();
+    for a in args.iter().chain([&f]) {
+        w.lit(*a);
+    }
+    let word = w.call_closure(args.len()).prim("exit").build(heap, "call-from-native");
+    let mut m = Machine::with_fuel(rt.word_fuel);
+    m.nested = true;
+    m.run = RUNS.with(|n| {
+        n.set(n.get() + 1);
+        n.get()
+    });
+    match m.run_in_runtime(rt, word) {
+        Ok(()) => m.ds.pop().ok_or_else(|| NativeExit::Failed("the call left nothing".into())),
+        Err(_) if m.aborted.is_some() => {
+            let (tag, v) = m.aborted.expect("aborted");
+            Err(NativeExit::Abort { tag, v })
+        }
+        Err(_) if m.thrown.is_some() => {
+            let (k, v) = m.thrown.expect("thrown");
+            Err(NativeExit::Throw { k, v })
+        }
+        Err(t) => Err(NativeExit::Failed(t.to_string())),
+    }
+}
+
+/// A cellular closure that calls `f`, a procedure of `arity` arguments of
+/// another convention, with its own arguments: an adapter to the cellular
+/// convention (`%fx26-convert`). Its word calls `f`, its one free value,
+/// in a tail call, which calls native code as every call here does.
+pub fn cellular_adapter(heap: &mut Heap, f: Value, arity: usize) -> Value {
+    let word = WordBuilder::new().free(0).tailcall(arity).build(heap, "adapter");
+    let c = heap.make_bloblet(const { kind("cellular-closure") }, 2, 0, true);
+    heap.set_bloblet_slot(c, CLOSURE_WORD, word);
+    heap.set_bloblet_slot(c, CLOSURE_FREE0, f);
+    c
+}
+
+/// Cellular closure `c` in the native convention, as its type says there
+/// (`nclosure`, `ncallcc`): an adapter (`Runtime::adapt`), a native
+/// closure that calls it; its callers pass the count. Anything else as it
+/// is: a continuation another machine took may be native already.
+fn as_native(cx: &mut Ctx, c: Value) -> Result<Value, Trap> {
+    let Ctx::Rt(rt) = cx else { return Err(Trap::Prim("no closure in the native convention can be made here".into())) };
+    if !(c.is_bloblet() && rt.heap.bloblet_kind(c) == const { kind("cellular-closure") }) {
+        return Ok(c);
+    }
+    let Some(adapt) = rt.adapt else { return Err(Trap::Prim("no closure in the native convention can be made here".into())) };
+    adapt(rt, c, 0, true).map_err(Trap::Prim)
+}
+
+/// `v`, called by a routine with `n` values (a thunk, a procedure given a
+/// continuation, a handler), as cellular code: a native closure, which
+/// cellular code makes in a program whose convention is native
+/// (`nclosure`), behind a cellular adapter, which calls it as `tailcall`
+/// does; anything else as it is.
+pub fn as_cellular(heap: &mut Heap, v: Value, n: usize) -> Value {
+    if v.is_bloblet() && heap.bloblet_kind(v) == const { kind("native-closure") } {
+        // An adapter cellular code made (`nclosure`): what it calls.
+        return heap.adapted(v).unwrap_or_else(|| cellular_adapter(heap, v, n));
+    }
+    v
+}
+
+/// A thrown value as a message.
+/// What a primitive raised, as a trap's message.
+pub fn describe(rt: &Runtime, obj: Value) -> String {
+    if rt.is_error_object(obj) {
+        fixpt_runtime::display_value(&rt.heap, rt.heap.obj_ref(obj, 1))
+    } else {
+        fixpt_runtime::write_value(&rt.heap, obj)
+    }
+}
+
+const EXIT: i64 = routine("exit") as i64;
+const HALT: i64 = routine("halt") as i64;
+const LIT: i64 = routine("lit") as i64;
+const BRANCH: i64 = routine("branch") as i64;
+const ZBRANCH: i64 = routine("0branch") as i64;
+const EXECUTE: i64 = routine("execute") as i64;
+const DUP: i64 = routine("dup") as i64;
+const DROP: i64 = routine("drop") as i64;
+const SWAP: i64 = routine("swap") as i64;
+const OVER: i64 = routine("over") as i64;
+const EQ: i64 = routine("eq") as i64;
+const FIELD_REF: i64 = routine("field@") as i64;
+const FIELD_SET: i64 = routine("field!") as i64;
+const CONS: i64 = routine("cons") as i64;
+const ADD: i64 = routine("+") as i64;
+const SUB: i64 = routine("-") as i64;
+const LESS: i64 = routine("<") as i64;
+const CAR: i64 = routine("car") as i64;
+const CDR: i64 = routine("cdr") as i64;
+const SLOT: i64 = routine("slot") as i64;
+const SLOT_SET: i64 = routine("slot!") as i64;
+const REST: i64 = routine("rest") as i64;
+const FREE: i64 = routine("free") as i64;
+const RETURN: i64 = routine("return") as i64;
+const GLOBAL: i64 = routine("global") as i64;
+const GLOBAL_SET: i64 = routine("global!") as i64;
+const CLOSURE: i64 = routine("closure") as i64;
+const NCLOSURE: i64 = routine("nclosure") as i64;
+const NCALLCOMP: i64 = routine("ncallcomp") as i64;
+const NCALLCC: i64 = routine("ncallcc") as i64;
+const CALLONE: i64 = routine("callone") as i64;
+const NCALLONE: i64 = routine("ncallone") as i64;
+const CALL: i64 = routine("call") as i64;
+const TAILCALL: i64 = routine("tailcall") as i64;
+const PRIM: i64 = routine("prim") as i64;
+const PROMPT: i64 = routine("prompt") as i64;
+const ABORT: i64 = routine("abort") as i64;
+const CALLCOMP: i64 = routine("callcomp") as i64;
+const CALLCC: i64 = routine("callcc") as i64;
+const WITHMARK: i64 = routine("withmark") as i64;
+const WITHMARK_TAIL: i64 = routine("withmark-tail") as i64;
+const TCALL: i64 = routine("tcall") as i64;
+const TTAILCALL: i64 = routine("ttailcall") as i64;
+const RESUME: i64 = routine("resume") as i64;
+const UNDEFINED: i64 = routine("undefined") as i64;
+const INT_ADD: i64 = routine("int-add") as i64;
+const INT_SUB: i64 = routine("int-sub") as i64;
+const INT_LESS: i64 = routine("int-less") as i64;
+const INT_EQ: i64 = routine("int-eq") as i64;
+const PAIR_CAR: i64 = routine("pair-car") as i64;
+const PAIR_CDR: i64 = routine("pair-cdr") as i64;
+const FIELD: i64 = routine("field") as i64;
+const FIRSTMARK: i64 = routine("firstmark") as i64;
+const CURRENTMARKS: i64 = routine("currentmarks") as i64;
+const MARKSOF: i64 = routine("marksof") as i64;
+
+enum Flow {
+    Next,
+    Exit,
+    Halt,
+}
+
+/// Small cellular programs, shared by the tests of both inner interpreters
+/// and by their benchmark.
+pub mod examples {
+    use super::WordBuilder;
+    use fixpt_heap::{Heap, Value};
+
+    fn n(i: i64) -> Value {
+        Value::fixnum(i)
+    }
+
+    /// `( n -- fib(n) )`, doubly recursive.
+    pub fn fib(heap: &mut Heap) -> Value {
+        let mut b = WordBuilder::new();
+        let big = b.label();
+        b.prim("dup").lit(n(2)).prim("<").zbranch(big).prim("exit");
+        b.place(big);
+        b.prim("dup").lit(n(1)).prim("-").recurse();
+        b.prim("swap").lit(n(2)).prim("-").recurse();
+        b.prim("+").prim("exit");
+        b.build(heap, "fib")
+    }
+
+    /// `( acc n -- acc+n+(n-1)+…+1 )`, a loop.
+    pub fn sum_to(heap: &mut Heap) -> Value {
+        let mut b = WordBuilder::new();
+        let (top, more) = (b.label(), b.label());
+        b.place(top);
+        b.prim("dup").lit(n(0)).prim("eq").zbranch(more).prim("drop").prim("exit");
+        b.place(more);
+        b.prim("swap").prim("over").prim("+").prim("swap").lit(n(1)).prim("-").branch(top);
+        b.build(heap, "sum-to")
+    }
+
+    /// `( n -- (1 2 … n) )`, consing.
+    pub fn iota(heap: &mut Heap) -> Value {
+        let mut b = WordBuilder::new();
+        let (top, more) = (b.label(), b.label());
+        b.lit(Value::NULL).prim("swap");
+        b.place(top);
+        b.prim("dup").lit(n(0)).prim("eq").zbranch(more).prim("drop").prim("exit");
+        b.place(more);
+        b.prim("swap").prim("over").prim("swap").prim("cons").prim("swap").lit(n(1)).prim("-").branch(top);
+        b.build(heap, "iota")
+    }
+
+    /// `( list -- sum )`, recursive, with `car` and `cdr`.
+    pub fn list_sum(heap: &mut Heap) -> Value {
+        let mut b = WordBuilder::new();
+        let more = b.label();
+        b.prim("dup").lit(Value::NULL).prim("eq").zbranch(more).prim("drop").lit(n(0)).prim("exit");
+        b.place(more);
+        b.prim("dup").prim("car").prim("swap").prim("cdr").recurse().prim("+").prim("exit");
+        b.build(heap, "list-sum")
+    }
+
+    /// `( n -- sum(1..n) )` by way of a list: `iota` then `list-sum`,
+    /// calling other words.
+    pub fn sum_by_list(heap: &mut Heap) -> Value {
+        let iota = iota(heap);
+        let sum = list_sum(heap);
+        let mut b = WordBuilder::new();
+        b.call(heap, iota).call(heap, sum).prim("exit");
+        b.build(heap, "sum-by-list")
+    }
+}

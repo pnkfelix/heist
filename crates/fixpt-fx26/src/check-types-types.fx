@@ -1,0 +1,410 @@
+;;; The types of `check-types.fx`, its `check-types-module`: a module file of no
+;;; state, which it loads, and so may its clients (`TODO.md` §68); its
+;;; items in the order they were there.
+
+;; The types these use, from the files that define them.
+(hide (define parser-types ((proj (load-module "fx26:parser-types.fx") @s @e @m @c @p))))
+(define-type syn (select parser-types syn))
+;; The checker's state, and everything checking may do.
+(define-effect kstate (maxeff (read @globals) (read @t) (write @t) (alloc @t)))
+(define-effect checks (maxeff (read @s) kstate (goto @z)))
+;; Reading the checker's state; and that, allocating in it, and perhaps not
+;; ending, as reading and showing descriptions do.
+(define-effect kreads (maxeff (read @globals) (read @t)))
+(define-effect kbuilds (maxeff kreads (alloc @t) spin))
+;;; ------------------------------------------------------------ descriptions
+
+;; A region: a constant `@name`, a fresh one (made by inference or a
+;; bloblet, which no program can name), or a binder.
+;; `(r-frozen p #f)` is `(const p)`, and `(r-frozen p #t)` `(acyclic p)`
+;; (frozen data never written, only built, and so finite); in both, the
+;; region of data frozen into place `p` (a
+;; place variable, or -1 for the heap: `const`), which nothing may write;
+;; `r-heap` is `heap`, the place that never ends
+;; (`docs/research/places-and-regions.md`). `(r-global g)` is `(globals g)`,
+;; the binding of global `g`, and `r-globals` is `@globals`, every global's:
+;; only in effects, only read and written, never masked.
+(define-datatype k-region
+  (r-const symbol) (r-fresh int string) (r-var int) (r-frozen int bool) (r-heap)
+  (r-global symbol) (r-globals))
+(define-datatype k-atom
+  (a-read k-region) (a-write k-region) (a-alloc k-region)
+  (a-goto k-region) (a-comefrom k-region) (a-await k-region)
+  ;; An I-cell's fill (`init`), a send, a receive (`docs/fx26.md`,
+  ;; "Processes").
+  (a-init k-region) (a-send k-region) (a-receive k-region)
+  (a-spin)
+  ;; `(io k)` (`TODO.md` §84): `k` the kind's number, in
+  ;; `k-io-kind-name`'s order, as `IoKind`'s in the Rust checker.
+  (a-io int)
+  ;; What may differ from run to run (`docs/fx26.md`, "Processes").
+  (a-nondet)
+  (a-var int)
+  ;; `(e d …)`: a description function to an effect, a variable, applied
+  ;; to descriptions, none a type (`check-kinds.fx`): an unknown effect, as
+  ;; a variable is.
+  (a-app int (listof k-desc acyclic)))
+(define-type k-eff (listof k-atom acyclic))
+;; A `vsubr`'s effect, element and result, in a list: one or none.
+(define-type k-vsub (listof (productof (1 k-eff) (2 int) (3 int)) acyclic))
+(define-type k-ids (listof int acyclic))
+;; `lambda`s settled at the types `->*` found: each type, and where it is.
+(define-type k-settleds (listof (productof (1 int) (2 int) (3 int)) acyclic))
+;; Propositions about a procedure's arguments, what a test proves of them
+;; (`(bool (then P …) (else Q …))`, an `ensures`), each by its parameter's
+;; number from 0: of a shape (`check-unions.fx`'s), or, the
+;; flag, not; certifications, acyclic, a natural, of a length; a relation
+;; of sizes, 0 `<`, 1 `<=`, 2 `=`, 3 not `=`, of terms: argument `i` as a
+;; natural, the length of its `nlist`, or a natural (`sizes.rs`).
+(define-datatype k-term (tm-param int) (tm-length int) (tm-lit int))
+(define-datatype k-prop
+  (pr-shape int int bool) (pr-acyclic int) (pr-nat int) (pr-length int int)
+  (pr-rel int k-term k-term))
+(define-type k-props (listof k-prop acyclic))
+;; A specification's integer (`logic.rs`'s `Expr`, its atoms `ast::Named`):
+;; a parameter, by number from 0; the result; a literal; a sum, a
+;; difference, a product. And of what a test proves: a parameter's
+;; `nlist`'s length; booleans, a parameter of a shape, acyclic, a natural,
+;; a list of another's length. And a logic function's value at its
+;; arguments: a global named, `pure` (`specs::spec_call`).
+(define-datatype k-sx
+  (sx-param int) (sx-result) (sx-lit int)
+  (sx-add k-sx k-sx) (sx-sub k-sx k-sx) (sx-mul k-sx k-sx)
+  (sx-length int) (sx-shape int int) (sx-acyclic int) (sx-nat int) (sx-length-is int int)
+  (sx-call symbol (listof k-sx acyclic)))
+(define-type k-sxs (listof k-sx acyclic))
+;; A specification's proposition (`logic.rs`'s `Formula`): a relation, 0
+;; `<`, 1 `<=`, 2 `=`, 3 not `=`; a `bool` named (`sx-param`, `sx-result`)
+;; holding; the connectives.
+(define-datatype k-sf
+  (sf-true) (sf-false) (sf-rel int k-sx k-sx) (sf-holds k-sx) (sf-not k-sf)
+  (sf-and (listof k-sf acyclic)) (sf-or (listof k-sf acyclic)) (sf-implies k-sf k-sf))
+(define-type k-sfs (listof k-sf acyclic))
+;; A procedure's specification (`ast::Spec`): its parameters' names (`||`
+;; for one not named), its result's, its `requires`, its `ensures`.
+(define-type k-spec (productof (1 (listof symbol acyclic)) (2 symbol) (3 k-sf) (4 k-sf)))
+;; None or one.
+(define-type k-specs (listof k-spec acyclic))
+;; What an `ensures` says a test proves where true and where false, and the
+;; rest of it (`specs::latent_split`): none or one.
+(define-type k-latents (listof (productof (1 k-props) (2 k-props) (3 k-sf)) acyclic))
+;; A binder: a description variable and its kind, 0 region, 1 effect, 2 type.
+(define-type k-binders (listof (productof (1 int) (2 int)) acyclic))
+(define-type k-parts (listof (productof (1 symbol) (2 int)) acyclic))
+(define-type k-names (listof symbol acyclic))
+(define-type k-strings (listof string acyclic))
+;; A description in argument position, what `proj` supplies.
+;; A list's length, as far as it is known: `finite`, some number; or a
+;; constant and terms (variable . coefficient), in variable order.
+;; A procedure's convention (`docs/research/native-conventions.md`):
+;; `cellular`, `native`, `fx`, or a binder.
+(define-datatype k-conv (cv-cellular) (cv-native) (cv-fx) (cv-var int))
+;; A size's terms: each a variable and its coefficient.
+(define-type k-terms (listof (pairof int int acyclic) acyclic))
+(define-datatype k-size (sz-finite) (sz-lin int k-terms))
+(define-datatype k-desc (dr k-region) (de k-eff) (dt int) (dz k-size) (dc k-conv)
+  ;; A description function: a `dlambda`, a variable of an arrow kind, or a
+  ;; `select` of a module's (`check-kinds.fx`).
+  (df int))
+(define-type k-descs (listof k-desc acyclic))
+(define-datatype k-ty
+  (ty-base symbol)
+  (ty-void)
+  (ty-var int)
+  ;; effect, parameters, result, convention, specification (none or one)
+  (ty-subr k-eff k-ids int k-conv k-specs)
+  (ty-poly k-binders int)
+  (ty-ref int k-region)
+  ;; head, tail, region, and whether it may be `nil` (`(union nil (pairof
+  ;; …))`, as a list's pairs are; `docs/research/logical-types.md`, L0)
+  (ty-pair int int k-region bool)
+  ;; answer, payload, bound, region
+  (ty-tag int int k-eff k-region)
+  ;; argument, answer, effect, region
+  (ty-comp int int k-eff k-region bool)
+  (ty-markkey int k-region)
+  (ty-product k-parts)
+  (ty-sum k-parts)
+  (ty-array int k-size k-region)
+  (ty-icell int k-region)
+  ;; The place a region is allocated in, as a value: what `letrena` and
+  ;; `letreap` bind.
+  (ty-place k-region)
+  (ty-bloblet k-ids bool k-region)
+  ;; A forwarding slot: none or one.
+  (ty-link k-ids)
+  ;; A generative type applied to its descriptions: the `n`th
+  ;; `define-generative`. Equal only to itself, by its variance; looked
+  ;; through by every analysis of what a value holds.
+  (ty-named int (listof k-desc acyclic))
+  ;; `(nlist T size)`: a list frozen at the region (always finite) with `size`
+  ;; elements, or some number (`docs/research/sizes.md`).
+  (ty-nlist int k-size k-region)
+  ;; `(nat size)`: a natural, exactly `size`; `nat` is `(nat finite)`.
+  ;; Every one is an `int` (`docs/research/sizes.md`, N5d).
+  (ty-nat k-size)
+  ;; `(moduleof (abs t type) … (desc d T) … (val x T) …)`: a module's type
+  ;; (`docs/research/first-class-modules.md`): its abstract types, each a
+  ;; name and a type variable, binders in its descriptions and values.
+  (ty-module k-parts k-parts k-parts)
+  ;; `(select m t)` as written, resolved where it is checked
+  ;; (`k-resolve-selects`).
+  (ty-select symbol symbol)
+  ;; `(select $k t)`: in a procedure's type, the type `t` of its `k`th
+  ;; parameter (from 0), a module: a dependent procedure, a functor
+  ;; (`first-class-modules.md`, M5). A call puts the argument's for it.
+  (ty-param int symbol)
+  ;; `(dlambda ((x k) …) d)`: a description function; and `(f d …)`, one
+  ;; applied that cannot be reduced, `f` a variable or a `select`
+  ;; (`check-kinds.fx`).
+  (ty-lam k-binders k-desc)
+  (ty-app int (listof k-desc acyclic))
+  ;; `nil`, the empty list only; and `(union T …)`, its members of shapes
+  ;; that differ at run time (`k-shape`; `logical-types.md`, L1).
+  (ty-nil)
+  (ty-union k-ids)
+  ;; `false`: `#f` alone, below `bool`, of `bool`'s shape.
+  (ty-false))
+(define-type k-map (listof (pairof int k-desc @t) acyclic))
+;; What a description name means where it is used.
+(define-datatype k-ds
+  ;; A name `define-generative` bound: the `n`th generative type.
+  (ds-gen int)
+  ;; A size given for a type family's size parameter.
+  (ds-size k-size)
+  (ds-var int int)
+  (ds-rec int)
+  (ds-abbrev (listof (productof (1 symbol) (2 int)) acyclic) syn)
+  (ds-region k-region)
+  (ds-eff k-eff)
+  ;; A convention given for an abbreviation's convention parameter.
+  (ds-conv k-conv)
+  ;; A name for a description function: `define-type` of a `dlambda`, or a
+  ;; type family's parameter of an arrow kind given one.
+  (ds-fun int))
+;;; ------------------------------------------------------------ expressions
+;;; The parser's trees with their descriptions read. Each ends with where it
+;;; starts and ends, and which of the expressions there it is (as the
+;;; parser's trees do, `parser-types.fx`): the three its identity.
+
+;; An expression's identity, as what is found of it is kept: where it
+;; starts and ends, and which of the expressions there it is.
+(define-type k-at (productof (1 int) (2 int) (3 int)))
+
+(define-datatype kx
+  (x-var symbol int int int)
+  ;; A literal: its type, and its value if an integer (a boolean's is 1
+  ;; or 0), which the termination check reads.
+  (x-const int int int int int)
+  (x-lambda (listof (productof (1 symbol) (2 k-ids)) acyclic) kx int int int)
+  (x-app kx (listof kx acyclic) int int int)
+  (x-plambda k-binders kx int int int)
+  ;; `letregion`, `letrena`, `letreap` or `letfreeze`: what it makes besides
+  ;; the region (0 nothing, 1 an arena, 2 a reap, 3 nothing, frozen as it
+  ;; ends), the region variable, what a `letfreeze` freezes into (`(const
+  ;; p)`), and the body.
+  (x-letregion int int k-region kx int int int)
+  ;; `rlambda`: the region, and the `lambda`.
+  (x-rlambda kx kx int int int)
+  (x-proj kx (listof k-desc acyclic) int int int)
+  (x-if kx kx kx int int int)
+  (x-letrec (listof (productof (1 symbol) (2 int) (3 kx)) acyclic) kx int int int)
+  (x-let (listof (productof (1 symbol) (2 kx)) acyclic) kx int int int)
+  (x-begin (listof kx acyclic) int int int)
+  (x-prompt kx kx kx int int int)
+  (x-the int kx int int int)
+  ;; `(convention C e)`: the procedure converted to `C`.
+  (x-convention k-conv kx int int int)
+  (x-bloblet symbol int (listof kx acyclic) int int int)
+  (x-product (listof (productof (1 symbol) (2 kx)) acyclic) int int int)
+  (x-extract kx symbol int int int)
+  (x-sum symbol kx int int int)
+  (x-tagcase kx (listof (productof (1 symbol) (2 bool) (3 k-names) (4 kx)) acyclic)
+             (listof (productof (1 symbol) (2 kx)) acyclic) int int int)
+  ;; `module`: each item what it is (as `e-module`'s), its names, an
+  ;; abstract type's variable (else -1), its types, and its expressions.
+  (x-module (listof (productof (1 int) (2 k-names) (3 int) (4 k-ids) (5 (listof kx acyclic)))
+                    acyclic)
+            int int int)
+  (x-with symbol kx int int int))
+(define-type kxs (listof kx acyclic))
+(define-type k-item (productof (1 int) (2 k-names) (3 int) (4 k-ids) (5 kxs)))
+(define-type k-items (listof k-item acyclic))
+;; A type and an effect.
+(define-type k-te (productof (1 int) (2 k-eff)))
+;; What checking a program found, or the first error; and, inside, what a
+;; computation whose errors are being rewritten produced.
+(define-datatype k-result
+  (k-ok (listof string acyclic))
+  (k-err string int int)
+  (k-done k-te))
+;; The variables a test has narrowed, in the branch where it did: each by
+;; name and binding, and its type there (the Rust checker's `narrowed`).
+(define-type k-narrows (listof (productof (1 symbol) (2 int) (3 int)) acyclic))
+;; Unions read with a member not yet known, a recursive type's own name, and
+;; where: checked once it is (`k-union-of`).
+(define-type k-pendings (listof (productof (1 int) (2 int) (3 int)) acyclic))
+;; What `length-is?` has just confirmed: a variable, its binding, the length.
+(define-type k-cert-len (productof (1 symbol) (2 int) (3 k-size)))
+;; The arrow kinds made so far, newest first: each its parameters' kinds and
+;; its result's. Kind 100 + n is the nth; kinds below are the
+;; base kinds (0 region, 1 effect, 2 type, 3 place, 4 data, 5 size, 6 conv).
+(define-type k-arrow-kind (pairof k-ids int @t))
+;; Each bounded region binder's bound: `(r region p)`, a region that won't
+;; outlive `p` (`docs/research/places-and-regions.md`).
+(define-type k-bounded (listof (pairof int k-region @t) acyclic))
+;; The region and place variables bound around each one's binder, which it
+;; won't outlive: the order of lifetimes, by nesting.
+(define-type k-nesting (listof (pairof int k-ids @t) acyclic))
+;; The recursive groups whose lambdas are being checked, a call of which
+;; there is recursion; and the standard bindings. (Known procedures are
+;; kept with the bindings: `k-known`.)
+(define-type k-named (listof (pairof symbol int @t) acyclic))
+;; Every `define-generative`, newest first: its name, parameters, their
+;; variance (0 covariant, 1 contravariant, 2 invariant), and representation.
+(define-type k-gen (productof (1 symbol) (2 k-binders) (3 k-ids) (4 int)))
+;; The lemmas proved so far (`src/lemma.rs`), oldest last: binders, the
+;; two sides, the hypotheses, and the definition that proves it (none or
+;; one); and the one a `proves` type being read states.
+(define-type k-hyps (listof (pairof int int @t) acyclic))
+(define-type k-lemma (productof (1 k-binders) (2 int) (3 int) (4 k-hyps) (5 k-named)))
+(define-type k-regions (listof k-region acyclic))
+;; A step of a path from a variable: `car`, `cdr`, a product's field.
+(define-datatype k-step (st-car) (st-cdr) (st-field symbol))
+(define-type k-steps (listof k-step acyclic))
+;; What tests have narrowed paths from variables to (`check.rs`'s
+;; `PathFact`), newest first: the variable, its binding's depth, the
+;; steps, the regions they read through, the type, the closure depth it
+;; was found at, and whether an effect since has ended it.
+(define-type k-path-fact
+  (productof (1 symbol) (2 int) (3 k-steps) (4 k-regions) (5 int) (6 int) (7 bool)))
+(define-type k-path-facts (listof k-path-fact acyclic))
+
+;;; ------------------------------------------------------------ signatures
+
+;; What clients use of `check-types.fx`'s module (`TODO.md` §68): the
+;; evaluator's.
+(define-type check-types-sig
+  (moduleof
+   (val k-cat3 (subr pure (string string string) string))
+   (val k-cat5 (subr (read @globals) (string string string string string) string))
+   (val k-length (poly ((t type)) (subr (read @globals) ((listof t acyclic)) int)))
+   (val k-tag
+        (prompt-tag k-result
+                    k-result
+                    (maxeff (alloc @t) (read @globals) (read @s) (read @t) (write @t) spin)
+                    @z))
+   (val k-fail
+        (subr (maxeff (alloc @t) (goto @z) (read @globals) (read @s) (read @t) (write @t))
+              (string int int)
+              void))
+   (val k-cat4 (subr (read @globals) (string string string string) string))
+   (val k-quote (subr (read @globals) (string) string))
+   (val k-join
+        (subr (maxeff (read @globals) (read @t)) ((listof string acyclic) string) string))
+   (val k-has-name? (subr (maxeff (read @globals) (read @t)) (k-names symbol) bool))
+   (val k-resolve (subr (maxeff (read @globals) (read @t) spin) (int) int))
+   (val k-get (subr (maxeff (read @globals) (read @t) spin) (int) k-ty))
+   (val k-recursive (ref k-named @t))
+   (val k-ngens (ref int @t))
+   (val k-transparent (ref k-ids @t))
+   (val k-inside (ref (listof (pairof symbol int @t) acyclic) @t))
+   (val k-conversions (ref k-named @t))
+   (val k-lemmas (ref (listof k-lemma acyclic) @t))
+   (val k-pending-lemma (ref (listof k-lemma acyclic) @t))
+   (val k-arrow-star (ref bool @t))
+   (val k-arrow-star-tys (ref k-ids @t))
+   (val k-arrow-star-settled (ref k-settleds @t))
+   (val k-arrow-star-ty? (subr (maxeff (read @globals) (read @t)) (int) bool))
+   (val k-arrow-star-as
+        (subr (maxeff (read @globals) (read @t) (write @t) (alloc @t)) (int int) unit))
+   (val k-nth (poly ((t type)) (subr (read @globals) ((listof t acyclic) int) t)))
+   (val k-std (ref k-named @t))
+   (val k-std-table
+        (ref (bloblet (fields (subr pure (symbol) int)
+                              (subr pure (symbol symbol) bool)
+                              (arrayof (listof (pairof symbol int @t) acyclic) @t)
+                              int)
+                      @t)
+             @t))
+   (val k-named-has? (subr (maxeff (read @globals) (read @t)) (k-named symbol int) bool))
+   (val k-te (subr pure (int k-eff) k-te))
+   (val k-has-id? (subr (maxeff (read @globals) (read @t)) (k-ids int) bool))
+   (val k-io-kind-name (subr pure (int) string))
+   (val k-io-kind-code (subr pure (string) int))
+   (val k-io-kinds-shown string)
+   (val k-ty-new
+        (subr (maxeff (alloc @t) (read @globals) (read @t) (write @t) spin) (k-ty) int))
+   (val k-certified (ref (listof (pairof symbol int @t) acyclic) @t))
+   (val k-skolems (ref k-ids @t))
+   (val k-to-end-sizes (ref k-ids @t))
+   (val k-certified-nats (ref (listof (pairof symbol int @t) acyclic) @t))
+   (val k-certified-lengths (ref (listof k-cert-len acyclic) @t))
+   (val k-freezing (ref k-ids @t))
+   (val k-written (ref k-ids @t))
+   (val k-std-type (subr (maxeff (read @globals) (read @t)) (symbol) int))
+   (val k-std-binding? (subr (maxeff (read @globals) (read @t)) (symbol int) bool))
+   (val k-closure-depth (ref int @t))
+   (val k-set-link
+        (subr (maxeff (alloc @t) (read @globals) (read @t) (write @t)) (int int) unit))
+   (val k-slot (subr (maxeff (alloc @t) (read @globals) (read @t) (write @t) spin) () int))
+   (val k-narrowed (ref k-narrows @t))
+   (val k-narrows (ref int @t))
+   (val k-binder-has? (subr (maxeff (read @globals) (read @t)) (k-binders int) bool))
+   (val k-path-narrowed (ref k-path-facts @t))
+   (val k-dvar-name (subr (maxeff (read @globals) (read @t)) (int) symbol))
+   (val k-spin-why (ref (listof (productof (1 symbol) (2 int) (3 string)) acyclic) @t))
+   (val k-new-epoch (subr (maxeff (alloc @t) (read @globals) (read @t) (write @t)) () int))
+   (val k-visit?
+        (subr (maxeff (alloc @t) (read @globals) (read @t) (write @t) spin) (int int) bool))
+   (val k-gen-of (subr (maxeff (read @globals) (read @t)) (int) k-gen))
+   (val k-gen-param? (subr (maxeff (read @globals) (read @t)) (int) bool))
+   (val k-gen-region? (subr (maxeff (read @globals) (read @t)) (k-region) bool))
+   (val k-unify-exact (ref bool @t))
+   (val k-dvar-kind (subr (maxeff (read @globals) (read @t)) (int) int))
+   (val k-bound-of (subr (maxeff (alloc @t) (read @globals) (read @t)) (int) k-regions))
+   (val k-outer-of (subr (maxeff (read @globals) (read @t)) (int) k-ids))
+   (val k-data-var? (subr (maxeff (read @globals) (read @t)) (int) bool))
+   (val k-flat-var? (subr (maxeff (read @globals) (read @t)) (int) bool))
+   (val k-find-sub (subr (maxeff (read @globals) spin) (string string int) int))
+   (val k-arrow-kind? (subr pure (int) bool))
+   (val k-new-dvar-of
+        (subr (maxeff (alloc @t) (read @globals) (read @t) (write @t)) (symbol int) int))
+   (val k-arrow-result (subr (maxeff (read @globals) (read @t)) (int) int))
+   (val k-arrow-params (subr (maxeff (read @globals) (read @t)) (int) k-ids))
+   (val k-abstract-funs (ref k-ids @t))
+   (val k-arrow
+        (subr (maxeff (alloc @t) (read @globals) (read @t) (write @t) spin) (k-ids int) int))
+   (val k-binder-kinds (subr (read @globals) (k-binders) k-ids))
+   (val k-lifetimes (ref k-ids @t))
+   (val k-set-outer
+        (subr (maxeff (alloc @t) (read @globals) (read @t) (write @t)) (int k-ids) unit))
+   (val k-tys (ref (arrayof k-ty @t) @t))
+   (val k-ntys (ref int @t))
+   (val k-links (ref int @t))
+   (val k-dvars (ref k-names @t))
+   (val k-ndvars (ref int @t))
+   (val k-places (ref k-ids @t))
+   (val k-datas (ref k-ids @t))
+   (val k-flats (ref k-ids @t))
+   (val k-arrow-vars (ref (listof (pairof int int @t) acyclic) @t))
+   (val k-bounds (ref k-bounded @t))
+   (val k-outers (ref k-nesting @t))
+   (val k-distincts (ref k-ids @t))
+   (val k-distinct-var? (subr (maxeff (read @globals) (read @t)) (int) bool))
+   (val k-set-distinct (subr (maxeff (read @globals) (read @t) (write @t) (alloc @t)) (int) unit))
+   (val k-gens (ref (listof k-gen acyclic) @t))
+   (val k-arrow-parts
+        (subr (maxeff (read @globals) (read @t)) (int) (listof k-arrow-kind acyclic)))
+   (val k-raw (subr (maxeff (read @globals) (read @t)) (int) k-ty))
+   (val k-desc-types (subr (maxeff (alloc @t) (read @globals)) (k-descs) k-ids))
+   (val k-copy-array
+        (poly ((t type))
+              (subr (maxeff (read @globals) (read @t) (write @t) spin)
+                    ((arrayof t @t) (arrayof t @t) int)
+                    unit)))
+   (val k-desc-regions (subr (maxeff (alloc @t) (read @globals)) (k-descs) k-regions))
+   (val k-pending-unions (ref k-pendings @t))
+   (val k-links-below (ref int @t))
+   (val k-place-var? (subr (maxeff (read @globals) (read @t)) (int) bool))
+   (val k-int-cmp (subr pure (int int) int))))

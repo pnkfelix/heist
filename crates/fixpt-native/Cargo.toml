@@ -1,0 +1,22 @@
+[package]
+name = "fixpt-native"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+fixpt-heap = { path = "../fixpt-heap" }
+fixpt-memmgmt = { path = "../fixpt-memmgmt" }
+fixpt-engine = { path = "../fixpt-engine" }
+fixpt-runtime = { path = "../fixpt-runtime" }
+libc = "0.2"
+
+[build-dependencies]
+fixpt-heap = { path = "../fixpt-heap" }
+fixpt-engine = { path = "../fixpt-engine" }
+
+[features]
+gc-stress = ["fixpt-heap/gc-stress"]
+
+[lints]
+workspace = true

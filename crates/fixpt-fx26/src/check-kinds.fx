@@ -1,0 +1,66 @@
+;;; The checker, in FX-26: higher kinds (`docs/research/higher-kinds.md`),
+;;; the Rust checker's `kinds.rs`. Description functions, of arrow kinds
+;;; `(=> (k1 … kn) k)`, made by `dlambda` and applied to descriptions: a
+;;; `dlambda` applied is reduced (beta), one that only applies a function to
+;;; its parameters is that function (eta), and a variable applied is an
+;;; application, `ty-app`, equal only to one of the same function to equal
+;;; descriptions. To an effect, an application is an atom, `a-app`.
+;;; Reading them is `check-read-descs.fx`'s, with the rest of reading
+;;; types. Part of the checker, `check-types.fx` first.
+
+;;; ------------------------------------------------------------ description functions
+
+;; Its types, those it uses of the files before it, and the signatures of
+;; what it is given.
+(let* ((check-types-types (load-module "fx26:check-types-types.fx"))
+       (check-read-descs-types (load-module "fx26:check-read-descs-types.fx"))
+       (check-read-helpers-types (load-module "fx26:check-read-helpers-types.fx"))
+       (check-holds-types (load-module "fx26:check-holds-types.fx"))
+       (check-print-types (load-module "fx26:check-print-types.fx"))
+       (check-print-parts-types (load-module "fx26:check-print-parts-types.fx")))
+  ;; What it is given: the modules of the files before it that it uses.
+  (lambda ((check-types (select check-types-types check-types-sig))
+           (check-read-descs (select check-read-descs-types check-read-descs-sig))
+           (check-holds (select check-holds-types check-holds-sig))
+           (check-print (select check-print-types check-print-sig))
+           (check-read-helpers (select check-read-helpers-types check-read-helpers-sig))
+           (check-print-parts (select check-print-parts-types check-print-parts-sig)))
+    (module
+
+;; The types it uses of the files before it.
+(hide (include check-types-types))
+;; What it uses of the modules it is given: all of each, hidden.
+(hide (include check-types) (include check-read-helpers) (include check-holds)
+      (include check-print-parts))
+
+;; Whether description `d` is of kind `k`, as a binder of that kind takes; a
+;; function whose kind is not known yet, a `select`, is let through.
+(define k-desc-of-kind? (->* (k-desc int) bool)
+  (lambda (d k)
+    (tagcase d
+      (dr (r) (or (= k 0) (and (= k 3) (k-place? r))))
+      (de (e) (= k 1))
+      (dt (t) (or (= k 2) (= k 4) (= k 8) (and (= k 7) (k-is-flat? t))))
+      (dz (z) (= k 5))
+      (dc (c) (= k 6))
+      (df (f) (and (k-arrow-kind? k) (let ((g (k-fun-kind f))) (or (< g 0) (= g k))))))))
+
+;; Binders `ps` made again: fresh variables of the same names and kinds.
+(define k-fresh-binders (->* (k-binders) k-binders)
+  (lambda (ps)
+    (if (null? ps)
+        nil
+        (let* ((v (extract (car ps) 1)) (k (extract (car ps) 2))
+               (w (k-new-dvar-of (k-dvar-name v) k))
+               (rest (k-fresh-binders (cdr ps))))
+          (the k-binders (cons (product (1 w) (2 k)) rest))))))
+;; The `g`th generative type as a description function of kind `want`,
+;; `(dlambda ((p k) …) (name p …))`; -1 if it is not of that kind.
+(define k-generative-fun (->* (int int) int)
+  (lambda (g want)
+    (let ((ps (extract (k-gen-of g) 2)))
+      (if (not (= (k-arrow (k-binder-kinds ps) 2) want))
+          -1
+          (let* ((fresh (k-fresh-binders ps))
+                 (body (k-ty-new (ty-named g (k-binders-as-descs fresh)))))
+            (k-lam fresh (dt body))))))))))

@@ -1,0 +1,35 @@
+;;; The signature of `check-effects.fx`, its `check-effects-module`,
+;;; as its clients use it (`TODO.md` §68): a module file of no state.
+
+;;; ------------------------------------------------------------ signatures
+
+;; What its clients use of it (`check-program.fx`).
+;; The types it names, from the files that define them.
+(hide (define check-types-types (load-module "fx26:check-types-types.fx")))
+(import check-types-types (type k-atom k-eff k-region))
+;; The types it names, from the files that define them.
+(define-type k-conv (select check-types-types k-conv))
+(define-type check-effects-sig
+  (moduleof (val k-atom-region (subr (read @globals) (k-atom) k-region))
+            (val k-one (subr (alloc @t) (k-atom) k-eff))
+            (val k-insert
+                 (subr (maxeff (alloc @t) (read @globals) (read @t) spin)
+                       (k-atom k-eff)
+                       k-eff))
+            (val k-union
+                 (subr (maxeff (alloc @t) (read @globals) (read @t) spin)
+                       (k-eff k-eff)
+                       k-eff))
+            (val k-region=? (subr (maxeff (read @globals) spin) (k-region k-region) bool))
+            (val k-eff=? (subr (maxeff (read @globals) (read @t) spin) (k-eff k-eff) bool))
+            (val k-atom-rank (subr pure (k-atom) int))
+            (val k-contains?
+                 (subr (maxeff (read @globals) (read @t) spin) (k-eff k-atom) bool))
+            (val k-covered?
+                 (subr (maxeff (read @globals) (read @t) spin) (k-eff k-atom) bool))
+            (val k-within?
+                 (subr (maxeff (read @globals) (read @t) spin) (k-eff k-eff) bool))
+            (val k-has-region? (subr (read @globals) (k-atom) bool))
+            (val k-atom-with (subr (read @globals) (k-atom k-region) k-atom))
+            (val k-atom-var (subr pure (k-atom) int))
+            (val k-conv-code (subr pure (k-conv) int))))

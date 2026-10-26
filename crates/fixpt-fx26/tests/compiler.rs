@@ -1,0 +1,161 @@
+//! The compiler written in FX-26 (`src/compile.fx`): programs read, parsed
+//! and compiled to cellular words in FX-26, run on the cellular machine,
+//! against the evaluator written in FX-26 and the lowering to Scheme
+//! (`PLAN.md` §11, step 9d).
+
+mod common;
+
+use fixpt_engine::Backend;
+use fixpt_fx26::session::Fx26Session;
+
+/// All three ways; they must agree. Returns the value.
+fn three(program: &str) -> String {
+    let compiled = common::with_own(|s| s.compile_with_own_compiler(program)).unwrap_or_else(|e| panic!("the FX-26 front end: {e}\n{program}"));
+    let evaluated = common::with_own(|s| s.eval_with_own_evaluator(program)).unwrap_or_else(|e| panic!("the FX-26 front end: {e}\n{program}"));
+    let mut s = Fx26Session::with_backend(Backend::Bytecode).expect("starts");
+    let lowered = s.run_program(program).unwrap_or_else(|e| panic!("does not check: {e}\n{program}"));
+    let lowered = lowered.unwrap_or_else(|e| format!("!! {e}"));
+    assert_eq!(evaluated, lowered, "the evaluator and the lowering disagree on:\n{program}");
+    assert_eq!(compiled, lowered, "the compiled words and the lowering disagree on:\n{program}");
+    compiled
+}
+
+#[test]
+fn small_programs() {
+    assert_eq!(three("(+ 1 2)"), "3");
+    assert_eq!(three("(let* ((a 1) (b (+ a 1))) (if (and (< a b) (or #f #t)) 'yes 'no))"), "yes");
+    assert_eq!(three("(define* f (subr spin (int) int) (lambda (n) (if (= n 0) 1 (* n (f (- n 1)))))) (f 10)"), "3628800");
+    assert_eq!(three("(the (listof int @l) (cons 1 (cons 2 nil)))"), "(1 2)");
+    assert_eq!(three("(let ((r (the (ref int @r) (new 1)))) (begin (set r (+ (get r) 41)) (get r)))"), "42");
+    assert_eq!(three("(letrec ((even (subr spin (int) bool) (lambda (n) (if (= n 0) #t (odd (- n 1))))) (odd (subr spin (int) bool) (lambda (n) (if (= n 0) #f (even (- n 1)))))) (even 10))"), "#t");
+    assert_eq!(three("(string-append \"ab\" (symbol->string 'cd))"), "\"abcd\"");
+    assert_eq!(three("(sum a 1)"), "#<sum a>");
+    assert_eq!(three("((lambda ((x int)) ((lambda ((y int)) (+ x y)) 2)) 40)"), "42");
+    assert_eq!(three("(tagcase (the (sumof (a int) (b (productof (1 int) (2 int)))) (sum b (product (1 3) (2 4)))) (a n n) (b (x y) (+ x y)))"), "7");
+}
+
+#[test]
+fn test_programs() {
+    for p in [
+        include_str!("programs/bidirectional/twice.fx"),
+        include_str!("programs/bloblet/point.fx"),
+        include_str!("programs/bloblet/bytes.fx"),
+        include_str!("programs/bloblet/array-sum.fx"),
+        include_str!("programs/bloblet/else-narrows.fx"),
+        include_str!("programs/run/recursion.fx"),
+        include_str!("programs/run/redefinition.fx"),
+        include_str!("programs/run/state.fx"),
+    ] {
+        three(p);
+    }
+}
+
+/// `extract` takes its field from what the checker written in FX-26 found;
+/// a program that does not check is not compiled; a run-time error is
+/// reported as one.
+#[test]
+fn extract_and_errors() {
+    let mut s = common::session();
+    let out = s.compile_with_own_compiler("(extract (product (a 1) (b \"two\") (c #t)) b)").expect("parses");
+    assert_eq!(out, "\"two\"");
+    let out = s.compile_with_own_compiler("(extract (product (a 1)) b)").expect("parses");
+    assert!(out.starts_with("!! check: a (productof (a int)) has no `b`"), "{out}");
+    let out = s.compile_with_own_compiler("(car (the (listof int @l) nil))").expect("parses");
+    assert!(out.starts_with("!! "), "a run-time error is reported: {out}");
+}
+
+/// Every test program that checks, control ones included, compiled and run
+/// on the cellular machine against the lowering; disagreements reported
+/// together.
+#[test]
+fn every_program_compiled() {
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/programs");
+    let mut report = Vec::new();
+    let mut ran = 0;
+    for sub in ["bidirectional", "control", "run", "pldi89", "bloblet", "datum", "modules", "higher-kinds", "processes"] {
+        let mut names: Vec<_> = std::fs::read_dir(format!("{dir}/{sub}")).unwrap().map(|e| e.unwrap().path()).collect();
+        names.sort();
+        for path in names {
+            let program = std::fs::read_to_string(&path).unwrap();
+            let mut s = Fx26Session::with_backend(Backend::Bytecode).expect("starts");
+            let lowered = match s.run_program(&program) {
+                Ok(v) => v.unwrap_or_else(|e| format!("!! {e}")),
+                Err(_) => continue, // written to be rejected
+            };
+            let compiled = common::with_own(|s| s.compile_with_own_compiler(&program)).map_err(|e| e.to_string());
+            ran += 1;
+            let name = path.file_name().unwrap().to_string_lossy().to_string();
+            if compiled.as_deref() != Ok(lowered.as_str()) {
+                report.push(format!("{sub}/{name}: compiled {compiled:?}, lowered {lowered:?}"));
+            }
+        }
+    }
+    assert!(report.is_empty(), "{} of {ran} disagree:\n{}", report.len(), report.join("\n"));
+    // The corpus has 15 that check; fewer means the test stopped finding
+    // them.
+    assert!(ran >= 15, "only {ran} programs ran");
+}
+
+/// The same programs, compiled once more and run on each machine: the
+/// hand-encoded native machine, its words compiled by the Rust assembler
+/// or by `native.fx`, or run as register code; and the stencils at -O2.
+/// Control, and everything else a native machine has no code for, runs
+/// there through the Rust machine (the round trip). The stencils only where
+/// the build made them (a nightly compiler, arm64 or x86_64 Linux); and on
+/// x86_64, register code compiled by `native-x64-regs.fx`.
+#[test]
+#[cfg_attr(not(any(target_arch = "aarch64", target_arch = "x86_64")), ignore = "runs machine code")]
+fn every_program_on_every_machine() {
+    type Run = fn(&mut fixpt_runtime::Runtime, fixpt_heap::Value, &[fixpt_heap::Value]) -> Result<fixpt_heap::Value, String>;
+    // Each: its name, its machine, whether the compiler makes register
+    // code for it, and how code `native.fx` makes is placed, if it makes it.
+    type Place = Option<fixpt_runtime::PlaceCode>;
+    let machines: [(&str, Run, bool, Place); 6] = [
+        ("native", fixpt_native::cellular::run_word, false, None),
+        ("native, words compiled", fixpt_native::cellular::run_word_compiled, false, None),
+        ("native, words compiled by native.fx", fixpt_native::cellular::run_word_as_is, false, Some(fixpt_native::cellular::place_word)),
+        ("register code", fixpt_native::cellular::run_word_registers, true, None),
+        ("stencils", fixpt_native::stencil::run_word, false, None),
+        ("register code compiled by native-x64-regs.fx", fixpt_native::cellular::run_word_as_is, true, Some(fixpt_native::cellular::place_word)),
+    ];
+    // The stencils where the build made them; FX-26's register code for
+    // x86_64 only.
+    let machines: Vec<_> = machines
+        .into_iter()
+        .filter(|(name, ..)| *name != "stencils" || !fixpt_native::stencil::opt_levels().is_empty())
+        .filter(|(name, ..)| !name.contains("native-x64-regs") || cfg!(target_arch = "x86_64"))
+        .collect();
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/programs");
+    let mut report = Vec::new();
+    // A session for each machine, for every program.
+    let mut sessions: Vec<Fx26Session> = machines
+        .iter()
+        .map(|(_, run, registers, place)| {
+            let mut s = common::session();
+            s.scheme.runtime_unrooted().run_word = Some(*run);
+            s.scheme.runtime_unrooted().place_code = *place;
+            s.register_code = *registers;
+            s
+        })
+        .collect();
+    for sub in ["bidirectional", "control", "run", "pldi89", "bloblet", "datum", "modules", "higher-kinds", "processes"] {
+        let mut names: Vec<_> = std::fs::read_dir(format!("{dir}/{sub}")).unwrap().map(|e| e.unwrap().path()).collect();
+        names.sort();
+        for path in names {
+            let program = std::fs::read_to_string(&path).unwrap();
+            let mut s = Fx26Session::with_backend(Backend::Bytecode).expect("starts");
+            let lowered = match s.run_program(&program) {
+                Ok(v) => v.unwrap_or_else(|e| format!("!! {e}")),
+                Err(_) => continue,
+            };
+            for ((name, ..), s) in machines.iter().zip(&mut sessions) {
+                let compiled = s.compile_with_own_compiler(&program).map_err(|e| e.to_string());
+                if compiled.as_deref() != Ok(lowered.as_str()) {
+                    let file = path.file_name().unwrap().to_string_lossy().to_string();
+                    report.push(format!("{name} {sub}/{file}: {compiled:?}, lowered {lowered:?}"));
+                }
+            }
+        }
+    }
+    assert!(report.is_empty(), "disagreements:\n{}", report.join("\n"));
+}

@@ -1,0 +1,37 @@
+# FX files over the size limits when the rule came (2026-09-29): 1000 lines,
+# 100 columns (`fixpt_tidy::fx_size`). Path, lines, lines over 100 columns.
+# An entry may only come down: factor the file, then lower its entry.
+
+# Exempt for good (the user's, 2026-09-29), not measured:
+# Benchmarks, ported one file each by design (scheme-bench/PORTING.md).
+exempt scheme-bench/
+exempt mllang-bench/
+# The FX-91 conformance cases, copied as they were.
+exempt tests/conformance/fx91/
+# Test inputs whose size is their point: 70 values live across one call.
+exempt crates/fixpt-fx26/tests/programs/native/wide-frame.fx
+# Generated files (the user's decision, 2026-09-29): regenerated, not edited.
+exempt crates/fixpt-fx87/src/standard.fx
+exempt crates/fixpt-fx91/src/fx-module.fx
+# Seventy nested products, on two lines: the depth the termination check meets.
+exempt crates/fixpt-fx26/tests/programs/terminate/deep-self-application.fx
+
+# In debt: path, lines, lines over 100 columns.
+# The register compiler's one recursive group, modules and a leaf's tail
+# calls folded in to remove the hooks between files (the user's,
+# 2026-10-06, `TODO.md` §41): over the limit for now, to be revisited.
+# Raised by its imports alone when the conductor came to make it, 1125 to
+# 1415, and by two lines for each module it is given since (split from one
+# it was given), the code unchanged (the user's, 2026-10-09, `TODO.md` §68);
+# then down to 1130 by `(hide (include m))` in place of its imports (§69).
+crates/fixpt-fx26/src/regcode-core.fx 1122 0
+# The checker's one recursive group, every rule (58 members): within the
+# limit until the conductor came to make it, then over by its imports
+# alone, 998 to 1346, and by two lines for each module it is given since
+# (split from one it was given), the code unchanged (the user's,
+# 2026-10-09, `TODO.md` §68); and by one for `k-module-type`'s import
+# (`extend`, `TODO.md` §69), its code in `check-module-rules.fx`; then down
+# to 1069 by `(hide (include m))` in place of its imports (§69); then to
+# 1047 by `(with #%fx n)`'s rule, out of the group, moved to
+# `check-processes.fx` with the rules of processes and `par` (§92).
+crates/fixpt-fx26/src/check-rules.fx 1014 0

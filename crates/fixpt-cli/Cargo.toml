@@ -1,0 +1,25 @@
+[package]
+name = "fixpt-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "fixpt"
+path = "src/main.rs"
+
+[dependencies]
+fixpt-heap = { path = "../fixpt-heap" }
+fixpt-read = { path = "../fixpt-read" }
+fixpt-core = { path = "../fixpt-core" }
+fixpt-runtime = { path = "../fixpt-runtime" }
+fixpt-engine = { path = "../fixpt-engine" }
+fixpt-scheme = { path = "../fixpt-scheme" }
+fixpt-fx91 = { path = "../fixpt-fx91" }
+fixpt-fx87 = { path = "../fixpt-fx87" }
+fixpt-fx26 = { path = "../fixpt-fx26" }
+fixpt-native = { path = "../fixpt-native" }
+fixpt-memmgmt = { path = "../fixpt-memmgmt" }
+
+[lints]
+workspace = true

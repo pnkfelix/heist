@@ -1,0 +1,55 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/fixpt-memmgmt",
+    "crates/fixpt-heap",
+    "crates/fixpt-read",
+    "crates/fixpt-core",
+    "crates/fixpt-runtime",
+    "crates/fixpt-scheme",
+    "crates/fixpt-engine",
+    "crates/fixpt-cli",
+    "crates/fixpt-conform",
+    "crates/fixpt-fx91",
+    "crates/fixpt-fx87",
+    "crates/fixpt-fx26",
+    "crates/fixpt-tidy",
+    "crates/fixpt-tools",
+    "crates/fixpt-native",
+]
+# All but the tools' binaries, which have no tests: so that `cargo run`
+# finds one binary, `fixpt`, and starts the FX-26 REPL. The tools are
+# `cargo run -p fixpt-tools --bin sexp-edit` (or `fixpt-symbolize`).
+default-members = [
+    "crates/fixpt-memmgmt",
+    "crates/fixpt-heap",
+    "crates/fixpt-read",
+    "crates/fixpt-core",
+    "crates/fixpt-runtime",
+    "crates/fixpt-scheme",
+    "crates/fixpt-engine",
+    "crates/fixpt-cli",
+    "crates/fixpt-conform",
+    "crates/fixpt-fx91",
+    "crates/fixpt-fx87",
+    "crates/fixpt-fx26",
+    "crates/fixpt-tidy",
+    "crates/fixpt-native",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/pnkfelix/fixpt"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+# Release speed with the checks a debug build has: `debug_assert!`s and
+# arithmetic overflow panics (`cargo test --profile checked`). The suite
+# runs in about release's time, so nothing waits on an unoptimized build.
+[profile.checked]
+inherits = "release"
+debug-assertions = true
+overflow-checks = true

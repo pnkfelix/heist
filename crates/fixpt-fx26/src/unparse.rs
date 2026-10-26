@@ -1,0 +1,473 @@
+//! Printing descriptions, in FX-87's notation.
+
+use crate::ast::{Atom, Effect, Region, Ty, TyId};
+use crate::check::Checker;
+
+impl Checker {
+    /// Variable `v`'s name, or, while two types are shown apart
+    /// ([`show_apart`](Self::show_apart)), a mark for it, named after: `f`
+    /// where it is free, `b` where it is bound, `h` where it is bound and
+    /// not printed (a `moduleof`'s abstract type, shown by its component's
+    /// name).
+    fn dvar_text(&self, v: crate::ast::DVar, how: char) -> String {
+        if self.show_marks.get() {
+            format!("{MARK}{how}{}{MARK}", v.0)
+        } else if how == 'h' {
+            String::new()
+        } else {
+            self.interner.name(self.arena.dvar_name(v)).to_string()
+        }
+    }
+
+    /// What `make` shows, with two free variables of one name told apart:
+    /// the first, in the order the texts are read, keeps its name, the next
+    /// is primed, `a'`, and so on; and a line for each such name saying so,
+    /// or "". So that "a (subr pure (a) a) is expected here, and this is a
+    /// (subr pure (a) a)" says which `a` is which.
+    pub(crate) fn show_apart(&self, make: impl FnOnce(&Self) -> Vec<String>) -> (Vec<String>, String) {
+        self.show_marks.set(true);
+        let texts = make(self);
+        self.show_marks.set(false);
+        let marks: Vec<(char, u32)> = texts.iter().flat_map(|t| marks_in(t)).collect();
+        let name = |v: u32| self.interner.name(self.arena.dvar_name(crate::ast::DVar(v))).to_string();
+        // The free ones, by name, in the order they are read.
+        let mut groups: Vec<(String, Vec<u32>)> = Vec::new();
+        for &(how, v) in &marks {
+            if how != 'f' || marks.iter().any(|&(h, w)| w == v && h != 'f') {
+                continue;
+            }
+            let n = name(v);
+            match groups.iter_mut().find(|(m, _)| *m == n) {
+                Some((_, vs)) if !vs.contains(&v) => vs.push(v),
+                Some(_) => {}
+                None => groups.push((n, vec![v])),
+            }
+        }
+        let mut primed: Vec<(u32, String)> = Vec::new();
+        let mut hint = String::new();
+        for (n, vs) in groups.iter().filter(|(_, vs)| vs.len() > 1) {
+            let shown: Vec<String> = (0..vs.len()).map(|k| format!("{n}{}", "'".repeat(k))).collect();
+            primed.extend(vs.iter().copied().zip(shown.iter().cloned()));
+            let quoted: Vec<String> = shown.iter().map(|x| format!("`{x}`")).collect();
+            let (last, init) = quoted.split_last().expect("two");
+            hint.push_str(&format!("\n  {} and {last} are different variables, each named `{n}`", init.join(", ")));
+        }
+        let texts = texts
+            .iter()
+            .map(|t| {
+                named_marks(t, |how, v| match how {
+                    'h' => String::new(),
+                    _ => primed.iter().find(|(w, _)| *w == v).map_or_else(|| name(v), |(_, x)| x.clone()),
+                })
+            })
+            .collect();
+        (texts, hint)
+    }
+
+    /// A proposition as written: `(shape 0 int)`, `(not (shape 0 int))`.
+    pub(crate) fn show_prop(&self, p: &crate::ast::Prop) -> String {
+        use crate::ast::{Prop, Rel, Term};
+        let term = |t: &Term| match t {
+            Term::Param(i) => i.to_string(),
+            Term::Length(i) => format!("(length {i})"),
+            Term::Lit(k) => format!("(lit {k})"),
+        };
+        match p {
+            Prop::Shape { param, shape, negated } => {
+                let shape = format!("(shape {param} {})", crate::check::SHAPES[*shape].0);
+                if *negated { format!("(not {shape})") } else { shape }
+            }
+            Prop::Acyclic(i) => format!("(acyclic {i})"),
+            Prop::Nat(i) => format!("(nat {i})"),
+            Prop::Length(i, j) => format!("(length {i} {j})"),
+            Prop::Rel { op, a, b } => {
+                let (name, not) = match op {
+                    Rel::Lt => ("<", false),
+                    Rel::Le => ("<=", false),
+                    Rel::Eq => ("=", false),
+                    Rel::Ne => ("=", true),
+                };
+                let r = format!("({name} {} {})", term(a), term(b));
+                if not { format!("(not {r})") } else { r }
+            }
+        }
+    }
+
+    pub fn show_region(&self, r: Region) -> String {
+        match r {
+            Region::Const(s) => self.interner.name(s).to_string(),
+            Region::Var(v) => self.dvar_text(v, 'f'),
+            Region::Frozen(None, false) => "const".to_string(),
+            Region::Frozen(None, true) => "acyclic".to_string(),
+            Region::Frozen(Some(p), finite) => {
+                format!("({} {})", if finite { "acyclic" } else { "const" }, self.dvar_text(p, 'f'))
+            }
+            Region::Heap => "heap".to_string(),
+            Region::Global(g) => format!("(globals {})", self.interner.name(g)),
+            Region::Globals => "@globals".to_string(),
+        }
+    }
+
+    fn show_earg(&self, a: &crate::ast::EArg) -> String {
+        match a {
+            crate::ast::EArg::Region(r) => self.show_region(*r),
+            crate::ast::EArg::Effect(e) => self.show_effect(e),
+            crate::ast::EArg::Size(z) => self.show_size(z),
+            crate::ast::EArg::Conv(c) => self.show_conv(*c),
+        }
+    }
+
+    pub fn show_atom(&self, a: Atom) -> String {
+        let (op, r) = match a {
+            Atom::Read(r) => ("read", r),
+            Atom::Write(r) => ("write", r),
+            Atom::Alloc(r) => ("alloc", r),
+            Atom::Goto(r) => ("goto", r),
+            Atom::Comefrom(r) => ("comefrom", r),
+            Atom::Await(r) => ("await", r),
+            Atom::Init(r) => ("init", r),
+            Atom::Send(r) => ("send", r),
+            Atom::Receive(r) => ("receive", r),
+            Atom::Var(v) => return self.dvar_text(v, 'f'),
+            Atom::Spin => return "spin".to_string(),
+            Atom::Nondet => return "nondet".to_string(),
+            Atom::Io(k) => return format!("(io {})", k.name()),
+            Atom::App(n) => {
+                let (head, args) = self.arena.effect_apps.parts(n);
+                let ds: Vec<String> = args.iter().map(|a| self.show_earg(a)).collect();
+                return format!("({} {})", self.dvar_text(head, 'f'), ds.join(" "));
+            }
+        };
+        format!("({op} {})", self.show_region(r))
+    }
+
+    /// A size: `finite`, a literal, a variable, or `(+ …)` / `(- v k)`.
+    pub fn show_size(&self, s: &crate::ast::Size) -> String {
+        match s {
+            crate::ast::Size::Finite => "finite".into(),
+            crate::ast::Size::Lin { k, terms } => {
+                let mut parts: Vec<String> = terms
+                    .iter()
+                    .map(|(v, c)| {
+                        let n = self.dvar_text(*v, 'f');
+                        if *c == 1 { n } else { format!("(* {c} {n})") }
+                    })
+                    .collect();
+                match (parts.len(), *k) {
+                    (0, k) => k.to_string(),
+                    (1, 0) => parts.pop().expect("one"),
+                    (1, k) if k < 0 => format!("(- {} {})", parts[0], -k),
+                    (_, 0) => format!("(+ {})", parts.join(" ")),
+                    (_, k) => format!("(+ {} {k})", parts.join(" ")),
+                }
+            }
+        }
+    }
+
+    /// A convention as a program writes it.
+    pub fn show_conv(&self, c: crate::ast::Conv) -> String {
+        use crate::ast::Conv;
+        match c {
+            Conv::Cellular => "cellular".into(),
+            Conv::Native => "native".into(),
+            Conv::Fx => "fx".into(),
+            Conv::Var(v) => self.dvar_text(v, 'f'),
+        }
+    }
+
+    /// `pure`, a single atom, or `(maxeff …)`.
+    /// Reads, or writes, of several globals are one atom: `(read (globals f
+    /// g))`.
+    /// A specification's clauses, each after a space, as a `subr` type
+    /// writes them: `(requires p)`, `(ensures r q)`, those not `true`.
+    pub fn show_spec(&self, spec: &crate::ast::Spec) -> String {
+        use crate::ast::Named;
+        let param = |i: usize| spec.params.get(i).copied().flatten().map_or(format!("${i}"), |s| self.interner.name(s).to_string());
+        fn name(u: &Checker, spec: &crate::ast::Spec, n: &Named) -> String {
+            let param = |i: usize| spec.params.get(i).copied().flatten().map_or(format!("${i}"), |s| u.interner.name(s).to_string());
+            match *n {
+            Named::Param(i) => param(i),
+            Named::Result => spec.result.map_or("result".to_string(), |s| u.interner.name(s).to_string()),
+            Named::Length(i) => format!("(length {})", param(i)),
+            Named::Shape(i, k) => format!("(shape {} {})", param(i), crate::check::SHAPES[k].0),
+            Named::Acyclic(i) => format!("(acyclic {})", param(i)),
+            Named::Nat(i) => format!("(nat {})", param(i)),
+            Named::LengthIs(i, j) => format!("(length-is {} {})", param(i), param(j)),
+            Named::Call(g, ref xs) => {
+                let xs: String = xs.iter().map(|x| format!(" {}", crate::logic::show_expr(x, &|n: &Named| name(u, spec, n)))).collect();
+                format!("({}{xs})", u.interner.name(g))
+            }
+            }
+        }
+        let _ = param;
+        let name = |n: &Named| name(self, spec, n);
+        let mut out = String::new();
+        if !spec.requires.trivial() {
+            out += &format!(" (requires {})", crate::logic::show(&spec.requires, &name));
+        }
+        if !spec.ensures.trivial() {
+            out += &format!(" (ensures {} {})", name(&Named::Result), crate::logic::show(&spec.ensures, &name));
+        }
+        out
+    }
+
+    pub fn show_effect(&self, e: &Effect) -> String {
+        let mut atoms: Vec<String> = Vec::new();
+        let (mut reads, mut writes) = (Vec::new(), Vec::new());
+        for a in &e.0 {
+            match a {
+                Atom::Read(Region::Global(g)) => reads.push(self.interner.name(*g).to_string()),
+                Atom::Write(Region::Global(g)) => writes.push(self.interner.name(*g).to_string()),
+                _ => atoms.push(self.show_atom(*a)),
+            }
+        }
+        for (op, mut gs) in [("read", reads), ("write", writes)] {
+            gs.sort();
+            if !gs.is_empty() {
+                atoms.push(format!("({op} (globals {}))", gs.join(" ")));
+            }
+        }
+        match atoms.len() {
+            0 => "pure".into(),
+            1 => atoms[0].clone(),
+            _ => format!("(maxeff {})", atoms.join(" ")),
+        }
+    }
+
+    /// A type. A type that `define-type` named prints as its name. Any other
+    /// recursive type prints as far as its first repetition, which is shown
+    /// as `…` — enough to read, and it always terminates.
+    pub fn show_ty(&self, t: TyId) -> String {
+        self.show_ty_on(t, &mut Vec::new())
+    }
+
+    /// A type written out one level, even if it has a name: what a
+    /// `define-type` defined the name as.
+    pub fn show_definition(&self, t: TyId) -> String {
+        self.show_ty_body(self.arena.resolve(t), &mut Vec::new())
+    }
+
+    fn abbreviation(&self, t: TyId) -> Option<&str> {
+        let named = self.print_names.borrow().iter().rev().find(|(_, x)| self.arena.resolve(*x) == t).map(|(n, _)| *n);
+        if let Some(n) = named {
+            return Some(self.interner.name(n));
+        }
+        self.type_names()
+            .into_iter()
+            .rev()
+            .find(|n| self.type_named(*n).is_some_and(|d| self.arena.resolve(d) == t))
+            .map(|n| self.interner.name(n))
+    }
+
+    fn show_ty_on(&self, t: TyId, path: &mut Vec<TyId>) -> String {
+        let t = self.arena.resolve(t);
+        if let Some(name) = self.abbreviation(t) {
+            return name.to_string();
+        }
+        self.show_ty_body(t, path)
+    }
+
+    /// A description as written, inside a type being shown.
+    fn show_d_on(&self, d: &crate::ast::D, path: &mut Vec<TyId>) -> String {
+        match d {
+            crate::ast::D::Type(x) | crate::ast::D::Fun(x) => self.show_ty_on(*x, path),
+            crate::ast::D::Region(r) => self.show_region(*r),
+            crate::ast::D::Effect(e) => self.show_effect(e),
+            crate::ast::D::Size(z) => self.show_size(z),
+            crate::ast::D::Conv(c) => self.show_conv(*c),
+        }
+    }
+
+    fn show_ty_body(&self, t: TyId, path: &mut Vec<TyId>) -> String {
+        // A node met again on the way down is a cycle: named by its depth,
+        // and written `(mu %d …)` where the cycle starts.
+        if let Some(i) = path.iter().position(|x| *x == t) {
+            return format!("%{}", i + 1);
+        }
+        path.push(t);
+        let name = format!("%{}", path.len());
+        let out = match self.arena.get(t).clone() {
+            Ty::Base(s) => self.interner.name(s).to_string(),
+            Ty::Void => "void".into(),
+            Ty::Nil => "nil".into(),
+            Ty::False => "false".into(),
+            Ty::Union(ms) => {
+                let ms: Vec<String> = ms.iter().map(|m| self.show_ty_on(*m, path)).collect();
+                format!("(union {})", ms.join(" "))
+            }
+            Ty::Var(v) => self.dvar_text(v, 'f'),
+            Ty::Link(None) => "?".into(),
+            Ty::Link(Some(_)) => unreachable!("resolved"),
+            Ty::Subr { conv, effect, params, result, spec } => {
+                let mut ps: Vec<String> = params.iter().map(|p| self.show_ty_on(*p, path)).collect();
+                // The convention only where it is not the program's.
+                let c = if conv == self.conv_default { String::new() } else { format!("(conv {}) ", self.show_conv(conv)) };
+                // What a `bool` result proves, `(bool (then …) (else …))`,
+                // as written; a specification's parameters by their names,
+                // where it has clauses, and its clauses after the result.
+                let mut clauses = String::new();
+                let mut shown = self.show_ty_on(result, path);
+                if let Some(spec) = &spec {
+                    let mut spec = (**spec).clone();
+                    if let Some((then, els, rest)) = crate::specs::latent_split(&spec.ensures) {
+                        let side = |c: &Self, which: &str, ps: &[crate::ast::Prop]| format!("({which}{})", ps.iter().map(|p| format!(" {}", c.show_prop(p))).collect::<String>());
+                        shown = format!("(bool {} {})", side(self, "then", &then), side(self, "else", &els));
+                        spec.ensures = rest;
+                    }
+                    clauses = self.show_spec(&spec);
+                    if !clauses.is_empty() {
+                        for (p, n) in ps.iter_mut().zip(&spec.params) {
+                            if let Some(n) = n {
+                                *p = format!("({} {p})", self.interner.name(*n));
+                            }
+                        }
+                    }
+                }
+                format!("(subr {c}{} ({}) {shown}{clauses})", self.show_effect(&effect), ps.join(" "))
+            }
+            Ty::Poly { binders, body } => {
+                let bs: Vec<String> = binders
+                    .iter()
+                    .map(|(v, k)| {
+                        let k = self.show_kind(*k);
+                        let d = if self.arena.is_distinct(*v) { " distinct" } else { "" };
+                        match self.arena.bound(*v) {
+                            Some(b) => format!("({} {k} {}{d})", self.dvar_text(*v, 'b'), self.show_region(b)),
+                            None => format!("({} {k}{d})", self.dvar_text(*v, 'b')),
+                        }
+                    })
+                    .collect();
+                format!("(poly ({}) {})", bs.join(" "), self.show_ty_on(body, path))
+            }
+            Ty::Ref(a, r) => format!("(ref {} {})", self.show_ty_on(a, path), self.show_region(r)),
+            Ty::Module { abs, descs, vals } => {
+                let mut out = String::from("(moduleof");
+                for (n, v) in &abs {
+                    // Bound here, as a `poly`'s binders are.
+                    let bound = self.dvar_text(*v, 'h');
+                    let k = self.arena.dvar_kind_known(*v).unwrap_or(crate::ast::Kind::Type);
+                    out.push_str(&format!(" (abs {}{bound} {})", self.interner.name(*n), self.show_kind(k)));
+                }
+                // Each description's name, after it, names what it is.
+                let mark = self.print_names.borrow().len();
+                for (n, x) in descs.iter() {
+                    // An effect, a description function of no parameters.
+                    let shown = match self.arena.get(self.arena.resolve(*x)) {
+                        Ty::Lam { params, body: crate::ast::D::Effect(e) } if params.is_empty() => self.show_effect(e),
+                        // What it is, not its own name: a `define-type` alias
+                        // of it, `(select m n)`, named `n` too.
+                        _ if self.abbreviation(self.arena.resolve(*x)) == Some(self.interner.name(*n)) => {
+                            self.show_ty_body(self.arena.resolve(*x), path)
+                        }
+                        _ => self.show_ty_on(*x, path),
+                    };
+                    out.push_str(&format!(" (desc {} {shown})", self.interner.name(*n)));
+                    self.print_names.borrow_mut().push((*n, *x));
+                }
+                for (n, x) in vals.iter() {
+                    out.push_str(&format!(" (val {} {})", self.interner.name(*n), self.show_ty_on(*x, path)));
+                }
+                self.print_names.borrow_mut().truncate(mark);
+                out.push(')');
+                out
+            }
+            Ty::Select(m, n) => format!("(select {} {})", self.interner.name(m), self.interner.name(n)),
+            Ty::ParamSel(k, n) => format!("(select ${} {})", k + 1, self.interner.name(n)),
+            Ty::Product(parts) | Ty::Sum(parts) => {
+                let head = if matches!(self.arena.get(t), Ty::Product(_)) { "productof" } else { "sumof" };
+                let ps: Vec<String> =
+                    parts.iter().map(|(l, x)| format!(" ({} {})", self.interner.name(*l), self.show_ty_on(*x, path))).collect();
+                format!("({head}{})", ps.concat())
+            }
+            Ty::Array(a, crate::ast::Size::Finite, r) => format!("(arrayof {} {})", self.show_ty_on(a, path), self.show_region(r)),
+            Ty::Array(a, n, r) => format!("(narrayof {} {} {})", self.show_ty_on(a, path), self.show_size(&n), self.show_region(r)),
+            Ty::ICell(a, r) => format!("(icell {} {})", self.show_ty_on(a, path), self.show_region(r)),
+            Ty::Place(r) => format!("(place {})", self.show_region(r)),
+            Ty::Nat(crate::ast::Size::Finite) => "nat".to_string(),
+            Ty::Nat(size) => format!("(nat {})", self.show_size(&size)),
+            // FX-87's `listof`: a pair whose tail is itself.
+            Ty::Pair(a, b, r, true) if self.arena.resolve(b) == t => {
+                format!("(listof {} {})", self.show_ty_on(a, path), self.show_region(r))
+            }
+            Ty::PromptTag { answer, payload, effect, region } => format!(
+                "(prompt-tag {} {} {} {})",
+                self.show_ty_on(answer, path),
+                self.show_ty_on(payload, path),
+                self.show_effect(&effect),
+                self.show_region(region)
+            ),
+            Ty::Composable { arg, answer, effect, region, once } => format!(
+                "({} {} {} {} {})",
+                if once { "oneshot" } else { "composable" },
+                self.show_ty_on(arg, path),
+                self.show_ty_on(answer, path),
+                self.show_effect(&effect),
+                self.show_region(region)
+            ),
+            Ty::MarkKey(x, r) => format!("(mark-key {} {})", self.show_ty_on(x, path), self.show_region(r)),
+            Ty::Bloblet { fields, frozen, region } => {
+                let fs: Vec<String> = fields.iter().map(|f| self.show_ty_on(*f, path)).collect();
+                let head = if frozen { "frozen" } else { "fields" };
+                let sep = if fs.is_empty() { "" } else { " " };
+                format!("(bloblet ({head}{sep}{}) {})", fs.join(" "), self.show_region(region))
+            }
+            Ty::NList { elem, size, region } => match region {
+                Region::Frozen(Some(p), _) => format!(
+                    "(nlist {} {} {})",
+                    self.show_ty_on(elem, path),
+                    self.show_size(&size),
+                    self.dvar_text(p, 'f')
+                ),
+                _ => format!("(nlist {} {})", self.show_ty_on(elem, path), self.show_size(&size)),
+            },
+            Ty::Named { which, args } => {
+                let name = self.interner.name(self.generatives[which as usize].name).to_string();
+                if args.is_empty() {
+                    name
+                } else {
+                    let ds: Vec<String> = args.iter().map(|d| self.show_d_on(d, path)).collect();
+                    format!("({name} {})", ds.join(" "))
+                }
+            }
+            Ty::App { fun, args } => {
+                let ds: Vec<String> = args.iter().map(|d| self.show_d_on(d, path)).collect();
+                format!("({} {})", self.show_ty_on(fun, path), ds.join(" "))
+            }
+            Ty::Lam { params, body } => {
+                let ps: Vec<String> =
+                    params.iter().map(|(v, k)| format!("({} {})", self.dvar_text(*v, 'b'), self.show_kind(*k))).collect();
+                format!("(dlambda ({}) {})", ps.join(" "), self.show_d_on(&body, path))
+            }
+            Ty::Pair(a, b, r, nil) => {
+                let pair = format!("(pairof {} {} {})", self.show_ty_on(a, path), self.show_ty_on(b, path), self.show_region(r));
+                if nil { format!("(union nil {pair})") } else { pair }
+            }
+        };
+        path.pop();
+        if mentions_token(&out, &name) { format!("(mu {name} {out})") } else { out }
+    }
+}
+
+/// What brackets a variable's mark in [`Checker::show_apart`]'s texts.
+const MARK: char = '\u{1}';
+
+/// The marks in `s`, in order: how each is printed, and its variable.
+fn marks_in(s: &str) -> Vec<(char, u32)> {
+    s.split(MARK).skip(1).step_by(2).filter_map(|m| Some((m.chars().next()?, m.get(1..)?.parse().ok()?))).collect()
+}
+
+/// `s` with each mark replaced by what `name` makes of it.
+fn named_marks(s: &str, name: impl Fn(char, u32) -> String) -> String {
+    s.split(MARK)
+        .enumerate()
+        .map(|(k, part)| match (k % 2, part.chars().next(), part.get(1..).and_then(|v| v.parse().ok())) {
+            (1, Some(how), Some(v)) => name(how, v),
+            _ => part.to_string(),
+        })
+        .collect()
+}
+
+/// Whether `name` occurs in `s` as a symbol of its own.
+fn mentions_token(s: &str, name: &str) -> bool {
+    ["(", " "].iter().any(|b| [")", " "].iter().any(|a| s.contains(&format!("{b}{name}{a}"))))
+}

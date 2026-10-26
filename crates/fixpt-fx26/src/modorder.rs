@@ -1,0 +1,280 @@
+//! A module's definitions see each other, as `letrec*`'s (`TODO.md` §37):
+//! every name a module defines is in scope in all of it, and its items are
+//! made in the order written. A typed lambda's value (a definition's, or a
+//! `define-rec` member's) may name any item, earlier or later: it does not
+//! run when it is made. Every other item's value runs then, so it may reach
+//! only items made before it: those it names, and those named by the
+//! lambdas it reaches, followed through them. A module breaking that is
+//! refused (`module_hazards`), naming the chain; nothing is reordered.
+//! What a value names is its free variables (`free_vars`; a `with` inside
+//! not checked yet binds none, unless its module is an item checked before
+//! the rest, `early_modules`, whose values' names are then known, so that
+//! `(define x (with m x))` re-exports `m`'s `x`), followed in the order of
+//! the items they name. The FX-26 checker's `k-mod-hazards` (`check-modorder.fx`) is this,
+//! step for step.
+
+use crate::ast::{ExpId, ModItem, TyId};
+use crate::check::Checker;
+use crate::error::{FxError, R};
+use fixpt_read::Sym;
+
+/// A module's typed lambdas: name, written type, value, and the item it
+/// is written in.
+pub(crate) type Lambdas = Vec<(Sym, TyId, ExpId, usize)>;
+
+impl Checker {
+    /// The typed lambdas of `items`, in written order: each definition of
+    /// a lambda with a written type, and each `define-rec` member.
+    pub(crate) fn module_lambdas(&self, items: &[ModItem]) -> Lambdas {
+        let mut out = Vec::new();
+        for (i, item) in items.iter().enumerate() {
+            match item {
+                ModItem::Val { name, ty: Some(ty), init, .. } if self.is_lambda(*init) => out.push((*name, *ty, *init, i)),
+                ModItem::Rec(bs) => out.extend(bs.iter().map(|(n, t, e)| (*n, *t, *e, i))),
+                _ => {}
+            }
+        }
+        out
+    }
+
+    /// Each name `items` define, and the item defining it.
+    pub(crate) fn module_places(items: &[ModItem]) -> Vec<(Sym, usize)> {
+        let mut out = Vec::new();
+        for (i, item) in items.iter().enumerate() {
+            match item {
+                ModItem::Val { name, .. } => out.push((*name, i)),
+                ModItem::Rec(bs) => out.extend(bs.iter().map(|(n, _, _)| (*n, i))),
+                ModItem::Abs { up, down, .. } => out.extend([(*up, i), (*down, i)]),
+                ModItem::Desc { .. } => {}
+            }
+        }
+        out
+    }
+
+    /// The items checked before a module's typed lambdas are bound, in
+    /// order: each with no type written whose value is a module as written
+    /// (`written_module`), naming no item of the module but earlier such
+    /// ones. Checked first, a module's values' names are known to a `with`
+    /// of it not checked yet (`hazard_modules`). As the FX-26 checker's
+    /// `k-early-modules`.
+    pub(crate) fn early_modules(&self, items: &[ModItem]) -> Vec<usize> {
+        let places = Self::module_places(items);
+        let (mut names, mut out): (Vec<Sym>, Vec<usize>) = (Vec::new(), Vec::new());
+        for (i, item) in items.iter().enumerate() {
+            if let ModItem::Val { name, ty: None, init, .. } = item
+                && self.written_module(*init, &names)
+                && self.early_names_in(*init, &places).iter().all(|n| names.contains(n))
+            {
+                names.push(*name);
+                out.push(i);
+            }
+        }
+        out
+    }
+
+    /// Whether `e` is a module as written: a `module` (or a
+    /// `load-module`'s), under any `plambda`, `proj`, `lambda` of no
+    /// parameters or call of none; an earlier such item, of `early`; or a
+    /// value of one, `(with m x)`.
+    fn written_module(&self, e: ExpId, early: &[Sym]) -> bool {
+        use crate::ast::Exp;
+        match self.arena.exp_at(e) {
+            Exp::Module(_) => true,
+            Exp::App { fun, args } if args.is_empty() => self.written_module(*fun, early),
+            Exp::Lambda { params, body } if params.is_empty() => self.written_module(*body, early),
+            Exp::Proj { body, .. } | Exp::PLambda { body, .. } => self.written_module(*body, early),
+            // An earlier such item; a shared load (`parse_load`).
+            Exp::Var(x) => early.contains(x) || self.shared_globals.contains(x),
+            Exp::With { module, body } => {
+                (early.contains(module) || self.shared_globals.contains(module)) && matches!(self.arena.exp_at(*body), Exp::Var(_))
+            }
+            _ => false,
+        }
+    }
+
+    /// The names the module defines that a module as written `x` names: of
+    /// `(with m y)`, `m` only, `y` being `m`'s.
+    fn early_names_in(&self, x: ExpId, places: &[(Sym, usize)]) -> Vec<Sym> {
+        match self.arena.exp_at(x) {
+            crate::ast::Exp::With { module, .. } => places.iter().filter(|(n, _)| n == module).map(|(n, _)| *n).collect(),
+            _ => self.module_names_in(x, places),
+        }
+    }
+
+    /// The names free in `x` that the module defines, in written order.
+    fn module_names_in(&self, x: ExpId, places: &[(Sym, usize)]) -> Vec<Sym> {
+        let free = self.free_vars(x);
+        places.iter().filter(|(n, _)| free.contains(n)).map(|(n, _)| *n).collect()
+    }
+
+    /// Refused: an item that is not a typed lambda whose value may reach,
+    /// when it is made, an item not made yet (itself included).
+    pub(crate) fn module_hazards(&self, items: &[ModItem], lambdas: &Lambdas) -> R<()> {
+        let places = Self::module_places(items);
+        let place = |n: Sym| places.iter().find(|(m, _)| *m == n).map(|(_, i)| *i);
+        let lambda = |n: Sym| lambdas.iter().position(|(m, ..)| *m == n);
+        for (i, item) in items.iter().enumerate() {
+            let ModItem::Val { name, init, .. } = item else { continue };
+            if lambda(*name).is_some_and(|k| lambdas[k].3 == i) {
+                continue;
+            }
+            // A lambda typed `->*` is bound at its placeholder until every
+            // value is made: one named as a value is made is refused.
+            let star = |n: &Sym| lambda(*n).is_some_and(|k| self.arrow_star_tys.contains(&lambdas[k].1));
+            if let Some(f) = self.module_names_in(*init, &places).into_iter().find(star) {
+                let (x, f) = (self.interner.name(*name), self.interner.name(f));
+                return Err(FxError::at(
+                    self.arena.span_of(*init),
+                    format!("`{x}` names `{f}` as it is made, and `->*` finds `{f}`'s effect only after the module's values are made: write `{f}`'s effect, with `->` or `subr`"),
+                ));
+            }
+            // Breadth first from the value's names, through lambdas, each
+            // name with the one it was reached from.
+            let mut seen: Vec<(Sym, Option<usize>)> = Vec::new();
+            for n in self.module_names_in(*init, &places) {
+                seen.push((n, None));
+            }
+            let mut k = 0;
+            while k < seen.len() {
+                let n = seen[k].0;
+                let at = place(n).expect("a module's name");
+                if at >= i {
+                    let mut chain = vec![n];
+                    let mut from = seen[k].1;
+                    while let Some(f) = from {
+                        chain.push(seen[f].0);
+                        from = seen[f].1;
+                    }
+                    chain.reverse();
+                    let why = match self.captured(*init, i, &places) {
+                        Some(c) => self.capture_said(*name, c),
+                        None => self.too_soon(*name, &chain),
+                    };
+                    return Err(FxError::at(self.arena.span_of(*init), why));
+                }
+                if let Some(l) = lambda(n) {
+                    for m in self.module_names_in(lambdas[l].2, &places) {
+                        if !seen.iter().any(|(s, _)| *s == m) {
+                            seen.push((m, Some(k)));
+                        }
+                    }
+                }
+                k += 1;
+            }
+        }
+        Ok(())
+    }
+
+    /// Of the names item `i`'s value `init` names itself, the first the
+    /// module defines at or after it that is bound outside the module too:
+    /// a name the item captures, meant, likely, as the one outside
+    /// (`TODO.md` §72). Not one of the modules checked first, which are the
+    /// module's own as bound.
+    fn captured(&self, init: ExpId, i: usize, places: &[(Sym, usize)]) -> Option<Sym> {
+        self.module_names_in(init, places).into_iter().find(|c| {
+            places.iter().any(|(n, at)| n == c && *at >= i)
+                && self.lookup(*c).is_some()
+                && !self.hazard_modules.iter().any(|(m, _)| m == c)
+        })
+    }
+
+    /// What is said where `x`'s value names `c`, the module's own item, not
+    /// made yet, and bound outside it too.
+    fn capture_said(&self, x: Sym, c: Sym) -> String {
+        let c = self.interner.name(c);
+        let when = if self.interner.name(x) == "%include" {
+            "made after the modules included".to_string()
+        } else if self.interner.name(x) == c {
+            "this one".to_string()
+        } else {
+            format!("made after `{}`", self.interner.name(x))
+        };
+        format!("`{c}` here is the module's own item, {when}, not the `{c}` bound outside it")
+    }
+
+    /// What is said of `x`, whose value reaches `chain`'s last name, not
+    /// made yet, through the lambdas before it. Of `%include` (the modules
+    /// a module includes, `with_includes`), what an `include` is.
+    fn too_soon(&self, x: Sym, chain: &[Sym]) -> String {
+        let name = |n: &Sym| format!("`{}`", self.interner.name(*n));
+        let last = chain.last().expect("a chain");
+        let include = self.interner.name(x) == "%include";
+        let mut s = if include { format!("an `include` uses {}", name(&chain[0])) } else { format!("{} uses {}", name(&x), name(&chain[0])) };
+        for n in &chain[1..] {
+            s.push_str(&format!(", which uses {}", name(n)));
+        }
+        if include {
+            s.push_str(", which the module defines: an included module is made before its items");
+        } else if *last == x {
+            s.push_str(", before it is made");
+        } else if chain.len() == 1 {
+            s.push_str(", defined after it");
+        } else {
+            s.push_str(&format!(", defined after {}", name(&x)));
+        }
+        s
+    }
+
+    /// For each of `lambdas`, the lambdas (positions, in written order) of
+    /// its recursive group: those it reaches that reach it, by the names
+    /// their values hold (its strongly connected component, if that is a
+    /// cycle); empty if it is in none.
+    pub(crate) fn module_groups(&self, lambdas: &Lambdas) -> Vec<Vec<usize>> {
+        let n = lambdas.len();
+        let edges: Vec<Vec<usize>> = lambdas
+            .iter()
+            .map(|(_, _, e, _)| self.free_vars(*e).iter().filter_map(|m| lambdas.iter().position(|(l, ..)| l == m)).collect())
+            .collect();
+        // Their strongly connected components (Tarjan's), linear in the
+        // lambdas and edges; as the FX-26 checker's `k-mod-groups`. A lambda
+        // walked and not yet in a component is on the stack.
+        struct Walk<'a> {
+            edges: &'a [Vec<usize>],
+            index: Vec<Option<usize>>,
+            low: Vec<usize>,
+            comp: Vec<Option<usize>>,
+            stack: Vec<usize>,
+            count: usize,
+            comps: usize,
+        }
+        fn visit(w: &mut Walk, v: usize) {
+            w.index[v] = Some(w.count);
+            w.low[v] = w.count;
+            w.count += 1;
+            w.stack.push(v);
+            for &t in w.edges[v].iter() {
+                match w.index[t] {
+                    None => {
+                        visit(w, t);
+                        w.low[v] = w.low[v].min(w.low[t]);
+                    }
+                    Some(i) if w.comp[t].is_none() => w.low[v] = w.low[v].min(i),
+                    Some(_) => {}
+                }
+            }
+            if Some(w.low[v]) == w.index[v] {
+                while let Some(t) = w.stack.pop() {
+                    w.comp[t] = Some(w.comps);
+                    if t == v {
+                        break;
+                    }
+                }
+                w.comps += 1;
+            }
+        }
+        let mut w = Walk { edges: &edges, index: vec![None; n], low: vec![0; n], comp: vec![None; n], stack: Vec::new(), count: 0, comps: 0 };
+        for v in 0..n {
+            if w.index[v].is_none() {
+                visit(&mut w, v);
+            }
+        }
+        // A lambda's group: its component, if it is on a cycle (it names
+        // itself, or another is in its component).
+        (0..n)
+            .map(|a| {
+                let same: Vec<usize> = (0..n).filter(|b| w.comp[*b] == w.comp[a]).collect();
+                if same.len() > 1 || edges[a].contains(&a) { same } else { Vec::new() }
+            })
+            .collect()
+    }
+}

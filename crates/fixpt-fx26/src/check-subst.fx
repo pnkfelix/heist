@@ -1,0 +1,331 @@
+;;; The checker, in FX-26: substitution, of types for type variables and of
+;;; regions and effects for theirs (`k-subst` and its group). Before the
+;;; types' reader, which applies type functions with it. After
+;;; `check-syntax.fx`; part of the checker, `check-types.fx` first.
+
+;; Its types, those it uses of the files before it, and the signatures of
+;; what it is given.
+;; Its types (`check-subst-types.fx`), loaded before the module so that they are not
+;; among its values; the module names what it uses of them.
+(let* ((check-subst-types (load-module "fx26:check-subst-types.fx"))
+       (check-types-types (load-module "fx26:check-types-types.fx"))
+       (check-effects-types (load-module "fx26:check-effects-types.fx"))
+       (check-holds-types (load-module "fx26:check-holds-types.fx"))
+       (check-read-types (load-module "fx26:check-read-types.fx"))
+       (check-print-types (load-module "fx26:check-print-types.fx"))
+       (check-print-parts-types (load-module "fx26:check-print-parts-types.fx"))
+       (check-env-types (load-module "fx26:check-env-types.fx"))
+       (table-types (load-module "fx26:table-types.fx"))
+       (reader-types (load-module "fx26:reader-types.fx")))
+  ;; What it is given: the modules of the files before it that it uses.
+  (lambda ((check-types (select check-types-types check-types-sig))
+           (check-effects (select check-effects-types check-effects-sig))
+           (check-holds (select check-holds-types check-holds-sig))
+           (check-read (select check-read-types check-read-sig))
+           (check-print (select check-print-types check-print-sig))
+           (check-env (select check-env-types check-env-sig))
+           (tables (select table-types tables-sig))
+           (parser (select reader-types parser-sig))
+           (check-print-parts (select check-print-parts-types check-print-parts-sig)))
+    (module
+(hide (include check-subst-types) (include check-types-types))
+;; The types it uses of the files before it.
+;; What it uses of the modules it is given: all of each, hidden.
+(hide (include check-types) (include check-holds) (include check-print-parts) (include check-env)
+      (include tables) (include parser))
+(import check-effects k-atom-region k-atom-with k-one k-union)
+(import check-read k-keep-at k-subst-keep)
+
+(define k-gen-map (->* (k-binders k-descs) k-map)
+  (lambda (bs ds)
+    (if (null? bs)
+        nil
+        (the k-map (cons (cons (extract (car bs) 1) (car ds)) (k-gen-map (cdr bs) (cdr ds)))))))
+(define k-subst-conv (->* (k-conv k-map) k-conv)
+  (lambda (c m)
+    (tagcase c
+      (cv-var (v)
+        (let ((f (k-map-find m v)))
+          (if (null? f) c (tagcase (cdr (car f)) (dc (x) x) (else y c)))))
+      (else y c))))
+(define k-subst-region (->* (k-region k-map) k-region)
+  (lambda (r m)
+    (tagcase r
+      (r-var (v)
+        (let ((f (k-map-find m v)))
+          (if (null? f) r (tagcase (cdr (car f)) (dr (x) x) (else y r)))))
+      ;; Frozen data's place too.
+      (r-frozen (p fin)
+        (let ((f (if (< p 0) (the k-map nil) (k-map-find m p))))
+          (if (null? f)
+              r
+              (tagcase (cdr (car f))
+                (dr (x)
+                  (tagcase x (r-var (q) (r-frozen q fin)) (r-heap () (r-frozen -1 fin)) (else z r)))
+                (else y r)))))
+      (else y r))))
+;; Atom `a`, not a variable, substituted into: none if it reads, allocates
+;; or awaits at data frozen into the heap, which is pure (`k-frozen`), so
+;; that a region variable instantiated at `acyclic` or `const` leaves none.
+(define k-subst-atom (->* (k-atom k-map) k-eff)
+  (lambda (a m)
+    (let* ((r (k-subst-region (k-atom-region a) m))
+           (heap-frozen (tagcase r (r-frozen (p f) (< p 0)) (else y #f)))
+           (pure-there (tagcase a (a-read (x) #t) (a-alloc (x) #t) (a-await (x) #t) (else y #f))))
+      (if (and heap-frozen pure-there) nil (k-one (k-atom-with a r))))))
+(define k-subst-effect (->* (k-eff k-map) k-eff)
+  (lambda (e m)
+    (if (null? e)
+        nil
+        (let* ((a (car e))
+               (rest (k-subst-effect (cdr e) m))
+               (piece (tagcase a
+                        (a-var (v)
+                          (let ((f (k-map-find m v)))
+                            (if (null? f)
+                                (k-one a)
+                                (tagcase (cdr (car f)) (de (x) x) (else y (k-one a))))))
+                        (a-app (v ds) (k-subst-eff-app v (k-subst-eargs ds m) m))
+                        (else y (k-subst-atom a m)))))
+          (k-union piece rest)))))
+;; What an effect function is given, substituted into.
+(define k-subst-eargs (->* (k-descs k-map) k-descs)
+  (lambda (ds m)
+    (if (null? ds)
+        nil
+        (let* ((d (tagcase (car ds)
+                    (dr (r) (dr (k-subst-region r m)))
+                    (de (e) (de (k-subst-effect e m)))
+                    (dz (z) (dz (k-subst-size z m)))
+                    (dc (c) (dc (k-subst-conv c m)))
+                    (else y (car ds))))
+               (rest (k-subst-eargs (cdr ds) m)))
+          (the k-descs (cons d rest))))))
+;; Effect function `v` applied to `ds`, given what `v` is substituted by:
+;; reduced, if it is a `dlambda` now (`check-kinds.fx`).
+(define k-subst-eff-app (->* (int k-descs k-map) k-eff)
+  (lambda (v ds m)
+    (let ((f (k-map-find m v)))
+      (if (null? f)
+          (k-one (a-app v ds))
+          (tagcase (cdr (car f))
+            (df (g)
+              (tagcase (k-get g)
+                (ty-var (w) (k-one (a-app w ds)))
+                (ty-lam (bs body)
+                  (tagcase body
+                    (de (e)
+                      (if (= (k-length bs) (k-length ds))
+                          (k-subst-effect e (k-gen-map bs ds))
+                          (k-one (a-app v ds))))
+                    (else z (k-one (a-app v ds)))))
+                (else z (k-one (a-app v ds)))))
+            (else y (k-one (a-app v ds))))))))
+(define k-int-hash (->* (int) int) (lambda (t) t))
+(define* k-new-smemo (subr (alloc @t) () k-smemo)
+  (lambda () (make-table k-int-hash (lambda (a b) (= a b)))))
+;; What an application reduced gives as a type: a type, or else the
+;; application `t` as it was.
+(define k-applied-type (->* (k-desc int) int)
+  (lambda (d t) (tagcase d (dt (x) x) (else y t))))
+(define k-memo-find (->* (k-pairs int) int)
+  (lambda (ms t)
+    (cond ((null? ms) -1)
+          ((= (car (car ms)) t) (cdr (car ms)))
+          (else (k-memo-find (cdr ms) t)))))
+;; Each type a `define-type` named that mentions no variable
+;; (`k-closed-in?`): substitution leaves it itself, so that it keeps its name
+;; in what is shown. As the Rust checker's `closed_named`, a set: a type's
+;; id kept (1), as substitution asks of every type it meets.
+(define k-closed-named (ref k-smemo @t) (new (k-new-smemo)))
+;; None noted yet, for a new program.
+(define k-forget-closed-named (->* () unit)
+  (lambda () (set k-closed-named (k-new-smemo))))
+;; Whether `t` is data that mentions no variable: built of base types, `nil`,
+;; `false`, unions, sums, products, pairs, references and arrays, at regions
+;; that are constants, as far as it goes (`seen`, a cycle met again). As the
+;; Rust checker's `closed_data`.
+(define k-closed-region? (->* (k-region) bool)
+  (lambda (r) (tagcase r (r-var (v) #f) (r-frozen (p f) (< p 0)) (else y #t))))
+(define k-closed-in? (->* (int k-ids) bool)
+  (lambda (t0 seen)
+    (let ((t (k-resolve t0)))
+      (or (k-has-id? seen t)
+          (let ((s (the k-ids (cons t seen))))
+            (tagcase (k-get t)
+              (ty-base (n) #t) (ty-void () #t) (ty-nil () #t) (ty-false () #t)
+              (ty-union (ms) (k-all-closed? ms s))
+              (ty-sum (ps) (k-parts-closed? ps s))
+              (ty-product (ps) (k-parts-closed? ps s))
+              (ty-pair (a d r nl) (and (k-closed-region? r) (k-closed-in? a s) (k-closed-in? d s)))
+              (ty-ref (a r) (and (k-closed-region? r) (k-closed-in? a s)))
+              (ty-array (a nz r) (and (k-closed-region? r) (k-closed-in? a s)))
+              (else y #f)))))))
+(define k-all-closed? (->* (k-ids k-ids) bool)
+  (lambda (ts seen)
+    (or (null? ts) (and (k-closed-in? (car ts) seen) (k-all-closed? (cdr ts) seen)))))
+(define k-parts-closed? (->* (k-parts k-ids) bool)
+  (lambda (ps seen)
+    (or (null? ps)
+        (and (k-closed-in? (extract (car ps) 2) seen) (k-parts-closed? (cdr ps) seen)))))
+;; Each slot of `fs`, declared ahead and filled, noted if it is closed.
+(define k-note-closed-filled
+  (->* ((listof (productof (1 int) (2 int) (3 int)) acyclic)) unit)
+  (lambda (fs)
+    (if (null? fs)
+        #u
+        (begin (k-note-closed (extract (car fs) 1)) (k-note-closed-filled (cdr fs))))))
+;; `slot`, a type a `define-type` named, noted if it is closed.
+(define k-note-closed (->* (int) int)
+  (lambda (slot)
+    (begin
+      (if (k-closed-in? slot nil)
+          (table-set! (get k-closed-named) (k-resolve slot) 1)
+          #u)
+      slot)))
+(define k-subst-memo (->* (int k-map k-smemo) int)
+  (lambda (t m memo)
+    (let* ((t (k-resolve t))
+           (kept (or (and (>= (get k-subst-keep) 0) (= (k-keep-at t) (get k-subst-keep)))
+                     (>= (table-ref (get k-closed-named) t -1) 0)))
+           (done (if kept t (table-ref memo t -1))))
+      (if (>= done 0)
+          done
+          (tagcase (k-get t)
+            (ty-base (s) t)
+            (ty-void () t)
+            (ty-link (x) t)
+            (ty-var (v)
+              (let ((f (k-map-find m v)))
+                (if (null? f) t (tagcase (cdr (car f)) (dt (x) x) (df (x) x) (else y t)))))
+            (ty-select (mod n) (k-select-of mod n t))
+            (ty-param (k n) (k-param-sel-of k n t))
+            ;; A function applied, given what it is substituted by:
+            ;; reduced, if it is a `dlambda` now (`check-kinds.fx`).
+            (ty-app (g ds)
+              (let ((slot (k-slot)))
+                (begin
+                  (table-set! memo t slot)
+                  (let* ((g2 (k-subst-memo g m memo)) (ds2 (k-subst-descs ds m memo)))
+                    (begin (k-set-link slot (k-applied-type (k-apply-fun g2 ds2) t)) slot)))))
+            (else y
+              (let ((slot (k-slot)))
+                (begin
+                  (table-set! memo t slot)
+                  (let ((id (k-ty-new (k-subst-node t m memo))))
+                    (begin (k-set-link slot id) slot))))))))))
+;; Node `t`, of a type other than a variable, with its parts substituted.
+(define k-subst-node (->* (int k-map k-smemo) k-ty)
+  (lambda (t m memo)
+    (letrec ((sub (subr (maxeff kstate spin) (int) int)
+                  (lambda (x) (k-subst-memo x m memo)))
+             (subs (subr (maxeff kstate spin) (k-ids) k-ids)
+                   (lambda (xs) (k-subst-list xs m memo)))
+             (reg (subr kreads (k-region) k-region)
+                  (lambda (r) (k-subst-region r m))))
+      (tagcase (k-get t)
+        (ty-subr (e ps r cv spc)
+          (let* ((e2 (k-subst-effect e m)) (ps2 (subs ps)) (r2 (sub r)))
+            (ty-subr e2 ps2 r2 (k-subst-conv cv m) spc)))
+        (ty-poly (bs body) (ty-poly bs (sub body)))
+        (ty-ref (a r) (ty-ref (sub a) (reg r)))
+        (ty-array (a nz r) (ty-array (sub a) (k-subst-size nz m) (reg r)))
+        (ty-icell (a r) (ty-icell (sub a) (reg r)))
+        (ty-place (r) (ty-place (reg r)))
+        (ty-pair (a b r nl) (let* ((a2 (sub a)) (b2 (sub b))) (ty-pair a2 b2 (reg r) nl)))
+        (ty-tag (a h e r)
+          (let* ((a2 (sub a)) (h2 (sub h))) (ty-tag a2 h2 (k-subst-effect e m) (reg r))))
+        (ty-comp (b a e r once)
+          (let* ((b2 (sub b)) (a2 (sub a))) (ty-comp b2 a2 (k-subst-effect e m) (reg r) once)))
+        (ty-markkey (a r) (ty-markkey (sub a) (reg r)))
+        (ty-product (ps) (ty-product (k-subst-parts ps m memo)))
+        (ty-sum (ps) (ty-sum (k-subst-parts ps m memo)))
+        (ty-bloblet (fs z r) (ty-bloblet (subs fs) z (reg r)))
+        (ty-union (ms) (ty-union (subs ms)))
+        (ty-named (g ds) (ty-named g (k-subst-descs ds m memo)))
+        (ty-lam (bs body) (ty-lam bs (car (k-subst-descs (the k-descs (cons body nil)) m memo))))
+        (ty-nlist (e z r) (ty-nlist (sub e) (k-subst-size z m) (reg r)))
+        (ty-nat (z) (ty-nat (k-subst-size z m)))
+        (ty-module (abs ds vs)
+          (let* ((ds2 (k-subst-parts ds m memo)) (vs2 (k-subst-parts vs m memo)))
+            (ty-module abs ds2 vs2)))
+        (else z (k-get t))))))
+(define k-subst-descs (->* (k-descs k-map k-smemo) k-descs)
+  (lambda (ds m memo)
+    (if (null? ds)
+        nil
+        (let* ((d (tagcase (car ds)
+                    (dt (x) (dt (k-subst-memo x m memo)))
+                    (dr (r) (dr (k-subst-region r m)))
+                    (de (e) (de (k-subst-effect e m)))
+                    (dz (z) (dz (k-subst-size z m)))
+                    (dc (c) (dc (k-subst-conv c m)))
+                    (df (x) (df (k-subst-memo x m memo)))))
+               (rest (k-subst-descs (cdr ds) m memo)))
+          (cons d rest)))))
+(define k-subst-list (->* (k-ids k-map k-smemo) k-ids)
+  (lambda (ts m memo)
+    (if (null? ts)
+        nil
+        (let* ((x (k-subst-memo (car ts) m memo)) (rest (k-subst-list (cdr ts) m memo)))
+          (cons x rest)))))
+(define k-subst-parts (->* (k-parts k-map k-smemo) k-parts)
+  (lambda (ps m memo)
+    (if (null? ps)
+        nil
+        (let* ((x (k-subst-memo (extract (car ps) 2) m memo))
+               (rest (k-subst-parts (cdr ps) m memo)))
+          (cons (product (1 (extract (car ps) 1)) (2 x)) rest)))))
+;; `t` with each binder in `m` replaced. Recursive types are copied as
+;; cycles: each node gets its slot before its children are built.
+;; A substitution of its own (a `dlambda` reduced inside another) keeps
+;; nothing of another's.
+(define k-subst (->* (int k-map) int)
+  (lambda (t m)
+    (let* ((keep (get k-subst-keep))
+           (off (set k-subst-keep -1))
+           (r (k-subst-memo t m (k-new-smemo))))
+      (begin (set k-subst-keep keep) r))))
+;; The description of kind `k` that names binder `v`.
+(define k-binder-desc (->* (int int) k-desc)
+  (lambda (k v)
+    (case k ((0 3) (dr (r-var v)))
+            ((1) (de (k-one (a-var v))))
+            ((5) (dz (k-size-var v)))
+            ((6) (dc (cv-var v)))
+            (else
+             (cond ((>= k 100) (df (k-ty-new (ty-var v))))
+                   (else (dt (k-ty-new (ty-var v)))))))))
+(define-rec
+    ;; Description `d` substituted into.
+    (k-subst-desc (->* (k-desc k-map) k-desc)
+      (lambda (d m)
+        (car (k-subst-descs (the k-descs (cons d nil)) m (k-new-smemo)))))
+    ;; Function `f` applied to `ds`: what a `dlambda` reduces to, or an
+    ;; application that cannot be reduced. `ds` fit `f`'s kind, which the
+    ;; caller has made sure of.
+    (k-apply-fun (->* (int k-descs) k-desc)
+      (lambda (f ds)
+        (tagcase (k-get f)
+          (ty-lam (bs body)
+            (if (= (k-length bs) (k-length ds))
+                (k-subst-desc body (k-gen-map bs ds))
+                (k-apply-stuck f ds)))
+          (else y (k-apply-stuck f ds))))))
+;; `f` applied to `ds`, which cannot be reduced: an effect, an atom of its
+;; own; a function; or a type.
+(define k-apply-stuck (->* (int k-descs) k-desc)
+  (lambda (f ds)
+    (let ((r (k-arrow-result (k-fun-kind f))))
+      (cond ((= r 1)
+             (tagcase (k-get f)
+               (ty-var (v) (de (k-one (a-app v (k-eargs ds)))))
+               (else y (de nil))))
+            ((k-arrow-kind? r) (df (k-ty-new (ty-app f ds))))
+            (else (dt (k-ty-new (ty-app f ds))))))))
+;; What an effect function is given, of `ds`: no types.
+(define k-eargs (->* (k-descs) k-descs)
+  (lambda (ds)
+    (cond ((null? ds) nil)
+          ((tagcase (car ds) (dt (t) #t) (df (f) #t) (else y #f)) (k-eargs (cdr ds)))
+          (else (the k-descs (cons (car ds) (k-eargs (cdr ds)))))))))))

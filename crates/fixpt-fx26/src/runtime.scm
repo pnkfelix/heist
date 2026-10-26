@@ -1,0 +1,87 @@
+;;; The FX-26 run-time environment, as Scheme.
+;;;
+;;; Lowering (`lower.rs`) sends each standard FX-26 name either straight to
+;;; the Scheme procedure of the same meaning (`car`, `+`, `null?`, `call/cc`,
+;;; ...) or to one of these, where FX-26 and Scheme differ: FX-26's mutators
+;;; return the unit value, a reference is a box, and the control operations
+;;; take their arguments as procedures rather than as syntax.
+;;;
+;;; Every name here starts with `%fx26-`. A program's own names are lowered
+;;; with an `fx:` prefix, so the two can never meet.
+
+;;; ---- unit ----
+;;; Written `#u`, as FX-87 writes it; the symbol `|#u|` prints that way.
+(define %fx26-unit (string->symbol "#u"))
+
+;;; ---- references ----
+(define (%fx26-new v) (%make-box v))
+(define (%fx26-get r) (%box-ref r))
+(define (%fx26-set r v) (%box-set! r v) %fx26-unit)
+
+;;; ---- bloblets ----
+;;; The forms lower to the `%bloblet` primitives; these are the ones whose
+;;; FX-26 result differs from Scheme's.
+(define (%fx26-bloblet-set! b k v) (%bloblet-set! b k v) %fx26-unit)
+(define (%fx26-bloblet-set-byte! b i n) (%bloblet-set-byte! b i n) %fx26-unit)
+(define (%fx26-bloblet-freeze b) (%bloblet-freeze! b #t #f) b)
+
+
+;;; ---- products and sums ----
+;;; Immutable, so bloblets frozen, fields and suffix, as they are made: of
+;;; kind `product` (37) and `sum` (36), so that what one is can be told.
+(define (%fx26-product . fields) (apply %make-frozen 37 fields))
+(define (%fx26-sum tag v) (%make-frozen 36 tag v))
+;; A `vsubr` (`vlambda`): Scheme's own variadic procedure, giving `f` the
+;; list of its arguments; `apply`, Scheme's. (The cellular machines have
+;; runtime primitives of these names, which this Scheme shadows.)
+(define (%fx26-vlambda f) (lambda xs (f xs)))
+;; The list copied, and so checked for a cycle (`apply` says no `spin`):
+;; Scheme's `apply` copies it too, but loops on a cycle.
+(define (%fx26-apply v xs) (apply v (%fx26-list-copy xs)))
+(define (%fx26-no-arm v) (error "tagcase: no arm for this value" v))
+
+
+;;; ---- arrays ----
+;;; A bloblet with a field per element; element `i` is field `i + 2`.
+(define (%fx26-make-array n fill) (%make-bloblet-filled 0 n fill))
+(define (%fx26-array-ref a i) (%bloblet-ref a (+ i 2)))
+(define (%fx26-array-set! a i v) (%bloblet-set! a (+ i 2) v) %fx26-unit)
+(define (%fx26-array-length a) (- (%bloblet-fields a) 1))
+
+;;; ---- pairs ----
+(define (%fx26-set-car! p v) (set-car! p v) %fx26-unit)
+(define (%fx26-set-cdr! p v) (set-cdr! p v) %fx26-unit)
+
+;;; ---- delimited control ----
+;;; A prompt is the `prompt` form, lowered to `call-with-continuation-prompt`
+;;; directly. These are the constants.
+(define (%fx26-make-prompt-tag) (make-continuation-prompt-tag 'fx26))
+(define (%fx26-abort tag v) (abort-current-continuation tag v))
+(define (%fx26-call/comp proc tag) (call-with-composable-continuation proc tag))
+;; One-shot (`TODO.md` §98): the continuation given to `proc` fails if
+;; given a value a second time.
+(define (%fx26-call/one proc tag)
+  (call-with-composable-continuation
+    (lambda (k)
+      (let ((spent #f))
+        (proc (lambda (v)
+                (if spent
+                    (error "a one-shot continuation resumed twice")
+                    (begin (set! spent #t) (k v)))))))
+    tag))
+
+;;; ---- continuation marks ----
+;;; A key is any value compared with `eq?`, so a fresh pair makes one.
+(define (%fx26-make-mark-key) (list 'fx26-mark-key))
+(define (%fx26-with-mark key v thunk) (with-continuation-mark key v (thunk)))
+(define (%fx26-first-mark key default) (continuation-mark-set-first #f key default))
+(define (%fx26-current-marks key)
+  (continuation-mark-set->list (current-continuation-marks) key))
+(define (%fx26-marks-of k key) (continuation-mark-set->list (continuation-marks k) key))
+
+
+;;; ---- data ----
+;;; A datum is the Scheme value itself. The operations the ordinary
+;;; procedures do not cover are runtime primitives (`%fx26-…` in
+;;; `fixpt_runtime::prim`), so that cellular code can call them too.
+(define (%fx26-identity x) x)

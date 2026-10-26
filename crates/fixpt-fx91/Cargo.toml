@@ -1,0 +1,19 @@
+[package]
+name = "fixpt-fx91"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+fixpt-heap = { path = "../fixpt-heap" }
+fixpt-read = { path = "../fixpt-read" }
+fixpt-core = { path = "../fixpt-core" }
+fixpt-scheme = { path = "../fixpt-scheme" }
+fixpt-engine = { path = "../fixpt-engine" }
+fixpt-runtime = { path = "../fixpt-runtime" }
+
+[dev-dependencies]
+fixpt-conform = { path = "../fixpt-conform" }
+
+[lints]
+workspace = true
