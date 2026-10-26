@@ -55,6 +55,36 @@ snapshot's highlighted match."
           (list (product (start (column-of text (- hs ls))) (end (column-of text (- he ls))) (face 'isearch)))
           nil))))
 
+"The faces of `fs` (sorted by start) that reach into `from`..`to`."
+(define* faces-between (subr spin (text-faces int int) text-faces)
+  (lambda (fs from to)
+    (cond ((null? fs) nil)
+          ((>= (extract (car fs) start) to) nil)
+          ((<= (extract (car fs) end) from) (faces-between (cdr fs) from to))
+          (else (cons (car fs) (faces-between (cdr fs) from to))))))
+
+"The spans of line `text` (from `ls` to `le` in the buffer) for faces `fs`:
+the match highlighted if it is on the line, else the faces the syntax
+gave."
+(define* line-spans (subr spin (snapshot text-faces int int string) spans)
+  (lambda (snap fs ls le text)
+    (let ((hl (highlight-spans snap ls le text)))
+      (if (pair? hl)
+          hl
+          (letrec ((go (subr spin (text-faces) spans)
+                     (lambda (fs)
+                       (if (null? fs)
+                           nil
+                           (let* ((f (car fs))
+                                  (a (max ls (extract f start)))
+                                  (b (min le (extract f end))))
+                             (if (< a b)
+                                 (cons (product (start (column-of text (- a ls))) (end (column-of text (- b ls)))
+                                                (face (extract f face)))
+                                       (go (cdr fs)))
+                                 (go (cdr fs))))))))
+            (go (faces-between fs ls (+ le 1))))))))
+
 "`v`'s rows for snapshot `snap`, scrolled to show point: the view after,
 and the command that reports it."
 (define* lay-out (subr turn-eff (view snapshot) (reply view))
@@ -63,10 +93,14 @@ and the command that reports it."
            (h (max 1 (extract v height)))
            (w (max 1 (extract v width)))
            (pline (rope-line-of t (extract snap point)))
+           (ann (extract snap annotation))
            ;; Point off the window: recentered, as Emacs does.
            (top (if (or (< pline (extract v top)) (>= pline (+ (extract v top) h)))
                     (max 0 (- pline (quotient h 2)))
                     (extract v top)))
+           (shown-from (rope-line-start t top))
+           (shown-faces (faces-between (extract ann faces) shown-from
+                                       (rope-line-end t (min (- (rope-line-count t) 1) (+ top h)))))
            (lines (letrec ((go (subr turn-eff (int) rows)
                              (lambda (i)
                                (if (>= i h)
@@ -76,7 +110,7 @@ and the command that reports it."
                                                (let* ((ls (rope-line-start t n))
                                                       (le (rope-line-end t n))
                                                       (text (rope-substring t ls le)))
-                                                 (make-row w (expand-tabs text) (highlight-spans snap ls le text)))
+                                                 (make-row w (expand-tabs text) (line-spans snap shown-faces ls le text)))
                                                (blank-row w))
                                            (go (+ i 1))))))))
                     (go 0)))
@@ -85,7 +119,12 @@ and the command that reports it."
            (column (min (- w 1) (column-of line-text (- (extract snap point) start))))
            (mode (string-append (if (extract snap modified) "-**- " "---- ")
                                 (extract snap name)
-                                "   L" (int->string (+ pline 1))))
+                                "   L" (int->string (+ pline 1))
+                                (if (string=? (extract ann problem) "")
+                                    ""
+                                    (string-append "   ! " (extract ann problem) " (L"
+                                                   (int->string (+ 1 (rope-line-of t (max 0 (extract ann problem-at)))))
+                                                   ")"))))
            (v2 (product (window (extract v window)) (report (extract v report)) (top top)
                         (height (extract v height)) (width (extract v width))
                         (last (sum some snap)))))

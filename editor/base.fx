@@ -2,9 +2,14 @@
 ;;; the effect of what commands do outside. The editor is one program in
 ;;; several files, run in one session (`bin/heist-edit`), each file seeing
 ;;; the globals of those before it:
-;;;   base.fx buffer.fx view.fx frame.fx main.fx
+;;;   base.fx buffer.fx syntax.fx view.fx frame.fx main.fx
 
-(define-effect world (maxeff (io stdout) (io terminal) (io fs-read) (io fs-write)))
+;; What Fixpt's own reader does to its regions: it keeps its state there,
+;; and leaves a form it cannot read by an escape.
+(define-effect reader-eff
+  (maxeff (read @s) (write @s) (alloc @s) (read @m) (write @m) (alloc @m)
+          (read @c) (write @c) (alloc @c) (read @e) (goto @e) (comefrom @e)))
+(define-effect world (maxeff (io stdout) (io terminal) (io fs-read) (io fs-write) reader-eff))
 (define core ((proj (load-module "core.fx") @ed world)))
 (import core spawn-actor set-class! interactive display idle tell tell-latest tell! run-turns!
         turns-waiting? interactive-waiting? actor-state actor-name same reply-with
@@ -49,3 +54,9 @@
                        ((char=? (string-ref file i) #\/) (substring file 0 (+ i 1)))
                        (else (go (- i 1)))))))
       (go (- (string-length file) 1)))))
+
+"Fixpt's own reader of FX-26 (`fx26:eager-reader.fx`), the one that reads
+the editor itself: syntax with each form's span, in characters."
+(define reader ((proj (load-module "fx26:eager-reader.fx") @s @e @m @c)))
+(import reader eager-start-fx26 eager-feed-string eager-feed eager-status eager-state-syntax eager-context
+        eager-state-message eager-state-position atom lst dotted vec (type syn syns state))

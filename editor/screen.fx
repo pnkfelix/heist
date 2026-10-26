@@ -97,6 +97,8 @@ span covers are in the default face."
       ((keyword) "0;1;35")
       ((comment) "0;2")
       ((string) "0;32")
+      ((function-name) "0;1;34")
+      ((type) "0;36")
       (else "0"))))
 
 "A row of `width` columns from `text`: cut or padded with spaces, control

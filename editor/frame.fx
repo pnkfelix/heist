@@ -354,10 +354,11 @@ known by name and shown in the selected window."
 (define* buffer-made (subr pure ((actor frame) string string (actor buffer)) (msg frame))
   (lambda (fr name file b)
     (lambda ((f frame))
-      (let ((f2 (frame-of f (extract f windows) (extract f selected)
-                          (append (extract f buffers) (list (product (name name) (file file) (actor b))))
-                          (extract f next-id) (extract f echo) (extract f prefix) (extract f mini))))
-        (show-buffer fr f2 b)))))
+      (let* ((f2 (frame-of f (extract f windows) (extract f selected)
+                           (append (extract f buffers) (list (product (name name) (file file) (actor b))))
+                           (extract f next-id) (extract f echo) (extract f prefix) (extract f mini)))
+             (r (show-buffer fr f2 b)))
+        (reply-with (extract r state) (append (attach-syntax b name) (extract r cmds)))))))
 
 "The text of `file`: its contents; empty, and whether it was found."
 (define* file-text (subr (maxeff (io fs-read) spin) (string) (productof (text rope) (found bool)))
@@ -451,6 +452,92 @@ known by name and shown in the selected window."
 (define* save-buffers-kill-editor (subr pure () frame-action)
   (lambda () (lambda ((fr (actor frame)) (f frame)) (reply-with f (list (lambda () (set running #f)))))))
 
+;;; ------------------------------------------------------------ definitions
+
+"Where M-. has been from, newest first: a buffer and its point, for M-,."
+(define-type place (productof (buffer (actor buffer)) (point int)))
+(define places (ref (listof place acyclic) @ed) (new nil))
+
+"Whether `c` can be in a symbol, as FX-26 reads one."
+(define* symbol-char? (subr pure (char) bool)
+  (lambda (c)
+    (not (or (char-whitespace? c) (char-in? c "()[]\";'`,")))))
+
+"The symbol point is in or just after, in `t`; \"\" if none."
+(define* symbol-at (subr spin (rope int) string)
+  (lambda (t p)
+    (let ((n (rope-length t)))
+      (letrec ((back (subr spin (int) int)
+                 (lambda (i) (if (and (> i 0) (symbol-char? (rope-ref t (- i 1)))) (back (- i 1)) i)))
+               (fwd (subr spin (int) int)
+                 (lambda (i) (if (and (< i n) (symbol-char? (rope-ref t i))) (fwd (+ i 1)) i))))
+        (let ((a (back p)) (b (fwd p)))
+          (if (< a b) (rope-substring t a b) ""))))))
+
+"Message for a buffer: point to `p`."
+(define* goto-position (subr pure (int) command)
+  (lambda (p) (lambda ((b buffer)) (done (with-point b p)))))
+
+"The buffer that defines `name`, and where: the selected one first, then
+the others in order."
+(define* find-definition (subr turn-eff (frame (actor buffer) string) (sumof (none unit) (found place)))
+  (lambda (f current name)
+    (letrec ((in (subr spin (definitions) int)
+               (lambda (ds) (cond ((null? ds) -1)
+                                  ((string=? (extract (car ds) name) name) (extract (car ds) start))
+                                  (else (in (cdr ds))))))
+             (look (subr turn-eff ((actor buffer)) int)
+               (lambda (b) (in (extract (extract (actor-state b) annotation) definitions))))
+             (others (subr turn-eff (buffer-infos) (sumof (none unit) (found place)))
+               (lambda (bs)
+                 (if (null? bs)
+                     (sum none #u)
+                     (let ((at (look (extract (car bs) actor))))
+                       (if (>= at 0)
+                           (sum found (product (buffer (extract (car bs) actor)) (point at)))
+                           (others (cdr bs))))))))
+      (let ((here (look current)))
+        (if (>= here 0)
+            (sum found (product (buffer current) (point here)))
+            (others (extract f buffers)))))))
+
+"Go to place `pl`: its buffer shown in the selected window (if it is not),
+and point there."
+(define* go-to-place (subr turn-eff ((actor frame) frame place) (reply frame))
+  (lambda (fr f pl)
+    (let* ((b (extract pl buffer))
+           (r (if (same-actor? b (extract (selected-window f) buffer)) (same f) (show-buffer fr f b))))
+      (reply-with (extract r state)
+                  (append (extract r cmds) (list (tell b (in-buffer fr (goto-position (extract pl point))))))))))
+
+"M-.: the definition of the name at point, in the buffers read."
+(define* find-definition-at-point (subr pure () frame-action)
+  (lambda ()
+    (lambda ((fr (actor frame)) (f frame))
+      (let* ((current (extract (selected-window f) buffer))
+             (st (actor-state current))
+             (name (symbol-at (extract st text) (extract st point))))
+        (if (string=? name "")
+            (draw (with-echo f "No name at point"))
+            (tagcase (find-definition f current name)
+              (none u (draw (with-echo f (string-append "No definition of " name " in the buffers read"))))
+              (found pl
+                (let ((r (go-to-place fr f pl)))
+                  (reply-with (extract r state)
+                              (cons (lambda () (set places (cons (product (buffer current) (point (extract st point)))
+                                                                 (get places))))
+                                    (extract r cmds)))))))))))
+
+"M-,: back to where the last M-. was from."
+(define* pop-definition (subr pure () frame-action)
+  (lambda ()
+    (lambda ((fr (actor frame)) (f frame))
+      (let ((ps (get places)))
+        (if (null? ps)
+            (draw (with-echo f "No previous location"))
+            (let ((r (go-to-place fr f (car ps))))
+              (reply-with (extract r state) (cons (lambda () (set places (cdr (get places)))) (extract r cmds)))))))))
+
 ;;; ------------------------------------------------------------ searching
 
 "Message for the frame: the search's latest step failed, or did not."
@@ -517,6 +604,8 @@ known by name and shown in the selected window."
           (buffer-command "fail-on-purpose" (fail-on-purpose))
           (frame-command "isearch-forward" (isearch #t))
           (frame-command "isearch-backward" (isearch #f))
+          (frame-command "xref-find-definitions" (find-definition-at-point))
+          (frame-command "xref-go-back" (pop-definition))
           (frame-command "find-file" (find-file))
           (frame-command "switch-to-buffer" (switch-to-buffer))
           (frame-command "list-buffers" (list-buffers))
@@ -567,6 +656,7 @@ names of their commands."
         (product (keys "C-_") (command "undo")) (product (keys "C-/") (command "undo"))
         (product (keys "C-x u") (command "undo"))
         (product (keys "C-g") (command "keyboard-quit"))
+        (product (keys "M-.") (command "xref-find-definitions")) (product (keys "M-,") (command "xref-go-back"))
         (product (keys "C-s") (command "isearch-forward")) (product (keys "C-r") (command "isearch-backward"))
         (product (keys "C-x C-s") (command "save-buffer"))
         (product (keys "C-x C-f") (command "find-file"))
@@ -708,4 +798,4 @@ names of their commands."
              (f2 (frame-of f (list (extract made window)) id
                            (list (product (name name) (file file) (actor b)))
                            (+ id 1) (extract f echo) (extract f prefix) (extract f mini))))
-        (reply-with f2 (extract made cmds))))))
+        (reply-with f2 (append (attach-syntax b name) (extract made cmds)))))))

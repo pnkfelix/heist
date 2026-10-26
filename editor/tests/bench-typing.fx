@@ -2,6 +2,7 @@
 ;;; painter, as the editor runs them, the screen written to stdout (send
 ;;; it to /dev/null). Run after base.fx … frame.fx:
 ;;;   fixpt run base.fx buffer.fx view.fx frame.fx tests/bench-typing.fx -- FILE > /dev/null
+;;; needs: base.fx buffer.fx syntax.fx view.fx frame.fx
 (define* bench-main (subr (maxeff cmd-eff (io args) (io clock) (io stderr) (alloc @a)) () int)
   (lambda ()
     (let* ((as (the (listof string @a) (args)))

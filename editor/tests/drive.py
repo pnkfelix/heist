@@ -17,6 +17,7 @@ ap.add_argument("--rows", type=int, default=12)
 ap.add_argument("--cols", type=int, default=50)
 ap.add_argument("--file", default=None)
 ap.add_argument("--settle", type=float, default=2.0, help="seconds to wait for startup")
+ap.add_argument("--faces", action="store_true", help="also print each cell's face, as a letter")
 ap.add_argument("keys", nargs="*")
 a = ap.parse_args()
 
@@ -65,6 +66,11 @@ except ProcessLookupError:
 # A minimal terminal.
 rows, cols = a.rows, a.cols
 grid = [[" "] * cols for _ in range(rows)]
+fgrid = [[" "] * cols for _ in range(rows)]
+# The faces' SGR parameters (screen.fx's face-sgr), as letters.
+FACE = {"0": " ", "0;1;35": "k", "0;1;34": "f", "0;36": "t", "0;32": "s", "0;2": "c",
+        "0;1;31": "e", "0;30;45": "i", "0;7": "m", "0;2;7": "M", "0;1;36": "p"}
+sgr = "0"
 cur = [0, 0]
 last = None
 text = out.decode("utf-8", "replace")
@@ -80,8 +86,11 @@ while i < len(text):
                 cur = [(ps[0] - 1) if ps else 0, (ps[1] - 1) if len(ps) > 1 else 0]
             elif fin == "J" and ps == [2]:
                 grid = [[" "] * cols for _ in range(rows)]
+                fgrid = [[" "] * cols for _ in range(rows)]
+            elif fin == "m" and not priv:
+                sgr = params or "0"
             elif priv == "?" and ps == [1049] and fin == "l":
-                last = ([r[:] for r in grid], cur[:])
+                last = ([r[:] for r in grid], cur[:], [r[:] for r in fgrid])
             i += m.end()
             continue
         i += 1
@@ -91,11 +100,15 @@ while i < len(text):
         continue
     if 0 <= cur[0] < rows and 0 <= cur[1] < cols:
         grid[cur[0]][cur[1]] = c
+        fgrid[cur[0]][cur[1]] = FACE.get(sgr, "?")
     cur[1] += 1
     i += 1
 if last is None:
-    last = (grid, cur)
-g, c = last
+    last = (grid, cur, fgrid)
+g, c, fg = last
 for r in g:
     print("".join(r).rstrip().ljust(cols) + "|")
 print(f"cursor {c[0]},{c[1]}")
+if a.faces:
+    for r in fg:
+        print("".join(r).rstrip().ljust(cols) + "|")

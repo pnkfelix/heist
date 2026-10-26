@@ -7,10 +7,24 @@
 ;;; run in a turn of the buffer's: a procedure from the buffer to the
 ;;; buffer after it, what to do, and a message for the echo area.
 
+"What a party outside the text (the syntax actor) knows of a revision of
+it: faces for stretches of the text, the definitions it makes, and a
+problem (a read error), each by position in the text."
+(define-type text-face (productof (start int) (end int) (face face)))
+(define-type text-faces (listof text-face acyclic))
+(define-type definition (productof (name string) (start int) (end int)))
+(define-type definitions (listof definition acyclic))
+(define-type annotation
+  (productof (revision int) (faces text-faces) (definitions definitions)
+             (problem string) (problem-at int)))
+(define no-annotation annotation
+  (product (revision -1) (faces nil) (definitions nil) (problem "") (problem-at -1)))
+
 "What a buffer's subscribers (its views) are sent after each command."
 (define-type snapshot
   (productof (name string) (text rope) (point int) (mark int) (revision int) (modified bool)
-             (highlight-start int) (highlight-end int)))
+             (highlight-start int) (highlight-end int)
+             (annotation annotation)))
 (define-type subscriber (subr turn-eff (snapshot) cmd))
 (define-type subscription (productof (id int) (send subscriber)))
 "A text the buffer had, and its point then."
@@ -22,7 +36,8 @@
              (undo (listof undo-entry acyclic))
              (subscribers (listof subscription acyclic))
              (highlight-start int) (highlight-end int)  ; a match shown (C-s); -1: none
-             (origin int)))                             ; where a search began
+             (origin int)                               ; where a search began
+             (annotation annotation)))                  ; the latest a party outside sent
 "What a command gives: the buffer after it, what to do, and a message for
 the echo area (\"\" for none)."
 (define-type outcome (productof (buffer buffer) (cmds cmds) (message string)))
@@ -31,13 +46,15 @@ the echo area (\"\" for none)."
 (define* new-buffer (subr pure (string string rope) buffer)
   (lambda (name file text)
     (product (name name) (file file) (text text) (point 0) (mark -1) (revision 0) (modified #f)
-             (undo nil) (subscribers nil) (highlight-start -1) (highlight-end -1) (origin 0))))
+             (undo nil) (subscribers nil) (highlight-start -1) (highlight-end -1) (origin 0)
+             (annotation no-annotation))))
 
 (define* snapshot-of (subr pure (buffer) snapshot)
   (lambda (b)
     (product (name (extract b name)) (text (extract b text)) (point (extract b point))
              (mark (extract b mark)) (revision (extract b revision)) (modified (extract b modified))
-             (highlight-start (extract b highlight-start)) (highlight-end (extract b highlight-end)))))
+             (highlight-start (extract b highlight-start)) (highlight-end (extract b highlight-end))
+             (annotation (extract b annotation)))))
 
 "`b` with all its fields given."
 (define* buffer-of
@@ -46,7 +63,7 @@ the echo area (\"\" for none)."
     (product (name (extract b name)) (file (extract b file)) (text text) (point point) (mark mark)
              (revision revision) (modified modified) (undo undo) (subscribers subs)
              (highlight-start (extract b highlight-start)) (highlight-end (extract b highlight-end))
-             (origin (extract b origin)))))
+             (origin (extract b origin)) (annotation (extract b annotation)))))
 
 "`b` with a match shown from `hs` to `he` (-1: none), and a search's origin."
 (define* with-search (subr pure (buffer int int int) buffer)
@@ -54,7 +71,7 @@ the echo area (\"\" for none)."
     (product (name (extract b name)) (file (extract b file)) (text (extract b text)) (point (extract b point))
              (mark (extract b mark)) (revision (extract b revision)) (modified (extract b modified))
              (undo (extract b undo)) (subscribers (extract b subscribers))
-             (highlight-start hs) (highlight-end he) (origin origin))))
+             (highlight-start hs) (highlight-end he) (origin origin) (annotation (extract b annotation)))))
 
 "How many texts the undo history keeps."
 (define undo-limit int 1000)
@@ -368,3 +385,19 @@ Point goes to the match's end (its start, going back), and it is shown."
       (letrec ((go (subr turn-eff ((listof subscription acyclic)) cmds)
                  (lambda (ss) (if (null? ss) nil (cons ((extract (car ss) send) snap) (go (cdr ss)))))))
         (go (extract b subscribers))))))
+
+"`a`, from a party outside, kept if it is of the text as it is now, and
+the subscribers sent a snapshot that has it; else dropped (the text
+changed since, and the party will be sent the new text)."
+(define* annotate (subr pure (annotation) (msg buffer))
+  (lambda (a)
+    (lambda ((b buffer))
+      (if (= (extract a revision) (extract b revision))
+          (let ((b2 (product (name (extract b name)) (file (extract b file)) (text (extract b text))
+                             (point (extract b point)) (mark (extract b mark)) (revision (extract b revision))
+                             (modified (extract b modified)) (undo (extract b undo))
+                             (subscribers (extract b subscribers))
+                             (highlight-start (extract b highlight-start)) (highlight-end (extract b highlight-end))
+                             (origin (extract b origin)) (annotation a))))
+            (reply-with b2 (notify b2)))
+          (same b)))))
