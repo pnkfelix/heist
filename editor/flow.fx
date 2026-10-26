@@ -38,10 +38,10 @@
   (k-case core (listof arm acyclic))             ; tagcase: the subject, the arms
   (k-escape (listof core acyclic)))              ; given to code not known: escapes; unknown
 (define-type field-init (productof (label string) (value core)))
-"A `tagcase` arm: its tag (\"\" for `else`), the variables it binds (one:
-the payload; or several: the payload's fields by position, labels `1`,
-`2`, …), its body."
-(define-type arm (productof (tag string) (vars (listof int acyclic)) (body core)))
+"A `tagcase` arm: its tag (\"\" for `else`), the variables it binds --
+the payload, for `(tag x body)`; its fields by position, labels `1`, `2`,
+…, for `(tag (x y) body)` (`fields`) -- and its body."
+(define-type arm (productof (tag string) (vars (listof int acyclic)) (fields bool) (body core)))
 (define-type cores (listof core acyclic))
 
 ;;; ------------------------------------------------------------ numbering
@@ -124,6 +124,24 @@ code not known may: what they are given escapes."
         "abort-current-continuation" "with-mark" "cwcc" "%vlambda"))
 "Standard procedures whose result holds the elements of their arguments."
 (define passing strings (list "reverse" "append" "list" "cons" "car" "cdr" "datum-list"))
+
+"Constructor `tag` of `n` fields, of variant syntax `x`: the global bound
+to a lambda making `(sum tag (product (1 p1) … (n pn)))`."
+(define constructor-core (->* (string syn string int) core)
+  (lambda (file x tag n)
+    (let* ((params (letrec ((go (->* (int) (listof int acyclic)) (lambda (i) (if (>= i n) nil (cons (new-var) (go (+ i 1)))))))
+                     (go 0)))
+           (fields (letrec ((go (->* ((listof int acyclic) int) (listof field-init acyclic))
+                              (lambda (ps i) (if (null? ps) nil
+                                                 (cons (product (label (int->string i)) (value (k-var (car ps))))
+                                                       (go (cdr ps) (+ i 1)))))))
+                     (go params 1)))
+           (body (k-alloc (add-site (product (span (span-of file x)) (kind "sum") (tag tag)))
+                          (list (product (label "payload")
+                                         (value (k-alloc (add-site (product (span (span-of file x)) (kind "product") (tag "")))
+                                                         fields)))))))
+      (k-bind (global-var tag)
+              (k-lam (add-lambda (product (span (span-of file x)) (name tag) (params params) (rest -1) (body body))))))))
 
 (define last-syn (->* ((listof syn acyclic)) syn)
   (lambda (l) (if (null? (cdr l)) (car l) (last-syn (cdr l)))))
@@ -276,7 +294,21 @@ code not known may: what they are given escapes."
                                                         (go (cdr bs)))
                                                   (go (cdr bs))))))))
                   (go rest))))
-        ((or (string=? head "define-type") (string=? head "define-effect") (string=? head "define-datatype")
+        ;; `(define-datatype t (tag T …) …)`: each tag a global constructor, a
+        ;; lambda of as many parameters as types, making a sum of the tag whose
+        ;; payload is a product of them, fields `1`, `2`, … (as `tagcase`'s
+        ;; arms take it apart).
+        ((string=? head "define-datatype")
+         (k-seq (letrec ((variants (->* ((listof syn acyclic)) cores)
+                           (lambda (vs)
+                             (if (null? vs) nil
+                                 (let ((is (list-items (car vs))))
+                                   (if (pair? is)
+                                       (cons (constructor-core file (car vs) (sym-of (car is)) (length (cdr is)))
+                                             (variants (cdr vs)))
+                                       (variants (cdr vs))))))))
+                  (variants (if (pair? rest) (cdr rest) nil)))))
+        ((or (string=? head "define-type") (string=? head "define-effect")
              (string=? head "define-generative") (string=? head "import") (string=? head "module-parameters"))
          (k-none nil))
         ((or (string=? head "module") (string=? head "hide")) (body-to-core file rest env))
@@ -364,6 +396,7 @@ code not known may: what they are given escapes."
                                                                                          (g (cdr ns) (cdr vs) (cons (product (name (car ns)) (var (car vs))) env))))))
                                                      (g names vars env))))
                                        (cons (product (tag (if (string=? tag "else") "" tag)) (vars vars)
+                                                      (fields (tagcase (car (cdr is)) (lst (ns d a b) #t) (else y #f)))
                                                       (body (body-to-core file (cdr (cdr is)) inner)))
                                              (go (cdr as))))
                                      (go (cdr as))))))))
@@ -476,31 +509,42 @@ newest call and the contour of the rest, recursively."
                        (table-set! (get fl-contour-calls) n l)
                        n)))))))
 
-"The contour a call `call` made in contour `c` gives its callee. At depth
-0, the empty one."
-(define push-contour (subr flow-eff (int int) int)
-  (lambda (call c)
-    (if (= (get fl-depth) 0)
-        0
-        (contour-of (take-ints (get fl-depth) (cons call (table-ref (get fl-contour-calls) c nil)))))))
-
 "The closure of lambda `l` made in contour `c`, its number made on first
-use. At depth 0, the lambda's own number."
+use: in the empty contour, the lambda's own number; else one past them."
 (define closure-of (subr flow-eff (int int) int)
   (lambda (l c)
-    (if (= (get fl-depth) 0) l
+    (if (= c 0) l
     (let* ((k (pair-key l c)) (id (table-ref (get fl-closure-ids) k -1)))
       (if (>= id 0) id
-          (let ((n (get fl-closure-count)))
-            (begin (set fl-closure-count (+ n 1))
+          (let ((n (+ (get fl-closure-count) (array-length (get fl-lambda-array)))))
+            (begin (set fl-closure-count (+ (get fl-closure-count) 1))
                    (table-set! (get fl-closure-ids) k n)
                    (table-set! (get fl-closure-lambda) n l)
                    (table-set! (get fl-closure-contour) n c)
                    n)))))))
 (define closure-lambda (subr flow-eff (int) int)
-  (lambda (cl) (if (= (get fl-depth) 0) cl (table-ref (get fl-closure-lambda) cl -1))))
+  (lambda (cl) (if (< cl (array-length (get fl-lambda-array))) cl (table-ref (get fl-closure-lambda) cl -1))))
 (define closure-contour (subr flow-eff (int) int)
-  (lambda (cl) (if (= (get fl-depth) 0) 0 (table-ref (get fl-closure-contour) cl 0))))
+  (lambda (cl) (if (< cl (array-length (get fl-lambda-array))) 0 (table-ref (get fl-closure-contour) cl 0))))
+
+"Small procedures, and lambdas made in them (yank's `call-site-size`):
+analysed apart for each call site, even at depth 0."
+(define small-size (ref int @fl) (new 0))     ; off: measured to buy no callee here (docs/fx26-analysis.md)
+(define set-small-size! (->* (int) unit) (lambda (n) (set small-size n)))
+(define fl-small (ref (arrayof int @fl) @fl) (new (make-array 0 0)))   ; 1 small, 2 made in a small one
+
+"The contour a call `call`, made in contour `c`, of closure `cl` gives the
+callee: at depth m, the call pushed onto the caller's, cut to m; at depth
+0, the call alone for a small procedure, where it was made for a lambda
+made in one, and the empty one else."
+(define push-contour (subr flow-eff (int int int) int)
+  (lambda (call c cl)
+    (let ((l (closure-lambda cl)))
+      (cond ((> (get fl-depth) 0)
+             (contour-of (take-ints (get fl-depth) (cons call (table-ref (get fl-contour-calls) c nil)))))
+            ((= (array-ref (get fl-small) l) 1) (contour-of (list call)))
+            ((= (array-ref (get fl-small) l) 2) (closure-contour cl))
+            (else 0)))))
 
 "Closure `t` to be evaluated: a task, on every pass from now on."
 (define ensure-task! (subr flow-eff (int) unit)
@@ -521,7 +565,7 @@ use. At depth 0, the lambda's own number."
 (define cell-key (subr flow-eff (int int) int)
   (lambda (v c) (+ (* v 1048576) (if (array-ref (get fl-global) v) 0 c))))
 (define cell (subr flow-eff (int) vals)
-  (lambda (k) (if (= (get fl-depth) 0) (array-ref (get fl-cell-array) (quotient k 1048576)) (table-ref (get fl-cells) k nil))))
+  (lambda (k) (if (= (remainder k 1048576) 0) (array-ref (get fl-cell-array) (quotient k 1048576)) (table-ref (get fl-cells) k nil))))
 
 "The cell at `k` of `table` given `s` too."
 (define join-table! (subr flow-eff ((table int vals @fl) int vals) unit)
@@ -532,7 +576,7 @@ use. At depth 0, the lambda's own number."
           (if (= (length new) (length old)) #u (begin (table-set! tbl k new) (set fl-changed #t)))))))
 (define join-cell! (subr flow-eff (int vals) unit)
   (lambda (k s)
-    (if (= (get fl-depth) 0)
+    (if (= (remainder k 1048576) 0)
         (join! (get fl-cell-array) (quotient k 1048576) s)
         (begin (if (and (pair? s) (null? (table-ref (get fl-cells) k nil))) (set fl-cell-keys (cons k (get fl-cell-keys))) #u)
                (join-table! (get fl-cells) k s)))))
@@ -596,12 +640,12 @@ and unknown if it may be code not known."
                          (payload-of (cdr s) tag))))
           ((= (car s) unknown) (vals-union (list unknown) (payload-of (cdr s) tag)))
           (else (payload-of (cdr s) tag)))))
-"An arm's variables, in contour `c`, given the payload: one, all of it;
-several, its product's fields by position."
-(define bind-arm (subr flow-eff (ints vals int) unit)
-  (lambda (vars payload c)
+"An arm's variables, in contour `c`, given the payload: all of it, or
+(`fields`) its product's fields by position."
+(define bind-arm (subr flow-eff (ints bool vals int) unit)
+  (lambda (vars fields payload c)
     (cond ((null? vars) #u)
-          ((null? (cdr vars)) (join-cell! (cell-key (car vars) c) payload))
+          ((not fields) (join-cell! (cell-key (car vars) c) payload))
           (else
            (letrec ((go (->* (ints int) unit)
                       (lambda (vs i) (if (null? vs) #u
@@ -689,7 +733,7 @@ several, its product's fields by position."
                           (if (null? as) nil
                               (let ((a (car as)))
                                 (begin
-                                  (bind-arm (extract a vars) (payload-of subject (extract a tag)) c)
+                                  (bind-arm (extract a vars) (extract a fields) (payload-of subject (extract a tag)) c)
                                   (cons (eval-core (extract a body) c) (go (cdr as)))))))))
                (go arms)))))
         (k-app (call f args)
@@ -708,7 +752,7 @@ several, its product's fields by position."
              (let* ((cl (quotient (car ops) 4))
                     (l (closure-lambda cl))
                     (made (closure-contour cl))
-                    (c1 (push-contour call c))
+                    (c1 (push-contour call c cl))
                     (info (array-ref (get fl-lambda-array) l))
                     (task (closure-of l c1)))
                (begin
@@ -801,6 +845,79 @@ not global."
                          (else (go (cdr rs) (cons (car rs) acc)))))))
         (go (extract rb refs) nil)))))
 
+"The nodes of `x`, counted no further than `limit`."
+(define-rec
+  (node-count (subr flow-eff (core int) int)
+    (lambda (x limit)
+      (if (<= limit 0) 0
+          (+ 1 (tagcase x
+                 (k-none (xs) (node-count-all xs (- limit 1)))
+                 (k-var (v) 0)
+                 (k-lam (l) 0)
+                 (k-app (call f args) (node-count-all (cons f args) (- limit 1)))
+                 (k-seq (xs) (node-count-all xs (- limit 1)))
+                 (k-alt (xs) (node-count-all xs (- limit 1)))
+                 (k-bind (v e) (node-count e (- limit 1)))
+                 (k-alloc (site inits)
+                   (node-count-all (letrec ((vs (subr flow-eff ((listof field-init acyclic)) cores)
+                                                  (lambda (is) (if (null? is) nil (cons (extract (car is) value) (vs (cdr is)))))))
+                                     (vs inits))
+                                   (- limit 1)))
+                 (k-field (e label) (node-count e (- limit 1)))
+                 (k-store (e label v) (node-count-all (list e v) (- limit 1)))
+                 (k-escape (xs) (node-count-all xs (- limit 1)))
+                 (k-case (e arms)
+                   (node-count-all (cons e (letrec ((bs (subr flow-eff ((listof arm acyclic)) cores)
+                                                          (lambda (as) (if (null? as) nil (cons (extract (car as) body) (bs (cdr as)))))))
+                                             (bs arms)))
+                                   (- limit 1))))))))
+  (node-count-all (subr flow-eff (cores int) int)
+    (lambda (xs limit)
+      (if (null? xs) 0
+          (let ((n (node-count (car xs) limit))) (+ n (node-count-all (cdr xs) (- limit n))))))))
+
+(define global-var-of (subr flow-eff (string) int)
+  (lambda (name) (table-ref (get fl-globals) name -1)))
+
+"Whether lambda `l` is a small procedure: named for a definition, not
+calling itself by its name, its body of `small-size` nodes or fewer."
+(define small-lambda? (subr flow-eff (int) bool)
+  (lambda (l)
+    (let* ((info (array-ref (get fl-lambda-array) l)) (name (extract info name)) (n (string-length name)))
+      (and (> n 0)
+           (not (and (>= n 2) (string=? (substring name (- n 2) n) "/λ")))
+           (> (get small-size) 0)
+           (<= (node-count (extract info body) (+ (get small-size) 1)) (get small-size))
+           (not (member-int? (global-var-of name) (extract (refs-binds-of (extract info body) (product (refs nil) (binds nil))) refs)))))))
+"Lambda `l` small, and the lambdas made in its body made in a small one."
+(define mark-small! (subr flow-eff (int) unit)
+  (lambda (l)
+    (begin
+      (array-set! (get fl-small) l 1)
+      (letrec ((inner (subr flow-eff (core) unit)
+                 (lambda (x)
+                   (tagcase x
+                     (k-lam (m) (if (= (array-ref (get fl-small) m) 0)
+                                    (begin (array-set! (get fl-small) m 2)
+                                           (inner (extract (array-ref (get fl-lambda-array) m) body)))
+                                    #u))
+                     (k-none (xs) (each xs)) (k-seq (xs) (each xs)) (k-alt (xs) (each xs)) (k-escape (xs) (each xs))
+                     (k-app (call f args) (begin (inner f) (each args)))
+                     (k-bind (v e) (inner e))
+                     (k-alloc (site inits) (letrec ((go (subr flow-eff ((listof field-init acyclic)) unit)
+                                                      (lambda (is) (if (null? is) #u (begin (inner (extract (car is) value)) (go (cdr is)))))))
+                                             (go inits)))
+                     (k-field (e label) (inner e))
+                     (k-store (e label v) (begin (inner e) (inner v)))
+                     (k-case (e arms) (begin (inner e)
+                                             (letrec ((go (subr flow-eff ((listof arm acyclic)) unit)
+                                                        (lambda (as) (if (null? as) #u (begin (inner (extract (car as) body)) (go (cdr as)))))))
+                                               (go arms))))
+                     (else y #u))))
+               (each (subr flow-eff (cores) unit)
+                 (lambda (xs) (if (null? xs) #u (begin (inner (car xs)) (each (cdr xs)))))))
+        (inner (extract (array-ref (get fl-lambda-array) l) body))))))
+
 "The program of `files` analysed at the depth set (`set-flow-depth!`):
 its top levels evaluated in the empty contour, and every task, until the
 store stops growing. The number of passes."
@@ -833,6 +950,12 @@ store stops growing. The number of passes."
                      (lambda (l) (if (>= l (array-length (get fl-lambda-array))) #u
                                      (begin (array-set! (get fl-free) l (free-of l)) (frees (+ l 1)))))))
             (frees 0))
+          (set fl-small (make-array (array-length (get fl-lambda-array)) 0))
+          (letrec ((mark (subr flow-eff (int) unit)
+                     (lambda (l)
+                       (if (>= l (array-length (get fl-lambda-array))) #u
+                           (begin (if (small-lambda? l) (mark-small! l) #u) (mark (+ l 1)))))))
+            (mark 0))
           (set fl-cells (the (table int vals @fl) (make-table int-hash int-same)))
           (set fl-cell-array (make-array (get fl-vars) nil))
           (set fl-cell-keys nil)
@@ -881,7 +1004,7 @@ contours, summed over the variables; and how many hold more than one."
   (lambda ()
     (let ((merged (the (arrayof vals @fl) (make-array (get fl-vars) nil))))
       (begin
-        (if (= (get fl-depth) 0)
+        (begin
             (letrec ((go (subr flow-eff (int) unit)
                        (lambda (v) (if (>= v (get fl-vars)) #u
                                        (begin (array-set! merged v (array-ref (get fl-cell-array) v)) (go (+ v 1)))))))

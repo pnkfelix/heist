@@ -189,3 +189,39 @@ helpers more.
 **Cost of depths above 0:** contours are interned by recursion over
 their calls through hash tables, and cells are in a hash table keyed by
 variable and contour. Neither was tuned, since depth bought nothing here.
+
+## Constructors, and small procedures by call site (2026-10-26)
+
+- **`define-datatype` constructors** are now global lambdas making
+  `(sum tag (product (1 …) (2 …) …))`, as Fixpt's parser expands them.
+  `tagcase` arms tell `(tag x …)` (the payload) from `(tag (x …) …)` (its
+  fields by position). On the editor, callees in all rose from 2,027 to
+  2,166: calls to constructors now reach them, where before they reached
+  nothing.
+- **Small procedures by call site** (yank's `call-site-size`): a named,
+  non-recursive lambda of `small-size` nodes or fewer gets each call site
+  as its contour, even at depth 0, and lambdas made in it are called in
+  the contour they were made in. Measured at depth 0:
+
+  | program | small size | time | tasks | values locals hold | locals holding several |
+  |---|---|---|---|---|---|
+  | editor | 0 | 25 ms | 697 | 3,051 | 448 |
+  | editor | 40 | 150 ms | 2,560 | 3,051 | 448 |
+  | Fixpt front end | 0 | 382 ms | 5,184 | 57,171 | 2,359 |
+  | Fixpt front end | 20 | 4.1 s | 14,231 | 54,240 | 2,305 |
+  | Fixpt front end | 40 | 6.7 s | 16,315 | 52,579 | 2,294 |
+
+  - **What it bought:** nothing in the editor, and 8% fewer values in
+    Fixpt's front end. No call's callees changed in either. Yank had a
+    third fewer parameter values, for 15% more time.
+  - **What it cost:** 6 to 18 times the time. That is the store more than
+    the idea: cells in a contour other than the empty one go through
+    `fx26:table.fx`'s generic hash table (a closure call to hash, buckets
+    as association lists). A faster store for contours, an array per
+    lambda's contours say, is what to try before turning it on.
+  - **The default** is `small-size` 0 (off), and it is a setting
+    (`set-small-size!`).
+- **So far,** neither depth nor small procedures has changed what a call
+  can call, in either program. The precision that matters to C-c e and
+  C-c r came from modelling data (products, sums, refs, pairs) and
+  constructors, not from context.

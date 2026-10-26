@@ -33,3 +33,34 @@
       (if (string=? got want) #u
           (begin (write-out (string-append "FAIL got " got " (" (int->string passes) " passes)\n")) #u)))))
 (flow-test)
+;; Constructors and small procedures.
+(define sample2 string "(define-datatype shape (circle int) (handler (subr pure (int) int)))
+(define inc (lambda (n) (+ n 1)))
+(define dbl (lambda (n) (* n 2)))
+(define h (handler dbl))
+(tagcase h (handler (f) (f 1)) (else y 0))
+(define id (lambda (x) x))
+(define a (id inc))
+(define b (id dbl))
+(a 1)
+(b 2)")
+(define show-calls2 (->* ((listof call-result acyclic)) string)
+  (lambda (cs)
+    (if (null? cs) ""
+        (let ((c (car cs)))
+          (string-append (substring sample2 (extract (extract c operator) start) (extract (extract c operator) end))
+                         "->"
+                         (letrec ((names (->* ((listof callee acyclic)) string)
+                                    (lambda (l) (if (null? l) "" (string-append (extract (car l) name) "," (names (cdr l)))))))
+                           (names (extract c callees)))
+                         " " (show-calls2 (cdr cs)))))))
+(define flow-test2 (->* () unit)
+  (lambda ()
+    (let* ((passes (begin (set-small-size! 40) (analyze-flow (list (product (file "s") (forms (syntax-of sample2)))))))
+           (got (show-calls2 (flow-calls)))
+           ;; handler (the constructor), f the handler's dbl; id twice; a only
+           ;; inc and b only dbl, id being small.
+           (want "handler->handler, f->dbl, id->id, id->id, a->inc, b->dbl, "))
+      (if (string=? got want) #u
+          (begin (write-out (string-append "FAIL got " got "\n")) #u)))))
+(flow-test2)
