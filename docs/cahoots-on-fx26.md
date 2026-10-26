@@ -296,3 +296,83 @@ source.
   indenter (whitespace only).
 - **Keys typed during C-x C-f went to the old buffer.** Activities now
   finish one key before the next (`tests/ui/type-ahead`).
+
+## Several files, and programs beside the editor (2026-10-26, later)
+
+The editor can now run programs, which needed Fixpt's F4
+(`FIXPT-CHANGES.md`): `(io process)` and six `process-*` primitives.
+`editor/process.fx` and `editor/files.fx` are new.
+
+**Programs** (`process.fx`):
+- **M-x compile, C-c c:** a shell command, its output in *compilation*.
+- **M-x grep:** a grep, its output in *grep*.
+- **M-!:** a shell command, its output in *Shell Command Output*.
+- **M-x shell:** a shell in *shell*. RET sends the line, and C-c C-c
+  interrupts what it runs.
+- **Places in output:** C-x \` (and M-g n, M-g p) visits the next place
+  the output names, as `FILE:LINE[:COLUMN]`. RET in the output visits
+  the place on its line.
+- **Running again:** g, or M-x recompile, runs the command again where it
+  ran before. Its header says what and where.
+- **Directories:** names are relative to the directory the header gives,
+  or to the last `Entering directory 'D'` line not yet left, as make
+  prints them. `tests/run.sh` now prints those lines around a failing
+  test's output.
+- **How output arrives:** it is polled, not waited for. The main loop
+  asks each running process for its output every 50 ms, and tells its
+  buffer what came. Fixpt has no `pselect` arm for a process yet; F4
+  says what one would take.
+
+**Several files** (`frame.fx`, `files.fx`):
+- **TAB completes** in the minibuffer: file names (C-x C-f, C-x C-w),
+  buffer names (C-x b) and command names (M-x). Several candidates show
+  as `{a | b}`, as icomplete shows them. The line scrolls so that point
+  stays in view.
+- **Directories:** C-x C-f on a directory makes a listing. RET visits the
+  file or directory on a line, and g lists it again.
+- **The buffer list:** RET in *Buffer List* shows the buffer on its line.
+- **C-x s** asks about each changed file (y, n, !, q).
+- **M-x revert-buffer** reads the file again, keeping the old text for
+  undo.
+- **Keys by kind:** buffer keys can be bound by the kind of buffer, not
+  only by its name. A listing is `<listing>` (`buffer-kind`).
+
+**Dogfooding.** These sessions ran on a copy of the repository, through
+`drive.py`. Its new `=` argument prints the screen part way through.
+- **The test loop, inside the editor:**
+  - I planted a typo in `tests/rope-test.fx`, then ran `tests/run.sh`
+    with M-x compile.
+  - C-x \` went to `rope-test.fx` line 16, column 38. The output's
+    `Entering directory` line said where.
+  - I fixed the typo there and saved, then ran M-x recompile, and the
+    suite passed.
+- **Across files:** M-x grep for a name over `*.fx`, then C-x \` through
+  each match, in two files. C-x C-b, RET on a line. C-x b, `fi` TAB,
+  completing to `files.fx`.
+
+**What was missing or wrong, each fixed:**
+- **C-c c from a file in `tests/` ran there,** and `tests/run.sh` was not
+  found. Emacs does the same; its answer, also ours now, is `recompile`,
+  which runs in the original directory.
+- **The place in the command line.** The command echoed in the header
+  (`echo b.txt:2:3…`) was taken as the first place. Places are now
+  looked for after the header.
+- **`sh -i` stopped at once.** With a process group of its own but the
+  editor's terminal still its controlling one, it tried to take the
+  terminal for job control and was stopped. Processes now start in a
+  session of their own (F4).
+- **A failed save said "Wrote".** `save-buffer` ignored `write-file`'s
+  result and marked the buffer saved. This was older than today's work,
+  and was found by reading it. Saving is now a message to the buffer, so
+  it follows a C-x C-w's change of file. Its command reports
+  `Could not write FILE: why`, and leaves the buffer modified.
+- **Output marked its buffer modified,** so *grep* showed `**`. Output
+  is no longer a change.
+- **A five-digit size in *Buffer List*** pushed its file over: the
+  column was a tab. It is spaces now.
+
+**A mistake of mine, on the way.** A Python script that edited
+`frame.fx` reopened the file for writing before reading it, which
+emptied it. A UI test run was using the file at that moment. I restored
+it from git and redid the edits. That run's results were thrown away,
+and the screens it might have written were made again.
