@@ -64,7 +64,7 @@ point kept where it can be, not modified, the old text kept for undo."
     (lambda ((b buffer))
       (let* ((b1 (with-text b t (extract b point)))
              (b2 (buffer-of b1 t (extract b1 point) (extract b1 mark) (extract b1 revision) #f
-                            (extract b1 undo) (extract b1 subscribers))))
+                            (all-modified (extract b1 undo)) (extract b1 subscribers))))
         (reply-with b2 (notify b2))))))
 
 "M-x revert-buffer, g in a listing: the selected buffer's file (or

@@ -38,11 +38,13 @@ the `import`, and the file (as `load-module` names it)."
              (marks text-faces)))
 (define-type subscriber (subr turn-eff (snapshot) cmd))
 (define-type subscription (productof (id int) (send subscriber)))
-"A text the buffer had, and its point then."
-"A text the buffer had, and its point then. For a run of characters typed
-(undone as one, as Emacs does, up to `run-limit` of them): where the run
-ends now, and how long it is; -1 and 0 for any other change."
-(define-type undo-entry (productof (text rope) (point int) (run-end int) (run-count int)))
+"A text the buffer had, its point then, and whether it was modified then
+(undoing back to the text saved is not modified, as in Emacs). For a run
+of characters typed (undone as one, as Emacs does, up to `run-limit` of
+them): where the run ends now, and how long it is; -1 and 0 for any other
+change."
+(define-type undo-entry
+  (productof (text rope) (point int) (modified bool) (run-end int) (run-count int)))
 (define run-limit int 20)
 (define-type buffer
   (productof (name string) (file string) (text rope) (point int)
@@ -105,7 +107,8 @@ the echo area (\"\" for none)."
     (buffer-of b t (max 0 (min p (rope-length t)))
                (min (extract b mark) (rope-length t))
                (+ 1 (extract b revision)) #t
-               (cons (product (text (extract b text)) (point (extract b point)) (run-end -1) (run-count 0))
+               (cons (product (text (extract b text)) (point (extract b point)) (modified (extract b modified))
+                              (run-end -1) (run-count 0))
                      (take undo-limit (extract b undo)))
                (extract b subscribers))))
 
@@ -165,9 +168,11 @@ here, so that one undo takes back the run; else a change of its own."
         (done (buffer-of b t (+ p 1) (extract b mark) (+ 1 (extract b revision)) #t
                          (if continues
                              (cons (product (text (extract (car u) text)) (point (extract (car u) point))
+                                            (modified (extract (car u) modified))
                                             (run-end (+ p 1)) (run-count (+ 1 (extract (car u) run-count))))
                                    (cdr u))
-                             (cons (product (text (extract b text)) (point p) (run-end (+ p 1)) (run-count 1))
+                             (cons (product (text (extract b text)) (point p) (modified (extract b modified))
+                                            (run-end (+ p 1)) (run-count 1))
                                    (take undo-limit u)))
                          (extract b subscribers)))))))
 
@@ -354,10 +359,8 @@ long enough."
         (if (null? u)
             (say b "No further undo information")
             (say (buffer-of b (extract (car u) text) (extract (car u) point) (extract b mark)
-                            (+ 1 (extract b revision)) #t (cdr u) (extract b subscribers))
+                            (+ 1 (extract b revision)) (extract (car u) modified) (cdr u) (extract b subscribers))
                  "Undo"))))))
-
-"Save: the buffer's text to its file, after the turn."
 
 (define* keyboard-quit (subr pure () command)
   (lambda () (lambda ((b buffer)) (say (with-marks (with-mark b -1) nil) "Quit"))))
@@ -561,6 +564,16 @@ changed since, and the party will be sent the new text)."
             (reply-with b2 (notify b2)))
           (same b)))))
 
+"Undo history `u` with each text marked modified: none is the file's
+text now (after a save, or a revert)."
+(define* all-modified (subr spin ((listof undo-entry acyclic)) (listof undo-entry acyclic))
+  (lambda (u)
+    (if (null? u) nil
+        (let ((e (car u)))
+          (cons (product (text (extract e text)) (point (extract e point)) (modified #t)
+                         (run-end (extract e run-end)) (run-count (extract e run-count)))
+                (all-modified (cdr u)))))))
+
 "Message for a buffer: its text as of revision `rev` is in its file now;
 not modified, if it has not changed since."
 (define* marked-saved (subr pure (int) (msg buffer))
@@ -568,6 +581,6 @@ not modified, if it has not changed since."
     (lambda ((b buffer))
       (if (= (extract b revision) rev)
           (let ((b2 (buffer-of b (extract b text) (extract b point) (extract b mark) rev #f
-                               (extract b undo) (extract b subscribers))))
+                               (all-modified (extract b undo)) (extract b subscribers))))
             (reply-with b2 (notify b2)))
           (same b)))))
