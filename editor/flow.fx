@@ -447,7 +447,12 @@ A set of them: a sorted list."
 (define lambda-val? (subr flow-eff (int) bool) (lambda (x) (and (>= x 0) (= (remainder x 4) 0))))
 (define site-val? (subr flow-eff (int) bool) (lambda (x) (and (>= x 0) (= (remainder x 4) 1))))
 
-(define int-hash (subr pure (int) int) (lambda (k) k))
+;; Keys here are pairs packed as `a * 2^20 + b`. The tables choose a
+;; bucket by the hash modulo a power of two, so the hash must bring both
+;; halves into the low bits: an identity hash put every contour (whose
+;; low half was the empty contour, 0) into one bucket.
+(define int-hash (subr pure (int) int)
+  (lambda (k) (+ (* (quotient k 1048576) 7919) (* (remainder k 1048576) 1000003))))
 (define int-same (subr pure (int int) bool) (lambda (a b) (= a b)))
 
 "The analysis's depth: how many call sites a contour keeps (0: 0CFA)."

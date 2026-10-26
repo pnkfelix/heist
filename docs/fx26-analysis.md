@@ -225,3 +225,46 @@ variable and contour. Neither was tuned, since depth bought nothing here.
   can call, in either program. The precision that matters to C-c e and
   C-c r came from modelling data (products, sums, refs, pairs) and
   constructors, not from context.
+
+## Correction: the cost was a hash, not the table (2026-10-26)
+
+The costs above for depths 1 and 2, and for small procedures, were
+wrong, and so was the explanation given for them: "the generic hash
+table". That was a guess, never measured.
+
+**What `perf` showed** (`FIXPT_PERF_MAP=1`, Fixpt's perf-map support):
+60% of the time was in `fx26:table.fx`'s `bucket-find`, under
+`contour-of`.
+- The table picks a bucket as the hash modulo a power of two.
+- `flow.fx` hashed its integer keys by the identity, and packed them as
+  `a * 2^20 + b`.
+- For contours, `b` (the rest of the contour) was nearly always 0. So
+  every contour went into one bucket, and each lookup scanned all of
+  them. Cell keys had the same flaw.
+
+The hash now brings both halves into the low bits. The table was never
+the problem.
+
+**Measured again** (`fast`, depth 0 unless said):
+
+| program | setting | time | tasks | values locals hold | locals holding several |
+|---|---|---|---|---|---|
+| editor | depth 0 | 25 ms | 697 | 3,051 | 448 |
+| editor | depth 1 | 133 ms | 3,687 | 2,967 (−3%) | 448 |
+| editor | depth 2 | 1.4 s | 15,285 | 2,967 | 448 |
+| editor | small 40 | 70 ms | 2,560 | 3,051 | 448 |
+| Fixpt front end | depth 0 | 0.39 s | 5,184 | 57,171 | 2,359 |
+| Fixpt front end | depth 1 | 1.6 s | 20,495 | 45,933 (−20%) | 2,173 (−8%) |
+| Fixpt front end | depth 2 | 15.9 s | 63,901 | 44,126 (−23%) | 2,172 |
+| Fixpt front end | small 40 | 0.87 s | 16,315 | 52,579 (−8%) | 2,294 (−3%) |
+
+What follows from the corrected numbers:
+- **What a call can call** is the same at every setting, in both
+  programs. C-c e and C-c r stay at depth 0.
+- **What variables hold** improves with context in Fixpt's front end:
+  20% fewer values at depth 1, for 4 times the time. A display of
+  values at point, which the editor does not have yet, would want depth
+  1.
+- **Small procedures by call site** cost 2.2 times for 3.1 times the
+  tasks. That is what whole passes cost; a worklist that re-runs only
+  the tasks whose inputs grew, as yank's does, is the next saving.
