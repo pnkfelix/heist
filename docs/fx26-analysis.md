@@ -149,3 +149,43 @@ version.**
     names. That is the case in Fixpt's sources, where the merge makes
     results imprecise.
   - **Warm starts after an edit.** The analysis runs whole, on demand.
+
+## Depth: m-CFA measured (2026-10-26)
+
+`flow.fx` is m-CFA with its depth a setting (`set-flow-depth!`):
+- **contours** are the last `m` call sites;
+- **closures** are a lambda and the contour it was made in;
+- **free variables** are copied into the callee's contour;
+- **locals** are addressed by contour; globals and allocation sites have one
+  address each.
+
+Depth 0 is 0CFA, and gives what the analysis gave before. Measured on the
+editor's own files (`fast`):
+
+| depth | time | tasks | calls reaching several lambdas | values locals can hold, merged | locals holding several |
+|---|---|---|---|---|---|
+| 0 | 22 ms | 666 | 9 | 2,551 | 317 |
+| 1 | 665 ms | 3,477 | 9 | 2,467 | 317 |
+| 2 | 3,999 ms | 14,095 | 9 | 2,467 | 317 |
+
+On Fixpt's front end (174 files), depths 0, 1 and 2 took 0.27 s, 57 s
+and 295 s. Each found the same 117 calls reaching several lambdas, and
+the same 13,133 callees in all.
+
+So, on these programs:
+- **What a call can call** (C-c e, C-c r) is the same at every depth.
+  That answer is per call site, merged over contours, and no spurious
+  closure reached a call through a context's merge.
+- **What locals can hold** is 3% smaller at depth 1, and no smaller at
+  depth 2.
+
+This fits yank's finding, that context pays where values are merged
+(its unknown parameters), not in callee sets. It is also not a verdict
+on m-CFA against k-CFA: those differ only above depth 0, and that
+comparison was not run. The editor runs at depth 0. Depth stays a
+setting, to measure again on code that passes closures through shared
+helpers more.
+
+**Cost of depths above 0:** contours are interned by recursion over
+their calls through hash tables, and cells are in a hash table keyed by
+variable and contour. Neither was tuned, since depth bought nothing here.

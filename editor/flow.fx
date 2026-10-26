@@ -382,30 +382,65 @@ name is the module's definition of it, by name), declared a global."
           (declare-globals (cdr files))))))
 
 ;;; ------------------------------------------------------------ the analysis
+;;;
+;;; m-CFA (Might, Smaragdakis and Van Horn, PLDI 2010), as yank's
+;;; `cfa.sld` does it: a contour is the last `m` call sites, newest first;
+;;; a closure is a lambda and the contour it was made in; a call gives the
+;;; callee the contour of the call site pushed onto the caller's, cut to
+;;; `m`, and copies the lambda's free variables into it from the closure's.
+;;; Locals are addressed by variable and contour; globals and allocation
+;;; sites have one address each. At depth 0 every contour is the empty one:
+;;; 0CFA. Each (lambda, contour) called, or made, is a task, evaluated
+;;; again on every pass until the store stops growing.
 
-"An abstract value: lambda `l` as 4l, site `s` as 4s+1, unknown as -1.
+"What the analysis does: to its own state, and reading globals' bindings
+through the tables' procedures."
+(define-effect flow-eff (maxeff (read @fl) (write @fl) (alloc @fl) (read @globals) spin))
+
+"An abstract value: closure `c` as 4c, site `s` as 4s+1, unknown as -1.
 A set of them: a sorted list."
 (define-type vals (listof int acyclic))
 (define unknown int -1)
 
-(define vals-union (->* (vals vals) vals)
+(define vals-union (subr flow-eff (vals vals) vals)
   (lambda (a b)
     (cond ((null? a) b)
           ((null? b) a)
           ((< (car a) (car b)) (cons (car a) (vals-union (cdr a) b)))
           ((< (car b) (car a)) (cons (car b) (vals-union a (cdr b))))
           (else (cons (car a) (vals-union (cdr a) (cdr b)))))))
-(define vals-has? (->* (vals int) bool)
+(define vals-has? (subr flow-eff (vals int) bool)
   (lambda (s x) (and (pair? s) (or (= (car s) x) (and (< (car s) x) (vals-has? (cdr s) x))))))
-(define lambda-val? (->* (int) bool) (lambda (x) (and (>= x 0) (= (remainder x 4) 0))))
-(define site-val? (->* (int) bool) (lambda (x) (and (>= x 0) (= (remainder x 4) 1))))
+(define lambda-val? (subr flow-eff (int) bool) (lambda (x) (and (>= x 0) (= (remainder x 4) 0))))
+(define site-val? (subr flow-eff (int) bool) (lambda (x) (and (>= x 0) (= (remainder x 4) 1))))
 
-;; The store: a cell per variable, per lambda's result, per site's fields
-;; (an association list from label), per call's callees; and what has
-;; escaped. Made when the core is complete, sized by its numbers.
+(define int-hash (subr pure (int) int) (lambda (k) k))
+(define int-same (subr pure (int int) bool) (lambda (a b) (= a b)))
+
+"The analysis's depth: how many call sites a contour keeps (0: 0CFA)."
+(define fl-depth (ref int @fl) (new 0))
+(define set-flow-depth! (subr flow-eff (int) unit) (lambda (m) (set fl-depth m)))
+
+;; Contours, interned: their numbers by key, and their calls by number.
+(define fl-contour-ids (ref (table int int @fl) @fl) (new (the (table int int @fl) (make-table int-hash int-same))))
+(define fl-contour-calls (ref (table int ints @fl) @fl) (new (the (table int ints @fl) (make-table int-hash int-same))))
+(define fl-contour-count (ref int @fl) (new 0))
+;; Closures, interned: a lambda and a contour.
+(define fl-closure-ids (ref (table int int @fl) @fl) (new (the (table int int @fl) (make-table int-hash int-same))))
+(define fl-closure-lambda (ref (table int int @fl) @fl) (new (the (table int int @fl) (make-table int-hash int-same))))
+(define fl-closure-contour (ref (table int int @fl) @fl) (new (the (table int int @fl) (make-table int-hash int-same))))
+(define fl-closure-count (ref int @fl) (new 0))
+
+;; The store.
 (define-type fields (listof (productof (label string) (vals vals)) acyclic))
-(define fl-var-cells (ref (arrayof vals @fl) @fl) (new (make-array 0 nil)))
-(define fl-results (ref (arrayof vals @fl) @fl) (new (make-array 0 nil)))
+(define fl-cells (ref (table int vals @fl) @fl) (new (the (table int vals @fl) (make-table int-hash int-same))))
+(define fl-cell-array (ref (arrayof vals @fl) @fl) (new (make-array 0 nil)))
+"The keys of the cells made in the table, for measuring (it cannot be
+walked: `fx26:table.fx` has no iteration)."
+(define fl-cell-keys (ref ints @fl) (new nil))
+(define fl-results (ref (table int vals @fl) @fl) (new (the (table int vals @fl) (make-table int-hash int-same))))
+(define fl-global (ref (arrayof bool @fl) @fl) (new (make-array 0 #f)))
+(define fl-free (ref (arrayof ints @fl) @fl) (new (make-array 0 nil)))
 (define fl-fields (ref (arrayof fields @fl) @fl) (new (make-array 0 nil)))
 (define fl-callees (ref (arrayof vals @fl) @fl) (new (make-array 0 nil)))
 (define fl-escaped (ref (arrayof bool @fl) @fl) (new (make-array 0 #f)))
@@ -414,17 +449,95 @@ A set of them: a sorted list."
   (new (make-array 0 (product (span (product (file "") (start 0) (end 0))) (name "") (params nil) (rest -1) (body (k-none nil))))))
 (define fl-site-array (ref (arrayof site-info @fl) @fl)
   (new (make-array 0 (product (span (product (file "") (start 0) (end 0))) (kind "") (tag "")))))
+;; The tasks: closures (a lambda and the contour its body is evaluated in).
+(define fl-tasks (ref ints @fl) (new nil))
+(define fl-task-seen (ref (table int bool @fl) @fl) (new (the (table int bool @fl) (make-table int-hash int-same))))
 (define fl-changed (ref bool @fl) (new #f))
 
-"Cell `i` of `cells` given `s` too: whether it grew."
-(define join! (->* ((arrayof vals @fl) int vals) unit)
+(define take-ints (subr flow-eff (int ints) ints)
+  (lambda (n l) (if (or (<= n 0) (null? l)) nil (cons (car l) (take-ints (- n 1) (cdr l))))))
+(define ints-key (subr flow-eff (ints) string)
+  (lambda (l) (if (null? l) "" (string-append (int->string (car l)) "," (ints-key (cdr l))))))
+
+"A key of two numbers as one."
+(define pair-key (subr pure (int int) int) (lambda (a b) (+ (* a 1048576) b)))
+
+"The contour of calls `l`, its number made on first use: interned by its
+newest call and the contour of the rest, recursively."
+(define contour-of (subr flow-eff (ints) int)
+  (lambda (l)
+    (if (null? l)
+        0
+        (let* ((rest (contour-of (cdr l))) (k (pair-key (car l) rest)) (id (table-ref (get fl-contour-ids) k -1)))
+          (if (>= id 0) id
+              (let ((n (get fl-contour-count)))
+                (begin (set fl-contour-count (+ n 1))
+                       (table-set! (get fl-contour-ids) k n)
+                       (table-set! (get fl-contour-calls) n l)
+                       n)))))))
+
+"The contour a call `call` made in contour `c` gives its callee. At depth
+0, the empty one."
+(define push-contour (subr flow-eff (int int) int)
+  (lambda (call c)
+    (if (= (get fl-depth) 0)
+        0
+        (contour-of (take-ints (get fl-depth) (cons call (table-ref (get fl-contour-calls) c nil)))))))
+
+"The closure of lambda `l` made in contour `c`, its number made on first
+use. At depth 0, the lambda's own number."
+(define closure-of (subr flow-eff (int int) int)
+  (lambda (l c)
+    (if (= (get fl-depth) 0) l
+    (let* ((k (pair-key l c)) (id (table-ref (get fl-closure-ids) k -1)))
+      (if (>= id 0) id
+          (let ((n (get fl-closure-count)))
+            (begin (set fl-closure-count (+ n 1))
+                   (table-set! (get fl-closure-ids) k n)
+                   (table-set! (get fl-closure-lambda) n l)
+                   (table-set! (get fl-closure-contour) n c)
+                   n)))))))
+(define closure-lambda (subr flow-eff (int) int)
+  (lambda (cl) (if (= (get fl-depth) 0) cl (table-ref (get fl-closure-lambda) cl -1))))
+(define closure-contour (subr flow-eff (int) int)
+  (lambda (cl) (if (= (get fl-depth) 0) 0 (table-ref (get fl-closure-contour) cl 0))))
+
+"Closure `t` to be evaluated: a task, on every pass from now on."
+(define ensure-task! (subr flow-eff (int) unit)
+  (lambda (t)
+    (if (table-ref (get fl-task-seen) t #f)
+        #u
+        (begin (table-set! (get fl-task-seen) t #t) (set fl-tasks (cons t (get fl-tasks))) (set fl-changed #t)))))
+
+"Element `i` of `cells` given `s` too."
+(define join! (subr flow-eff ((arrayof vals @fl) int vals) unit)
   (lambda (cells i s)
     (if (null? s)
         #u
         (let* ((old (array-ref cells i)) (new (vals-union old s)))
           (if (= (length new) (length old)) #u (begin (array-set! cells i new) (set fl-changed #t)))))))
 
-(define field-of (->* (int string) vals)
+"Variable `v`'s address in contour `c`: a global's is its own."
+(define cell-key (subr flow-eff (int int) int)
+  (lambda (v c) (+ (* v 1048576) (if (array-ref (get fl-global) v) 0 c))))
+(define cell (subr flow-eff (int) vals)
+  (lambda (k) (if (= (get fl-depth) 0) (array-ref (get fl-cell-array) (quotient k 1048576)) (table-ref (get fl-cells) k nil))))
+
+"The cell at `k` of `table` given `s` too."
+(define join-table! (subr flow-eff ((table int vals @fl) int vals) unit)
+  (lambda (tbl k s)
+    (if (null? s)
+        #u
+        (let* ((old (table-ref tbl k nil)) (new (vals-union old s)))
+          (if (= (length new) (length old)) #u (begin (table-set! tbl k new) (set fl-changed #t)))))))
+(define join-cell! (subr flow-eff (int vals) unit)
+  (lambda (k s)
+    (if (= (get fl-depth) 0)
+        (join! (get fl-cell-array) (quotient k 1048576) s)
+        (begin (if (and (pair? s) (null? (table-ref (get fl-cells) k nil))) (set fl-cell-keys (cons k (get fl-cell-keys))) #u)
+               (join-table! (get fl-cells) k s)))))
+
+(define field-of (subr flow-eff (int string) vals)
   (lambda (site label)
     (letrec ((go (->* (fields) vals)
                (lambda (fs) (cond ((null? fs) nil)
@@ -432,7 +545,7 @@ A set of them: a sorted list."
                                   (else (go (cdr fs)))))))
       (go (array-ref (get fl-fields) site)))))
 
-(define field-join! (->* (int string vals) unit)
+(define field-join! (subr flow-eff (int string vals) unit)
   (lambda (site label s)
     (if (null? s)
         #u
@@ -451,25 +564,27 @@ A set of them: a sorted list."
                                     (drop fs))))
                 (set fl-changed #t)))))))
 
-(define last-vals (->* ((listof vals acyclic)) vals)
+(define last-vals (subr flow-eff ((listof vals acyclic)) vals)
   (lambda (l) (if (null? (cdr l)) (car l) (last-vals (cdr l)))))
-(define union-all (->* ((listof vals acyclic)) vals)
+(define union-all (subr flow-eff ((listof vals acyclic)) vals)
   (lambda (l) (if (null? l) nil (vals-union (car l) (union-all (cdr l))))))
-"The callees of a call: its operator's lambdas, and unknown if it may be
-code not known."
-(define filter-callees (->* (vals) vals)
+"The callees of a call, by lambda (4l): its operator's closures' lambdas,
+and unknown if it may be code not known."
+(define filter-callees (subr flow-eff (vals) vals)
   (lambda (ops) (cond ((null? ops) nil)
-                      ((or (lambda-val? (car ops)) (= (car ops) unknown)) (cons (car ops) (filter-callees (cdr ops))))
+                      ((lambda-val? (car ops))
+                       (vals-union (list (* 4 (closure-lambda (quotient (car ops) 4)))) (filter-callees (cdr ops))))
+                      ((= (car ops) unknown) (vals-union (list unknown) (filter-callees (cdr ops))))
                       (else (filter-callees (cdr ops))))))
 "The field `label` of the sites in `s` (unknown if `s` may be)."
-(define fields-of (->* (vals string) vals)
+(define fields-of (subr flow-eff (vals string) vals)
   (lambda (s label)
     (cond ((null? s) nil)
           ((site-val? (car s)) (vals-union (field-of (quotient (car s) 4) label) (fields-of (cdr s) label)))
           ((= (car s) unknown) (vals-union (list unknown) (fields-of (cdr s) label)))
           (else (fields-of (cdr s) label)))))
 "The payload of the sum sites in `s` of tag `tag` (any, for \"\")."
-(define payload-of (->* (vals string) vals)
+(define payload-of (subr flow-eff (vals string) vals)
   (lambda (s tag)
     (cond ((null? s) nil)
           ((site-val? (car s))
@@ -481,45 +596,44 @@ code not known."
                          (payload-of (cdr s) tag))))
           ((= (car s) unknown) (vals-union (list unknown) (payload-of (cdr s) tag)))
           (else (payload-of (cdr s) tag)))))
-"An arm's variables given the payload: one, all of it; several, its
-product's fields by position."
-(define bind-arm (->* ((listof int acyclic) vals) unit)
-  (lambda (vars payload)
+"An arm's variables, in contour `c`, given the payload: one, all of it;
+several, its product's fields by position."
+(define bind-arm (subr flow-eff (ints vals int) unit)
+  (lambda (vars payload c)
     (cond ((null? vars) #u)
-          ((null? (cdr vars)) (join! (get fl-var-cells) (car vars) payload))
+          ((null? (cdr vars)) (join-cell! (cell-key (car vars) c) payload))
           (else
-           (letrec ((go (->* ((listof int acyclic) int) unit)
+           (letrec ((go (->* (ints int) unit)
                       (lambda (vs i) (if (null? vs) #u
-                                         (begin (join! (get fl-var-cells) (car vs) (fields-of payload (int->string i)))
+                                         (begin (join-cell! (cell-key (car vs) c) (fields-of payload (int->string i)))
                                                 (go (cdr vs) (+ i 1)))))))
              (go vars 1))))))
-"Arguments `as` given to parameters `ps` (and the rest, `rest` if not -1)."
-(define pass-args (->* ((listof int acyclic) int (listof vals acyclic)) unit)
-  (lambda (ps rest as)
-    (cond ((null? ps) (if (>= rest 0) (join! (get fl-var-cells) rest (union-all as)) #u))
+"Arguments `as` given, in contour `c`, to parameters `ps` (and the rest,
+`rest`, if not -1)."
+(define pass-args (subr flow-eff (ints int (listof vals acyclic) int) unit)
+  (lambda (ps rest as c)
+    (cond ((null? ps) (if (>= rest 0) (join-cell! (cell-key rest c) (union-all as)) #u))
           ((null? as) #u)
-          (else (begin (join! (get fl-var-cells) (car ps) (car as)) (pass-args (cdr ps) rest (cdr as)))))))
+          (else (begin (join-cell! (cell-key (car ps) c) (car as)) (pass-args (cdr ps) rest (cdr as) c))))))
 
-"What `s` holds escapes to code not known: its lambdas may be called with
-anything, and what its sites hold escapes too."
 (define-rec
-  (escape! (->* (vals) unit)
+  ;; What `s` holds escapes to code not known: its closures may be called
+  ;; with anything (their bodies evaluated where they were made, their
+  ;; parameters unknown there), and what its sites hold escapes too.
+  (escape! (subr flow-eff (vals) unit)
     (lambda (s)
       (cond ((null? s) #u)
             ((lambda-val? (car s))
-             (let ((l (quotient (car s) 4)))
+             (let* ((cl (quotient (car s) 4)) (l (closure-lambda cl)) (c (closure-contour cl))
+                    (info (array-ref (get fl-lambda-array) l)))
                (begin
-                 (if (array-ref (get fl-escaped) l)
-                     #u
-                     (let ((info (array-ref (get fl-lambda-array) l)))
-                       (begin
-                         (array-set! (get fl-escaped) l #t)
-                         (set fl-changed #t)
-                         (letrec ((params (->* ((listof int acyclic)) unit)
-                                    (lambda (ps) (if (null? ps) #u
-                                                     (begin (join! (get fl-var-cells) (car ps) (list unknown)) (params (cdr ps)))))))
-                           (params (extract info params)))
-                         (if (>= (extract info rest) 0) (join! (get fl-var-cells) (extract info rest) (list unknown)) #u))))
+                 (if (array-ref (get fl-escaped) l) #u (begin (array-set! (get fl-escaped) l #t) (set fl-changed #t)))
+                 (letrec ((params (->* (ints) unit)
+                            (lambda (ps) (if (null? ps) #u
+                                             (begin (join-cell! (cell-key (car ps) c) (list unknown)) (params (cdr ps)))))))
+                   (params (extract info params)))
+                 (if (>= (extract info rest) 0) (join-cell! (cell-key (extract info rest) c) (list unknown)) #u)
+                 (ensure-task! cl)
                  (escape! (cdr s)))))
             ((site-val? (car s))
              (let ((site (quotient (car s) 4)))
@@ -533,27 +647,31 @@ anything, and what its sites hold escapes too."
                          (each (array-ref (get fl-fields) site)))))
                  (escape! (cdr s)))))
             (else (escape! (cdr s))))))
-  ;; The value of `x` in the store as it is, joining what it does into it.
-  (eval-core (->* (core) vals)
-    (lambda (x)
+  ;; The value of `x` in contour `c`, in the store as it is, joining what it
+  ;; does into it.
+  (eval-core (subr flow-eff (core int) vals)
+    (lambda (x c)
       (tagcase x
-        (k-none (xs) (begin (eval-all xs) nil))
-        (k-var (v) (array-ref (get fl-var-cells) v))
-        (k-lam (l) (list (* 4 l)))
-        (k-seq (xs) (let ((vs (eval-all xs))) (if (null? vs) nil (last-vals vs))))
-        (k-alt (xs) (union-all (eval-all xs)))
-        (k-bind (v e) (begin (join! (get fl-var-cells) v (eval-core e)) nil))
+        (k-none (xs) (begin (eval-all xs c) nil))
+        (k-var (v) (cell (cell-key v c)))
+        (k-lam (l) (let ((cl (closure-of l c)))
+                     ;; Made: its body evaluated where it was made, whether or not
+                     ;; it is called (the runtime calls some: handlers, branches).
+                     (begin (ensure-task! cl) (list (* 4 cl)))))
+        (k-seq (xs) (let ((vs (eval-all xs c))) (if (null? vs) nil (last-vals vs))))
+        (k-alt (xs) (union-all (eval-all xs c)))
+        (k-bind (v e) (begin (join-cell! (cell-key v c) (eval-core e c)) nil))
         (k-alloc (site inits)
           (begin
             (letrec ((go (->* ((listof field-init acyclic)) unit)
                        (lambda (is) (if (null? is) #u
-                                        (begin (field-join! site (extract (car is) label) (eval-core (extract (car is) value)))
+                                        (begin (field-join! site (extract (car is) label) (eval-core (extract (car is) value) c))
                                                (go (cdr is)))))))
               (go inits))
             (list (+ 1 (* 4 site)))))
-        (k-field (e label) (fields-of (eval-core e) label))
+        (k-field (e label) (fields-of (eval-core e c) label))
         (k-store (e label v)
-          (let ((targets (eval-core e)) (s (eval-core v)))
+          (let ((targets (eval-core e c)) (s (eval-core v c)))
             (begin
               (letrec ((go (->* (vals) unit)
                          (lambda (ts) (cond ((null? ts) #u)
@@ -562,76 +680,172 @@ anything, and what its sites hold escapes too."
                                             (else (go (cdr ts)))))))
                 (go targets))
               nil)))
-        (k-escape (xs) (begin (escape! (union-all (eval-all xs))) (list unknown)))
+        (k-escape (xs) (begin (escape! (union-all (eval-all xs c))) (list unknown)))
         (k-case (e arms)
-          (let ((subject (eval-core e)))
+          (let ((subject (eval-core e c)))
             (union-all
              (letrec ((go (->* ((listof arm acyclic)) (listof vals acyclic))
                         (lambda (as)
                           (if (null? as) nil
-                              (let* ((a (car as))
-                                     (payload (payload-of subject (extract a tag))))
+                              (let ((a (car as)))
                                 (begin
-                                  (bind-arm (extract a vars) payload)
-                                  (cons (eval-core (extract a body)) (go (cdr as)))))))))
+                                  (bind-arm (extract a vars) (payload-of subject (extract a tag)) c)
+                                  (cons (eval-core (extract a body) c) (go (cdr as)))))))))
                (go arms)))))
-        (k-app (c f args)
-          (let ((ops (eval-core f)) (as (eval-all args)))
+        (k-app (call f args)
+          (let ((ops (eval-core f c)) (as (eval-all args c)))
             (begin
-              (join! (get fl-callees) c (filter-callees ops))
-              (call-all ops as)))))))
-  (eval-all (->* (cores) (listof vals acyclic))
-    (lambda (xs) (if (null? xs) nil (let ((v (eval-core (car xs)))) (cons v (eval-all (cdr xs)))))))
-  ;; Each operator in `ops` called with `as`: the union of their results.
-  (call-all (->* (vals (listof vals acyclic)) vals)
-    (lambda (ops as)
+              (join! (get fl-callees) call (filter-callees ops))
+              (call-all call c ops as)))))))
+  (eval-all (subr flow-eff (cores int) (listof vals acyclic))
+    (lambda (xs c) (if (null? xs) nil (let ((v (eval-core (car xs) c))) (cons v (eval-all (cdr xs) c))))))
+  ;; Each operator in `ops` called at `call`, in contour `c`, with `as`: the
+  ;; union of their results.
+  (call-all (subr flow-eff (int int vals (listof vals acyclic)) vals)
+    (lambda (call c ops as)
       (cond ((null? ops) nil)
             ((lambda-val? (car ops))
-             (let* ((l (quotient (car ops) 4)) (info (array-ref (get fl-lambda-array) l)))
+             (let* ((cl (quotient (car ops) 4))
+                    (l (closure-lambda cl))
+                    (made (closure-contour cl))
+                    (c1 (push-contour call c))
+                    (info (array-ref (get fl-lambda-array) l))
+                    (task (closure-of l c1)))
                (begin
-                 (pass-args (extract info params) (extract info rest) as)
-                 (vals-union (array-ref (get fl-results) l) (call-all (cdr ops) as)))))
+                 ;; Its free variables, copied from where it was made.
+                 (letrec ((copy (->* (ints) unit)
+                            (lambda (vs) (if (null? vs) #u
+                                             (begin (join-cell! (cell-key (car vs) c1) (cell (cell-key (car vs) made)))
+                                                    (copy (cdr vs)))))))
+                   (copy (array-ref (get fl-free) l)))
+                 (pass-args (extract info params) (extract info rest) as c1)
+                 (ensure-task! task)
+                 (vals-union (table-ref (get fl-results) task nil) (call-all call c (cdr ops) as)))))
             ((= (car ops) unknown)
-             (begin (escape! (union-all as)) (vals-union (list unknown) (call-all (cdr ops) as))))
-            (else (call-all (cdr ops) as))))))
+             (begin (escape! (union-all as)) (vals-union (list unknown) (call-all call c (cdr ops) as))))
+            (else (call-all call c (cdr ops) as))))))
 
 (define-type program-files (listof (productof (file string) (forms (listof syn acyclic))) acyclic))
 
 "The list `l`, newest first, as an array oldest first."
-(define lambdas->array (->* ((listof lambda-info acyclic) lambda-info) (arrayof lambda-info @fl))
+(define lambdas->array (subr flow-eff ((listof lambda-info acyclic) lambda-info) (arrayof lambda-info @fl))
   (lambda (l default)
     (let ((a (the (arrayof lambda-info @fl) (make-array (length l) default))))
       (letrec ((go (->* ((listof lambda-info acyclic) int) unit)
                  (lambda (l i) (if (null? l) #u (begin (array-set! a i (car l)) (go (cdr l) (- i 1)))))))
         (begin (go l (- (length l) 1)) a)))))
-(define sites->array (->* ((listof site-info acyclic) site-info) (arrayof site-info @fl))
+(define sites->array (subr flow-eff ((listof site-info acyclic) site-info) (arrayof site-info @fl))
   (lambda (l default)
     (let ((a (the (arrayof site-info @fl) (make-array (length l) default))))
       (letrec ((go (->* ((listof site-info acyclic) int) unit)
                  (lambda (l i) (if (null? l) #u (begin (array-set! a i (car l)) (go (cdr l) (- i 1)))))))
         (begin (go l (- (length l) 1)) a)))))
 
-"The program of `files` analysed: its top levels and every lambda's body
-evaluated until the store stops growing. The number of passes."
-(define analyze-flow (->* (program-files) int)
+(define append-ints (subr flow-eff (ints ints) ints)
+  (lambda (a b) (if (null? a) b (cons (car a) (append-ints (cdr a) b)))))
+(define member-int? (subr flow-eff (int ints) bool)
+  (lambda (x l) (and (pair? l) (or (= (car l) x) (member-int? x (cdr l))))))
+
+"The variables `x` refers to and binds (its lambdas' bodies and parameters
+included), onto `refs` and `binds`."
+(define-type refs-binds (productof (refs ints) (binds ints)))
+(define-rec
+  (refs-binds-of (subr flow-eff (core refs-binds) refs-binds)
+    (lambda (x acc)
+      (tagcase x
+        (k-none (xs) (refs-binds-all xs acc))
+        (k-var (v) (product (refs (cons v (extract acc refs))) (binds (extract acc binds))))
+        (k-lam (l) (let ((info (array-ref (get fl-lambda-array) l)))
+                     (refs-binds-of (extract info body)
+                                    (product (refs (extract acc refs))
+                                             (binds (append-ints (extract info params)
+                                                                 (if (>= (extract info rest) 0)
+                                                                     (cons (extract info rest) (extract acc binds))
+                                                                     (extract acc binds))))))))
+        (k-app (call f args) (refs-binds-all args (refs-binds-of f acc)))
+        (k-seq (xs) (refs-binds-all xs acc))
+        (k-alt (xs) (refs-binds-all xs acc))
+        (k-bind (v e) (refs-binds-of e (product (refs (extract acc refs)) (binds (cons v (extract acc binds))))))
+        (k-alloc (site inits)
+          (letrec ((go (->* ((listof field-init acyclic) refs-binds) refs-binds)
+                     (lambda (is acc) (if (null? is) acc (go (cdr is) (refs-binds-of (extract (car is) value) acc))))))
+            (go inits acc)))
+        (k-field (e label) (refs-binds-of e acc))
+        (k-store (e label v) (refs-binds-of v (refs-binds-of e acc)))
+        (k-escape (xs) (refs-binds-all xs acc))
+        (k-case (e arms)
+          (letrec ((go (->* ((listof arm acyclic) refs-binds) refs-binds)
+                     (lambda (as acc)
+                       (if (null? as) acc
+                           (go (cdr as) (refs-binds-of (extract (car as) body)
+                                                       (product (refs (extract acc refs))
+                                                                (binds (append-ints (extract (car as) vars) (extract acc binds))))))))))
+            (go arms (refs-binds-of e acc)))))))
+  (refs-binds-all (subr flow-eff (cores refs-binds) refs-binds)
+    (lambda (xs acc) (if (null? xs) acc (refs-binds-all (cdr xs) (refs-binds-of (car xs) acc))))))
+
+"Lambda `l`'s free variables: those its body refers to, not bound in it,
+not global."
+(define free-of (subr flow-eff (int) ints)
+  (lambda (l)
+    (let* ((info (array-ref (get fl-lambda-array) l))
+           (rb (refs-binds-of (extract info body)
+                              (product (refs nil) (binds (append-ints (extract info params)
+                                                                      (if (>= (extract info rest) 0) (list (extract info rest)) nil))))))
+           (bound (extract rb binds)))
+      (letrec ((go (->* (ints ints) ints)
+                 (lambda (rs acc)
+                   (cond ((null? rs) acc)
+                         ((or (array-ref (get fl-global) (car rs)) (member-int? (car rs) bound) (member-int? (car rs) acc))
+                          (go (cdr rs) acc))
+                         (else (go (cdr rs) (cons (car rs) acc)))))))
+        (go (extract rb refs) nil)))))
+
+"The program of `files` analysed at the depth set (`set-flow-depth!`):
+its top levels evaluated in the empty contour, and every task, until the
+store stops growing. The number of passes."
+(define analyze-flow (subr flow-eff (program-files) int)
   (lambda (files)
     (begin
       (set fl-vars 0) (set fl-lambdas nil) (set fl-calls nil) (set fl-sites nil)
       (array-set! fl-counts 0 0) (array-set! fl-counts 1 0) (array-set! fl-counts 2 0)
       (set fl-globals (the (table string int @fl) (make-table string-hash string=?)))
       (declare-globals files)
-      (let ((tops (letrec ((go (->* (program-files) cores)
-                             (lambda (fs) (if (null? fs) nil
-                                              (cons (body-to-core (extract (car fs) file) (extract (car fs) forms) nil)
-                                                    (go (cdr fs)))))))
-                    (go files))))
+      (let* ((global-count (get fl-vars))
+             (tops (letrec ((go (->* (program-files) cores)
+                              (lambda (fs) (if (null? fs) nil
+                                               (cons (body-to-core (extract (car fs) file) (extract (car fs) forms) nil)
+                                                     (go (cdr fs)))))))
+                     (go files))))
         (begin
           (set fl-lambda-array (lambdas->array (get fl-lambdas)
                                                (product (span (product (file "") (start 0) (end 0))) (name "")
                                                         (params nil) (rest -1) (body (k-none nil)))))
           (set fl-site-array (sites->array (get fl-sites) (product (span (product (file "") (start 0) (end 0))) (kind "") (tag ""))))
-          (set fl-var-cells (make-array (get fl-vars) nil))
-          (set fl-results (make-array (length (get fl-lambdas)) nil))
+          ;; The globals are the variables declared first, and those the
+          ;; desugaring made for names defined later (global-var).
+          (set fl-global (make-array (get fl-vars) #f))
+          (letrec ((mark (->* (int) unit)
+                     (lambda (v) (if (>= v global-count) #u (begin (array-set! (get fl-global) v #t) (mark (+ v 1)))))))
+            (mark 0))
+          (set fl-free (make-array (array-length (get fl-lambda-array)) nil))
+          (letrec ((frees (->* (int) unit)
+                     (lambda (l) (if (>= l (array-length (get fl-lambda-array))) #u
+                                     (begin (array-set! (get fl-free) l (free-of l)) (frees (+ l 1)))))))
+            (frees 0))
+          (set fl-cells (the (table int vals @fl) (make-table int-hash int-same)))
+          (set fl-cell-array (make-array (get fl-vars) nil))
+          (set fl-cell-keys nil)
+          (set fl-results (the (table int vals @fl) (make-table int-hash int-same)))
+          (set fl-contour-ids (the (table int int @fl) (make-table int-hash int-same)))
+          (set fl-contour-calls (the (table int ints @fl) (make-table int-hash int-same)))
+          (set fl-contour-count 1)
+          (set fl-closure-ids (the (table int int @fl) (make-table int-hash int-same)))
+          (set fl-closure-lambda (the (table int int @fl) (make-table int-hash int-same)))
+          (set fl-closure-contour (the (table int int @fl) (make-table int-hash int-same)))
+          (set fl-closure-count 0)
+          (set fl-tasks nil)
+          (set fl-task-seen (the (table int bool @fl) (make-table int-hash int-same)))
           (set fl-fields (make-array (length (get fl-sites)) nil))
           (set fl-callees (make-array (length (get fl-calls)) nil))
           (set fl-escaped (make-array (length (get fl-lambdas)) #f))
@@ -640,16 +854,57 @@ evaluated until the store stops growing. The number of passes."
                      (lambda (n)
                        (begin
                          (set fl-changed #f)
-                         (eval-all tops)
-                         (letrec ((bodies (->* (int) unit)
-                                    (lambda (l)
-                                      (if (>= l (array-length (get fl-lambda-array))) #u
-                                          (begin (join! (get fl-results) l
-                                                        (eval-core (extract (array-ref (get fl-lambda-array) l) body)))
-                                                 (bodies (+ l 1)))))))
-                           (bodies 0))
+                         (eval-all tops 0)
+                         (letrec ((tasks (->* (ints) unit)
+                                    (lambda (ts)
+                                      (if (null? ts) #u
+                                          (let ((cl (car ts)))
+                                            (begin
+                                              (join-table! (get fl-results) cl
+                                                           (eval-core (extract (array-ref (get fl-lambda-array) (closure-lambda cl)) body)
+                                                                      (closure-contour cl)))
+                                              (tasks (cdr ts))))))))
+                           (tasks (get fl-tasks)))
                          (if (get fl-changed) (pass (+ n 1)) n)))))
             (pass 1)))))))
+
+"`s` with each closure as its lambda (4l)."
+(define by-lambda (subr flow-eff (vals) vals)
+  (lambda (s)
+    (cond ((null? s) nil)
+          ((lambda-val? (car s)) (vals-union (list (* 4 (closure-lambda (quotient (car s) 4)))) (by-lambda (cdr s))))
+          (else (vals-union (list (car s)) (by-lambda (cdr s)))))))
+
+"For measuring: the values each local variable can hold, merged over its
+contours, summed over the variables; and how many hold more than one."
+(define flow-value-precision (subr flow-eff () (productof (total int) (several int)))
+  (lambda ()
+    (let ((merged (the (arrayof vals @fl) (make-array (get fl-vars) nil))))
+      (begin
+        (if (= (get fl-depth) 0)
+            (letrec ((go (subr flow-eff (int) unit)
+                       (lambda (v) (if (>= v (get fl-vars)) #u
+                                       (begin (array-set! merged v (array-ref (get fl-cell-array) v)) (go (+ v 1)))))))
+              (go 0))
+            (letrec ((go (subr flow-eff (ints) unit)
+                       (lambda (ks) (if (null? ks) #u
+                                        (let ((v (quotient (car ks) 1048576)))
+                                          (begin (array-set! merged v (vals-union (array-ref merged v) (table-ref (get fl-cells) (car ks) nil)))
+                                                 (go (cdr ks))))))))
+              (go (get fl-cell-keys))))
+        (letrec ((tally (subr flow-eff (int int int) (productof (total int) (several int)))
+                   (lambda (v total several)
+                     (if (>= v (get fl-vars)) (product (total total) (several several))
+                         (if (array-ref (get fl-global) v)
+                             (tally (+ v 1) total several)
+                             ;; Closures counted by their lambdas: a lambda made in
+                             ;; several contours is one value to whoever reads it.
+                             (let ((n (length (by-lambda (array-ref merged v)))))
+                               (tally (+ v 1) (+ total n) (if (> n 1) (+ several 1) several))))))))
+          (tally 0 0 0))))))
+
+"How many tasks (a lambda in a contour) the last analysis evaluated."
+(define flow-task-count (subr flow-eff () int) (lambda () (length (get fl-tasks))))
 
 ;;; ------------------------------------------------------------ results
 

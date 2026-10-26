@@ -10,7 +10,6 @@
 ;;; sexps (C-M-f, C-M-b, C-M-u, C-M-d), killing one (C-M-k), the match of
 ;;; the paren at point, and paredit's keys and structural edits.
 
-(define-type ints (listof int acyclic))
 
 "Where the top-level form `pos` is in starts: the last `(` at the start of a
 line at or before `pos`; 0 if none."

@@ -26,6 +26,7 @@
         (type row rows screen span spans face))
 
 (define-type strings (listof string acyclic))
+(define-type ints (listof int acyclic))
 
 "`s` with every `from` character replaced by `to`."
 (define* string-replace-char (subr spin (string char char) string)
