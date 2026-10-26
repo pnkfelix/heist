@@ -677,6 +677,22 @@ in a new one."
                                   (if (extract got found) #u
                                       (tell! fr (echo (string-append "No file " file))))))))))))))
 
+"M-. on a name the program does not define: said to be one of FX-26's
+standard names, with its type, if Fixpt's table of them (standard.rs,
+where the checker learns their types) has it. Read in a command."
+(define* say-standard (subr pure ((actor frame) string) cmd)
+  (lambda (fr name)
+    (lambda ()
+      (let* ((got (file-text (string-append fixpt-sources "standard.rs")))
+             (s (if (extract got found) (rope->string (extract got text)) ""))
+             (key (string-append "(\"" name "\", \""))
+             (at (string-search s key 0))
+             (to (if (< at 0) -1 (string-search s "\")," (+ at (string-length key))))))
+        (tell! fr (echo (if (< to 0)
+                            (string-append "No definition of " name " found")
+                            (string-append name " is built in to FX-26, so has no definition here: "
+                                           (substring s (+ at (string-length key)) to)))))))))
+
 "Go to place `pl`; or, if a name imported from a file is there, on to its
 definition in that file."
 (define* land (subr turn-eff ((actor frame) frame place) (reply frame))
@@ -692,8 +708,9 @@ definition in that file."
           (visit-definition fr f (linked-file (extract st file) lk) (symbol-at (extract st text) (+ 1 (extract pl point))))))))
 
 "M-.: the definition of the name at point. Its binder in this text, if it
-is here; else a definition in a buffer, else in the index; through an
-`import`, on to the file the name comes from."
+is here; else a definition in a buffer, else in the index; a standard
+name, said to be one (`say-standard`); through an `import`, on to the file
+the name comes from."
 (define* find-definition-at-point (subr pure () frame-action)
   (lambda ()
     (lambda ((fr (actor frame)) (f frame))
@@ -721,7 +738,7 @@ is here; else a definition in a buffer, else in the index; through an
                                                (extract hit file)
                                                (linked-file (extract hit file) (extract hit link)))
                                            name)))
-                 (none u2 (draw (with-echo f (string-append "No definition of " name " found")))))))))))))
+                 (none u2 (reply-with f (list (say-standard fr name)))))))))))))
 
 "M-,: back to where the last M-. was from."
 (define* pop-definition (subr pure () frame-action)
