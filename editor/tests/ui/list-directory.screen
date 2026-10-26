@@ -1,0 +1,13 @@
+alpha                                   |
+                                        |
+                                        |
+                                        |
+                                        |
+---- a.txt   L1                         |
+Directory TMP/list-dire|
+a.txt                                   |
+b.txt                                   |
+                                        |
+---- *Directory*   L1                   |
+                                        |
+cursor 0,0

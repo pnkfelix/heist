@@ -6,6 +6,8 @@
 ;;;   RET in *Buffer List* the buffer on this line, shown
 ;;;   C-x s                each file changed and not saved, saved if you say so
 ;;;   M-x revert-buffer    the buffer's file read again
+;;;   C-x d, M-x dired     a directory read, and its listing visited
+;;;   C-x C-d              a directory's names (`ls -F`), shown in *Directory*
 
 "The text of the line point is on in `st`, and its number."
 (define* point-line (subr spin (buffer) (productof (text string) (line int)))
@@ -121,6 +123,37 @@ it and the rest, q the rest not. `saved`: how many so far."
   (lambda ()
     (lambda ((fr (actor frame)) (f frame)) (save-some fr f (unsaved-buffers (extract f buffers)) 0))))
 
+"Directory name `typed`, absolute, without its last `/`."
+(define* typed-directory (subr spin (string string) string)
+  (lambda (typed dir)
+    (let* ((d (expand-file-name typed dir)) (n (string-length d)))
+      (if (and (> n 1) (char=? (string-ref d (- n 1)) #\/)) (substring d 0 (- n 1)) d))))
+
+"C-x d: a directory read, and its listing visited."
+(define* dired (subr pure () frame-action)
+  (lambda ()
+    (lambda ((fr (actor frame)) (f frame))
+      (let ((dir (selected-directory f)))
+        (read-completing f "Dired (directory): " dir (sum files #u)
+                         (lambda ((fr (actor frame)) (f frame) (typed string))
+                           (visit-file fr f (typed-directory typed dir))))))))
+
+"C-x C-d: a directory read, and its names (`ls -F`) shown in *Directory*,
+the selected window staying selected."
+(define* list-directory (subr pure () frame-action)
+  (lambda ()
+    (lambda ((fr (actor frame)) (f frame))
+      (let ((dir (selected-directory f)))
+        (read-completing f "List directory: " dir (sum files #u)
+                         (lambda ((fr (actor frame)) (f frame) (typed string))
+                           (let ((d (string-append (typed-directory typed dir) "/")))
+                             (run-in-buffer fr f "*Directory*" "command" (list "ls" "-F" d) d
+                                            (string-append "Directory " d "\n") #f))))))))
+
+(define-command! "dired" (sum on-frame (dired)))
+(define-command! "list-directory" (sum on-frame (list-directory)))
+(define-key! "C-x d" "dired")
+(define-key! "C-x C-d" "list-directory")
 (define-command! "dired-find-file" (sum on-frame (listing-visit)))
 (define-command! "Buffer-menu-this-window" (sum on-frame (buffer-list-visit)))
 (define-command! "revert-buffer" (sum on-frame (revert-buffer)))
