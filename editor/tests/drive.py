@@ -50,14 +50,28 @@ def pump(seconds):
                 return
             out.extend(data)
 
-pump(a.settle)
+def quiet(seconds, limit=10.0):
+    """Pump until no output has come for `seconds`, or `limit` has passed."""
+    end = time.time() + limit
+    while time.time() < end:
+        before = len(out)
+        pump(seconds)
+        if len(out) == before:
+            return
+
+# Started: the first screen drawn (the cursor shown after drawing), and
+# then quiet, so that the parties outside (syntax, index) have had a go.
+end = time.time() + a.settle + 10
+while b"\x1b[?25h" not in out and time.time() < end:
+    pump(0.1)
+quiet(0.3)
 for k in a.keys:
     if k.startswith("@"):
         pump(int(k[1:]) / 1000)
         continue
     os.write(fd, k.encode("utf-8").decode("unicode_escape").encode("latin-1"))
-    pump(0.25)
-pump(0.5)
+    quiet(0.25)
+quiet(0.5)
 try:
     os.kill(pid, 9)
 except ProcessLookupError:

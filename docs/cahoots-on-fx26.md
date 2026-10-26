@@ -183,9 +183,9 @@ and `scope.sld`). What is wrong today:
 - Of two files that define a name, the first found wins.
 - `import` and `with` are not followed.
 
-Each of these is a matter of names, not flow. The checker already
-resolves every name, and using its resolution, rather than writing a
-second one, is the fix. What *does* need flow analysis, typed or not, is
+Each of these is a matter of names, not flow. Fixpt's checker resolves
+every name as it checks, but keeps no record of it, and has no API for it.
+So the editor needs a resolver of its own: `docs/fx26-analysis.md`. What *does* need flow analysis, typed or not, is
 the questions about values: the closures that reach a call through a
 variable or a field, and where a value goes. That is R10 of
 `fx26-for-yank.md`, a flow analysis on the checker's output, built once

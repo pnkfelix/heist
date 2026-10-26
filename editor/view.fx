@@ -13,6 +13,7 @@ cursor's row and column in it."
 (define-type reporter (subr turn-eff (int rows string int int) cmd))
 (define-type view
   (productof (window int) (report reporter) (top int) (height int) (width int)
+             (hscroll int)                        ; the first column shown
              (last (sumof (none unit) (some snapshot)))))
 
 (define tab-width int 8)
@@ -85,6 +86,23 @@ gave."
                                  (go (cdr fs))))))))
             (go (faces-between fs ls (+ le 1))))))))
 
+"Row `w` wide of a line shown as `shown` with spans `ss`, from column `hs`."
+(define* scrolled-row (subr spin (int string spans int) row)
+  (lambda (w shown ss hs)
+    (if (= hs 0)
+        (make-row w shown ss)
+        (make-row w
+                  (if (> (string-length shown) hs) (substring shown hs (string-length shown)) "")
+                  (letrec ((go (subr spin (spans) spans)
+                             (lambda (ss)
+                               (cond ((null? ss) nil)
+                                     ((<= (extract (car ss) end) hs) (go (cdr ss)))
+                                     (else (cons (product (start (max 0 (- (extract (car ss) start) hs)))
+                                                          (end (- (extract (car ss) end) hs))
+                                                          (face (extract (car ss) face)))
+                                                 (go (cdr ss))))))))
+                    (go ss))))))
+
 "`v`'s rows for snapshot `snap`, scrolled to show point: the view after,
 and the command that reports it."
 (define* lay-out (subr turn-eff (view snapshot) (reply view))
@@ -98,6 +116,14 @@ and the command that reports it."
            (top (if (or (< pline (extract v top)) (>= pline (+ (extract v top) h)))
                     (max 0 (- pline (quotient h 2)))
                     (extract v top)))
+           (start (rope-line-start t pline))
+           (line-text (rope-substring t start (rope-line-end t pline)))
+           (true-column (column-of line-text (- (extract snap point) start)))
+           ;; The cursor off the window sideways: scrolled to put it in the middle.
+           (hs (if (and (>= true-column (extract v hscroll)) (< true-column (+ (extract v hscroll) (- w 1))))
+                   (extract v hscroll)
+                   (if (< true-column (- w 1)) 0 (- true-column (quotient w 2)))))
+           (column (- true-column hs))
            (shown-from (rope-line-start t top))
            (shown-faces (faces-between (extract ann faces) shown-from
                                        (rope-line-end t (min (- (rope-line-count t) 1) (+ top h)))))
@@ -110,13 +136,10 @@ and the command that reports it."
                                                (let* ((ls (rope-line-start t n))
                                                       (le (rope-line-end t n))
                                                       (text (rope-substring t ls le)))
-                                                 (make-row w (expand-tabs text) (line-spans snap shown-faces ls le text)))
+                                                 (scrolled-row w (expand-tabs text) (line-spans snap shown-faces ls le text) hs))
                                                (blank-row w))
                                            (go (+ i 1))))))))
                     (go 0)))
-           (start (rope-line-start t pline))
-           (line-text (rope-substring t start (rope-line-end t pline)))
-           (column (min (- w 1) (column-of line-text (- (extract snap point) start))))
            (mode (string-append (if (extract snap modified) "-**- " "---- ")
                                 (extract snap name)
                                 "   L" (int->string (+ pline 1))
@@ -126,7 +149,7 @@ and the command that reports it."
                                                    (int->string (+ 1 (rope-line-of t (max 0 (extract ann problem-at)))))
                                                    ")"))))
            (v2 (product (window (extract v window)) (report (extract v report)) (top top)
-                        (height (extract v height)) (width (extract v width))
+                        (height (extract v height)) (width (extract v width)) (hscroll hs)
                         (last (sum some snap)))))
       (reply-with v2 (list ((extract v report) (extract v window) lines mode (- pline top) column))))))
 
@@ -139,7 +162,7 @@ and the command that reports it."
   (lambda (h w)
     (lambda ((v view))
       (let ((v2 (product (window (extract v window)) (report (extract v report)) (top (extract v top))
-                         (height h) (width w) (last (extract v last)))))
+                         (height h) (width w) (hscroll (extract v hscroll)) (last (extract v last)))))
         (tagcase (extract v last)
           (some snap (lay-out v2 snap))
           (none u (same v2)))))))
@@ -148,5 +171,5 @@ and the command that reports it."
 (define* make-view (subr (alloc @ed) (int reporter int int) (actor view))
   (lambda (id report h w)
     (spawn-actor (string-append "view " (int->string id))
-                 (product (window id) (report report) (top 0) (height h) (width w)
+                 (product (window id) (report report) (top 0) (height h) (width w) (hscroll 0)
                           (last (the (sumof (none unit) (some snapshot)) (sum none #u)))))))
