@@ -55,41 +55,41 @@ the payload; or several: the payload's fields by position, labels `1`,
 (define fl-lambdas (ref (listof lambda-info acyclic) @fl) (new nil))   ; newest first
 (define fl-calls (ref (listof call-info acyclic) @fl) (new nil))
 (define fl-sites (ref (listof site-info acyclic) @fl) (new nil))
-(define fl-globals (ref (listof (productof (name string) (var int)) acyclic) @fl) (new nil))
+(define fl-tables (load-module "fx26:table.fx"))
+(import fl-tables make-table table-ref table-set! (type table))
+"The globals' variables, by name."
+(define fl-globals (ref (table string int @fl) @fl)
+  (new (the (table string int @fl) (make-table string-hash string=?))))
+"How many lambdas, calls and sites have been numbered."
+(define fl-counts (arrayof int @fl) (make-array 3 0))
 "The definition being read, to name the lambdas in it: `move-by/λ`."
 (define fl-definition (ref string @fl) (new ""))
 
-(define-effect numbering (maxeff (read @fl) (write @fl) spin))
+(define-effect numbering (maxeff (read @fl) (write @fl) (alloc @fl) (read @globals) spin))
 
 (define new-var (->* () int)
   (lambda () (let ((n (get fl-vars))) (begin (set fl-vars (+ n 1)) n))))
 
 "The variable of global `name`, made on first use."
-(define global-var (->* (string) int)
+(define global-var (subr (maxeff numbering (read @globals) (alloc @fl)) (string) int)
   (lambda (name)
-    (letrec ((go (subr spin ((listof (productof (name string) (var int)) acyclic)) int)
-               (lambda (gs) (cond ((null? gs) -1)
-                                  ((string=? (extract (car gs) name) name) (extract (car gs) var))
-                                  (else (go (cdr gs)))))))
-      (let ((v (go (get fl-globals))))
-        (if (>= v 0)
-            v
-            (let ((n (new-var)))
-              (begin (set fl-globals (cons (product (name name) (var n)) (get fl-globals))) n)))))))
+    (let ((v (table-ref (get fl-globals) name -1)))
+      (if (>= v 0)
+          v
+          (let ((n (new-var)))
+            (begin (table-set! (get fl-globals) name n) n))))))
 
-(define filter-globals (->* (string (listof (productof (name string) (var int)) acyclic)) (listof int acyclic))
-  (lambda (name gs) (cond ((null? gs) nil)
-                          ((string=? (extract (car gs) name) name) (cons (extract (car gs) var) nil))
-                          (else (filter-globals name (cdr gs))))))
-
-(define global-defined? (->* (string) bool)
-  (lambda (name) (pair? (filter-globals name (get fl-globals)))))
+(define global-defined? (subr (maxeff (read @fl) (read @globals) spin) (string) bool)
+  (lambda (name) (>= (table-ref (get fl-globals) name -1) 0)))
+"The next number of kind `k` (0 lambdas, 1 calls, 2 sites)."
+(define next-number (->* (int) int)
+  (lambda (k) (let ((n (array-ref fl-counts k))) (begin (array-set! fl-counts k (+ n 1)) n))))
 (define add-lambda (->* (lambda-info) int)
-  (lambda (info) (begin (set fl-lambdas (cons info (get fl-lambdas))) (- (length (get fl-lambdas)) 1))))
+  (lambda (info) (begin (set fl-lambdas (cons info (get fl-lambdas))) (next-number 0))))
 (define add-call (->* (call-info) int)
-  (lambda (info) (begin (set fl-calls (cons info (get fl-calls))) (- (length (get fl-calls)) 1))))
+  (lambda (info) (begin (set fl-calls (cons info (get fl-calls))) (next-number 1))))
 (define add-site (->* (site-info) int)
-  (lambda (info) (begin (set fl-sites (cons info (get fl-sites))) (- (length (get fl-sites)) 1))))
+  (lambda (info) (begin (set fl-sites (cons info (get fl-sites))) (next-number 2))))
 
 ;;; ------------------------------------------------------------ the syntax, read as core
 
@@ -616,7 +616,9 @@ evaluated until the store stops growing. The number of passes."
 (define analyze-flow (->* (program-files) int)
   (lambda (files)
     (begin
-      (set fl-vars 0) (set fl-lambdas nil) (set fl-calls nil) (set fl-sites nil) (set fl-globals nil)
+      (set fl-vars 0) (set fl-lambdas nil) (set fl-calls nil) (set fl-sites nil)
+      (array-set! fl-counts 0 0) (array-set! fl-counts 1 0) (array-set! fl-counts 2 0)
+      (set fl-globals (the (table string int @fl) (make-table string-hash string=?)))
       (declare-globals files)
       (let ((tops (letrec ((go (->* (program-files) cores)
                              (lambda (fs) (if (null? fs) nil
