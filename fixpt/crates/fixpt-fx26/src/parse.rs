@@ -1599,7 +1599,7 @@ impl Checker {
             }
             "begin" => self.parse_body(span, &items[1..]),
             // Processes and `par` (`processes.rs`).
-            head @ ("spawn" | "spawn-monitored" | "send" | "receive" | "self" | "par" | "race" | "pselect" | "icell-get" | "icell-put!") => {
+            head @ ("spawn" | "spawn-monitored" | "send" | "receive" | "self" | "par" | "race" | "attempt" | "pselect" | "icell-get" | "icell-put!") => {
                 let head = head.to_string();
                 self.parse_process_form(span, &head, &items)
             }

@@ -97,8 +97,12 @@
 ;; file built in sees.
 (define check-built-in! (->* (bool) unit)
   (lambda (on) (set k-in-built-in (+ (get k-in-built-in) (if on 1 -1)))))
+;; Every one begins with `%`, which most names a lookup asks about do not:
+;; tested first, since `k-lookup` asks of every name (Heist's, as
+;; `attempt1` lengthened the list: `FIXPT-CHANGES.md` F1).
 (define k-built-in-only? (->* (symbol) bool)
   (lambda (s)
+    (and (let ((n (symbol->string s))) (and (> (string-length n) 0) (char=? (string-ref n 0) #\%)))
     (or (symbol=? s '%sched) (symbol=? s '%processes:spawn-process)
         (symbol=? s '%processes:send) (symbol=? s '%processes:receive)
         (symbol=? s '%processes:icell-get) (symbol=? s '%processes:icell-put!)
@@ -106,8 +110,9 @@
         (symbol=? s '%processes:mailbox-event) (symbol=? s '%processes:or-event)
         (symbol=? s '%processes:sync) (symbol=? s '%processes:clock-event)
         (symbol=? s '%processes:stdin-event)
-        (symbol=? s '%processes:race2) (symbol=? s '%processes:self)
-        (symbol=? s '%processes:spawn-monitored))))
+        (symbol=? s '%processes:race2) (symbol=? s '%processes:attempt1)
+        (symbol=? s '%processes:self)
+        (symbol=? s '%processes:spawn-monitored)))))
 ;; Whether the innermost binding of `s` was made at depth `mark` or after.
 (define k-bound-since? (->* (symbol int) bool)
   (lambda (s mark)
