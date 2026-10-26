@@ -791,6 +791,15 @@ extended, as Emacs's is, by tables it consults each time."
 (`buffer-kind`), looked up first."
 (define buffer-keys (ref (listof (productof (buffer string) (keys string) (command string)) acyclic) @ed) (new nil))
 
+"What C-h k does with the keys it read (as `keys->string` writes them)
+and the name of their command (\"\": none): help.fx makes it show a
+description; until then, the echo area says the name."
+(define key-describer (ref (subr pure (string string) frame-action) @ed)
+  (new (lambda ((ks string) (name string))
+         (lambda ((fr (actor frame)) (f frame))
+           (draw (with-echo f (if (string=? name "") (string-append ks " is undefined")
+                                  (string-append ks " runs the command " name))))))))
+
 (define* buffer-command (subr pure (string command) named)
   (lambda (name c) (product (name name) (action (sum on-buffer c)))))
 (define* frame-command (subr pure (string frame-action) named)
@@ -913,41 +922,46 @@ names of their commands."
         (product (keys "C-k") (command "paredit-kill"))))
 
 "The prefixes: key sequences that are the start of longer bindings."
-(define prefixes strings (list "C-x" "C-c" "M-g" "ESC" "C-x ESC" "C-c ESC"))
+(define prefixes strings (list "C-x" "C-c" "M-g" "C-h" "ESC" "C-x ESC" "C-c ESC" "C-h ESC"))
 
-"What `ks` does: a command, more keys to come, or nothing."
-(define* binding (subr (maxeff (read @ed) spin) (keys string) (sumof (command action) (prefix unit) (undefined unit)))
+"The name of the command `ks` is bound to in buffer `buffer-name`, or \"\"."
+(define* binding-name (subr (maxeff (read @ed) spin) (keys string) string)
   (lambda (ks buffer-name)
     (let ((s (keys->string ks)))
       (letrec ((bound (subr spin ((listof (productof (keys string) (command string)) acyclic)) string)
                  (lambda (m) (cond ((null? m) "")
                                    ((string=? (extract (car m) keys) s) (extract (car m) command))
-                                   (else (bound (cdr m))))))
-               (prefix? (subr spin (strings) bool)
+                                   (else (bound (cdr m)))))))
+        (let ((n (letrec ((local (subr spin ((listof (productof (buffer string) (keys string) (command string)) acyclic)) string)
+                            (lambda (m) (cond ((null? m) "")
+                                              ((and (or (string=? (extract (car m) buffer) buffer-name)
+                                                        (string=? (extract (car m) buffer) (buffer-kind buffer-name)))
+                                                    (string=? (extract (car m) keys) s))
+                                               (extract (car m) command))
+                                              (else (local (cdr m)))))))
+                   (local (get buffer-keys)))))
+          (cond ((not (string=? n "")) n)
+                ;; Paredit's keys, while it is on, in FX-26 buffers.
+                ((and (get paredit-on) (fx26-file? buffer-name)
+                      (not (string=? (bound paredit-keys) "")))
+                 (bound paredit-keys))
+                ((not (string=? (bound keymap) "")) (bound keymap))
+                (else (bound (get more-keys)))))))))
+
+"What `ks` does: a command, more keys to come, or nothing."
+(define* binding (subr (maxeff (read @ed) spin) (keys string) (sumof (command action) (prefix unit) (undefined unit)))
+  (lambda (ks buffer-name)
+    (let ((s (keys->string ks)) (name (binding-name ks buffer-name)))
+      (letrec ((prefix? (subr spin (strings) bool)
                  (lambda (ps) (and (pair? ps) (or (string=? (car ps) s) (prefix? (cdr ps)))))))
-        (let ((name (let ((n (letrec ((local (subr spin ((listof (productof (buffer string) (keys string) (command string)) acyclic)) string)
-                                        (lambda (m) (cond ((null? m) "")
-                                                          ((and (or (string=? (extract (car m) buffer) buffer-name)
-                                                                    (string=? (extract (car m) buffer) (buffer-kind buffer-name)))
-                                                                (string=? (extract (car m) keys) s))
-                                                           (extract (car m) command))
-                                                          (else (local (cdr m)))))))
-                               (local (get buffer-keys)))))
-                      (cond ((not (string=? n "")) n)
-                            ;; Paredit's keys, while it is on, in FX-26 buffers.
-                            ((and (get paredit-on) (fx26-file? buffer-name)
-                                  (not (string=? (bound paredit-keys) "")))
-                             (bound paredit-keys))
-                            ((not (string=? (bound keymap) "")) (bound keymap))
-                            (else (bound (get more-keys)))))))
-          (cond ((not (string=? name ""))
-                 (tagcase (command-named name) (found a (sum command a)) (none u (sum undefined #u))))
-                ((prefix? prefixes) (sum prefix #u))
-                ((and (pair? ks) (null? (cdr ks)))
-                 (typecase (car ks)
-                   (char c (sum command (sum on-buffer (self-insert c))))
-                   (else y (sum undefined #u))))
-                (else (sum undefined #u))))))))
+        (cond ((not (string=? name ""))
+               (tagcase (command-named name) (found a (sum command a)) (none u (sum undefined #u))))
+              ((prefix? prefixes) (sum prefix #u))
+              ((and (pair? ks) (null? (cdr ks)))
+               (typecase (car ks)
+                 (char c (sum command (sum on-buffer (self-insert c))))
+                 (else y (sum undefined #u))))
+              (else (sum undefined #u)))))))
 
 ;;; ------------------------------------------------------------ keys
 
@@ -1060,21 +1074,37 @@ in Emacs, for terminals without a Meta key)."
           ((and (null? (cdr ks)) (key=? (car ks) 'ESC)) (list (meta-key k)))
           (else (cons (car ks) (keys-then (cdr ks) k))))))
 
-"A key typed with no minibuffer or search: looked up, with any prefix."
+"Whether `ks` is C-h k and the keys it describes."
+(define* describing? (subr pure (keys) bool)
+  (lambda (ks)
+    (and (pair? ks) (key=? (car ks) 'C-h) (pair? (cdr ks)) (key=? (car (cdr ks)) #\k) (pair? (cdr (cdr ks))))))
+
+"A key typed with no minibuffer or search: looked up, with any prefix.
+After C-h k, the keys are described (`key-describer`), not run."
 (define* dispatch-key (subr turn-eff ((actor frame) frame key) (reply frame))
   (lambda (fr f k)
     (let* ((ks (keys-then (extract f prefix) k))
-           (cleared (with-echo (with-prefix f nil) "")))
-      (tagcase (binding ks (extract (actor-state (extract (selected-window f) buffer)) name))
-        (command a (let ((r (run-action fr cleared a)))
-                     ;; The echo area cleared, and shown so, if it said something.
-                     (if (string=? (extract f echo) "")
-                         r
-                         (reply-with (extract r state)
-                                     (append (extract r cmds) (extract (draw (extract r state)) cmds))))))
-        (prefix u (draw (with-echo (with-prefix f ks) (string-append (keys->string ks) "-"))))
-        (undefined u (draw (with-echo (with-prefix f nil)
-                                      (string-append (keys->string ks) " is undefined"))))))))
+           (cleared (with-echo (with-prefix f nil) ""))
+           (bname (extract (actor-state (extract (selected-window f) buffer)) name)))
+      (if (describing? ks)
+          (let* ((rest (cdr (cdr ks)))
+                 (describe (lambda ((name string))
+                             (run-action fr cleared (sum on-frame ((get key-describer) (keys->string rest) name))))))
+            (tagcase (binding rest bname)
+              (prefix u (draw (with-echo (with-prefix f ks) (string-append "Describe key: " (keys->string rest) "-"))))
+              (command a (let ((n (binding-name rest bname)))
+                           (describe (if (string=? n "") "self-insert-command" n))))
+              (undefined u (describe ""))))
+        (tagcase (binding ks bname)
+          (command a (let ((r (run-action fr cleared a)))
+                       ;; The echo area cleared, and shown so, if it said something.
+                       (if (string=? (extract f echo) "")
+                           r
+                           (reply-with (extract r state)
+                                       (append (extract r cmds) (extract (draw (extract r state)) cmds))))))
+          (prefix u (draw (with-echo (with-prefix f ks) (string-append (keys->string ks) "-"))))
+          (undefined u (draw (with-echo (with-prefix f nil)
+                                        (string-append (keys->string ks) " is undefined")))))))))
 
 "A key typed while searching."
 (define* isearch-key (subr turn-eff ((actor frame) frame isearch key) (reply frame))

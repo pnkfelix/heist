@@ -1,0 +1,13 @@
+alpha                                   |
+                                        |
+                                        |
+                                        |
+                                        |
+---- a.txt   L1                         |
+Help: C-h then one of these keys.       |
+                                        |
+a  apropos: the commands whose names hav|
+b  describe-bindings: the keys bound her|
+---- *Help*   L1                        |
+                                        |
+cursor 0,0

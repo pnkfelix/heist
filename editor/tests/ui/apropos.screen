@@ -1,0 +1,13 @@
+alpha                                   |
+                                        |
+                                        |
+                                        |
+                                        |
+---- a.txt   L1                         |
+end-of-buffer               M->         |
+  Point moved to the end of the buffer. |
+                                        |
+                                        |
+---- *Apropos*   L1                     |
+                                        |
+cursor 0,0
