@@ -169,6 +169,68 @@ do it, and what it cost. Kayak will need the same changes later
     print as the first in order.
 - **Kayak will need:** the same primitive, over its own checker.
 
+### F4. Programs run beside this one: `(io process)` and `process-*` (primitive)
+
+- **Needed for:** the editor's M-x compile, M-x grep, M-! and M-x shell:
+  running the editor's own tests from inside it and visiting the places
+  their output names. This is R7's "the world outside", for programs, in
+  `fx26-for-yank.md`.
+- **What changed:**
+  - **A new I/O kind, `(io process)`**, the eleventh: `IoKind::Process`
+    (`ast.rs`), and in the checker written in FX-26 `k-io-kind-name` and
+    `k-io-kind-code` (`check-types.fx`) and `io-any` (`eval-types.fx`).
+  - **Six primitives:**
+    - `process-start : (subr (maxeff (io process) (read r)) ((listof string r) string) (sumof (started int) (failed io-error)))`,
+      a program and its arguments, and a directory (`""` means this one's);
+    - `process-output : (subr (io process) (int) string)`, what it wrote since last asked;
+    - `process-status : (subr (io process) (int) (sumof (running unit) (exited int) (signalled int) (unknown unit)))`;
+    - `process-write : (subr (io process) (int string) (sumof (done unit) (failed io-error)))`;
+    - `process-close-input : (subr (io process) (int) unit)`;
+    - `process-signal : (subr (io process) (int int) unit)`, a signal to its group.
+  - **The runtime:** a table of processes in `World` (`world.rs`). Each
+    process's standard output and error are one pipe, which a thread of
+    its own reads into a buffer, so that asking never waits. Its output
+    is decoded as UTF-8: a character cut by a read waits for its rest,
+    and a byte that is not UTF-8 becomes U+FFFD.
+  - **Status:** a process is `running` until it has exited and its
+    output has all been read, so one more `process-output` after
+    `exited` gives the rest.
+  - **Sessions:** each process starts in a session of its own (`setsid`,
+    `tty::new_session`). With no controlling terminal, a shell cannot
+    take the editor's terminal for job control. At first I used only a
+    process group of its own, and `sh -i` was stopped trying (SIGTTOU).
+    The session's group is what `process-signal` signals, so C-c C-c
+    reaches what a shell runs.
+  - **The unsafe code** (`setsid` between fork and exec, `kill`) is in
+    `tty.rs`, which was already the crate's one place that calls the
+    system.
+  - **Names elsewhere:** `docs/fx26.md`, `prim.rs`, `standard.rs`, `lower.rs`, `debts.rs`
+    (they cannot fail), and `eval-prims.fx`.
+  - **Regenerated:** `standard.fx` and `native-direct-x64-layout.fx`.
+- **Why a primitive:** nothing in FX-26 could start a program.
+- **What it does not do:** a program cannot wait for a process. There is
+  no `pselect` arm for one, as there is for `(read-byte)`. The editor
+  polls every 50 ms while a process runs, and every 500 ms otherwise.
+  An arm would need:
+  - a waker list per process in the scheduler (`sched.rs`), as there is
+    for the standard input;
+  - the reader threads to wake `wait_stdin`'s `poll` (a pipe it also
+    polls);
+  - the arm's syntax in both parsers.
+  - **Also not done:** a pseudo-terminal for the program, so programs
+    see no terminal (`sh -i` says so, and runs without job control);
+    environment variables; separate standard output and error.
+- **Machines covered:** all twelve, and both checkers agree.
+  `programs/process/basic.fx` writes to a shell's input, reads its
+  output and status, and starts a program that does not exist.
+- **Also fixed: column limits.** The tidy test (`fixpt-tidy`,
+  `fx_size.rs`) found lines over 100 columns that F1 and F3 had added,
+  in `check-processes.fx`, `parser-forms.fx` and their tests. I had run
+  only `fixpt-fx26`'s tests after them, not the whole workspace. They
+  are now wrapped, and the whole workspace's tests pass.
+- **Kayak will need:** the I/O kind, and the same six primitives over
+  its own runtime.
+
 Each entry takes this form:
 
 ### Fn. Title (library | primitive | language)

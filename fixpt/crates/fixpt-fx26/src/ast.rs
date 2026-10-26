@@ -139,10 +139,12 @@ pub enum IoKind {
     Exit,
     Terminal,
     Native,
+    /// Heist's (`FIXPT-CHANGES.md` F4): programs run beside this one.
+    Process,
 }
 
 impl IoKind {
-    pub const ALL: [IoKind; 10] = [
+    pub const ALL: [IoKind; 11] = [
         IoKind::Stdin,
         IoKind::Stdout,
         IoKind::Stderr,
@@ -153,6 +155,7 @@ impl IoKind {
         IoKind::Exit,
         IoKind::Terminal,
         IoKind::Native,
+        IoKind::Process,
     ];
     /// Its name, as `(io k)` writes it.
     pub fn name(self) -> &'static str {
@@ -167,6 +170,7 @@ impl IoKind {
             IoKind::Exit => "exit",
             IoKind::Terminal => "terminal",
             IoKind::Native => "native",
+            IoKind::Process => "process",
         }
     }
     pub fn named(n: &str) -> Option<IoKind> {
