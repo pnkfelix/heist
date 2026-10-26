@@ -99,6 +99,8 @@ span covers are in the default face."
       ((string) "0;32")
       ((function-name) "0;1;34")
       ((type) "0;36")
+      ((use) "0;4")
+      ((binder) "0;1;4")
       (else "0"))))
 
 "A row of `width` columns from `text`: cut or padded with spaces, control

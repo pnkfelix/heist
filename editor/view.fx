@@ -72,6 +72,19 @@ gave."
     (let ((hl (highlight-spans snap ls le text)))
       (if (pair? hl)
           hl
+          (let ((marked (faces-between (extract snap marks) ls (+ le 1))))
+           (if (pair? marked)
+          ;; Uses marked (M-?) on the line: shown, in place of the syntax's faces.
+          (letrec ((go (subr spin (text-faces) spans)
+                     (lambda (fs)
+                       (if (null? fs) nil
+                           (let ((a (max ls (extract (car fs) start))) (b (min le (extract (car fs) end))))
+                             (if (< a b)
+                                 (cons (product (start (column-of text (- a ls))) (end (column-of text (- b ls)))
+                                                (face (extract (car fs) face)))
+                                       (go (cdr fs)))
+                                 (go (cdr fs))))))))
+            (go marked))
           (letrec ((go (subr spin (text-faces) spans)
                      (lambda (fs)
                        (if (null? fs)
@@ -84,7 +97,7 @@ gave."
                                                 (face (extract f face)))
                                        (go (cdr fs)))
                                  (go (cdr fs))))))))
-            (go (faces-between fs ls (+ le 1))))))))
+            (go (faces-between fs ls (+ le 1))))))))))
 
 "Row `w` wide of a line shown as `shown` with spans `ss`, from column `hs`."
 (define* scrolled-row (subr spin (int string spans int) row)

@@ -1,0 +1,25 @@
+(define x 1)                            |
+(define* f (subr pure (int) int)        |
+  (lambda (x) (+ x x)))                 |
+(f x)                                   |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+---- a.fx   L3                          |
+2 uses here; M-n, M-p to move among them|
+cursor 2,11
+ kkkkkk f                               |
+ kkkkkkk f  tttt                        |
+           B     u u                    |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm|
+                                        |

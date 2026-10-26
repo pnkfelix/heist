@@ -1,5 +1,5 @@
 ;;; Reading from checkpoints gives what reading the whole text gives: the
-;;; needs: base.fx buffer.fx syntax.fx
+;;; needs: base.fx buffer.fx resolve.fx syntax.fx
 ;;; args: ../frame.fx
 ;;; text read, an edit made at several places, each read both ways and
 ;;; compared. Run after base.fx, buffer.fx and syntax.fx, given a file:

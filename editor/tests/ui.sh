@@ -10,15 +10,17 @@ trap 'rm -rf "$tmp"' EXIT
 status=0
 for k in "$here"/ui/*.keys; do
   name=$(basename "$k" .keys)
+  # A scenario named *.fx is of an FX-26 file, its faces shown too.
+  case "$name" in *.fx) file=a.fx; faces=--faces;; *) file=a.txt; faces=;; esac
   mkdir -p "$tmp/$name"
-  head -1 "$k" | sed 's/\\n/\n/g' > "$tmp/$name/a.txt"
+  head -1 "$k" | sed 's/\\n/\n/g' > "$tmp/$name/$file"
   printf 'second file\nhere\n' > "$tmp/$name/b.txt"
   # Keys: one drive.py argument per line.
   set --
   while IFS= read -r line; do set -- "$@" "$line"; done <<KEYS
 $(tail -n +2 "$k")
 KEYS
-  got=$(cd "$tmp/$name" && "$here/drive.py" --rows 12 --cols 40 --file a.txt "$@")
+  got=$(cd "$tmp/$name" && "$here/drive.py" --rows 12 --cols 40 $faces --file "$file" "$@")
   if [ "$1" = "--update" ] || [ "${UPDATE:-}" = 1 ]; then
     printf '%s\n' "$got" > "$here/ui/$name.screen"; echo "wrote $name.screen"
   elif [ "$got" = "$(cat "$here/ui/$name.screen")" ]; then

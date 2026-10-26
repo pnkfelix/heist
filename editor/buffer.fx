@@ -14,17 +14,24 @@ problem (a read error), each by position in the text."
 (define-type text-faces (listof text-face acyclic))
 (define-type definition (productof (name string) (start int) (end int)))
 (define-type definitions (listof definition acyclic))
+"A binder: a name and where it is."
+(define-type binder (productof (name string) (start int) (end int)))
+(define-type binders (listof binder acyclic))
+"A use of a name, and where its binder is (-1: not in this text)."
+(define-type reference (productof (start int) (end int) (binder-start int) (binder-end int)))
+(define-type references (listof reference acyclic))
 (define-type annotation
   (productof (revision int) (faces text-faces) (definitions definitions)
-             (problem string) (problem-at int)))
+             (references references) (problem string) (problem-at int)))
 (define no-annotation annotation
-  (product (revision -1) (faces nil) (definitions nil) (problem "") (problem-at -1)))
+  (product (revision -1) (faces nil) (definitions nil) (references nil) (problem "") (problem-at -1)))
 
 "What a buffer's subscribers (its views) are sent after each command."
 (define-type snapshot
   (productof (name string) (text rope) (point int) (mark int) (revision int) (modified bool)
              (highlight-start int) (highlight-end int)
-             (annotation annotation)))
+             (annotation annotation)
+             (marks text-faces)))
 (define-type subscriber (subr turn-eff (snapshot) cmd))
 (define-type subscription (productof (id int) (send subscriber)))
 "A text the buffer had, and its point then."
@@ -37,7 +44,8 @@ problem (a read error), each by position in the text."
              (subscribers (listof subscription acyclic))
              (highlight-start int) (highlight-end int)  ; a match shown (C-s); -1: none
              (origin int)                               ; where a search began
-             (annotation annotation)))                  ; the latest a party outside sent
+             (annotation annotation)                    ; the latest a party outside sent
+             (marks text-faces)))                       ; the uses M-? shows
 "What a command gives: the buffer after it, what to do, and a message for
 the echo area (\"\" for none)."
 (define-type outcome (productof (buffer buffer) (cmds cmds) (message string)))
@@ -47,14 +55,14 @@ the echo area (\"\" for none)."
   (lambda (name file text)
     (product (name name) (file file) (text text) (point 0) (mark -1) (revision 0) (modified #f)
              (undo nil) (subscribers nil) (highlight-start -1) (highlight-end -1) (origin 0)
-             (annotation no-annotation))))
+             (annotation no-annotation) (marks nil))))
 
 (define* snapshot-of (subr pure (buffer) snapshot)
   (lambda (b)
     (product (name (extract b name)) (text (extract b text)) (point (extract b point))
              (mark (extract b mark)) (revision (extract b revision)) (modified (extract b modified))
              (highlight-start (extract b highlight-start)) (highlight-end (extract b highlight-end))
-             (annotation (extract b annotation)))))
+             (annotation (extract b annotation)) (marks (extract b marks)))))
 
 "`b` with all its fields given."
 (define* buffer-of
@@ -63,7 +71,7 @@ the echo area (\"\" for none)."
     (product (name (extract b name)) (file (extract b file)) (text text) (point point) (mark mark)
              (revision revision) (modified modified) (undo undo) (subscribers subs)
              (highlight-start (extract b highlight-start)) (highlight-end (extract b highlight-end))
-             (origin (extract b origin)) (annotation (extract b annotation)))))
+             (origin (extract b origin)) (annotation (extract b annotation)) (marks (extract b marks)))))
 
 "`b` with a match shown from `hs` to `he` (-1: none), and a search's origin."
 (define* with-search (subr pure (buffer int int int) buffer)
@@ -71,7 +79,8 @@ the echo area (\"\" for none)."
     (product (name (extract b name)) (file (extract b file)) (text (extract b text)) (point (extract b point))
              (mark (extract b mark)) (revision (extract b revision)) (modified (extract b modified))
              (undo (extract b undo)) (subscribers (extract b subscribers))
-             (highlight-start hs) (highlight-end he) (origin origin) (annotation (extract b annotation)))))
+             (highlight-start hs) (highlight-end he) (origin origin) (annotation (extract b annotation))
+             (marks (extract b marks)))))
 
 "How many texts the undo history keeps."
 (define undo-limit int 1000)
@@ -101,6 +110,15 @@ the echo area (\"\" for none)."
   (lambda (b m)
     (buffer-of b (extract b text) (extract b point) m (extract b revision) (extract b modified)
                (extract b undo) (extract b subscribers))))
+
+"`b` with uses `ms` marked."
+(define* with-marks (subr pure (buffer text-faces) buffer)
+  (lambda (b ms)
+    (product (name (extract b name)) (file (extract b file)) (text (extract b text)) (point (extract b point))
+             (mark (extract b mark)) (revision (extract b revision)) (modified (extract b modified))
+             (undo (extract b undo)) (subscribers (extract b subscribers))
+             (highlight-start (extract b highlight-start)) (highlight-end (extract b highlight-end))
+             (origin (extract b origin)) (annotation (extract b annotation)) (marks ms))))
 
 (define* done (subr pure (buffer) outcome)
   (lambda (b) (product (buffer b) (cmds nil) (message ""))))
@@ -287,7 +305,7 @@ long enough."
                (message (string-append "Wrote " file)))))))))
 
 (define* keyboard-quit (subr pure () command)
-  (lambda () (lambda ((b buffer)) (say (with-mark b -1) "Quit"))))
+  (lambda () (lambda ((b buffer)) (say (with-marks (with-mark b -1) nil) "Quit"))))
 
 "For trying a failing command: takes the car of the empty list."
 (define* fail-on-purpose (subr pure () command)
@@ -355,6 +373,92 @@ Point goes to the match's end (its start, going back), and it is shown."
   (lambda ()
     (lambda ((b buffer)) (say (with-point (with-search b -1 -1 0) (extract b origin)) "Quit"))))
 
+;;; ------------------------------------------------------------ names
+
+"The reference point is in or just after, if the annotation has one."
+(define* reference-at (subr spin (buffer) (sumof (none unit) (found reference)))
+  (lambda (b)
+    (let ((p (extract b point)))
+      (letrec ((go (subr spin (references) (sumof (none unit) (found reference)))
+                 (lambda (rs)
+                   (cond ((null? rs) (sum none #u))
+                         ((and (<= (extract (car rs) start) p) (<= p (extract (car rs) end))) (sum found (car rs)))
+                         ((> (extract (car rs) start) p) (sum none #u))
+                         (else (go (cdr rs)))))))
+        (go (extract (extract b annotation) references))))))
+
+"The binder at point: of the reference there, or the binder itself (a
+definition's name, a parameter). Its start, or -1."
+(define* binder-at (subr spin (buffer) int)
+  (lambda (b)
+    (tagcase (reference-at b)
+      (found r (extract r binder-start))
+      (none u
+        ;; Point on a binder: some reference names it.
+        (let ((p (extract b point)))
+          (letrec ((go (subr spin (references) int)
+                     (lambda (rs)
+                       (cond ((null? rs) -1)
+                             ((and (>= (extract (car rs) binder-start) 0)
+                                   (<= (extract (car rs) binder-start) p) (<= p (extract (car rs) binder-end)))
+                              (extract (car rs) binder-start))
+                             (else (go (cdr rs)))))))
+            (go (extract (extract b annotation) references))))))))
+
+(define* merge-uses (subr spin (text-faces text-faces) text-faces)
+  (lambda (a b)
+    (cond ((null? a) b)
+          ((null? b) a)
+          ((<= (extract (car a) start) (extract (car b) start)) (cons (car a) (merge-uses (cdr a) b)))
+          (else (cons (car b) (merge-uses a (cdr b)))))))
+
+"The binder at `start`, and every use of it, as faces, in order."
+(define* uses-of (subr spin (buffer int) text-faces)
+  (lambda (b start)
+    (let ((rs (extract (extract b annotation) references)))
+      (letrec ((end-of (subr spin (references) int)
+                 (lambda (rs) (cond ((null? rs) start)
+                                    ((= (extract (car rs) binder-start) start) (extract (car rs) binder-end))
+                                    (else (end-of (cdr rs))))))
+               (go (subr spin (references) text-faces)
+                 (lambda (rs)
+                   (cond ((null? rs) nil)
+                         ((= (extract (car rs) binder-start) start)
+                          (cons (product (start (extract (car rs) start)) (end (extract (car rs) end)) (face 'use))
+                                (go (cdr rs))))
+                         (else (go (cdr rs)))))))
+        (merge-uses (list (product (start start) (end (end-of rs)) (face 'binder))) (go rs))))))
+
+"M-?: the binder at point and its uses marked, and how many said."
+(define* show-uses (subr pure () command)
+  (lambda ()
+    (lambda ((b buffer))
+      (let ((at (binder-at b)))
+        (if (< at 0)
+            (say (with-marks b nil) "No binder here in this file")
+            (let ((ms (uses-of b at)))
+              (say (with-marks b ms)
+                   (string-append (int->string (- (length ms) 1)) " uses here; M-n, M-p to move among them"))))))))
+
+"M-n, M-p: point to the next mark after point (`dir` 1) or the last
+before it (-1)."
+(define* next-mark (subr pure (int) command)
+  (lambda (dir)
+    (lambda ((b buffer))
+      (let ((p (extract b point)) (ms (extract b marks)))
+        (letrec ((after (subr spin (text-faces) int)
+                   (lambda (ms) (cond ((null? ms) -1) ((> (extract (car ms) start) p) (extract (car ms) start)) (else (after (cdr ms))))))
+                 (before (subr spin (text-faces int) int)
+                   (lambda (ms best) (cond ((null? ms) best)
+                                           ((< (extract (car ms) end) p) (before (cdr ms) (extract (car ms) start)))
+                                           ((and (< (extract (car ms) start) p) (not (<= p (extract (car ms) end))))
+                                            (before (cdr ms) (extract (car ms) start)))
+                                           (else best)))))
+          (if (null? ms)
+              (say b "No uses marked (M-? marks them)")
+              (let ((to (if (> dir 0) (after ms) (before ms -1))))
+                (if (< to 0) (say b "No more") (done (with-point b to))))))))))
+
 ;;; ------------------------------------------------------------ messages to a buffer
 
 "A subscriber added, and sent a snapshot now."
@@ -398,6 +502,6 @@ changed since, and the party will be sent the new text)."
                              (modified (extract b modified)) (undo (extract b undo))
                              (subscribers (extract b subscribers))
                              (highlight-start (extract b highlight-start)) (highlight-end (extract b highlight-end))
-                             (origin (extract b origin)) (annotation a))))
+                             (origin (extract b origin)) (annotation a) (marks (extract b marks)))))
             (reply-with b2 (notify b2)))
           (same b)))))

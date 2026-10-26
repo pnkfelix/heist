@@ -1,5 +1,5 @@
 ;;; syntax.fx's analysis of a small FX-26 text. Run after base.fx,
-;;; needs: base.fx buffer.fx syntax.fx
+;;; needs: base.fx buffer.fx resolve.fx syntax.fx
 ;;; buffer.fx and syntax.fx (tests/run.sh does).
 (define sample string
   "; a comment\n(define* f (subr pure (int) int) (lambda (x) \"s;\" x))\n(define-type t int)\n(f")

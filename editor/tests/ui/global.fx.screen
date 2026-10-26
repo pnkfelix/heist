@@ -1,0 +1,25 @@
+(define x 1)                            |
+(define* f (subr pure (int) int)        |
+  (lambda (y) (+ y x)))                 |
+(f x)                                   |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+---- a.fx   L1                          |
+                                        |
+cursor 0,8
+ kkkkkk f                               |
+ kkkkkkk f  tttt                        |
+   kkkkkk                               |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm|
+                                        |

@@ -1,0 +1,25 @@
+(define* g (subr pure () int)           |
+  (lambda () (+ 1 2)                    |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+---- a.fx   L1   ! a form is not closed |
+                                        |
+cursor 0,0
+e                                       |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm|
+                                        |

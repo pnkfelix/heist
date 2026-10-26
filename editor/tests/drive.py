@@ -83,7 +83,7 @@ grid = [[" "] * cols for _ in range(rows)]
 fgrid = [[" "] * cols for _ in range(rows)]
 # The faces' SGR parameters (screen.fx's face-sgr), as letters.
 FACE = {"0": " ", "0;1;35": "k", "0;1;34": "f", "0;36": "t", "0;32": "s", "0;2": "c",
-        "0;1;31": "e", "0;30;45": "i", "0;7": "m", "0;2;7": "M", "0;1;36": "p"}
+        "0;1;31": "e", "0;30;45": "i", "0;7": "m", "0;2;7": "M", "0;1;36": "p", "0;4": "u", "0;1;4": "B"}
 sgr = "0"
 cur = [0, 0]
 last = None

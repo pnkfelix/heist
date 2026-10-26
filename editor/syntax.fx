@@ -234,6 +234,7 @@ end."
                        (merge-faces tree (list (product (start at) (end (+ at 1)) (face 'error)))))))
       (product (revision rev) (faces (merge-faces (lexical-faces s) marked))
                (definitions (reverse-definitions (extract found definitions)))
+               (references (resolve-text (eager-state-syntax st)))
                (problem problem) (problem-at at)))))
 
 "Text `s`, of revision `rev`, read -- from the last checkpoint before where

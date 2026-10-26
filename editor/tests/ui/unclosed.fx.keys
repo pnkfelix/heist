@@ -1,0 +1,2 @@
+(define* g (subr pure () int)\n  (lambda () (+ 1 2)
+@300
