@@ -9,7 +9,9 @@
 (define-effect reader-eff
   (maxeff (read @s) (write @s) (alloc @s) (read @m) (write @m) (alloc @m)
           (read @c) (write @c) (alloc @c) (read @e) (goto @e) (comefrom @e)))
-(define-effect world (maxeff (io stdout) (io terminal) (io fs-read) (io fs-write) reader-eff))
+(define-effect world (maxeff (io stdout) (io terminal) (io fs-read) (io fs-write) reader-eff
+                             (read @fl) (write @fl) (alloc @fl)      ; the flow analysis's state
+                             (read @pf) (alloc @pf)))                ; the files of a program, listed
 (define core ((proj (load-module "core.fx") @ed world)))
 (import core spawn-actor set-class! interactive display idle tell tell-latest tell! run-turns!
         turns-waiting? interactive-waiting? actor-state actor-name same reply-with

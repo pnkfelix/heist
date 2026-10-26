@@ -1,0 +1,35 @@
+;;; flow.fx: which lambdas reach which calls, through parameters, fields,
+;;; refs and sums; and what escapes.
+;;; needs: base.fx buffer.fx resolve.fx syntax.fx flow.fx
+(define sample string "(define twice (lambda (f x) (f (f x))))
+(define inc (lambda (n) (+ n 1)))
+(define dbl (lambda (n) (* n 2)))
+(twice inc 1)
+(define table (product (op dbl)))
+((extract table op) 5)
+(define r (new inc))
+((get r) 3)
+(tagcase (sum some dbl) (some g (g 1)) (else y 0))
+(define esc (lambda (k) (k 0)))
+(apply esc (list 1))")
+(define* syntax-of (subr (maxeff reader-eff spin) (string) (listof syn acyclic))
+  (lambda (s) (eager-state-syntax (eager-feed (eager-feed-string (eager-start-fx26) s) #\newline))))
+(define show-calls (->* ((listof call-result acyclic)) string)
+  (lambda (cs)
+    (if (null? cs) ""
+        (let ((c (car cs)))
+          (string-append (substring sample (extract (extract c operator) start) (extract (extract c operator) end))
+                         "->"
+                         (letrec ((names (->* ((listof callee acyclic)) string)
+                                    (lambda (l) (if (null? l) "" (string-append (extract (car l) name) "," (names (cdr l)))))))
+                           (names (extract c callees)))
+                         (if (extract c unknown) "?" "")
+                         " " (show-calls (cdr cs)))))))
+(define flow-test (->* () unit)
+  (lambda ()
+    (let* ((passes (analyze-flow (list (product (file "s") (forms (syntax-of sample))))))
+           (got (show-calls (flow-calls)))
+           (want "f->inc, f->inc, twice->twice, (extract table op)->dbl, (get r)->inc, g->dbl, k->? "))
+      (if (string=? got want) #u
+          (begin (write-out (string-append "FAIL got " got " (" (int->string passes) " passes)\n")) #u)))))
+(flow-test)

@@ -637,6 +637,13 @@ is here; else a definition in a buffer, else in the index; through an
 ;;; ------------------------------------------------------------ commands by name, and keys
 
 (define-type named (productof (name string) (action action)))
+"Commands and keys that files after this one add (`define-command!`,
+`define-key!`), looked up after the built-in ones: how the editor is
+extended, as Emacs's is, by tables it consults each time."
+(define more-commands (ref (listof named acyclic) @ed) (new nil))
+(define more-keys (ref (listof (productof (keys string) (command string)) acyclic) @ed) (new nil))
+"Keys bound in buffers of one name only (*xref*'s RET), looked up first."
+(define buffer-keys (ref (listof (productof (buffer string) (keys string) (command string)) acyclic) @ed) (new nil))
 
 (define* buffer-command (subr pure (string command) named)
   (lambda (name c) (product (name name) (action (sum on-buffer c)))))
@@ -698,7 +705,7 @@ is here; else a definition in a buffer, else in the index; through an
                  (cond ((null? cs) (sum none #u))
                        ((string=? (extract (car cs) name) name) (sum found (extract (car cs) action)))
                        (else (go (cdr cs)))))))
-      (go (commands)))))
+      (go (append (commands) (get more-commands))))))
   (execute-extended-command (->* () frame-action)
   (lambda ()
     (lambda ((fr (actor frame)) (f frame))
@@ -751,8 +758,8 @@ names of their commands."
 (define prefixes strings (list "C-x" "C-c"))
 
 "What `ks` does: a command, more keys to come, or nothing."
-(define* binding (subr spin (keys) (sumof (command action) (prefix unit) (undefined unit)))
-  (lambda (ks)
+(define* binding (subr (maxeff (read @ed) spin) (keys string) (sumof (command action) (prefix unit) (undefined unit)))
+  (lambda (ks buffer-name)
     (let ((s (keys->string ks)))
       (letrec ((bound (subr spin ((listof (productof (keys string) (command string)) acyclic)) string)
                  (lambda (m) (cond ((null? m) "")
@@ -760,7 +767,16 @@ names of their commands."
                                    (else (bound (cdr m))))))
                (prefix? (subr spin (strings) bool)
                  (lambda (ps) (and (pair? ps) (or (string=? (car ps) s) (prefix? (cdr ps)))))))
-        (let ((name (bound keymap)))
+        (let ((name (let ((n (letrec ((local (subr spin ((listof (productof (buffer string) (keys string) (command string)) acyclic)) string)
+                                           (lambda (m) (cond ((null? m) "")
+                                                             ((and (string=? (extract (car m) buffer) buffer-name)
+                                                                   (string=? (extract (car m) keys) s))
+                                                              (extract (car m) command))
+                                                             (else (local (cdr m)))))))
+                                 (local (get buffer-keys)))))
+                      (cond ((not (string=? n "")) n)
+                            ((not (string=? (bound keymap) "")) (bound keymap))
+                            (else (bound (get more-keys)))))))
           (cond ((not (string=? name ""))
                  (tagcase (command-named name) (found a (sum command a)) (none u (sum undefined #u))))
                 ((prefix? prefixes) (sum prefix #u))
@@ -800,7 +816,7 @@ names of their commands."
   (lambda (fr f k)
           (let* ((ks (append (extract f prefix) (list k)))
                  (cleared (with-echo (with-prefix f nil) "")))
-            (tagcase (binding ks)
+            (tagcase (binding ks (extract (actor-state (extract (selected-window f) buffer)) name))
               (command a (let ((r (run-action fr cleared a)))
                            ;; The echo area cleared, and shown so, if it said something.
                            (if (string=? (extract f echo) "")
@@ -876,3 +892,16 @@ names of their commands."
                            (list (product (name name) (file file) (actor b)))
                            (+ id 1) (extract f echo) (extract f prefix) (extract f mini))))
         (reply-with f2 (append (attach-syntax b name) (append (index-directory-of file) (extract made cmds))))))))
+
+"A command added by name, for M-x and keys."
+(define* define-command! (subr (maxeff (read @ed) (write @ed)) (string action) unit)
+  (lambda (name a) (set more-commands (cons (product (name name) (action a)) (get more-commands)))))
+
+"Keys bound to a command's name."
+(define* define-key! (subr (maxeff (read @ed) (write @ed)) (string string) unit)
+  (lambda (ks name) (set more-keys (cons (product (keys ks) (command name)) (get more-keys)))))
+
+"Keys bound in buffers named `buffer` only."
+(define* define-buffer-key! (subr (maxeff (read @ed) (write @ed)) (string string string) unit)
+  (lambda (buffer ks name)
+    (set buffer-keys (cons (product (buffer buffer) (keys ks) (command name)) (get buffer-keys)))))
