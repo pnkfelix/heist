@@ -140,13 +140,33 @@ do it, and what it cost. Kayak will need the same changes later
 - **Measured:** on the editor's own program (220 KB, seven files), 21 ms
   near its start and 0.44 s near its end.
 - **Not done:**
-  - **Names in types.** Types are printed fully expanded, not by their
-    `define-type` names, so a command's type is several hundred
-    characters long.
   - **Text past an error.** It stops at the first refusal before the
     place.
   - **Instantiations at a place** (`facts.insts`) and effects. These are
     for R10's flow analysis.
+- **Names in what it prints** (added after): the checker keeps a
+  `define-type`'s name only for data that mentions no variable
+  (`closed_named`), so a `subr`, or a product holding one, printed
+  expanded, and the editor's types ran to thousands of characters.
+  `type-at` now prints a type, and each named type, with no names at all,
+  then puts each named type back where its text appears, longest first.
+  - **Printing.** That needed a printing mode with no names,
+    `Checker::print_expanded`. In it, closed data keeps its name, and a
+    cycle prints by its distance up (`%^2`), so that a recursive type
+    reads the same wherever it is printed.
+  - **Modules.** A module's types and effects read as `(select m t)` are
+    resolved first: the effects through `selected_effect`, the types
+    through `select_map`, which then applies a family it finds applied.
+  - **Families.** One-parameter families (a module's `(actor s)`) are
+    named when applied to a named type that is in the result:
+    `(actor frame)`.
+  - **Result:** `in-buffer` prints as `(subr pure ((actor frame) command)
+    (msg buffer))`, as written.
+  - **Cost:** 69 ms near the start of the editor's program and 0.5 s
+    near its end. Families applied to every named type, before limiting
+    them to those in the result, took 0.4 s more a query.
+  - **What it is:** a printing, not a judgement. Two names of one type
+    print as the first in order.
 - **Kayak will need:** the same primitive, over its own checker.
 
 Each entry takes this form:
