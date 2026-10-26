@@ -124,6 +124,89 @@ The smallest thing that is still cahoots' shape, end to end:
 The first Fixpt change, R2, should land before or during step 1, so
 that the actor core catches failing turns from the start.
 
+## Status (2026-10-25, later)
+
+`bin/heist-edit [FILE]` runs the editor on Heist's own build of Fixpt.
+It is one program in seven files, run in one session: `base.fx`,
+`buffer.fx`, `syntax.fx`, `index.fx`, `view.fx`, `frame.fx` and
+`main.fx`, over the modules `core.fx`, `rope.fx`, `keys.fx` and
+`screen.fx`.
+
+**What it does:**
+- Windows (C-x 2, o, 1, 0), each its own view.
+- The minibuffer, used by C-x C-f, C-x b and M-x (any command by name),
+  and *Buffer List*.
+- Mark and region, the kill ring (C-w, M-w, C-k, C-y), and undo (C-/,
+  C-x u).
+- Incremental search (C-s, C-r).
+- Tabs laid out as columns.
+- For `.fx` files:
+  - faces from Fixpt's own reader;
+  - the read problem in the mode line;
+  - M-. and M-, over the buffers, and over an index of the `.fx` files
+    in the directories of the files visited.
+- A command that fails (C-c ! does on purpose) is reported in the echo
+  area and changes nothing.
+
+**Actors:**
+- Interactive: the frame, and each buffer.
+- Display: each view, and the painter, which writes the screen once per
+  burst.
+- Idle: each `.fx` buffer's syntax actor, and the index.
+
+**Fixpt's reader, used as it was meant** (`fx26:eager-reader.fx`, after
+Shivers's "Eager parsing and user interaction with call/cc"):
+- It suspends for input with a composable continuation, and never mutates
+  what it has read. So each state is a value, and a checkpoint that can be
+  resumed, more than once.
+- The syntax actor keeps a state at every line start. After an edit it
+  resumes from the last one before the first change, so only the text
+  after it is read again.
+- On a 1,000-line file, an edit at 90% is read again in under 1 ms, where
+  reading the whole text takes 8 to 11 ms. Reading the whole text, which an
+  edit near the start still costs, is about 150 ns a character.
+- Its own context (`eager-context`: the open constructs, each with its
+  start) gives where an unclosed form begins.
+- The reader keeps state in its regions and leaves by escapes, so it runs
+  in a command after a turn, not in a turn.
+
+**Measured (`fast`):**
+- A burst of keys costs 8 µs a key: laid out and drawn once.
+- A key alone costs 0.4 ms, laid out and drawn. Cahoots measured 1.5 ms on
+  Larceny.
+- Both stay the same in a 2.6 MB file (53,000 lines).
+
+**xref, and what it is not.** M-. finds a top-level definition by name;
+it needs no flow analysis, and cahoots' M-. used none either (`index.sld`
+and `scope.sld`). What is wrong today:
+- A local binding that shadows a global still sends M-. to the global.
+- Of two files that define a name, the first found wins.
+- `import` and `with` are not followed.
+
+Each of these is a matter of names, not flow. The checker already
+resolves every name, and using its resolution, rather than writing a
+second one, is the fix. What *does* need flow analysis, typed or not, is
+the questions about values: the closures that reach a call through a
+variable or a field, and where a value goes. That is R10 of
+`fx26-for-yank.md`, a flow analysis on the checker's output, built once
+for both the editor and the compiler.
+
+**Tests:**
+- `editor/tests/run.sh`: the modules, and the syntax analysis, incremental
+  reads included, compared with whole reads.
+- `editor/tests/ui.sh`: scenarios driven through a pseudo-terminal by
+  `drive.py`, whose screens must match those recorded. `drive.py --faces`
+  shows the faces as letters.
+- `editor/tests/bench-typing.fx`: the timings above.
+
+**Next:**
+- Scope-aware M-., then the checker's names and types (type at point needs
+  types kept by span, which Fixpt does not keep yet: its TODO §25).
+- Horizontal scrolling of long lines.
+- Activities and C-g between turns.
+- Reading only the form an edit is in, as cahoots does, so that an edit
+  near the start of a large file is cheap too.
+
 ## Status (2026-10-25)
 
 The first slice runs: `fixpt/target/release/fixpt run editor/main.fx -- FILE`.
