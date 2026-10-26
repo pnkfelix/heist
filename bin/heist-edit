@@ -1,0 +1,11 @@
+#!/bin/sh
+# The editor: cahoots on FX-26, run on Heist's own build of Fixpt.
+#   bin/heist-edit [FILE]
+heist=$(cd "$(dirname "$0")/.." && pwd)
+fixpt="$heist/fixpt/target/release/fixpt"
+[ -x "$fixpt" ] || { echo "build fixpt first: (cd $heist/fixpt && cargo build --release -p fixpt-cli)" >&2; exit 2; }
+# The modules are loaded by paths relative to editor/, so it runs there,
+# and a file named relative to here is made absolute first.
+set --  $(for f in "$@"; do case "$f" in /*) echo "$f";; *) echo "$PWD/$f";; esac; done)
+cd "$heist/editor" || exit 2
+exec "$fixpt" run base.fx buffer.fx view.fx frame.fx main.fx -- "$@"

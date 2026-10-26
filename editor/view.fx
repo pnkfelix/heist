@@ -1,0 +1,102 @@
+;;; view.fx: a window's view of a buffer (cahoots' `(yank actor view)`
+;;; and `(yank actor columns)`, c337e2a).
+;;;
+;;; A view is an actor of the display class: it runs only when no key
+;;; waits, and is told each snapshot of its buffer with one key, so of a
+;;; burst of keys it lays out only the last. It keeps the last snapshot,
+;;; to lay out again when its window changes size. What it shows -- rows,
+;;; a mode line, and where the cursor is -- it reports through a closure
+;;; the frame gave it, so it need not know the frame.
+
+"A view's report: its window, its rows, its mode line's text, and the
+cursor's row and column in it."
+(define-type reporter (subr turn-eff (int rows string int int) cmd))
+(define-type view
+  (productof (window int) (report reporter) (top int) (height int) (width int)
+             (last (sumof (none unit) (some snapshot)))))
+
+(define tab-width int 8)
+
+"Where the character at `i` of `s` shows: the columns before it, tabs
+taken to the next stop."
+(define* column-of (subr spin (string int) int)
+  (lambda (s i)
+    (letrec ((go (subr spin (int int) int)
+               (lambda (j col)
+                 (if (>= j i)
+                     col
+                     (go (+ j 1) (if (char=? (string-ref s j) #\tab)
+                                     (* tab-width (+ 1 (quotient col tab-width)))
+                                     (+ col 1)))))))
+      (go 0 0))))
+
+"`s` as it shows: each tab as spaces to the next stop."
+(define* expand-tabs (subr spin (string) string)
+  (lambda (s)
+    (letrec ((go (subr spin (int int (listof char acyclic)) (listof char acyclic))
+               ;; From `j`, at column `col`, the characters shown, last first.
+               (lambda (j col acc)
+                 (cond ((>= j (string-length s)) acc)
+                       ((char=? (string-ref s j) #\tab)
+                        (let ((next (* tab-width (+ 1 (quotient col tab-width)))))
+                          (go (+ j 1) next (pad (- next col) acc))))
+                       (else (go (+ j 1) (+ col 1) (cons (string-ref s j) acc))))))
+             (pad (subr spin (int (listof char acyclic)) (listof char acyclic))
+               (lambda (n acc) (if (<= n 0) acc (pad (- n 1) (cons #\space acc))))))
+      (list->string (reverse (go 0 0 nil))))))
+
+"`v`'s rows for snapshot `snap`, scrolled to show point: the view after,
+and the command that reports it."
+(define* lay-out (subr turn-eff (view snapshot) (reply view))
+  (lambda (v snap)
+    (let* ((t (extract snap text))
+           (h (max 1 (extract v height)))
+           (w (max 1 (extract v width)))
+           (pline (rope-line-of t (extract snap point)))
+           ;; Point off the window: recentered, as Emacs does.
+           (top (if (or (< pline (extract v top)) (>= pline (+ (extract v top) h)))
+                    (max 0 (- pline (quotient h 2)))
+                    (extract v top)))
+           (lines (letrec ((go (subr turn-eff (int) rows)
+                             (lambda (i)
+                               (if (>= i h)
+                                   nil
+                                   (let ((n (+ top i)))
+                                     (cons (if (< n (rope-line-count t))
+                                               (make-row w (expand-tabs (rope-substring t (rope-line-start t n)
+                                                                                        (rope-line-end t n)))
+                                                         nil)
+                                               (blank-row w))
+                                           (go (+ i 1))))))))
+                    (go 0)))
+           (start (rope-line-start t pline))
+           (line-text (rope-substring t start (rope-line-end t pline)))
+           (column (min (- w 1) (column-of line-text (- (extract snap point) start))))
+           (mode (string-append (if (extract snap modified) "-**- " "---- ")
+                                (extract snap name)
+                                "   L" (int->string (+ pline 1))))
+           (v2 (product (window (extract v window)) (report (extract v report)) (top top)
+                        (height (extract v height)) (width (extract v width))
+                        (last (sum some snap)))))
+      (reply-with v2 (list ((extract v report) (extract v window) lines mode (- pline top) column))))))
+
+"Message for a view: a snapshot of its buffer."
+(define* view-snapshot (subr pure (snapshot) (msg view))
+  (lambda (snap) (lambda ((v view)) (lay-out v snap))))
+
+"Message for a view: its window's text area is now `h` rows by `w`."
+(define* view-resize (subr pure (int int) (msg view))
+  (lambda (h w)
+    (lambda ((v view))
+      (let ((v2 (product (window (extract v window)) (report (extract v report)) (top (extract v top))
+                         (height h) (width w) (last (extract v last)))))
+        (tagcase (extract v last)
+          (some snap (lay-out v2 snap))
+          (none u (same v2)))))))
+
+"A new view, of the display class, for window `id`."
+(define* make-view (subr (alloc @ed) (int reporter int int) (actor view))
+  (lambda (id report h w)
+    (spawn-actor (string-append "view " (int->string id))
+                 (product (window id) (report report) (top 0) (height h) (width w)
+                          (last (the (sumof (none unit) (some snapshot)) (sum none #u)))))))
