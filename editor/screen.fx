@@ -101,6 +101,7 @@ span covers are in the default face."
       ((type) "0;36")
       ((use) "0;4")
       ((binder) "0;1;4")
+      ((paren) "0;1;7")
       (else "0"))))
 
 "A row of `width` columns from `text`: cut or padded with spaces, control

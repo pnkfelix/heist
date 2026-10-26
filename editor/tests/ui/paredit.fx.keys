@@ -1,0 +1,7 @@
+
+\x1bxparedit-mode\r
+@200
+(define (f x) (+ x 1))
+@300
+\x1b\x02
+@300

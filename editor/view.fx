@@ -64,27 +64,45 @@ snapshot's highlighted match."
           ((<= (extract (car fs) end) from) (faces-between (cdr fs) from to))
           (else (cons (car fs) (faces-between (cdr fs) from to))))))
 
-"The spans of line `text` (from `ls` to `le` in the buffer) for faces `fs`:
-the match highlighted if it is on the line, else the faces the syntax
-gave."
-(define* line-spans (subr spin (snapshot text-faces int int string) spans)
-  (lambda (snap fs ls le text)
+(define* append-faces (subr spin (text-faces text-faces) text-faces)
+  (lambda (a b) (if (null? a) b (cons (car a) (append-faces (cdr a) b)))))
+(define* merge-by-start (subr spin (text-faces text-faces) text-faces)
+  (lambda (a b)
+    (cond ((null? a) b)
+          ((null? b) a)
+          ((<= (extract (car a) start) (extract (car b) start)) (cons (car a) (merge-by-start (cdr a) b)))
+          (else (cons (car b) (merge-by-start a (cdr b)))))))
+
+"Faces `top` laid over faces `base` (both sorted, positions in the text):
+where they overlap, `top`'s win, and `base`'s are cut around them."
+(define* overlay-faces (subr spin (text-faces text-faces) text-faces)
+  (lambda (base top)
+    (letrec ((cut (subr spin (text-face text-faces) text-faces)
+                    ;; `f`'s pieces outside every face of `top`.
+                    (lambda (f top)
+                      (cond ((null? top) (list f))
+                            ((<= (extract (car top) end) (extract f start)) (cut f (cdr top)))
+                            ((>= (extract (car top) start) (extract f end)) (list f))
+                            (else
+                             (append-faces
+                              (if (< (extract f start) (extract (car top) start))
+                                  (list (product (start (extract f start)) (end (extract (car top) start)) (face (extract f face))))
+                                  nil)
+                              (if (> (extract f end) (extract (car top) end))
+                                  (cut (product (start (extract (car top) end)) (end (extract f end)) (face (extract f face))) (cdr top))
+                                  nil))))))
+             (all (subr spin (text-faces) text-faces)
+               (lambda (bs) (if (null? bs) nil (append-faces (cut (car bs) top) (all (cdr bs)))))))
+      (merge-by-start (all base) top))))
+
+"The spans of line `text` (from `ls` to `le` in the buffer): the faces `fs`
+the syntax gave, under the uses marked (M-?) and the parens matched, under
+a search's match."
+(define* line-spans (subr spin (snapshot text-faces text-faces int int string) spans)
+  (lambda (snap fs over ls le text)
     (let ((hl (highlight-spans snap ls le text)))
       (if (pair? hl)
           hl
-          (let ((marked (faces-between (extract snap marks) ls (+ le 1))))
-           (if (pair? marked)
-          ;; Uses marked (M-?) on the line: shown, in place of the syntax's faces.
-          (letrec ((go (subr spin (text-faces) spans)
-                     (lambda (fs)
-                       (if (null? fs) nil
-                           (let ((a (max ls (extract (car fs) start))) (b (min le (extract (car fs) end))))
-                             (if (< a b)
-                                 (cons (product (start (column-of text (- a ls))) (end (column-of text (- b ls)))
-                                                (face (extract (car fs) face)))
-                                       (go (cdr fs)))
-                                 (go (cdr fs))))))))
-            (go marked))
           (letrec ((go (subr spin (text-faces) spans)
                      (lambda (fs)
                        (if (null? fs)
@@ -97,7 +115,7 @@ gave."
                                                 (face (extract f face)))
                                        (go (cdr fs)))
                                  (go (cdr fs))))))))
-            (go (faces-between fs ls (+ le 1))))))))))
+            (go (overlay-faces (faces-between fs ls (+ le 1)) (faces-between over ls (+ le 1)))))))))
 
 "Row `w` wide of a line shown as `shown` with spans `ss`, from column `hs`."
 (define* scrolled-row (subr spin (int string spans int) row)
@@ -137,6 +155,16 @@ and the command that reports it."
                    (extract v hscroll)
                    (if (< true-column (- w 1)) 0 (- true-column (quotient w 2)))))
            (column (- true-column hs))
+           ;; Over the syntax's faces: the uses marked, and the paren next to
+           ;; point with its match.
+           (pm (paren-match t (extract snap point)))
+           (here (cond ((< pm 0) -1)
+                       ((< pm (extract snap point)) (- (extract snap point) 1))
+                       (else (extract snap point))))
+           (over (merge-by-start (extract snap marks)
+                                 (if (< pm 0) nil
+                                     (list (product (start (min pm here)) (end (+ 1 (min pm here))) (face 'paren))
+                                           (product (start (max pm here)) (end (+ 1 (max pm here))) (face 'paren))))))
            (shown-from (rope-line-start t top))
            (shown-faces (faces-between (extract ann faces) shown-from
                                        (rope-line-end t (min (- (rope-line-count t) 1) (+ top h)))))
@@ -149,7 +177,7 @@ and the command that reports it."
                                                (let* ((ls (rope-line-start t n))
                                                       (le (rope-line-end t n))
                                                       (text (rope-substring t ls le)))
-                                                 (scrolled-row w (expand-tabs text) (line-spans snap shown-faces ls le text) hs))
+                                                 (scrolled-row w (expand-tabs text) (line-spans snap shown-faces over ls le text) hs))
                                                (blank-row w))
                                            (go (+ i 1))))))))
                     (go 0)))
