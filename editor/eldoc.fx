@@ -7,13 +7,11 @@
 ;;; call around point. The type is the one the text declares -- by the
 ;;; name's binder, its definition, or Fixpt's table of standard names --
 ;;; so no checker runs. A message a command gave stays; eldoc replaces only
-;;; its own.
+;;; its own (`eldoc-said`, frame.fx), and *Messages* keeps none of it.
 ;;;
 ;;;   M-x eldoc-mode   eldoc off, or on (as the editor starts)
 
 (define eldoc-on (ref bool @ed) (new #t))
-"What eldoc said last: what it may replace in the echo area."
-(define eldoc-said (ref string @ed) (new ""))
 "A key was handled since eldoc last looked (main.fx's loop asks)."
 (define eldoc-due (ref bool @ed) (new #f))
 "Fixpt's standard.rs, once read (\"\": not yet)."

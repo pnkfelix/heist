@@ -1,0 +1,9 @@
+(define* f (subr pure (int) int) (lambda (y) y))\n(f 1)
+\x1b>
+\x02\x02\x02
+@600
+=
+\x07
+@300
+\x18b*Messages*\r
+@500

@@ -96,13 +96,15 @@ queue; C-g at once. Whether any came."
            (h (extract sz rows))
            (w (extract sz columns))
            (painter (spawn-actor "painter" no-screen))
+           (messages (spawn-actor "*Messages*" (new-buffer "*Messages*" "" empty-rope)))
            (b (spawn-actor name (new-buffer name file (extract got text))))
            (fr (spawn-actor "frame"
                             (product (height h) (width w) (windows (the windows nil)) (selected 0)
-                                     (buffers (the buffer-infos nil)) (next-id 1) (echo "")
+                                     (buffers (the buffer-infos (list (product (name "*Messages*") (file "") (actor messages))))) (next-id 1) (echo "")
                                      (prefix (the keys nil)) (mini no-mini) (painter painter)))))
       (begin
         (set-class! painter display)
+        (set messages-buffer (list messages))
         (let ((ix (spawn-actor "index" (product (directories (the strings nil)) (pending (the strings nil))
                                                 (files (the (listof indexed acyclic) nil))))))
           (begin (set-class! ix idle) (set the-index (list ix))))

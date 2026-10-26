@@ -106,6 +106,53 @@ changed."
           ((null? rs) (cons (blank-row w) (fit-rows (- n 1) w nil)))
           (else (cons (car rs) (fit-rows (- n 1) w (cdr rs)))))))
 
+"*Messages*: once main has made it, a list of it alone."
+(define messages-buffer (ref (listof (actor buffer) acyclic) @ed) (new nil))
+"The message last put in *Messages*, while the echo area still shows it."
+(define echo-logged (ref string @ed) (new ""))
+"What eldoc (eldoc.fx) said last: shown, but not a message to keep."
+(define eldoc-said (ref string @ed) (new ""))
+
+"`last`, a line of *Messages*, as `m` repeated: 1 if it is `m`, n if it is
+`m [n times]`, else 0."
+(define* times-said (subr spin (string string) int)
+  (lambda (last m)
+    (let ((n (string-length last)) (k (string-length m)))
+      (cond ((string=? last m) 1)
+            ((and (> n (+ k 9)) (string=? (substring last 0 (+ k 2)) (string-append m " ["))
+                  (string=? (substring last (- n 7) n) " times]"))
+             (parse-nat (substring last (+ k 2) (- n 7)) 10))
+            (else 0)))))
+
+"Message for *Messages*: `m` added as its last line, or, if that line is
+`m` already, counted again (`m [2 times]`), as Emacs's are. Point, at
+the end, stays at the end; the buffer is never modified, nor undone."
+(define* log-message (subr pure (string) (msg buffer))
+  (lambda (m)
+    (lambda ((b buffer))
+      (let* ((t (extract b text))
+             (n (rope-length t))
+             (from (if (= n 0) 0 (rope-line-start t (rope-line-of t (- n 1)))))
+             (k (if (= n 0) 0 (times-said (rope-substring t from (- n 1)) m)))
+             (t2 (if (> k 0)
+                     (rope-insert (rope-delete t from n) from
+                                  (string-append m " [" (int->string (+ k 1)) " times]\n"))
+                     (rope-insert t n (string-append m "\n"))))
+             (p (extract b point))
+             (b2 (buffer-of b t2 (if (>= p (if (> k 0) from n)) (rope-length t2) p) (extract b mark)
+                            (+ 1 (extract b revision)) #f nil (extract b subscribers))))
+        (reply-with b2 (notify b2))))))
+
+"A command: the echo area's `m` kept in *Messages* -- unless it is empty,
+or a prefix's keys (`prefixed`), or eldoc's, or kept already."
+(define* log-echo (subr pure (string bool) cmd)
+  (lambda (m prefixed)
+    (lambda ()
+      (cond ((string=? m "") (set echo-logged ""))
+            ((or prefixed (string=? m (get echo-logged)) (string=? m (get eldoc-said))) #u)
+            (else (begin (set echo-logged m)
+                    (let ((bs (get messages-buffer))) (if (pair? bs) (tell! (car bs) (log-message m)) #u))))))))
+
 "The frame's screen: each window's rows and mode line, then the echo area
 or minibuffer; and the command that has the painter show it."
 (define* draw (subr turn-eff (frame) (reply frame))
@@ -147,7 +194,8 @@ or minibuffer; and the command that has the painter show it."
                            (if (>= (extract bottom column) 0) last-row (extract body row))
                            (if (>= (extract bottom column) 0) (min (- w 1) (extract bottom column))
                                (extract body column)))))
-      (reply-with f (list (tell-latest (extract f painter) "paint" (paint s)))))))
+      (reply-with f (list (tell-latest (extract f painter) "paint" (paint s))
+                          (log-echo (extract f echo) (pair? (extract f prefix))))))))
 
 ;;; ------------------------------------------------------------ running commands
 
@@ -1217,7 +1265,7 @@ After C-h k, the keys are described (`key-describer`), not run."
       (let* ((made (new-window fr f b (extract f next-id) (- (extract f height) 1)))
              (id (extract f next-id))
              (f2 (frame-of f (list (extract made window)) id
-                           (list (product (name name) (file file) (actor b)))
+                           (cons (product (name name) (file file) (actor b)) (extract f buffers))
                            (+ id 1) (extract f echo) (extract f prefix) (extract f mini))))
         (reply-with f2 (append (attach-syntax b name) (append (index-directory-of file) (extract made cmds))))))))
 
