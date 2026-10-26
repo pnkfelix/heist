@@ -45,6 +45,16 @@ taken to the next stop."
                (lambda (n acc) (if (<= n 0) acc (pad (- n 1) (cons #\space acc))))))
       (list->string (reverse (go 0 0 nil))))))
 
+"The spans of line `text` (from `ls` to `le` in the buffer) that show the
+snapshot's highlighted match."
+(define* highlight-spans (subr spin (snapshot int int string) spans)
+  (lambda (snap ls le text)
+    (let ((hs (max (extract snap highlight-start) ls))
+          (he (min (extract snap highlight-end) le)))
+      (if (and (>= (extract snap highlight-start) 0) (< hs he))
+          (list (product (start (column-of text (- hs ls))) (end (column-of text (- he ls))) (face 'isearch)))
+          nil))))
+
 "`v`'s rows for snapshot `snap`, scrolled to show point: the view after,
 and the command that reports it."
 (define* lay-out (subr turn-eff (view snapshot) (reply view))
@@ -63,9 +73,10 @@ and the command that reports it."
                                    nil
                                    (let ((n (+ top i)))
                                      (cons (if (< n (rope-line-count t))
-                                               (make-row w (expand-tabs (rope-substring t (rope-line-start t n)
-                                                                                        (rope-line-end t n)))
-                                                         nil)
+                                               (let* ((ls (rope-line-start t n))
+                                                      (le (rope-line-end t n))
+                                                      (text (rope-substring t ls le)))
+                                                 (make-row w (expand-tabs text) (highlight-spans snap ls le text)))
                                                (blank-row w))
                                            (go (+ i 1))))))))
                     (go 0)))

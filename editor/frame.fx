@@ -19,10 +19,15 @@
 it, and what to do with the text when RET is typed."
 (define-type minibuffer
   (productof (prompt string) (text string) (point int) (then frame-action-of-string)))
+"An incremental search: its direction, its text, and whether it fails."
+(define-type isearch (productof (forward bool) (text string) (failing bool)))
+"What the bottom line is doing: showing the echo area, reading in the
+minibuffer, or searching."
+(define-type mini-state (sumof (none unit) (reading minibuffer) (searching isearch)))
 (define-type frame
   (productof (height int) (width int) (windows windows) (selected int) (buffers buffer-infos)
              (next-id int) (echo string) (prefix keys)
-             (mini (sumof (none unit) (reading minibuffer)))
+             (mini mini-state)
              (painter (actor screen))))
 "A command on the frame: run in the frame's turn, given the frame actor."
 (define-type frame-action (subr turn-eff ((actor frame) frame) (reply frame)))
@@ -42,7 +47,7 @@ buffer, or one on the frame."
 
 
 (define* frame-of
-  (subr pure (frame windows int buffer-infos int string keys (sumof (none unit) (reading minibuffer))) frame)
+  (subr pure (frame windows int buffer-infos int string keys mini-state) frame)
   (lambda (f ws sel bufs next echo prefix mini)
     (product (height (extract f height)) (width (extract f width)) (windows ws) (selected sel)
              (buffers bufs) (next-id next) (echo echo) (prefix prefix) (mini mini)
@@ -58,12 +63,12 @@ buffer, or one on the frame."
     (frame-of f (extract f windows) (extract f selected) (extract f buffers) (extract f next-id)
               (extract f echo) ks (extract f mini))))
 
-(define* with-mini (subr pure (frame (sumof (none unit) (reading minibuffer))) frame)
+(define* with-mini (subr pure (frame mini-state) frame)
   (lambda (f m)
     (frame-of f (extract f windows) (extract f selected) (extract f buffers) (extract f next-id)
               (extract f echo) (extract f prefix) m)))
 
-(define no-mini (sumof (none unit) (reading minibuffer)) (sum none #u))
+(define no-mini mini-state (sum none #u))
 
 (define* window-of (subr pure (window (actor buffer) (actor view) int int) window)
   (lambda (w b v id h)
@@ -124,6 +129,10 @@ or minibuffer; and the command that has the painter show it."
            (bottom (tagcase (extract f mini)
                      (reading m (product (text (string-append (extract m prompt) (extract m text)))
                                          (column (+ (string-length (extract m prompt)) (extract m point)))))
+                     (searching i (product (text (string-append (if (extract i failing) "Failing " "")
+                                                                (if (extract i forward) "I-search: " "I-search backward: ")
+                                                                (extract i text)))
+                                           (column -1)))
                      (none u (product (text (extract f echo)) (column -1)))))
            (s (make-screen (extract f height) w
                            (append (extract body rows) (list (make-row w (extract bottom text) nil)))
@@ -442,6 +451,30 @@ known by name and shown in the selected window."
 (define* save-buffers-kill-editor (subr pure () frame-action)
   (lambda () (lambda ((fr (actor frame)) (f frame)) (reply-with f (list (lambda () (set running #f)))))))
 
+;;; ------------------------------------------------------------ searching
+
+"Message for the frame: the search's latest step failed, or did not."
+(define* isearch-status (subr pure (bool) (msg frame))
+  (lambda (failing)
+    (lambda ((f frame))
+      (tagcase (extract f mini)
+        (searching i (draw (with-mini f (sum searching (product (forward (extract i forward)) (text (extract i text))
+                                                                (failing failing))))))
+        (else y (same f))))))
+
+(define* search-reporter (subr pure ((actor frame)) search-report)
+  (lambda (fr) (lambda ((failing bool)) (tell fr (isearch-status failing)))))
+
+"C-s, C-r: a search begun, in the selected window's buffer."
+(define* isearch (subr pure (bool) frame-action)
+  (lambda (forward)
+    (lambda ((fr (actor frame)) (f frame))
+      (let ((r (draw (with-mini (with-echo f "")
+                                (sum searching (product (forward forward) (text "") (failing #f)))))))
+        (reply-with (extract r state)
+                    (cons (tell (extract (selected-window f) buffer) (in-buffer fr (isearch-begin)))
+                          (extract r cmds)))))))
+
 ;;; ------------------------------------------------------------ commands by name, and keys
 
 (define-type named (productof (name string) (action action)))
@@ -482,6 +515,8 @@ known by name and shown in the selected window."
           (buffer-command "keyboard-quit" (keyboard-quit))
           (buffer-command "save-buffer" (save-buffer))
           (buffer-command "fail-on-purpose" (fail-on-purpose))
+          (frame-command "isearch-forward" (isearch #t))
+          (frame-command "isearch-backward" (isearch #f))
           (frame-command "find-file" (find-file))
           (frame-command "switch-to-buffer" (switch-to-buffer))
           (frame-command "list-buffers" (list-buffers))
@@ -532,6 +567,7 @@ names of their commands."
         (product (keys "C-_") (command "undo")) (product (keys "C-/") (command "undo"))
         (product (keys "C-x u") (command "undo"))
         (product (keys "C-g") (command "keyboard-quit"))
+        (product (keys "C-s") (command "isearch-forward")) (product (keys "C-r") (command "isearch-backward"))
         (product (keys "C-x C-s") (command "save-buffer"))
         (product (keys "C-x C-f") (command "find-file"))
         (product (keys "C-x b") (command "switch-to-buffer"))
@@ -592,13 +628,9 @@ names of their commands."
             (("C-k") (edit (substring text 0 p) p))
             (else (same f))))))))
 
-"Message for the frame: a key typed."
-(define* key-typed (subr pure ((actor frame) key) (msg frame))
-  (lambda (fr k)
-    (lambda ((f frame))
-      (tagcase (extract f mini)
-        (reading m (minibuffer-key fr f m k))
-        (none u
+"A key typed with no minibuffer or search: looked up, with any prefix."
+(define* dispatch-key (subr turn-eff ((actor frame) frame key) (reply frame))
+  (lambda (fr f k)
           (let* ((ks (append (extract f prefix) (list k)))
                  (cleared (with-echo (with-prefix f nil) "")))
             (tagcase (binding ks)
@@ -610,7 +642,50 @@ names of their commands."
                                            (append (extract r cmds) (extract (draw (extract r state)) cmds))))))
               (prefix u (draw (with-echo (with-prefix f ks) (string-append (keys->string ks) "-"))))
               (undefined u (draw (with-echo (with-prefix f nil)
-                                            (string-append (keys->string ks) " is undefined")))))))))))
+                                            (string-append (keys->string ks) " is undefined"))))))))
+
+"A key typed while searching."
+(define* isearch-key (subr turn-eff ((actor frame) frame isearch key) (reply frame))
+  (lambda (fr f i k)
+    (let* ((b (extract (selected-window f) buffer))
+           (report (search-reporter fr))
+           (fwd (extract i forward))
+           (text (extract i text))
+           (step (lambda ((t string) (forward bool) (again bool) (reset bool))
+                   (let ((r (draw (with-mini f (sum searching (product (forward forward) (text t)
+                                                                       (failing (extract i failing))))))))
+                     (reply-with (extract r state)
+                                 (append (if reset (list (tell b (in-buffer fr (isearch-abort-quietly)))) nil)
+                                         (cons (tell b (in-buffer fr (isearch-step t forward again report)))
+                                               (extract r cmds)))))))
+           (leave (lambda ((c command))
+                    (let ((r (draw (with-mini f no-mini))))
+                      (reply-with (extract r state) (cons (tell b (in-buffer fr c)) (extract r cmds)))))))
+      (typecase k
+        (char c (step (string-append text (char->string c)) fwd #f #f))
+        (else y
+          (case (key->string k)
+            (("C-s") (step text #t #t #f))
+            (("C-r") (step text #f #t #f))
+            (("DEL") (if (= (string-length text) 0)
+                         (same f)
+                         (step (substring text 0 (- (string-length text) 1)) fwd #f #t)))
+            (("RET") (leave (isearch-exit)))
+            (("C-g") (leave (isearch-abort)))
+            (else
+             ;; Any other key ends the search, and then does what it does.
+             (let* ((ended (leave (isearch-exit)))
+                    (r (dispatch-key fr (extract ended state) k)))
+               (reply-with (extract r state) (append (extract ended cmds) (extract r cmds)))))))))))
+
+"Message for the frame: a key typed."
+(define* key-typed (subr pure ((actor frame) key) (msg frame))
+  (lambda (fr k)
+    (lambda ((f frame))
+      (tagcase (extract f mini)
+        (reading m (minibuffer-key fr f m k))
+        (searching i (isearch-key fr f i k))
+        (none u (dispatch-key fr f k))))))
 
 "Message for the frame: the terminal is now `h` rows by `w`."
 (define* resized (subr pure (int int) (msg frame))

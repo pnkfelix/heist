@@ -9,7 +9,8 @@
 
 "What a buffer's subscribers (its views) are sent after each command."
 (define-type snapshot
-  (productof (name string) (text rope) (point int) (mark int) (revision int) (modified bool)))
+  (productof (name string) (text rope) (point int) (mark int) (revision int) (modified bool)
+             (highlight-start int) (highlight-end int)))
 (define-type subscriber (subr turn-eff (snapshot) cmd))
 (define-type subscription (productof (id int) (send subscriber)))
 "A text the buffer had, and its point then."
@@ -19,7 +20,9 @@
              (mark int)                                 ; -1: none set
              (revision int) (modified bool)
              (undo (listof undo-entry acyclic))
-             (subscribers (listof subscription acyclic))))
+             (subscribers (listof subscription acyclic))
+             (highlight-start int) (highlight-end int)  ; a match shown (C-s); -1: none
+             (origin int)))                             ; where a search began
 "What a command gives: the buffer after it, what to do, and a message for
 the echo area (\"\" for none)."
 (define-type outcome (productof (buffer buffer) (cmds cmds) (message string)))
@@ -28,19 +31,30 @@ the echo area (\"\" for none)."
 (define* new-buffer (subr pure (string string rope) buffer)
   (lambda (name file text)
     (product (name name) (file file) (text text) (point 0) (mark -1) (revision 0) (modified #f)
-             (undo nil) (subscribers nil))))
+             (undo nil) (subscribers nil) (highlight-start -1) (highlight-end -1) (origin 0))))
 
 (define* snapshot-of (subr pure (buffer) snapshot)
   (lambda (b)
     (product (name (extract b name)) (text (extract b text)) (point (extract b point))
-             (mark (extract b mark)) (revision (extract b revision)) (modified (extract b modified)))))
+             (mark (extract b mark)) (revision (extract b revision)) (modified (extract b modified))
+             (highlight-start (extract b highlight-start)) (highlight-end (extract b highlight-end)))))
 
 "`b` with all its fields given."
 (define* buffer-of
   (subr pure (buffer rope int int int bool (listof undo-entry acyclic) (listof subscription acyclic)) buffer)
   (lambda (b text point mark revision modified undo subs)
     (product (name (extract b name)) (file (extract b file)) (text text) (point point) (mark mark)
-             (revision revision) (modified modified) (undo undo) (subscribers subs))))
+             (revision revision) (modified modified) (undo undo) (subscribers subs)
+             (highlight-start (extract b highlight-start)) (highlight-end (extract b highlight-end))
+             (origin (extract b origin)))))
+
+"`b` with a match shown from `hs` to `he` (-1: none), and a search's origin."
+(define* with-search (subr pure (buffer int int int) buffer)
+  (lambda (b hs he origin)
+    (product (name (extract b name)) (file (extract b file)) (text (extract b text)) (point (extract b point))
+             (mark (extract b mark)) (revision (extract b revision)) (modified (extract b modified))
+             (undo (extract b undo)) (subscribers (extract b subscribers))
+             (highlight-start hs) (highlight-end he) (origin origin))))
 
 "How many texts the undo history keeps."
 (define undo-limit int 1000)
@@ -261,6 +275,68 @@ long enough."
 "For trying a failing command: takes the car of the empty list."
 (define* fail-on-purpose (subr pure () command)
   (lambda () (lambda ((b buffer)) (done (with-point b (car (the (listof int acyclic) nil)))))))
+
+;;; ------------------------------------------------------------ searching
+
+"Where `needle` is next in `hay` from `from` on, or -1."
+(define* search-forward-in (subr pure (string string int) int)
+  (lambda (hay needle from)
+    (if (> from (string-length hay)) -1 (string-search hay needle from))))
+
+"Where `needle` is last in `hay` ending at or before `limit`, or -1."
+(define* search-backward-in (subr spin (string string int) int)
+  (lambda (hay needle limit)
+    (letrec ((go (subr spin (int int) int)
+               (lambda (from best)
+                 (let ((i (search-forward-in hay needle from)))
+                   (if (or (< i 0) (> (+ i (string-length needle)) limit)) best (go (+ i 1) i))))))
+      (go 0 -1))))
+
+"What a search tells the frame: whether it failed."
+(define-type search-report (subr turn-eff (bool) cmd))
+
+"A search begun at point: point kept as where to go back to on C-g."
+(define* isearch-begin (subr pure () command)
+  (lambda () (lambda ((b buffer)) (done (with-search b -1 -1 (extract b point))))))
+
+"Search for `needle`, forward or back. `again`: for the next match after
+the one shown (C-s, C-r again), not the one at it (a character typed).
+Point goes to the match's end (its start, going back), and it is shown."
+(define* isearch-step (subr pure (string bool bool search-report) command)
+  (lambda (needle forward again report)
+    (lambda ((b buffer))
+      (let* ((hay (rope->string (extract b text)))
+             (n (string-length needle))
+             (hs (extract b highlight-start))
+             (shown (>= hs 0))
+             (p (extract b point))
+             (origin (extract b origin))
+             (i (cond ((= n 0) -1)
+                      (forward (search-forward-in hay needle (cond (again p) (shown hs) (else p))))
+                      (else (search-backward-in hay needle
+                                                (cond (again (if shown (- (+ hs n) 1) p))
+                                                      (shown (+ hs n))
+                                                      (else (+ p n))))))))
+        (if (< i 0)
+            (product (buffer (if (= n 0) (with-search b -1 -1 origin) b)) (cmds (list (report (> n 0)))) (message ""))
+            (product (buffer (with-search (with-point b (if forward (+ i n) i)) i (+ i n) origin))
+                     (cmds (list (report #f)))
+                     (message "")))))))
+
+"The search ended: point stays, the mark set where it began."
+(define* isearch-exit (subr pure () command)
+  (lambda ()
+    (lambda ((b buffer)) (done (with-mark (with-search b -1 -1 0) (extract b origin))))))
+
+"Back where the search began, nothing shown: before searching again."
+(define* isearch-abort-quietly (subr pure () command)
+  (lambda ()
+    (lambda ((b buffer)) (done (with-point (with-search b -1 -1 (extract b origin)) (extract b origin))))))
+
+"The search given up: point back where it began."
+(define* isearch-abort (subr pure () command)
+  (lambda ()
+    (lambda ((b buffer)) (say (with-point (with-search b -1 -1 0) (extract b origin)) "Quit"))))
 
 ;;; ------------------------------------------------------------ messages to a buffer
 
