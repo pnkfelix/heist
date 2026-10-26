@@ -28,7 +28,7 @@
                                                                                     (extract (extract (car l) span) end))
                                                                          "(c b)"))
                                                           (list (car l)))
-                                                         (else (go (cdr l))))))))
+                                                         (else (go (cdr l)))))))
                              (go cs))))
       (begin
         (expect "no call may reach code not known"
