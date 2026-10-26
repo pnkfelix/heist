@@ -123,3 +123,62 @@ The smallest thing that is still cahoots' shape, end to end:
 
 The first Fixpt change, R2, should land before or during step 1, so
 that the actor core catches failing turns from the start.
+
+## Status (2026-10-25)
+
+The first slice runs: `fixpt/target/release/fixpt run editor/main.fx -- FILE`.
+It has one buffer, one view and a frame, all actors. It has movement,
+insertion, deletion, C-x C-s and C-x C-c. `C-c !` is a command that
+fails on purpose: the echo area says why, and the buffer is left as it
+was.
+
+| File | From cahoots | What it is |
+|---|---|---|
+| `editor/core.fx` | `(yank actor core)` | Actors, turns under `attempt`, and commands run after a turn. No scheduling classes, activities or timers yet. |
+| `editor/rope.fx` | `(yank actor rope)` | The persistent rope, as a `define-datatype`. |
+| `editor/keys.fx` | `(yank keys)` | Keys as `(union char symbol)`, `kbd`, and decoding from a byte source. |
+| `editor/screen.fx` | `(yank screen)` | Immutable rows with face spans; `screen-update` redraws the rows that changed. |
+| `editor/main.fx` | `(yank actor main)`, a little of buffer, view, frame and commands | The slice. |
+
+`editor/tests/run.sh` runs the modules' tests. The slice itself was
+tried under `script(1)` with keys piped in.
+
+**How a turn is typed.** A message to an actor of state `S` is a
+`(subr turn-eff (S) (reply S))`. `turn-eff` is cancellable: it may
+read, allocate and loop. A reply is the next state, plus commands
+(thunks of `cmd-eff`) that the scheduler runs after the turn. The
+checker accepts `attempt` around a polymorphic `run-one`, so rollback
+is a property of the types, not a convention as it was in cahoots.
+
+**What writing FX-26 at this scale taught:**
+- A `cons` in one arm of an `if` gets a region of its own. Where the
+  other arm is an acyclic list, the `cons` needs `(the (listof T
+  acyclic) …)`, or a helper of that result type (`push` in
+  `screen.fx`).
+- `typecase` arms bind a name, `(char c …)`, and it must end with
+  `else`.
+- A type imported from a module file has no shape known at run time, so
+  it can't be a member of a union outside that module. `screen.fx` uses
+  `no-screen` instead of `(union false screen)`.
+- `spawn` and `send` are FX-26's process forms, so the core's are
+  named `spawn-actor` and `tell`.
+- A definition sees only those before it. The actors are wired up after
+  they are spawned (`subscribe`), and a buffer's subscribers are closures,
+  so its type never names the view's.
+- Types from a parameterized module are printed fully expanded, so one
+  message about an actor is pages long. Naming them in messages would
+  help.
+- `fixpt check editor/main.fx` reports that "the checkers disagree" on
+  `draw`. They agree on the type: one prints `cmd` by its name and the
+  other expands it.
+
+**Measured:** an empty program starts in 0.15 s, and checking and
+compiling the actor core adds 0.05 s. An `attempt` costs about 1.7 µs.
+
+**Next:**
+- Scheduling classes, so that a burst of keys is drawn once.
+- Activities, so that commands follow one another, and C-g.
+- Windows and the minibuffer, then C-x C-f.
+- Tabs laid out as columns (`(yank actor columns)`).
+- Then the parties outside: a syntax actor that reads FX-26 with
+  Fixpt's own reader, as a process sent snapshots.
