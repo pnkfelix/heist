@@ -40,6 +40,7 @@ and those waiting."
       (if (or (null? ks) (and (>= (get current-key) 0) (activity-running? (get current-key))))
           #u
           (begin (set pending-keys (cdr ks))
+            (set eldoc-due #t)
             (set current-key (start! fr (key-typed fr (car ks)))))))))
 
 "Read the keys typed, waiting up to `timeout` ms for the first, into the
@@ -73,9 +74,11 @@ queue; C-g at once. Whether any came."
       (run-turns! 100)
       (cond ((not (get running)) #u)
             ((or (turns-waiting?) (pair? (get pending-keys))) (begin (send-keys! fr 0) (run-loop fr rows columns)))
-            ;; Processes' output looked for every 50 ms while any runs.
-            ((send-keys! fr (if polling 50 500)) (run-loop fr rows columns))
+            ;; Processes' output looked for every 50 ms while any runs;
+            ;; after a key, eldoc's turn when 100 ms pass with no other.
+            ((send-keys! fr (cond (polling 50) ((get eldoc-due) 100) (else 500))) (run-loop fr rows columns))
             ((not (get running)) #u)
+            ((get eldoc-due) (begin (set eldoc-due #f) (tell! fr (eldoc-now fr)) (run-loop fr rows columns)))
             (else
              (let ((now (terminal-dimensions)))
                (if (and (= (extract now rows) rows) (= (extract now columns) columns))

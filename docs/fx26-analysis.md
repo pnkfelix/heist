@@ -283,8 +283,118 @@ area, or why the program does not check there.
   0.44 s near its end.
 
 **Not yet:**
-- **Types by name.** They are printed expanded, so a command's type is
-  hundreds of characters.
+- **Types by name.** They were printed expanded, so a command's type
+  ran to hundreds of characters. Done since (FIXPT-CHANGES.md F3, "Names
+  in what it prints"): `in-buffer` prints as written.
 - **Hovering** (eldoc-style signatures as point moves).
 - **Instantiations at a site,** as context for the flow analysis.
 - **Checking past an error** before point.
+
+## On-the-fly information, as yank's (plan, 2026-10-26)
+
+The user's question: yank, after `M-x flow-run-loads` (or in any R7RS
+library) once its flow analysis has finished, says in the echo area what
+is under point, as point moves, with no command typed. Heist says
+nothing until asked (C-c t, C-c e, M-.). This is the plan to close that,
+and whether Fixpt should change for it.
+
+**What yank shows** (`src/yank/scheme/flow.sld` and `eldoc.sld`, yank
+98132c0; read, not run side by side):
+- on a variable, the type of what can reach it there, `(list-of
+  number)`, narrowed by the tests it is under;
+- on a call's operator, the procedures it can call, if more than one;
+- on a call the analysis underlines, what is wrong with it;
+- eldoc: the signature of the procedure called around point, with the
+  types it is called with and returns;
+- in the mode line, how far the analysis has got.
+
+Yank infers every one of these. In FX-26 most are written down or
+checked, which changes what is hard.
+
+**The steps, in order:**
+
+1. **Declared signatures, in the editor alone** (this step is built: see
+   below). Every `define`, `define*`, `define-rec` binding, `letrec`
+   binding and `lambda` parameter states its type in the text. So the
+   signature of the name at point, or else of the operator of the call
+   around it, is a text lookup, by the resolver and index M-. already
+   uses. A standard name's type comes from Fixpt's `standard.rs`, as
+   M-. says it. No checker, no analysis.
+2. **Callees on an operator, idle.** The flow analysis (stage 2) takes
+   about 20 ms on the editor's program after reading it. Run when idle
+   after an edit, it can say "calls a | b" on an operator, as yank does.
+3. **Inferred types at point: the checker kept, not rerun** (needs
+   Fixpt: F5 below). The type of any expression, `let` variables and
+   arms of `tagcase` included, where nothing is written.
+4. **Diagnostics as you go:** the checker's refusals underlined, C-c C-n
+   to the next, from the same kept check.
+5. **Narrowing past types:** what yank's flow adds over a type, the
+   closures and allocation sites that can reach a variable. Stage 2,
+   with type arguments as context.
+
+**Should Fixpt change? Yes: the checker as a service the editor keeps,
+not a primitive it calls.** Measured on the editor's own program (345 KB,
+fourteen files, concatenated as C-c t does), `type-at` near its start,
+middle and end:
+
+| place         | `type-at` |
+|---------------|-----------|
+| 40 KB in      | 125 ms    |
+| 195 KB in     | 311 ms    |
+| 343 KB in     | 1002 ms   |
+
+`type-at` checks the program again from the start, up to the form at
+point, each time. A primitive runs in the one thread that runs every
+actor, so the editor stops for as long as it takes. That is fine for
+C-c t, typed now and then. It is not fine on every move of point, nor
+after every edit.
+
+What F5 would add, on the model of F4's processes (a thread of its own,
+polled by the main loop):
+
+- `check-start : (string) → int`: a thread of its own checks the text,
+  keeping each expression's type (`record_types`) and each refusal. The
+  checker is made in that thread and stays there, so nothing in it has
+  to be `Send`; questions and answers cross as strings.
+- `check-status : (int) → (sumof (running unit) (done unit))`.
+- `check-type-at : (int int) → string`, as `type-at` says it, but a
+  look-up in the kept types: no checking. The names `type-at` puts back
+  (F3's `named`) found once a check, not once a question.
+- `check-errors : (int) → (listof (productof (start int) (end int)
+  (message string)))`, for step 4.
+- Later, from the same: `check-binder-at` (M-. by Fixpt's own
+  resolution, where `resolve.fx` approximates it: definition order,
+  modules, one namespace for types and values), names in scope at a
+  place (completion), instantiations at a call (stage 2's context).
+
+Two properties of FX-26 make this better than it is for Scheme:
+
+- **Checking can go past an error.** `define*` declares its type before
+  its body, and `declare_ahead` reads the declarations first. A form that
+  is refused can be dropped and the forms after it checked against its
+  declared type. Today `type-at` stops at the first refusal.
+- **Checking can resume from the first form changed.** A definition sees
+  only those before it, so a check of forms 1..k does not depend on any
+  later form. After an edit in form k+1, the checker's state after form k
+  is exactly reusable. That needs the checker's state kept at some forms
+  (a clone, or an undo log), whose size has to be measured. Measured
+  above, a check from the middle of the editor saves about a third; from
+  near the end, nearly all of it.
+
+The same service would be the core of Fixpt TODO §25's `fixpt lsp`, for
+Emacs: the JSON would be a thin front on what the editor already asks.
+
+**Step 1, as built:** `editor/eldoc.fx`. When the editor has been idle
+100 ms after a key, in an FX-26 buffer, the echo area shows `name: TYPE`
+for the name at point, or else for the operator of the call around
+point:
+- **Where the type comes from:** the binder of the name, if it is in
+  this text: a `lambda` or `plambda` parameter, or a `letrec` or
+  `define-rec` binding. Else a definition in a buffer, or in the index
+  (the file read in a command). Else Fixpt's `standard.rs`, read once.
+- **What it does not override:** a message a command gave. It replaces
+  only its own.
+- **What it says nothing about:** special forms and type syntax, and
+  names with no declared type (a `let` variable, a `tagcase` arm's
+  name). Those are step 3's.
+- **Off and on:** M-x eldoc-mode.

@@ -1,0 +1,130 @@
+== screen 1
+(define* f (subr pure (int) int)        |
+  (lambda (y) (+ y (car (list y)))))    |
+(define k int (f 2))                    |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+---- a.fx   L3                          |
+f: (subr pure (int) int)                |
+cursor 2,15
+ kkkkkkk f  tttt                        |
+   kkkkkk                               |
+ kkkkkk f                               |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm|
+                                        |
+== screen 2
+(define* f (subr pure (int) int)        |
+  (lambda (y) (+ y (car (list y)))))    |
+(define k int (f 2))                    |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+---- a.fx   L3                          |
+f: (subr pure (int) int)                |
+cursor 2,17
+ kkkkkkk f  tttt                        |
+   kkkkkk                               |
+ kkkkkk f                               |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm|
+                                        |
+== screen 3
+(define* f (subr pure (int) int)        |
+  (lambda (y) (+ y (car (list y)))))    |
+(define k int (f 2))                    |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+---- a.fx   L2                          |
+car: (poly ((r region)) (poly ((t1 type)|
+cursor 1,22
+ kkkkkkk f  tttt                        |
+   kkkkkk                               |
+ kkkkkk f                               |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm|
+                                        |
+== screen 4
+(define* f (subr pure (int) int)        |
+  (lambda (y) (+ y (car (list y)))))    |
+(define k int (f 2))                    |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+---- a.fx   L2                          |
++: (subr pure (int int) int)            |
+cursor 1,17
+ kkkkkkk f  tttt                        |
+   kkkkkk                               |
+ kkkkkk f                               |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm|
+                                        |
+== at the end
+(define* f (subr pure (int) int)        |
+  (lambda (y) (+ y (car (list y)))))    |
+(define k int (f 2))                    |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+---- a.fx   L2                          |
+Wrote TMP/a.fx|
+cursor 1,17
+ kkkkkkk f  tttt                        |
+   kkkkkk                               |
+ kkkkkk f                               |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm|
+                                        |

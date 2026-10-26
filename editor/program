@@ -11,4 +11,5 @@ calls.fx
 process.fx
 files.fx
 help.fx
+eldoc.fx
 main.fx

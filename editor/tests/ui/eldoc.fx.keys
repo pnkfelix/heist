@@ -1,0 +1,24 @@
+(define* f (subr pure (int) int)\n  (lambda (y) (+ y (car (list y)))))\n(define k int (f 2))
+\x1b<
+\x13(f 2
+\r
+\x02\x02\x02
+@500
+=
+\x06\x06
+@500
+=
+\x1b<
+\x13(car
+\r
+\x02
+@800
+=
+\x1b<
+\x13+ y
+\r
+\x02
+@800
+=
+\x18\x13
+@800
