@@ -1,0 +1,216 @@
+;;; The types of `check-syntax.fx`, its `check-syntax-module`: a module file of no
+;;; state, which it loads, and so may its clients (`TODO.md` §68); its
+;;; items in the order they were there.
+
+;; The types these use, from the files that define them.
+(hide (define check-env-types (load-module "fx26:check-env-types.fx")))
+(define-type k-scope (select check-env-types k-scope))
+(hide (define parser-types ((proj (load-module "fx26:parser-types.fx") @s @e @m @c @p))))
+(define-type syn (select parser-types syn))
+(define-type k-slots (listof (pairof int syn @t) acyclic))
+;; The type families being expanded, each with the descriptions given it
+;; and the slot its type will fill: a use inside with the same descriptions
+;; is that slot, a knot (regular recursion).
+(define-type k-family-knot (productof (1 symbol) (2 k-scope) (3 int)))
+;; `(define-type name type)`: `name` stands for the type from here on, and
+;; may appear in its own definition.
+;; While a program's types are declared ahead (`k-ahead`): each
+;; abbreviation's slot, made before any is read so that they may name each
+;; other in any order; and those filled, with where, to check grounded once
+;; all are.
+(define-type k-ahead-slots (listof (pairof symbol int @t) acyclic))
+(define-type k-filled (listof (productof (1 int) (2 int) (3 int)) acyclic))
+
+;;; ------------------------------------------------------------ signatures
+
+;; What its clients use of it (`check-program.fx`).
+;; The types it names, from the files that define them.
+(hide (define check-types-types (load-module "fx26:check-types-types.fx")))
+(define-type k-names (select check-types-types k-names))
+(hide (define check-read-types (load-module "fx26:check-read-types.fx")))
+(define-type k-syns (select check-read-types k-syns))
+;; The types it names, from the files that define them.
+(define-type k-conv (select check-types-types k-conv))
+;; The types it names, from the files that define them.
+(import check-types-types (type k-binders k-ds k-eff k-hyps k-ids k-lemma k-parts k-size))
+(define-type check-syntax-sig
+  (moduleof (val k-define-family
+                 (subr (maxeff (alloc @t)
+                               (goto @z)
+                               (read @globals)
+                               (read @s)
+                               (read @t)
+                               (write @t)
+                               spin)
+                       (symbol k-syns syn)
+                       unit))
+            (val k-list-head (subr (maxeff (read @globals) (read @s)) (syn) string))
+            (val k-ahead-names (ref k-ahead-slots @t))
+            (val k-ahead-filled (ref k-filled @t))
+            (val k-ahead-declare
+                 (subr (maxeff (alloc @t)
+                               (goto @z)
+                               (read (globals ds-rec k-push-desc k-slot))
+                               (read @globals)
+                               (read @s)
+                               (read @t)
+                               (write @t)
+                               spin)
+                       (k-names k-names)
+                       unit))
+            (val k-filled-reversed (subr (read @globals) (k-filled k-filled) k-filled))
+            (val k-ground-filled
+                 (subr (maxeff (alloc @t)
+                               (goto @z)
+                               (read @globals)
+                               (read @s)
+                               (read @t)
+                               (write @t)
+                               spin)
+                       (k-filled)
+                       unit))
+            (val k-parse-conv
+                 (subr (maxeff (alloc @t)
+                               (goto @z)
+                               (read @globals)
+                               (read @s)
+                               (read @t)
+                               (write @t)
+                               spin)
+                       (syn)
+                       k-conv))
+            (val k-knots (ref (listof k-family-knot acyclic) @t))
+            (val k-effect-atom
+                 (subr (maxeff (alloc @t)
+                               (goto @z)
+                               (read @globals)
+                               (read @s)
+                               (read @t)
+                               (write @t)
+                               spin)
+                       (string syn)
+                       k-eff))
+            (val k-syn-label
+                 (subr (maxeff (alloc @t)
+                               (goto @z)
+                               (read @globals)
+                               (read @s)
+                               (read @t)
+                               (write @t))
+                       (syn)
+                       symbol))
+            (val k-has-label?
+                 (subr (maxeff (read @globals) (read @t)) (k-parts symbol) bool))
+            (val k-shape
+                 (subr (maxeff (alloc @t)
+                               (goto @z)
+                               (read @globals)
+                               (read @s)
+                               (read @t)
+                               (write @t))
+                       (bool string syn)
+                       unit))
+            (val k-dletrec-slots
+                 (subr (maxeff (alloc @t)
+                               (goto @z)
+                               (read @globals)
+                               (read @s)
+                               (read @t)
+                               (write @t)
+                               spin)
+                       (k-syns)
+                       k-slots))
+            (val k-grounded
+                 (subr (maxeff (alloc @t)
+                               (goto @z)
+                               (read @globals)
+                               (read @s)
+                               (read @t)
+                               (write @t)
+                               spin)
+                       (int int int)
+                       unit))
+            (val k-dletrec-no-knot
+                 (subr (maxeff (alloc @t)
+                               (goto @z)
+                               (read @globals)
+                               (read @s)
+                               (read @t)
+                               (write @t)
+                               spin)
+                       (k-slots syn)
+                       unit))
+            (val k-dletrec-grounded
+                 (subr (maxeff (alloc @t)
+                               (goto @z)
+                               (read @globals)
+                               (read @s)
+                               (read @t)
+                               (write @t)
+                               spin)
+                       (k-slots syn)
+                       unit))
+            (val k-push-all
+                 (subr (maxeff (alloc @t) (read @globals) (read @t) (write @t))
+                       (k-scope)
+                       unit))
+            (val k-parse-conv-form
+                 (subr (maxeff (alloc @t)
+                               (goto @z)
+                               (read @globals)
+                               (read @s)
+                               (read @t)
+                               (write @t)
+                               spin)
+                       (syn)
+                       k-conv))
+            (val k-knot-of
+                 (subr (maxeff (read @globals) (read @t) spin)
+                       ((listof k-family-knot acyclic) symbol k-scope)
+                       int))
+            (val k-twice (subr (read @globals) (string) string))
+            (val k-storage-head? (subr pure (string) bool))
+            (val k-type-kind? (subr pure (int) bool))
+            (val k-stated-lemma
+                 (subr (maxeff (read @globals) (read @t))
+                       (k-binders (pairof int int @t) k-hyps)
+                       k-lemma))
+            (val k-arity-message (subr (read @globals) (symbol int int) string))
+            (val k-ds-applied? (subr pure (k-ds) bool))
+            (val k-select-alias
+                 (subr (maxeff (read @globals) (read @t) spin) ((listof k-ds acyclic)) int))
+            (val k-module-type-head? (subr pure (symbol) bool))
+            (val k-endless
+                 (subr (maxeff (alloc @t)
+                               (goto @z)
+                               (read @globals)
+                               (read @s)
+                               (read @t)
+                               (write @t)
+                               spin)
+                       (syn symbol)
+                       void))
+            (val k-parse-size
+                 (subr (maxeff (alloc @t)
+                               (goto @z)
+                               (read @globals)
+                               (read @s)
+                               (read @t)
+                               (write @t)
+                               spin)
+                       (syn)
+                       k-size))
+            (val k-hyp-coercions
+                 (subr (maxeff (alloc @t)
+                               (goto @z)
+                               (read @globals)
+                               (read @s)
+                               (read @t)
+                               (write @t)
+                               spin)
+                       (k-hyps k-eff k-ids)
+                       k-ids))
+            (val k-ahead-take
+                 (subr (maxeff (alloc @t) (read @globals) (read @t) (write @t))
+                       (symbol)
+                       int))))

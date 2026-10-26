@@ -1,0 +1,41 @@
+;;; The types of `check-calls.fx`, its `check-calls-module`: a module file of no
+;;; state, which it loads, and so may its clients (`TODO.md` §68); its
+;;; items in the order they were there.
+;; Whether a procedure of type `t` could be given itself: a cycle in `t`
+;; runs through a parameter of a procedure (or the argument of a
+;; continuation). A type that is merely recursive, as a list is, does not let
+;; anything loop. `path`: the nodes on the way down, newest first, each with
+;; whether it was reached through a parameter.
+(define-type k-cpath (listof (pairof int bool @t) acyclic))
+;; A prompt tag's parts, if it is one (`k-tag-parts`).
+(define-type k-tag-parts
+  (listof (productof (1 int) (2 int) (3 k-eff) (4 k-region) (5 bool)) acyclic))
+;; Types made with `spin` (`k-spin-positive`): each node, what it was made.
+(define-type k-spun (listof (pairof int int @t) acyclic))
+
+;;; ------------------------------------------------------------ signatures
+
+;; What its clients use of it (`check-proofs.fx`).
+;; The types it names, from the files that define them.
+(hide (define check-types-types (load-module "fx26:check-types-types.fx")))
+(define-type kx (select check-types-types kx))
+;; The types it names, from the files that define them.
+(define-type kxs (select check-types-types kxs))
+;; The types it names, from the files that define them.
+(import check-types-types (type k-eff k-map k-region))
+(define-type check-calls-sig
+  (moduleof (val k-under (subr (read @globals) (kx) kx))
+            (val k-callee-name
+                 (subr (maxeff (alloc @t) (read @globals)) (kx) (listof symbol acyclic)))
+            (val k-std-op (subr (maxeff (read @globals) (read @t) spin) (kx) string))
+            (val k-may-spin?
+                 (subr (maxeff (alloc @t) (read @globals) (read @t) (write @t) spin)
+                       (kx int kxs)
+                       bool))
+            (val k-spin-for-cyclic
+                 (subr (maxeff (alloc @t) (read @globals) (read @t) (write @t) spin)
+                       (int int k-map)
+                       int))
+            (val k-tag-parts
+                 (subr (maxeff (alloc @t) (read @globals) (read @t) spin) (int) k-tag-parts))
+            (val k-has-comefrom? (subr (maxeff (read @globals) (read @t)) (k-eff) bool))))

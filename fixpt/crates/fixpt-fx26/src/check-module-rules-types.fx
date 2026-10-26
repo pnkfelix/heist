@@ -1,0 +1,145 @@
+;;; The types of `check-module-rules.fx`, its `check-module-rules-module`: a module file of no
+;;; state, which it loads, and so may its clients (`TODO.md` §68); its
+;;; items in the order they were there.
+
+;; The types these use, from the files that define them.
+(hide (define check-types-types (load-module "fx26:check-types-types.fx")))
+(import check-types-types (type k-at k-eff k-ids k-parts) (effect checks))
+(hide (define check-resolve-types (load-module "fx26:check-resolve-types.fx")))
+(define-type k-letrec-bs (select check-resolve-types k-letrec-bs))
+;; What an error's message `m` is made into.
+(define-type k-say (subr (maxeff checks spin) (string) string))
+;; What a module's items make, its abstract types, descriptions and values
+;; (each newest first), and the effect of making them.
+(define-type k-made (productof (1 k-parts) (2 k-parts) (3 k-parts) (4 k-eff)))
+;; The bindings of lambdas `ls`, and the types written, resolved.
+(define-type k-mod-bound (productof (1 k-letrec-bs) (2 k-ids)))
+;; Why each group found so far may not end ("" if it ends), by its first
+;; member's name.
+(define-type k-ends (listof (productof (1 symbol) (2 string)) acyclic))
+;; An effect, and a type.
+(define-type k-eff-ty (productof (1 k-eff) (2 int)))
+;; The effect of checking each lambda of `bs` against its type, in the
+;; scope of every item, with its recursive group (of `gs`, `k-mod-groups`)
+;; checked to end, as a `define-rec`'s members are; `ws` why the groups so
+;; far may not, `ds` the types written; and the bindings, a `define*`'s at
+;; the type found.
+(define-type k-mod-checked (productof (1 k-eff) (2 k-letrec-bs)))
+;; A module's lambdas, those typed `->*` at the types found, and their
+;; recursive groups (`k-mod-groups`) at those types.
+(hide (define check-modorder-types0 (load-module "fx26:check-modorder-types.fx")))
+(define-type k-mod-found
+  (productof (1 k-letrec-bs) (2 (select check-modorder-types0 k-groups))))
+(hide (define check-letrec-types (load-module "fx26:check-letrec-types.fx")))
+(define-type k-lambda-synth (select check-letrec-types k-lambda-synth))
+
+;;; ------------------------------------------------------------ signatures
+
+;; What its clients use of it (`check-program.fx`).
+;; The types it names, from the files that define them.
+(hide (define check-env-types (load-module "fx26:check-env-types.fx")))
+(define-type k-hazard-list (select check-env-types k-hazard-list))
+(import check-types-types (type k-item k-items))
+(hide (define check-modorder-types (load-module "fx26:check-modorder-types.fx")))
+(define-type k-mlams (select check-modorder-types k-mlams))
+(define-type k-names (select check-types-types k-names))
+(hide (define check-subtype-types (load-module "fx26:check-subtype-types.fx")))
+(define-type k-saying (select check-subtype-types k-saying))
+(define-type k-te (select check-types-types k-te))
+(hide (define check-terminate-types (load-module "fx26:check-terminate-types.fx")))
+(define-type k-thunk (select check-terminate-types k-thunk))
+(define-type check-module-rules-sig
+  (moduleof (val k-mod-star-groups
+                 (subr (maxeff (alloc @t)
+                               (goto @z)
+                               (read @globals)
+                               (read @s)
+                               (read @t)
+                               (write @t)
+                               spin)
+                       ((select check-modorder-types k-edges) k-letrec-bs k-lambda-synth)
+                       k-mod-found))
+            (val k-rebind-top
+                 (subr (maxeff (alloc @t) (read @globals) (read @t) (write @t) spin)
+                       (symbol int)
+                       unit))
+            (val k-saying
+                 (subr (maxeff (alloc @t)
+                               (goto @z)
+                               (read @globals)
+                               (read @s)
+                               (read @t)
+                               (write @t)
+                               spin)
+                       (k-thunk k-say)
+                       k-te))
+            (val k-star-mistake
+                 (subr (maxeff (alloc @t) (read @globals) (read @t) spin)
+                       (string symbol int string)
+                       string))
+            (val k-made-of (subr (alloc @t) (k-parts k-parts k-parts k-eff) k-made))
+            (val k-mod-early
+                 (subr (maxeff (alloc @t)
+                               (goto @z)
+                               (read @globals)
+                               (read @s)
+                               (read @t)
+                               (write @t)
+                               spin)
+                       (k-items k-names
+                                (subr (maxeff (alloc @t)
+                                              (goto @z)
+                                              (read @globals)
+                                              (read @s)
+                                              (read @t)
+                                              (write @t)
+                                              spin)
+                                      (k-item k-made)
+                                      k-made)
+                                k-made)
+                       k-made))
+            (val k-parts-modules
+                 (subr (maxeff (alloc @t) (read @globals) (read @t) spin)
+                       (k-parts)
+                       k-hazard-list))
+            (val k-mod-bindings
+                 (subr (maxeff (alloc @t)
+                               (goto @z)
+                               (read @globals)
+                               (read @s)
+                               (read @t)
+                               (write @t)
+                               spin)
+                       (k-mlams int int)
+                       k-mod-bound))
+            (val k-mod-bind
+                 (subr (maxeff (alloc @t) (read @globals) (read @t) (write @t) spin)
+                       (k-letrec-bs k-mlams)
+                       unit))
+            (val k-ends-with
+                 (subr (maxeff (alloc @t) (read @globals) (read @t) (write @t) spin)
+                       (k-ends k-letrec-bs)
+                       k-ends))
+            (val k-group-end (subr (read @globals) (k-ends k-letrec-bs) string))
+            (val k-other-member (subr (read @globals) (k-letrec-bs symbol) k-letrec-bs))
+            (val k-mod-vals
+                 (subr (maxeff (alloc @t) (read @globals) (read @t) spin)
+                       (k-items k-parts k-letrec-bs k-parts)
+                       k-parts))
+            (val k-vals-known
+                 (subr (maxeff (alloc @t)
+                               (goto @z)
+                               (read @globals)
+                               (read @s)
+                               (read @t)
+                               (write @t)
+                               spin)
+                       (k-parts k-ids int int)
+                       unit))
+            (val k-comp-names (subr (maxeff (alloc @t) (read @globals)) (k-parts) k-names))
+            (val k-bind-parts
+                 (subr (maxeff (alloc @t) (read @globals) (read @t) (write @t) spin)
+                       (k-parts)
+                       unit))
+            (val k-module-type
+                 (subr (maxeff checks spin) (k-items k-parts k-parts k-parts k-at) int))))

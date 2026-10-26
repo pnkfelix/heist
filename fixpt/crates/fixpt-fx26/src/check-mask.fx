@@ -1,0 +1,210 @@
+;;; The checker, in FX-26: masking an expression's effect. Part of the
+;;; checker, `check-types.fx` first (moved out of `check-resolve.fx`,
+;;; 2026-10-04).
+
+;;; ------------------------------------------------------------ masking
+;;; What cannot be observed outside `x`, whose type is `result`, is removed:
+;;; everything on a region that no free variable's type mentions, except
+;;; that `alloc`, `goto` and `comefrom` on a region the result mentions stay
+;;; (ranks 2 to 4; `await`, like `read`, does not).
+
+;; Its types, those it uses of the files before it, and the signatures of
+;; what it is given.
+(let* ((check-types-types (load-module "fx26:check-types-types.fx"))
+       (check-resolve-types (load-module "fx26:check-resolve-types.fx"))
+       (check-subst-types (load-module "fx26:check-subst-types.fx"))
+       (eager-reader-types ((proj (load-module "fx26:eager-reader-types.fx") @s @e @m @c)))
+       (check-effects-types (load-module "fx26:check-effects-types.fx"))
+       (check-env-types (load-module "fx26:check-env-types.fx"))
+       (check-print-types (load-module "fx26:check-print-types.fx"))
+       (check-print-parts-types (load-module "fx26:check-print-parts-types.fx"))
+       (check-read-types (load-module "fx26:check-read-types.fx")))
+  ;; What it is given: the modules of the files before it that it uses.
+  (lambda ((check-types (select check-types-types check-types-sig))
+           (check-resolve (select check-resolve-types check-resolve-sig))
+           (check-effects (select check-effects-types check-effects-sig))
+           (check-env (select check-env-types check-env-sig))
+           (check-print (select check-print-types check-print-sig))
+           (check-read (select check-read-types check-read-sig))
+           (check-print-parts (select check-print-parts-types check-print-parts-sig)))
+    (module
+
+;; The types it uses of the files before it.
+(hide (include check-types-types) (include check-resolve-types) (include check-subst-types)
+      (include eager-reader-types))
+;; What it uses of the modules it is given: all of each, hidden.
+(hide (include check-types) (include check-resolve) (include check-env)
+      (include check-print-parts))
+(import check-effects k-atom-rank k-atom-region k-has-region?)
+(define k-items (with check-read k-items))
+
+;; Whether an atom is on `const`, the frozen region.
+(define k-frozen-atom? (->* (k-atom) bool)
+  (lambda (a) (and (k-has-region? a) (tagcase (k-atom-region a) (r-frozen (p f) #t) (else y #f)))))
+;; Whether an atom is on data frozen into a place, other than a write: it is
+;; masked as what is done to the place is
+;; (`docs/research/soundness-findings.md`, F2).
+(define k-place-frozen-atom? (->* (k-atom) bool)
+  (lambda (a)
+    (and (k-has-region? a) (not (= (k-atom-rank a) 1))
+         (tagcase (k-atom-region a) (r-frozen (p f) (>= p 0)) (else y #f)))))
+;; The region an atom is masked by: a place-frozen atom's place.
+(define k-mask-region (->* (k-atom) k-region)
+  (lambda (a)
+    (if (k-place-frozen-atom? a)
+        (tagcase (k-atom-region a) (r-frozen (p f) (r-var p)) (else y (k-atom-region a)))
+        (k-atom-region a))))
+;; Whether an atom stays because the result mentions its region: `alloc`,
+;; `goto` and `comefrom` (ranks 2 to 4); only `alloc`, for a place-frozen
+;; one.
+(define k-result-keeps? (->* (k-atom) bool)
+  (lambda (a)
+    (let ((rank (k-atom-rank a)))
+      (if (k-place-frozen-atom? a) (= rank 2) (and (> rank 1) (< rank 5))))))
+;; Whether an atom stays because the result, whose regions are
+;; `in-result`, mentions its region.
+(define k-stays-for-result? (->* (k-atom k-regions) bool)
+  (lambda (a in-result)
+    (and (k-has-region-in? in-result (k-mask-region a)) (k-result-keeps? a))))
+;; Whether an atom is on frozen data in no place: it is never masked.
+(define k-unplaced-frozen-atom? (->* (k-atom) bool)
+  (lambda (a) (and (k-frozen-atom? a) (not (k-place-frozen-atom? a)))))
+;; The regions of `e`'s atoms that stay only if a free variable sees them.
+(define k-sought (->* (k-eff k-regions k-regions) k-regions)
+  (lambda (e in-result out)
+    (if (null? e)
+        out
+        (let ((a (car e)))
+          (k-sought (cdr e) in-result
+                    (if (and (k-has-region? a) (not (k-globals-atom? a))
+                             (not (k-unplaced-frozen-atom? a))
+                             (not (k-stays-for-result? a in-result)))
+                        (k-add-region out (k-mask-region a))
+                        out))))))
+(define k-drop-regions (->* (k-regions k-regions) k-regions)
+  (lambda (rs seen)
+    (cond ((null? rs) nil)
+          ((k-has-region-in? seen (car rs)) (k-drop-regions (cdr rs) seen))
+          (else (cons (car rs) (k-drop-regions (cdr rs) seen))))))
+
+;; Of the regions `rs`, those no variable free in `x` sees: a walk of `x`
+;; as `k-free-into`'s, that stops once each has been seen, as most are.
+(define-rec
+  (k-unseen-list (->* (kxs k-names k-regions) k-regions)
+    (lambda (xs bound rs)
+      (if (or (null? xs) (null? rs))
+          rs
+          (k-unseen-list (cdr xs) bound (k-unseen (car xs) bound rs)))))
+  (k-unseen (->* (kx k-names k-regions) k-regions)
+    (lambda (x bound rs)
+      (if (null? rs)
+          rs
+          (tagcase x
+            (x-var (s a b abk)
+              (let ((t (if (k-has-name? bound s) -1 (k-lookup s))))
+                (if (< t 0) rs (k-drop-regions rs (k-regions-in t)))))
+            (x-const (t v a b abk) rs)
+            (x-lambda (ps body a b abk) (k-unseen body (k-param-names ps bound) rs))
+            (x-app (f args a b abk) (k-unseen-list args bound (k-unseen f bound rs)))
+            (x-plambda (bs body a b abk) (k-unseen body bound rs))
+            (x-letregion (k r i body a b abk) (k-unseen body (cons (k-dvar-name r) bound) rs))
+            (x-rlambda (r l a b abk) (k-unseen l bound (k-unseen r bound rs)))
+            (x-proj (body ds a b abk) (k-unseen body bound rs))
+            (x-if (p c d a b abk) (k-unseen d bound (k-unseen c bound (k-unseen p bound rs))))
+            (x-letrec (bs body a b abk)
+              (let ((inner (k-letrec-names bs bound)))
+                (k-unseen body inner (k-unseen-letrec bs inner rs))))
+            (x-let (bs body a b abk)
+              (k-unseen body (k-let-names bs bound) (k-unseen-let bs bound rs)))
+            (x-begin (xs a b abk) (k-unseen-list xs bound rs))
+            (x-prompt (t body h a b abk)
+              (k-unseen h bound (k-unseen body bound (k-unseen t bound rs))))
+            (x-the (t body a b abk) (k-unseen body bound rs))
+            (x-convention (c body a b abk) (k-unseen body bound rs))
+            (x-bloblet (o i xs a b abk) (k-unseen-list xs bound rs))
+            ;; A product's fields are as a `let`'s bindings.
+            (x-product (fs a b abk) (k-unseen-let fs bound rs))
+            (x-extract (body l a b abk) (k-unseen body bound rs))
+            (x-sum (l body a b abk) (k-unseen body bound rs))
+            (x-tagcase (s arms els a b abk)
+              (let ((o (k-unseen-arms arms bound (k-unseen s bound rs))))
+                (k-unseen-else els bound o)))
+            (x-module (items a b abk) (k-unseen-module items bound rs))
+            (x-with (m body a b abk)
+              (if (k-fx-module? m)
+                  rs
+                  (let ((o (k-unseen (x-var m a b abk) bound rs)))
+                    (k-unseen body (k-names-onto (k-with-names a b abk) bound) o))))))))
+  ;; The same walk of a module's items, every item's names bound, as a
+  ;; `letrec*`'s.
+  (k-unseen-module (->* (k-items k-names k-regions) k-regions)
+    (lambda (items bound rs) (k-unseen-items items (k-items-bound items bound) rs)))
+  (k-unseen-items (->* (k-items k-names k-regions) k-regions)
+    (lambda (items bound rs)
+      (if (null? items)
+          rs
+          (k-unseen-items (cdr items) bound (k-unseen-list (extract (car items) 5) bound rs)))))
+  (k-unseen-letrec (->* (k-letrec-bs k-names k-regions) k-regions)
+    (lambda (bs bound rs)
+      (if (null? bs)
+          rs
+          (k-unseen-letrec (cdr bs) bound (k-unseen (extract (car bs) 3) bound rs)))))
+  (k-unseen-let (->* (k-let-bs k-names k-regions) k-regions)
+    (lambda (bs bound rs)
+      (if (null? bs)
+          rs
+          (k-unseen-let (cdr bs) bound (k-unseen (extract (car bs) 2) bound rs)))))
+  (k-unseen-arms (->* (k-arms k-names k-regions) k-regions)
+    (lambda (arms bound rs)
+      (if (null? arms)
+          rs
+          (let ((arm (car arms)))
+            (k-unseen-arms (cdr arms) bound
+                           (k-unseen (extract arm 4) (k-names-onto (extract arm 3) bound) rs))))))
+  ;; A `tagcase`'s `else` arm, if any, its variable bound.
+  (k-unseen-else (->* (k-let-bs k-names k-regions) k-regions)
+    (lambda (els bound rs)
+      (if (null? els)
+          rs
+          (k-unseen (extract (car els) 2) (cons (extract (car els) 1) bound) rs)))))
+
+;; What stays of `e`: an atom on a region no free variable sees goes.
+(define k-keep (->* (k-eff k-regions k-regions) k-eff)
+  (lambda (e unseen in-result)
+    (if (null? e)
+        nil
+        (let* ((a (car e)) (rest (k-keep (cdr e) unseen in-result)))
+          (cond ((not (k-has-region? a)) (cons a rest))
+                ((k-unplaced-frozen-atom? a) (cons a rest))
+                ((not (k-has-region-in? unseen (k-mask-region a))) (cons a rest))
+                ((k-stays-for-result? a in-result) (cons a rest))
+                (else rest))))))
+
+;; Note that region variable `v` is written, if a `letfreeze` is freezing
+;; it.
+(define k-note-written (->* (int) unit)
+  (lambda (v)
+    (if (and (k-has-id? (get k-freezing) v) (not (k-has-id? (get k-written) v)))
+        (set k-written (cons v (get k-written)))
+        #u)))
+;; A write to a region a `letfreeze` is freezing, noted before masking could
+;; hide it: that region's data may be cyclic.
+(define k-note-writes (->* (k-eff) unit)
+  (lambda (e)
+    (if (null? e)
+        #u
+        (begin
+          (tagcase (car e)
+            (a-write (r) (tagcase r (r-var (v) (k-note-written v)) (else y #u)))
+            (a-init (r) (tagcase r (r-var (v) (k-note-written v)) (else y #u)))
+            (else x #u))
+          (k-note-writes (cdr e))))))
+(define k-mask (->* (kx k-eff int) k-eff)
+  (lambda (x e result)
+    (if (begin (k-note-writes e) (null? e))
+        e
+        (let* ((in-result (k-regions-in result))
+               (sought (k-sought e in-result nil)))
+          (if (null? sought)
+              e
+              (k-keep e (k-unseen x nil sought) in-result)))))))))

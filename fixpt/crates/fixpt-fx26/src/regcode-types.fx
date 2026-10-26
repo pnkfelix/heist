@@ -1,0 +1,317 @@
+;;; The types of `regcode.fx`, its `regcode-module`: a module file of no
+;;; state, which it loads, and so may its clients (`TODO.md` §68); its
+;;; items in the order they were there.
+
+;; The types these use, from the files that define them.
+(hide (define compile-types (load-module "fx26:compile-types.fx")))
+(import compile-types (type c-this items) (effect compiles))
+(hide (define parser-types ((proj (load-module "fx26:parser-types.fx") @s @e @m @c @p))))
+(define-type exp (select parser-types exp))
+(hide (define table-types (load-module "fx26:table-types.fx")))
+(define-type table (select table-types table))
+;; What register code's own helpers do: read the globals and what is being
+;; made (`rreads`); and walk it, maybe at length (`rscans`), making more of
+;; it (`rbuilds`); or emit an instruction, which writes it (`emits`).
+(define-effect rreads (maxeff (read @globals) (read @k)))
+(define-effect rscans (maxeff rreads spin))
+(define-effect rbuilds (maxeff rreads (alloc @k) spin))
+(define-effect emits (maxeff rreads (write @k) (alloc @k)))
+;; And what the compiler proper does (`compiles`), at length.
+(define-effect rcompiles (maxeff compiles spin))
+;; Lists register code makes and walks.
+(define-type bools (listof bool acyclic))
+(define-type wcells (listof wcell @k))
+(define-type rints (listof int @k))
+;; What a procedure that knows itself knows (`c-this`), in a list of one.
+(define-type rthis (listof c-this @k))
+;;; ---------------------------------------------------------------- items
+
+(define-datatype ritem
+  (r-cell wcell)
+  (r-label int)
+  ;; `branch` (#f) or `branchf` (#t) to a label.
+  (r-branch bool int)
+  ;; `brancht` to a label.
+  (r-brancht int)
+  ;; The frame's size, known when the body is done.
+  (r-frame)
+  ;; `global-guard g w` to a label: unless global cell `g` holds a closure
+  ;; made from word `w`.
+  (r-guard-to wcell wcell int))
+(define-type ritems (listof ritem @k))
+;; Where a variable is, to register code.
+;; A constant that needs no allocation when it runs, as register code may
+;; know one: a sum or product of constants is made while compiling, once.
+(define-datatype rconst
+  (rc-int int) (rc-bool bool) (rc-char char) (rc-nil) (rc-data wcell)
+  ;; A symbol, and a pair of constants: the parts of a constant list
+  ;; (`TODO.md` §44), made where a cell needs it.
+  (rc-sym symbol) (rc-pair rconst rconst))
+(define-type rconsts (listof rconst @k))
+;; The globals defined as constants (`TODO.md` §42), each cell and value,
+;; newest first; each module's literal members, by the module's global; and,
+;; while a fast version is compiled, the constants it folds, each behind a
+;; `global-guard` (`r-fast-code`). As the Rust compiler's `const_globals`,
+;; `module_consts` and `consts_now`.
+(define-type r-const-global (pairof wglobal rconst @k))
+(define-type r-const-list (listof r-const-global @k))
+;; The globals defined as constant lists (`c-const-list`), apart from the
+;; rest, by their names: what `r-unrolled` asks of a call's arguments,
+;; without going through every constant.
+(define-type r-const-list-table (table symbol r-const-list @k))
+(define-type r-member-const (pairof symbol rconst @k))
+(define-type r-module-const (pairof wglobal (listof r-member-const @k) @k))
+;; The literal members of the module global `g` holds, in a list; none if it
+;; has none noted.
+(define-type r-members-at (listof (listof r-member-const @k) @k))
+(define-datatype rloc
+  (rl-reg int)
+  (rl-slot int)
+  (rl-free int)
+  (rl-global wglobal)
+  (rl-loop)
+  ;; A `letrec` sibling not made yet, to be in this frame slot.
+  (rl-pending int)
+  ;; A constant, bound to the name (`r-known`): no place at all.
+  (rl-const rconst)
+  ;; A `letrec`-bound procedure only called in tail position, a join point
+  ;; (`c-join-ok?`): where its parameters are, and its label.
+  (rl-join (listof rloc @k) int)
+  ;; A lambda-lifted procedure (`at-lifted`): only called.
+  (rl-lifted int)
+  ;; No name's place: a test an `if` around decided, true or false
+  ;; (`r-knowing`): its comparison's name and operands, each a place or a
+  ;; constant, as they were there.
+  (rl-test string (listof rloc @k) bool))
+(define-type rlocs (listof rloc @k))
+(define-type renv (listof (pairof symbol rloc @k) @k))
+;; An operand of a call-out: an expression, a constant, a procedure of no
+;; arguments whose body is an expression (a `prompt`'s), a frame slot's
+;; value, or a free value of the closure running.
+(define-datatype rarg
+  (a-e exp)
+  (a-v wcell)
+  (a-thunk exp)
+  (a-slot int)
+  (a-lexical int)
+  ;; A variable's value, wherever it is: a lifted procedure's added
+  ;; argument.
+  (a-name symbol)
+  ;; An expression's value, not converted as the checker said it is (the
+  ;; conversion's own operand).
+  (a-as-is exp))
+(define-type rargs (listof rarg @k))
+;; A standard operation, as register code does it.
+(define-datatype rstd
+  ;; `op2 r`, operands in order, or swapped; then `not`, if asked.
+  (s-op2 int bool bool)
+  (s-op1 int)
+  (s-op2imm int wcell)
+  (s-field int)
+  ;; A call-out: a runtime primitive, or a cellular routine.
+  (s-prim int)
+  ;; A runtime primitive of one or two operands that never collects: in
+  ;; line, as `prim1`, `prim2` or `prim2imm`, its operands as `op2`'s.
+  (s-pure int)
+  (s-cellular int)
+  ;; Its argument itself (`%fx26-identity`).
+  (s-identity)
+  ;; A reference written: `setfield 2`, then unit.
+  (s-set)
+  ;; Arrays, the tag and key makers: several instructions.
+  (s-special string)
+  ;; `(apply f xs)`: a call, of `f`'s procedure of one list (`r-apply`).
+  (s-apply)
+  ;; `(list x …)`: the pairs made in line (`r-list`).
+  (s-list)
+  (s-none))
+;; What is being made: the items, newest first; whether a leaf; the next
+;; register and frame slot, and the most slots used; the labels; and, for a
+;; procedure that knows itself, what it knows and its start's label.
+(define-type rgen
+  (productof (items (ref ritems @k)) (leaf bool) (nreg (ref int @k)) (nslot (ref int @k))
+             (mslot (ref int @k)) (labels (ref int @k)) (this rthis) (start int)))
+;;; Register moves: (source, destination), source 0 being RESULT.
+(define-type rmove (pairof int int @k))
+(define-type rmoves (listof rmove @k))
+;; A leaf's tail call's arguments, as `r-leaf-args` sorts them: the moves
+;; of those in registers, or made into one, to REG1…REGn; and the simple
+;; ones, each with its register, made after the moves.
+(define-type rlate (listof (pairof int exp @k) @k))
+(define-type rleaf (productof (moves rmoves) (late rlate)))
+;; A test's description: its comparison's name, and its operands.
+(define-type rtest (pairof string rlocs @k))
+
+;;; ------------------------------------------------------------ signatures
+
+;; What its clients use of it (`compile-programs.fx`).
+;; The types it names, from the files that define them.
+(define-type cenv (select compile-types cenv))
+(hide (define check-resolve-types (load-module "fx26:check-resolve-types.fx")))
+(define-type exp-letrec-bs (select check-resolve-types exp-letrec-bs))
+(define-type exps (select compile-types exps))
+;; The types it names, from the files that define them.
+(define-type syms (select compile-types syms))
+(define-type regcode-sig
+  (moduleof (val r-const-globals (ref r-const-list @k))
+            (val r-const-lists (ref r-const-list-table @k))
+            (val r-module-consts (ref (listof r-module-const @k) @k))
+            (val r-const-in
+                 (subr (maxeff (alloc @k) (read @globals) (read @k) spin)
+                       (r-const-list wglobal)
+                       rconsts))
+            (val r-member-const
+                 (subr (maxeff (alloc @k) (read @globals) (read @k) spin)
+                       (wglobal symbol)
+                       rconsts))
+            (val r-rev-consts
+                 (subr (maxeff (alloc @k) (read @globals) (read @k) spin)
+                       (rconsts rconsts)
+                       rconsts))
+            (val c-length-consts
+                 (subr (maxeff (read @globals) (read @k) spin) (rconsts) int))
+            (val r-consts-now (ref r-const-list @k))
+            (val r-declined (ref bool @k))
+            (val r-decline (subr (maxeff (read @globals) (write @k)) () unit))
+            (val r-emit (subr (maxeff (alloc @k) (read @k) (write @k)) (rgen ritem) unit))
+            (val r-op0
+                 (subr (maxeff (alloc @k) (read @globals) (read @k) (write @k))
+                       (rgen int)
+                       unit))
+            (val r-opn
+                 (subr (maxeff (alloc @k) (read @globals) (read @k) (write @k))
+                       (rgen int int)
+                       unit))
+            (val r-opnn
+                 (subr (maxeff (alloc @k) (read @globals) (read @k) (write @k))
+                       (rgen int int int)
+                       unit))
+            (val r-lambda-op
+                 (subr (maxeff (alloc @k) (read @globals) (read @k) (write @k))
+                       (rgen wcell int)
+                       unit))
+            (val r-adapted
+                 (subr (maxeff (alloc @k) (read @globals) (read @k) (write @k)) (rgen) unit))
+            (val r-slot (subr (maxeff (read @k) (write @k)) (rgen) int))
+            (val r-done
+                 (subr (maxeff (alloc @k) (read @globals) (read @k) (write @k))
+                       (rgen bool)
+                       unit))
+            (val r-assemble
+                 (subr (maxeff (alloc @k) (read @globals) (read @k) (write @k) spin)
+                       (rgen)
+                       wcells))
+            (val r-where
+                 (subr (maxeff (alloc @k) (read @globals) (read @k) spin)
+                       (renv symbol)
+                       rlocs))
+            (val r-bind (subr (maxeff (alloc @k) (read @globals)) (symbol rloc renv) renv))
+            (val r-standard
+                 (subr (maxeff (alloc @k) (read @globals) (read @k)) (string int) rstd))
+            (val r-op1
+                 (subr (maxeff (alloc @k) (read @globals) (read @k) (write @k))
+                       (rgen int wcell)
+                       unit))
+            (val r-op2
+                 (subr (maxeff (alloc @k) (read @globals) (read @k) (write @k))
+                       (rgen int wcell wcell)
+                       unit))
+            (val r-new-label (subr (maxeff (read @k) (write @k)) (rgen) int))
+            (val r-reg (subr (maxeff (read @globals) (read @k) (write @k)) (rgen) int))
+            (val r-leave
+                 (subr (maxeff (alloc @k) (read @globals) (read @k) (write @k)) (rgen) unit))
+            (val r-var-loc
+                 (subr (maxeff (alloc @k) (read @globals) (read @k) spin) (renv exp) rlocs))
+            (val r-plain-var-loc
+                 (subr (maxeff (alloc @k) (read @globals) (read @k) spin) (renv exp) rlocs))
+            (val r-local (subr (maxeff (alloc @k) (read @globals)) (cenv symbol) cenv))
+            (val r-simple? (subr (maxeff (read @globals) (read @k)) (exp) bool))
+            (val r-const-cell (subr spin (rconst) wcell))
+            (val r-const-false? (subr pure (rconst) bool))
+            (val r-holds? (subr (maxeff (read @globals) (read @k)) (rconsts bool) bool))
+            (val r-lifted
+                 (subr (maxeff (read @globals) (read @k))
+                       (int int int)
+                       (listof (listof int @k) @k)))
+            (val r-bind-lifted
+                 (subr (maxeff (alloc @k) (read @globals) (read @k) spin)
+                       (exp-letrec-bs (listof int @k) renv)
+                       renv))
+            (val r-lifted-at
+                 (subr (maxeff (alloc @k) (read @globals) (read @k) spin) (renv exp) int))
+            (val r-par-moves
+                 (subr (maxeff (alloc @k) (read @globals) (read @k) (write @k) spin)
+                       (rgen rmoves)
+                       unit))
+            (val r-rleaf (subr (read @globals) (rmoves rlate) rleaf))
+            (val r-leaf-move
+                 (subr (maxeff (alloc @k) (read @globals)) (rleaf int int) rleaf))
+            (val r-leaf-late
+                 (subr (maxeff (alloc @k) (read @globals)) (rleaf int exp) rleaf))
+            (val r-reg-of (subr (maxeff (read @globals) (read @k)) (rlocs) int))
+            (val r-moves-cycle?
+                 (subr (maxeff (alloc @k) (read @globals) (read @k) spin) (rmoves) bool))
+            (val r-written?
+                 (subr (maxeff (read @globals) (read @k) spin) (int rmoves rlate) bool))
+            (val r-moves-snoc
+                 (subr (maxeff (alloc @k) (read @globals) (read @k) spin)
+                       (rmoves int int)
+                       rmoves))
+            (val r-self-known?
+                 (subr (maxeff (alloc @k) (read @globals) (read @k) spin)
+                       (rgen exp int cenv)
+                       bool))
+            (val r-add-name? (subr (read @globals) (string) bool))
+            (val r-standard-name
+                 (subr (maxeff (alloc @k) (read @globals) (read @k) spin) (renv exp) string))
+            (val r-adds?
+                 (subr (maxeff (alloc @k) (read @globals) (read @k) spin) (renv exp) bool))
+            (val r-known
+                 (subr (maxeff (alloc @k) (read @globals) (read @k) spin)
+                       (renv exp)
+                       rconsts))
+            (val r-count-args (subr (maxeff (read @globals) (read @k) spin) (rargs) int))
+            (val r-never-collects? (subr (read @globals) (string) bool))
+            (val r-exp-args (subr (maxeff (alloc @k) (read @globals)) (exps) rargs))
+            (val r-last-hard
+                 (subr (maxeff (read @globals) (read @k) spin) (rargs int int) int))
+            (val r-nth-arg (subr (maxeff (read @globals) (read @k) spin) (rargs int) rarg))
+            (val r-arg-simple-here?
+                 (subr (maxeff (alloc @k) (read @globals) (read @k) spin)
+                       (rarg renv bool)
+                       bool))
+            (val r-name
+                 (subr (maxeff (alloc @k)
+                               (goto @y)
+                               (read @globals)
+                               (read @k)
+                               (read @t)
+                               (write @k)
+                               spin)
+                       (rgen symbol renv)
+                       unit))
+            (val r-nth-int
+                 (subr (maxeff (read @globals) (read @k) spin) ((listof int @k) int) int))
+            (val r-small? (subr pure (int) bool))
+            (val r-const-small
+                 (subr (maxeff (alloc @k) (read @globals)) (rconst) (listof int @k)))
+            (val r-name-args
+                 (subr (maxeff (alloc @k) (read @globals) (read @k) spin)
+                       (syms rargs)
+                       rargs))
+            (val r-reg-moves
+                 (subr (maxeff (alloc @k) (read @globals) (read @k) spin)
+                       (syms renv int)
+                       rmoves))
+            (val r-test-desc
+                 (subr (maxeff (alloc @k) (read @globals) (read @k) spin)
+                       (renv exp)
+                       (listof rtest @k)))
+            (val r-same-exp? (subr (read (globals exp-end exp-start exp-kth)) (exp exp) bool))
+            (val r-this-added (subr (read @k) (rgen) int))
+            (val r-var-global
+                 (subr (maxeff (alloc @k) (read @globals) (read @k) spin)
+                       (renv exp)
+                       (listof wglobal @k)))
+            (val r-this-name? (subr (read @k) (rthis symbol int) bool))
+            (val r-operator (subr (maxeff (read @globals) (read @k) spin) (exp) exp))))

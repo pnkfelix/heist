@@ -1,0 +1,811 @@
+;;; The checker, in FX-26: subtyping, modules' included.
+;;; Part of the checker, `check-types.fx` first (PLAN.md §11, step 10).
+
+;;; ------------------------------------------------------------ subtyping
+;;; `a ≤ b`. Recursive types are compared coinductively: a pair already
+;;; being compared is assumed to hold.
+
+;; Its types, those it uses of the files before it, and the signatures of
+;; what it is given.
+(let* ((check-subtype-types (load-module "fx26:check-subtype-types.fx"))
+       (check-types-types (load-module "fx26:check-types-types.fx"))
+       (check-subst-types (load-module "fx26:check-subst-types.fx"))
+       (check-resolve-types (load-module "fx26:check-resolve-types.fx"))
+       (check-sub-env-types (load-module "fx26:check-sub-env-types.fx"))
+       (check-env-types (load-module "fx26:check-env-types.fx"))
+       (check-print-types (load-module "fx26:check-print-types.fx"))
+       (check-print-parts-types (load-module "fx26:check-print-parts-types.fx"))
+       (check-effects-types (load-module "fx26:check-effects-types.fx"))
+       (check-proving-types (load-module "fx26:check-proving-types.fx"))
+       (check-modules-types (load-module "fx26:check-modules-types.fx"))
+       (check-read-helpers-types (load-module "fx26:check-read-helpers-types.fx"))
+       (check-logic-types (load-module "fx26:check-logic-types.fx")))
+  ;; What it is given: the modules of the files before it that it uses.
+  (lambda ((check-types (select check-types-types check-types-sig))
+           (check-resolve (select check-resolve-types check-resolve-sig))
+           (check-sub-env (select check-sub-env-types check-sub-env-sig))
+           (check-env (select check-env-types check-env-sig))
+           (check-print (select check-print-types check-print-sig))
+           (check-effects (select check-effects-types check-effects-sig))
+           (check-proving (select check-proving-types check-proving-sig))
+           (check-subst (select check-subst-types check-subst-sig))
+           (check-modules (select check-modules-types check-modules-sig))
+           (check-print-parts (select check-print-parts-types check-print-parts-sig))
+           (check-read-helpers (select check-read-helpers-types check-read-helpers-sig))
+           (check-logic (select check-logic-types check-logic-sig)))
+    (module
+(hide (include check-subtype-types) (include check-types-types) (include check-subst-types)
+      (include check-env-types))
+;; The types it uses of the files before it.
+;; What it uses of the modules it is given: all of each, hidden.
+(hide (include check-types) (include check-resolve) (include check-sub-env) (include check-env)
+      (include check-print-parts) (include check-effects) (include check-proving)
+      (include check-subst) (include check-modules))
+(import check-read-helpers k-unsized-length k-with-unsized-length)
+(import check-logic k-specs=? k-spec-within?)
+;; A blobref's (generative 5) arguments `xs`, to an array that runs to the
+;; end of the suffix, its length named where it was bound, as one of
+;; length `finite`, which means just that, where `ys`'s is (`TODO.md` §77).
+(define k-to-end-forgot (->* (int k-descs k-descs) k-descs)
+  (lambda (g xs ys)
+    (if (and (= g 5) (= (k-length xs) 2) (= (k-length ys) 2))
+        (tagcase (car (cdr xs))
+          (dt (xf)
+            (tagcase (car (cdr ys))
+              (dt (yf)
+                (if (and (k-finite-end? yf) (k-to-end-var? xf))
+                    (the k-descs (list (car xs) (dt (k-with-unsized-length xf (sz-finite)))))
+                    xs))
+              (else w xs)))
+          (else w xs))
+        xs)))
+(define k-finite-end? (->* (int) bool)
+  (lambda (f)
+    (let ((n (k-unsized-length f)))
+      (and (not (null? n)) (tagcase (car n) (sz-finite () #t) (else y #f))))))
+(define k-to-end-var? (->* (int) bool)
+  (lambda (f)
+    (let ((n (k-unsized-length f)))
+      (and (not (null? n))
+           (tagcase (car n)
+             (sz-lin (k ts)
+               (and (= k 0) (= (k-length ts) 1) (= (cdr (car ts)) 1)
+                    (k-id-member? (car (car ts)) (get k-to-end-sizes))))
+             (else y #f))))))
+(define k-id-member? (->* (int k-ids) bool)
+  (lambda (v vs) (and (not (null? vs)) (or (= v (car vs)) (k-id-member? v (cdr vs))))))
+;; Fields `fs` past the first `n`, each forgettable from a bloblet at `r`,
+;; frozen if `z` (`k-forgettable?`).
+(define k-forgettable-past? (->* (k-ids int k-region bool) bool)
+  (lambda (fs n r z)
+    (cond ((null? fs) #t)
+          ((> n 0) (k-forgettable-past? (cdr fs) (- n 1) r z))
+          (else (and (k-forgettable? (car fs) r z) (k-forgettable-past? (cdr fs) 0 r z))))))
+
+;; Name each pair of binders of two `poly` nodes `a` and `b` by the pair and
+;; its position: the environments inside, for each side, from `es`.
+(define k-name-binders (->* (k-binders k-binders int int int k-benvs k-labels) k-benvs)
+  (lambda (ba bb a b i es labels)
+    (if (null? ba)
+        es
+        (let* ((l (k-label labels a b i))
+               (ea (k-benv-set (car es) (extract (car ba) 1) l))
+               (eb (k-benv-set (cdr es) (extract (car bb) 1) l)))
+          (k-name-binders (cdr ba) (cdr bb) a b (+ i 1) (the k-benvs (cons ea eb)) labels)))))
+;; Bounded region binders must have the same bounds.
+(define k-same-bounds? (->* (k-binders k-binders k-benv k-benv) bool)
+  (lambda (ba bb ea eb)
+    (or (null? ba)
+        (let ((x (k-bound-of (extract (car ba) 1))) (y (k-bound-of (extract (car bb) 1))))
+          (and (cond ((and (null? x) (null? y)) #t)
+                     ((or (null? x) (null? y)) #f)
+                     (else (k-benv-region=? (car x) (car y) ea eb)))
+               ;; A `distinct` binder of `a`'s is one of `b`'s, whose
+               ;; callers promise at least what `a` needs.
+               (or (not (k-distinct-var? (extract (car ba) 1)))
+                   (k-distinct-var? (extract (car bb) 1)))
+               (k-same-bounds? (cdr ba) (cdr bb) ea eb))))))
+;; Whether two nodes are the same generative type's.
+(define k-same-named? (->* (k-ty k-ty) bool)
+  (lambda (ta tb)
+    (tagcase ta
+      (ty-named (g xs) (tagcase tb (ty-named (h ys) (= g h)) (else z #f)))
+      (else z #f))))
+;; Whether node `t` is a generative type open here: inside its own
+;; conversions, its name is its representation; everywhere else only itself.
+(define k-open-named? (->* (k-ty) bool)
+  (lambda (t) (tagcase t (ty-named (g xs) (k-has-id? (get k-transparent) g)) (else z #f))))
+;; The tail of a `nlist` of `x` of size `m` in `r`: one shorter.
+(define k-nlist-tail (->* (int k-size k-region) int)
+  (lambda (x m r) (k-ty-new (ty-nlist x (k-tail-size m) r))))
+;; The binder of `bs` that effect `d` is, alone, or -1.
+(define k-effect-binder (->* (k-binders k-eff) int)
+  (lambda (bs d)
+    (if (and (not (null? d)) (null? (cdr d)))
+        (tagcase (car d) (a-var (x) (if (k-binder-has? bs x) x -1)) (else z -1))
+        -1)))
+
+;; Whether effects `d` and `e` are the same, each by its side's environment.
+(define k-benv-eff=? (->* (k-eff k-eff k-benv k-benv) bool)
+  (lambda (d e ea eb) (k-eff=? (k-benv-effect ea d) (k-benv-effect eb e))))
+(define-rec
+  (k-subs-contra (->* (k-ids k-ids k-benv k-benv k-strail k-labels) bool)
+    (lambda (xs ys ea eb trail labels)
+      (cond ((null? xs) (null? ys))
+            ((null? ys) #f)
+            (else (and (k-sub (car ys) (car xs) eb ea trail labels)
+                       (k-subs-contra (cdr xs) (cdr ys) ea eb trail labels))))))
+  (k-inv (->* (int int k-benv k-benv k-strail k-labels) bool)
+    (lambda (x y ea eb trail labels)
+      (and (k-sub x y ea eb trail labels) (k-sub y x eb ea trail labels))))
+  ;; `x ≤ y` as what a place holds: covariant if it is `frozen`, cannot be
+  ;; written; otherwise invariant.
+  (k-sub-held (->* (bool int int k-benv k-benv k-strail k-labels) bool)
+    (lambda (frozen x y ea eb trail labels)
+      (and (k-sub x y ea eb trail labels) (or frozen (k-sub y x eb ea trail labels)))))
+  ;; `a ≤ b` as what calling each does.
+  (k-sub-callable (->* (int int k-benv k-benv k-strail k-labels) bool)
+    (lambda (a b ea eb trail labels)
+      (let ((ca (car (k-as-subr a))) (cb (car (k-as-subr b))))
+        (and (= (k-length (extract ca 2)) (k-length (extract cb 2)))
+             (k-within? (k-benv-effect ea (extract ca 1)) (k-benv-effect eb (extract cb 1)))
+             (k-subs-contra (extract ca 2) (extract cb 2) ea eb trail labels)
+             (k-sub (extract ca 3) (extract cb 3) ea eb trail labels)))))
+  ;; `a ≤ b`. Recursive types are compared coinductively: a pair already
+  ;; being compared is assumed to hold, which is what makes comparing two
+  ;; cycles terminate: FX-87's trail, Amadio and Cardelli's assumption set.
+  ;; Every rule is a conjunction, so an assumption left behind by a failed
+  ;; comparison is never relied on: the failure is the answer.
+  ;; `a ≤ b`: by the rules; failing that, by a lemma. A comparison that
+  ;; failed may have left assumptions on the trail, so it is put back as it
+  ;; was; a lemma's hypotheses are compared assuming what is being shown.
+  (k-sub (->* (int int k-benv k-benv k-strail k-labels) bool)
+    (lambda (a b ea eb trail labels)
+      (if (null? (get k-lemmas))
+          (k-sub-rules a b ea eb trail labels)
+          (let ((ra (k-resolve a)) (rb (k-resolve b)))
+            (if (not (k-lemma-may-apply? (get k-lemmas) ra rb))
+                (k-sub-rules a b ea eb trail labels)
+                (let ((st (get trail)) (sl (get labels)))
+                  (or (k-sub-rules a b ea eb trail labels)
+                      (begin
+                        (k-restore trail labels st sl)
+                        (k-strail-push trail ra rb ea eb)
+                        (let ((ls (the (listof k-lemma acyclic) (reverse (get k-lemmas)))))
+                          (k-sub-by-lemmas (k-lemma-instances ls ra rb) ea eb trail labels))))))))))
+  (k-sub-by-lemmas (->* (k-instances k-benv k-benv k-strail k-labels) bool)
+    (lambda (insts ea eb trail labels)
+      (and (not (null? insts))
+           (let ((st (get trail)) (sl (get labels)))
+             (or (k-sub-hyps (car insts) ea eb trail labels)
+                 (begin (k-restore trail labels st sl)
+                        (k-sub-by-lemmas (cdr insts) ea eb trail labels)))))))
+  (k-sub-hyps (->* (k-hyps k-benv k-benv k-strail k-labels) bool)
+    (lambda (hs ea eb trail labels)
+      (or (null? hs)
+          (and (k-sub (car (car hs)) (cdr (car hs)) ea eb trail labels)
+               (k-sub-hyps (cdr hs) ea eb trail labels)))))
+  ;; `a ≤ b`, a question of its own.
+  ;; Its trail's entries no longer counted once it is answered.
+  (k-subtype (->* (int int) bool)
+    (lambda (a b)
+      (let* ((trail (the k-strail (new nil)))
+             (r (k-sub a b (the k-benv nil) (the k-benv nil) trail (the k-labels (new nil)))))
+        (begin (k-strail-drop (get trail) nil) r))))
+  (k-same-ty? (->* (int int) bool)
+    (lambda (x y) (and (k-subtype x y) (k-subtype y x))))
+  ;; Each lemma of `ls` that fits `a` and `b`: its hypotheses, instantiated.
+  (k-lemma-instances (->* ((listof k-lemma acyclic) int int) k-instances)
+    (lambda (ls a b)
+      (if (null? ls)
+          nil
+          (let* ((l (car ls))
+                 (m (the (ref k-map @t) (new nil)))
+                 (mine (if (k-lemma-fits? l a b m)
+                           (the k-instances (cons (k-subst-hyps (extract l 4) (get m)) nil))
+                           (the k-instances nil)))
+                 (rest (k-lemma-instances (cdr ls) a b)))
+            (if (null? mine) rest (the k-instances (cons (car mine) rest)))))))
+  ;; Whether lemma `l`'s sides fit `a` and `b`, its binders standing for
+  ;; what is recorded in `m`, and each for something.
+  (k-lemma-fits? (->* (k-lemma int int (ref k-map @t)) bool)
+    (lambda (l a b m)
+      (let ((seen (the k-trail (new nil))))
+        (and (k-match-ty l (extract l 2) a m seen) (k-match-ty l (extract l 3) b m seen)
+             (k-all-bound? (extract l 1) (get m))))))
+  ;; Whether `t` is `pat` with the lemma's binders standing for something,
+  ;; recorded in `m`.
+  (k-match-ty (->* (k-lemma int int (ref k-map @t) k-trail) bool)
+    (lambda (l pat t m seen)
+      (let ((pat (k-resolve pat)) (t (k-resolve t)))
+        (or (k-pair-seen? (get seen) pat t)
+            (begin
+              (set seen (cons (cons pat t) (get seen)))
+              (tagcase (k-get pat)
+                (ty-var (v)
+                  (if (k-binder-has? (extract l 1) v)
+                      (k-match-binder v (dt t) m)
+                      (k-same-ty? pat t)))
+                (else z (k-match-node l pat t m seen))))))))
+  ;; Whether node `t` is node `pat`, other than a variable: of its shape,
+  ;; with parts that match; or, failing that, the same type.
+  (k-match-node (->* (k-lemma int int (ref k-map @t) k-trail) bool)
+    (lambda (l pat t m seen)
+      (letrec ((mt (subr (maxeff kstate spin) (int int) bool)
+                   (lambda (x y) (k-match-ty l x y m seen)))
+               (mr (subr (maxeff kstate spin) (k-region k-region) bool)
+                   (lambda (r q) (k-match-region (extract l 1) r q m)))
+               (same (subr (maxeff kstate spin) () bool) (lambda () (k-same-ty? pat t))))
+        (let ((tt (k-get t)))
+          (tagcase (k-get pat)
+            (ty-named (g xs)
+              (tagcase tt
+                (ty-named (h ys) (and (= g h) (k-match-descs l xs ys m seen)))
+                (else z (same))))
+            (ty-pair (a1 b1 r1 n1)
+              (tagcase tt
+                (ty-pair (a2 b2 r2 n2) (and (bool=? n1 n2) (mr r1 r2) (mt a1 a2) (mt b1 b2)))
+                (else z (same))))
+            (ty-nil () (tagcase tt (ty-nil () #t) (else z (same))))
+            (ty-false () (tagcase tt (ty-false () #t) (else z (same))))
+            (ty-union (xs)
+              (tagcase tt
+                (ty-union (ys) (and (= (k-length xs) (k-length ys)) (k-match-list l xs ys m seen)))
+                (else z (same))))
+            (ty-ref (x r) (tagcase tt (ty-ref (y q) (and (mr r q) (mt x y))) (else z (same))))
+            (ty-array (x nz r)
+              (tagcase tt (ty-array (y nz q) (and (mr r q) (mt x y))) (else z (same))))
+            (ty-icell (x r) (tagcase tt (ty-icell (y q) (and (mr r q) (mt x y))) (else z (same))))
+            (ty-product (ps)
+              (tagcase tt (ty-product (qs) (k-match-parts l ps qs m seen)) (else z (same))))
+            (ty-sum (ps) (tagcase tt (ty-sum (qs) (k-match-parts l ps qs m seen)) (else z (same))))
+            (ty-subr (e1 p1 r1 c1 s1)
+              (tagcase tt
+                (ty-subr (e2 p2 r2 c2 s2)
+                  (and (k-conv=? c1 c2) (k-eff=? e1 e2) (k-specs=? s1 s2)
+                       (= (k-length p1) (k-length p2))
+                       (k-match-list l p1 p2 m seen) (mt r1 r2)))
+                (else z (same))))
+            (else z (same)))))))
+  (k-match-list (->* (k-lemma k-ids k-ids (ref k-map @t) k-trail) bool)
+    (lambda (l xs ys m seen)
+      (or (null? xs)
+          (and (k-match-ty l (car xs) (car ys) m seen) (k-match-list l (cdr xs) (cdr ys) m seen)))))
+  (k-match-parts (->* (k-lemma k-parts k-parts (ref k-map @t) k-trail) bool)
+    (lambda (l ps qs m seen)
+      (and (= (k-length ps) (k-length qs))
+           (letrec ((each (subr (maxeff kstate spin) (k-parts k-parts) bool)
+                          (lambda (ps qs)
+                            (or (null? ps)
+                                (and (symbol=? (extract (car ps) 1) (extract (car qs) 1))
+                                     (k-match-ty l (extract (car ps) 2) (extract (car qs) 2) m seen)
+                                     (each (cdr ps) (cdr qs)))))))
+             (each ps qs)))))
+  (k-match-descs (->* (k-lemma k-descs k-descs (ref k-map @t) k-trail) bool)
+    (lambda (l xs ys m seen)
+      (or (null? xs)
+          (and (let ((y (car ys)) (bs (extract l 1)))
+                 (tagcase (car xs)
+                   (dt (a) (tagcase y (dt (b) (k-match-ty l a b m seen)) (else z #f)))
+                   (dr (r) (tagcase y (dr (q) (k-match-region bs r q m)) (else z #f)))
+                   (de (d) (tagcase y (de (e) (k-match-effect bs d e m)) (else z #f)))
+                   (dz (a) (tagcase y (dz (b) (k-size=? a b)) (else z #f)))
+                   (dc (a) (tagcase y (dc (b) (k-conv=? a b)) (else z #f)))
+                   (df (a) #f)))
+               (k-match-descs l (cdr xs) (cdr ys) m seen)))))
+  ;; Whether binder `v` may stand for `d`, as recorded in `m`: recorded now
+  ;; if it stands for nothing yet, or already for the same.
+  (k-match-binder (->* (int k-desc (ref k-map @t)) bool)
+    (lambda (v d m)
+      (let ((f (k-map-find (get m) v)))
+        (if (null? f)
+            (begin (set m (cons (cons v d) (get m))) #t)
+            (k-same-desc? (cdr (car f)) d)))))
+  ;; Whether descriptions `x` and `d` are the same type, region or effect.
+  (k-same-desc? (->* (k-desc k-desc) bool)
+    (lambda (x d)
+      (tagcase x
+        (dt (u) (tagcase d (dt (t) (k-same-ty? u t)) (else z #f)))
+        (dr (r) (tagcase d (dr (q) (k-region=? r q)) (else z #f)))
+        (de (e) (tagcase d (de (e2) (k-eff=? e e2)) (else z #f)))
+        (else z #f))))
+  (k-match-region (->* (k-binders k-region k-region (ref k-map @t)) bool)
+    (lambda (bs r q m)
+      (tagcase r
+        (r-var (v) (if (k-binder-has? bs v) (k-match-binder v (dr q) m) (k-region=? r q)))
+        (else z (k-region=? r q)))))
+  (k-match-effect (->* (k-binders k-eff k-eff (ref k-map @t)) bool)
+    (lambda (bs d e m)
+      (let ((v (k-effect-binder bs d)))
+        (if (< v 0) (k-eff=? d e) (k-match-binder v (de e) m)))))
+  ;; `a ≤ b` by the rules alone.
+  (k-sub-rules (->* (int int k-benv k-benv k-strail k-labels) bool)
+    (lambda (a b ea eb trail labels)
+      (let ((a (k-resolve a)) (b (k-resolve b)))
+        (cond
+          ((and (= a b) (and (null? ea) (null? eb))) #t)
+          ((k-strail-has? (get trail) a b ea eb) #t)
+          (else
+           (begin
+             (k-strail-push trail a b ea eb)
+             (k-sub-opened a b ea eb trail labels)))))))
+  ;; `a ≤ b`, assumed: a generative type open here is its representation,
+  ;; unless both are the same one or `a` is `void`.
+  (k-sub-opened (->* (int int k-benv k-benv k-strail k-labels) bool)
+    (lambda (a b ea eb trail labels)
+      (let* ((ta (k-get a)) (tb (k-get b))
+             (closed (or (k-same-named? ta tb) (tagcase ta (ty-void () #t) (else z #f)))))
+        (cond
+          ((and (not closed) (k-open-named? ta))
+           (tagcase ta (ty-named (g xs) (k-sub (k-unfold g xs) b ea eb trail labels)) (else z #f)))
+          ((and (not closed) (k-open-named? tb))
+           (tagcase tb (ty-named (g ys) (k-sub a (k-unfold g ys) ea eb trail labels)) (else z #f)))
+          (else (k-sub-shapes a b ta tb ea eb trail labels))))))
+  ;; `a ≤ b`, their nodes `ta` and `tb`, by their shapes. A union is below
+  ;; what each of its members is; a type is below a union if below a
+  ;; member, or, a pair that may be `nil`, if `nil` and the pair that is
+  ;; not are each below one.
+  (k-sub-shapes (->* (int int k-ty k-ty k-benv k-benv k-strail k-labels) bool)
+    (lambda (a b ta tb ea eb trail labels)
+      (tagcase ta
+        (ty-void () #t)
+        (ty-union (ms) (k-sub-all ms b ea eb trail labels))
+        (else z
+          (tagcase tb
+            (ty-union (ns)
+              (or (k-below-one a ns ea eb trail labels)
+                  (tagcase ta
+                    (ty-pair (x y r nl)
+                      (and nl (k-below-one (k-ty-new (ty-nil)) ns ea eb trail labels)
+                           (k-below-one (k-ty-new (ty-pair x y r #f)) ns ea eb trail labels)))
+                    (else w #f))))
+            (else w (k-sub-plain a b ta tb ea eb trail labels)))))))
+  (k-sub-all (->* (k-ids int k-benv k-benv k-strail k-labels) bool)
+    (lambda (ms b ea eb trail labels)
+      (or (null? ms)
+          (and (k-sub (car ms) b ea eb trail labels) (k-sub-all (cdr ms) b ea eb trail labels)))))
+  ;; Whether `x` is below one of `ns`, what a failed try learnt forgotten.
+  (k-below-one (->* (int k-ids k-benv k-benv k-strail k-labels) bool)
+    (lambda (x ns ea eb trail labels)
+      (and (not (null? ns))
+           (let ((st (get trail)) (sl (get labels)))
+             (or (k-sub x (car ns) ea eb trail labels)
+                 (begin (k-restore trail labels st sl)
+                        (k-below-one x (cdr ns) ea eb trail labels)))))))
+  (k-sub-plain (->* (int int k-ty k-ty k-benv k-benv k-strail k-labels) bool)
+    (lambda (a b ta tb ea eb trail labels)
+      ;; A composable continuation where a subroutine is wanted: one that
+      ;; ensures nothing.
+      (if (and (tagcase ta (ty-comp (x y e r once) #t) (else z #f))
+               (tagcase tb (ty-subr (e ps r cv spc) #t) (else z #f)))
+          (and (k-sub-callable a b ea eb trail labels)
+               (tagcase tb (ty-subr (e ps r cv spc) (k-spec-within? nil spc)) (else z #f)))
+          (tagcase ta
+            (ty-void () #t)
+            ;; `false` is `#f`, a `bool`.
+            (ty-false () (tagcase tb (ty-false () #t) (ty-base (y) (= b k-bool)) (else z #f)))
+            ;; `nil` is the empty list, so any list of no elements.
+            (ty-nil ()
+              (tagcase tb
+                (ty-nil () #t)
+                (ty-pair (y1 y2 s m) m)
+                (ty-nlist (y n s) (k-size-le? (k-size-lit 0) n))
+                (else z #f)))
+            (ty-base (x) (tagcase tb (ty-base (y) (k-base-below? x y)) (else z #f)))
+            ;; A natural is an integer; one of a known size, a natural.
+            (ty-nat (m)
+              (tagcase tb
+                (ty-base (y) (symbol=? y 'int))
+                (ty-nat (n) (k-size-le? m n))
+                (else z #f)))
+            (ty-var (x) (tagcase tb (ty-var (y) (k-benv-var=? x y ea eb)) (else z #f)))
+            ;; Behavioural subtyping, last (`logic::spec_within`).
+            (ty-subr (e ps r cv s1)
+              (tagcase tb
+                (ty-subr (e2 ps2 r2 cv2 s2)
+                  (and (k-conv-sub? cv cv2 ea eb) (k-sub-callable a b ea eb trail labels)
+                       (k-spec-within? s1 s2)))
+                (else z #f)))
+            (ty-ref (x r)
+              (tagcase tb
+                (ty-ref (y s) (and (k-benv-region=? r s ea eb) (k-inv x y ea eb trail labels)))
+                (else z #f)))
+            ;; An array's length never changes, so it may be forgotten, as a
+            ;; `nlist`'s is.
+            (ty-array (x m r)
+              (tagcase tb
+                (ty-array (y n s)
+                  (and (k-benv-region=? r s ea eb) (k-size-le? m n)
+                       (k-inv x y ea eb trail labels)))
+                (else z #f)))
+            (ty-icell (x r)
+              (tagcase tb
+                (ty-icell (y s) (and (k-benv-region=? r s ea eb) (k-inv x y ea eb trail labels)))
+                (else z #f)))
+            (ty-place (r) (tagcase tb (ty-place (s) (k-benv-region=? r s ea eb)) (else z #f)))
+            (ty-pair (x1 x2 r n)
+              (tagcase tb
+                ;; A pair that may be `nil` fits only a pair that may be too.
+                (ty-pair (y1 y2 s m)
+                  (and (or (not n) m)
+                       (k-benv-frozen-le? r s ea eb)
+                       ;; Frozen pairs cannot be written, so, as a frozen
+                       ;; bloblet's fields, their contents are covariant;
+                       ;; and finite data may be seen as possibly cyclic.
+                       (let ((frozen (tagcase r (r-frozen (p f) #t) (else z #f))))
+                         (and (k-sub-held frozen x1 y1 ea eb trail labels)
+                              (k-sub-held frozen x2 y2 ea eb trail labels)))))
+                ;; A finite list is a `nlist` of some length.
+                (ty-nlist (y sz s)
+                  (and (tagcase sz (sz-finite () #t) (else z #f))
+                       (tagcase r (r-frozen (p f) f) (else z #f))
+                       (k-benv-frozen-le? r s ea eb)
+                       (k-sub x1 y ea eb trail labels)
+                       (k-sub x2 b ea eb trail labels)))
+                (else z #f)))
+            (ty-tag (a1 h1 d1 r1)
+              (tagcase tb
+                (ty-tag (a2 h2 d2 r2)
+                  (and (k-benv-region=? r1 r2 ea eb)
+                       (k-eff=? (k-benv-effect ea d1) (k-benv-effect eb d2))
+                       (k-inv a1 a2 ea eb trail labels) (k-inv h1 h2 ea eb trail labels)))
+                (else z #f)))
+            (ty-comp (t1 a1 d1 r1 o1)
+              (tagcase tb
+                (ty-comp (t2 a2 d2 r2 o2)
+                  (and (bool=? o1 o2) (k-benv-region=? r1 r2 ea eb)
+                       (k-within? (k-benv-effect ea d1) (k-benv-effect eb d2))
+                       (k-sub t2 t1 eb ea trail labels) (k-sub a1 a2 ea eb trail labels)))
+                (else z #f)))
+            (ty-markkey (x r)
+              (tagcase tb
+                (ty-markkey (y s) (and (k-benv-region=? r s ea eb) (k-inv x y ea eb trail labels)))
+                (else z #f)))
+            (ty-bloblet (fa za r)
+              (tagcase tb
+                (ty-bloblet (fb zb s)
+                  ;; At least its fields: those past the wider type's
+                  ;; forgotten, if no analysis of it needed them.
+                  (and (if za (k-benv-frozen-le? r s ea eb) (k-benv-region=? r s ea eb))
+                       (k-bool=? za zb) (>= (k-length fa) (k-length fb))
+                       (k-sub-fields fa fb za ea eb trail labels)
+                       (k-forgettable-past? fa (k-length fb) r za)))
+                (else z #f)))
+            (ty-product (pa)
+              (tagcase tb
+                (ty-product (pb)
+                  (and (= (k-length pa) (k-length pb)) (k-sub-product pa pb ea eb trail labels)))
+                (else z #f)))
+            (ty-sum (sa)
+              (tagcase tb (ty-sum (sb) (k-sub-sum sa sb ea eb trail labels)) (else z #f)))
+            (ty-poly (ba xa)
+              (tagcase tb
+                (ty-poly (bb xb)
+                  (and (= (k-length ba) (k-length bb)) (k-same-kinds? ba bb)
+                       (let* ((named (k-name-binders ba bb a b 0 (the k-benvs (cons ea eb)) labels))
+                              (ia (car named)) (ib (cdr named)))
+                         (and (k-same-bounds? ba bb ia ib)
+                              (k-sub xa xb ia ib trail labels)))))
+                (else z #f)))
+            ;; A `nlist` is frozen, so covariant in its elements, and
+            ;; forgets its size to `finite`; any `nlist` is a finite
+            ;; list, and a finite list a `nlist` of some length.
+            (ty-nlist (x m r)
+              (tagcase tb
+                (ty-nlist (y n s)
+                  (and (k-benv-frozen-le? r s ea eb) (k-size-le? m n)
+                       (k-sub x y ea eb trail labels)))
+                (ty-pair (y tail s nm)
+                  (let ((k (k-size-as-lit m)))
+                    ;; Not `nil` only if of at least one element.
+                    (and (or nm (k-size-le? (k-size-lit 1) m))
+                         (k-benv-frozen-le? r s ea eb)
+                         (k-sub x y ea eb trail labels)
+                         (tagcase m
+                           ;; A `nlist` of some length has for its tail the same type.
+                           (sz-finite () (k-sub a tail ea eb trail labels))
+                           (else w
+                             (or (= k 0) (k-sub (k-nlist-tail x m r) tail ea eb trail labels)))))))
+                (else z #f)))
+            ;; A generative type is related only to itself, argument
+            ;; by argument, as its variance says.
+            (ty-named (g xs)
+              (tagcase tb
+                (ty-named (h ys)
+                  (and (= g h)
+                       (k-sub-descs (k-to-end-forgot g xs ys) ys (extract (k-gen-of g) 3)
+                                    ea eb trail labels)))
+                (else z #f)))
+            ;; A description function applied: the same function, given
+            ;; the same descriptions (FX-91's congruence).
+            (ty-app (f xs)
+              (tagcase tb
+                (ty-app (g ys)
+                  (and (= (k-length xs) (k-length ys)) (k-fun-same? f g ea eb trail labels)
+                       (k-ds-same? xs ys ea eb trail labels)))
+                (else z #f)))
+            ;; Two description functions (a module's transparent ones).
+            (ty-lam (bs x)
+              (tagcase tb (ty-lam (cs y) (k-fun-same? a b ea eb trail labels)) (else z #f)))
+            (ty-module (abs ds vs) (k-sub-modules a b ta tb ea eb trail labels))
+            (ty-param (k x) (k-sub-modules a b ta tb ea eb trail labels))
+            (else z #f)))))
+  ;; Generative type arguments `xs ≤ ys`, each as its variance in `vs` says.
+  (k-sub-descs (->* (k-descs k-descs k-ids k-benv k-benv k-strail k-labels) bool)
+    (lambda (xs ys vs ea eb trail labels)
+      (or (null? xs)
+          (and (let ((v (car vs)))
+                 (tagcase (car xs)
+                   (dt (x)
+                     (tagcase (car ys)
+                       (dt (y) (case v ((0) (k-sub x y ea eb trail labels))
+                                       ((1) (k-sub y x eb ea trail labels))
+                                       (else (k-inv x y ea eb trail labels))))
+                       (else z #f)))
+                   (dr (r) (tagcase (car ys) (dr (q) (k-benv-region=? r q ea eb)) (else z #f)))
+                   (de (d)
+                     (tagcase (car ys)
+                       (de (e)
+                         (let ((d2 (k-benv-effect ea d)) (e2 (k-benv-effect eb e)))
+                           (case v ((0) (k-within? d2 e2))
+                                   ((1) (k-within? e2 d2))
+                                   (else (k-eff=? d2 e2)))))
+                       (else z #f)))
+                   (dz (m) (tagcase (car ys) (dz (n) (k-size-eq? m n)) (else z #f)))
+                   (dc (c) (tagcase (car ys) (dc (d) (k-conv-same? c d ea eb)) (else z #f)))
+                   (df (f) (k-d-same? (car xs) (car ys) ea eb trail labels))))
+               (k-sub-descs (cdr xs) (cdr ys) (cdr vs) ea eb trail labels)))))
+  (k-sub-fields (->* (k-ids k-ids bool k-benv k-benv k-strail k-labels) bool)
+    (lambda (fa fb frozen ea eb trail labels)
+      (cond ((null? fb) #t)
+            (else (and (k-sub-held frozen (car fa) (car fb) ea eb trail labels)
+                       (k-sub-fields (cdr fa) (cdr fb) frozen ea eb trail labels))))))
+  (k-sub-product (->* (k-parts k-parts k-benv k-benv k-strail k-labels) bool)
+    (lambda (pa pb ea eb trail labels)
+      (cond ((null? pa) #t)
+            (else (and (symbol=? (extract (car pa) 1) (extract (car pb) 1))
+                       (k-sub (extract (car pa) 2) (extract (car pb) 2) ea eb trail labels)
+                       (k-sub-product (cdr pa) (cdr pb) ea eb trail labels))))))
+  (k-sub-sum (->* (k-parts k-parts k-benv k-benv k-strail k-labels) bool)
+    (lambda (sa sb ea eb trail labels)
+      (cond ((null? sa) #t)
+            (else (let ((y (k-part-find sb (extract (car sa) 1))))
+                    (and (>= y 0) (k-sub (extract (car sa) 2) y ea eb trail labels)
+                         (k-sub-sum (cdr sa) sb ea eb trail labels)))))))
+  ;; Whether descriptions `x` and `y` are the same, each by its side's
+  ;; environment: types each a subtype of the other.
+  (k-d-same? (->* (k-desc k-desc k-benv k-benv k-strail k-labels) bool)
+    (lambda (x y ea eb trail labels)
+      (tagcase x
+        (dt (a) (tagcase y (dt (b) (k-inv a b ea eb trail labels)) (else z #f)))
+        (dr (r) (tagcase y (dr (s) (k-benv-region=? r s ea eb)) (else z #f)))
+        (de (d) (tagcase y (de (e) (k-benv-eff=? d e ea eb)) (else z #f)))
+        (dz (m) (tagcase y (dz (n) (k-size-eq? m n)) (else z #f)))
+        (dc (c) (tagcase y (dc (d) (k-conv-same? c d ea eb)) (else z #f)))
+        (df (f) (tagcase y (df (g) (k-fun-same? f g ea eb trail labels)) (else z #f))))))
+  (k-ds-same? (->* (k-descs k-descs k-benv k-benv k-strail k-labels) bool)
+    (lambda (xs ys ea eb trail labels)
+      (or (null? xs)
+          (and (k-d-same? (car xs) (car ys) ea eb trail labels)
+               (k-ds-same? (cdr xs) (cdr ys) ea eb trail labels)))))
+  ;; Whether description functions `f` and `g` are the same, each by its
+  ;; side's environment: the same variable, or `dlambda`s of the same kinds
+  ;; whose bodies are the same, their parameters named alike. They are
+  ;; reduced and eta-contracted as they are made, so nothing else is.
+  (k-fun-same? (->* (int int k-benv k-benv k-strail k-labels) bool)
+    (lambda (f g ea eb trail labels)
+      (let ((f (k-resolve f)) (g (k-resolve g)))
+        (if (and (= f g) (null? ea) (null? eb))
+            #t
+            (tagcase (k-get f)
+              (ty-var (x) (tagcase (k-get g) (ty-var (y) (k-benv-var=? x y ea eb)) (else z #f)))
+              ;; A dependent procedure's parameter's, or a `select` as written.
+              (ty-param (k x) (k-param-is? g k x))
+              (ty-select (m x) (k-select-is? g m x))
+              (ty-lam (pa ba)
+                (tagcase (k-get g)
+                  (ty-lam (pb bb)
+                    (and (= (k-length pa) (k-length pb)) (k-same-kinds? pa pb)
+                         (let ((named (k-name-binders pa pb f g 0 (cons ea eb) labels)))
+                           (k-d-same? ba bb (car named) (cdr named) trail labels))))
+                  (else z #f)))
+              (else z #f)))))))
+(define k-part-index (->* (k-parts symbol int) int)
+  (lambda (ps l i)
+    (cond ((null? ps) -1)
+          ((symbol=? (extract (car ps) 1) l) i)
+          (else (k-part-index (cdr ps) l (+ i 1))))))
+
+;;; ------------------------------------------------- modules compared
+;;; (`check-module-rules.fx` has the rest of their rules.)
+;; The type part `n` of `ps` is, or -1.
+(define k-part-of (->* (k-parts symbol) int)
+  (lambda (ps n)
+    (cond ((null? ps) -1)
+          ((symbol=? (extract (car ps) 1) n) (extract (car ps) 2))
+          (else (k-part-of (cdr ps) n)))))
+;; Whether a name of `xs` is one of `ys`'s.
+(define k-comps-meet? (->* (k-parts k-parts) bool)
+  (lambda (xs ys)
+    (and (not (null? xs))
+         (or (>= (k-part-of ys (extract (car xs) 1)) 0) (k-comps-meet? (cdr xs) ys)))))
+;; Whether `xs` and `ys` are values of the same names, in order.
+(define k-same-names? (->* (k-parts k-parts) bool)
+  (lambda (xs ys)
+    (if (null? xs)
+        (null? ys)
+        (and (not (null? ys))
+             (symbol=? (extract (car xs) 1) (extract (car ys) 1))
+             (k-same-names? (cdr xs) (cdr ys))))))
+;; Each abstract type of `ab` (from position `i`) paired with `aa`'s of its
+;; name, as a `poly`'s binders are, in the environments `es`; or met by a
+;; description of `da`'s. None, if one is neither.
+(define k-pair-abs
+  (->* (k-parts k-parts k-parts int int int k-benvs k-labels) (listof k-benvs acyclic))
+  (lambda (ab aa da a b i es labels)
+    (if (null? ab)
+        (the (listof k-benvs acyclic) (cons es nil))
+        (let* ((n (extract (car ab) 1)) (x (k-part-of aa n)))
+          (cond
+            ((and (>= x 0) (not (= (k-dvar-kind x) (k-dvar-kind (extract (car ab) 2))))) nil)
+            ((>= x 0)
+             (let* ((l (k-label labels a b i))
+                    (ea (k-benv-set (car es) x l))
+                    (eb (k-benv-set (cdr es) (extract (car ab) 2) l)))
+               (k-pair-abs (cdr ab) aa da a b (+ i 1) (the k-benvs (cons ea eb)) labels)))
+            ((>= (k-part-of da n) 0) (k-pair-abs (cdr ab) aa da a b (+ i 1) es labels))
+            (else nil))))))
+;; Type `t` as the description that stands for variable `v`: a function, if
+;; `v` is of an arrow kind.
+(define k-as-kind (->* (int int) k-desc)
+  (lambda (v t) (if (k-arrow-kind? (k-dvar-kind v)) (df t) (dt t))))
+;; Each binder named in `ea`, as the type of the name its pair was given.
+(define k-labels-map (->* (k-benv) k-map)
+  (lambda (ea)
+    (if (null? ea)
+        nil
+        (let ((t (k-ty-new (ty-var (cdr (car ea))))))
+          (the k-map (cons (cons (car (car ea)) (k-as-kind (car (car ea)) t))
+                           (k-labels-map (cdr ea))))))))
+;; `b`'s abstract types (`ab`) that `a` defines (`da`, not abstract in `aa`):
+;; each as that definition, `m` naming `a`'s own abstract types in it.
+(define k-defined-map (->* (k-parts k-parts k-parts k-map) k-map)
+  (lambda (ab aa da m)
+    (if (null? ab)
+        nil
+        (let* ((n (extract (car ab) 1))
+               (d (if (>= (k-part-of aa n) 0) -1 (k-part-of da n)))
+               (rest (k-defined-map (cdr ab) aa da m)))
+          (if (< d 0)
+              rest
+              (let ((y (extract (car ab) 2)))
+                (the k-map (cons (cons y (k-as-kind y (k-subst d m))) rest))))))))
+;; For the pair of module types `a` and `b`, met before in this question, the
+;; wanted one's descriptions and values with its abstract types the given
+;; one's transparent ones: made once, so that a recursive type meets the same
+;; pair again, which the trail catches. Kept with the question's labels, at
+;; position -1, as a module type of no abstract types.
+(define k-module-memo (->* (k-label-list int int) int)
+  (lambda (ls a b)
+    (cond ((null? ls) -1)
+          ((k-label-of? (car ls) a b -1) (extract (car ls) 4))
+          (else (k-module-memo (cdr ls) a b)))))
+(define k-module-parts
+  (->* (int int k-parts k-parts k-parts k-parts k-parts k-benv k-labels) int)
+  (lambda (a b aa da ab db vb ea labels)
+    (let ((known (k-module-memo (get labels) a b)))
+      (if (>= known 0)
+          known
+          (let* ((by (k-defined-map ab aa da (k-labels-map ea)))
+                 (bd (k-subst-each db by))
+                 (bv (k-subst-each vb by))
+                 (t (k-ty-new (ty-module nil bd bv))))
+            (begin (set labels (cons (product (1 a) (2 b) (3 -1) (4 t)) (get labels))) t))))))
+;; Each description of `bd` one of `da`'s, the same.
+(define k-descs-same?
+  (->* (k-parts k-parts k-benv k-benv k-strail k-labels) bool)
+  (lambda (bd da ea eb trail labels)
+    (or (null? bd)
+        (let ((x (k-part-of da (extract (car bd) 1))))
+          (and (>= x 0) (k-inv x (extract (car bd) 2) ea eb trail labels)
+               (k-descs-same? (cdr bd) da ea eb trail labels))))))
+;; Each value of `va` a subtype of `bv`'s, pairwise.
+(define k-vals-sub?
+  (->* (k-parts k-parts k-benv k-benv k-strail k-labels) bool)
+  (lambda (va bv ea eb trail labels)
+    (or (null? va)
+        (and (k-sub (extract (car va) 2) (extract (car bv) 2) ea eb trail labels)
+             (k-vals-sub? (cdr va) (cdr bv) ea eb trail labels)))))
+;; Module type `a` ≤ `b` (`first-class-modules.md`, M4): each abstract type
+;; of `b`'s an abstract type of `a`'s (paired as a `poly`'s binders are) or
+;; a transparent one (`b`'s abstract type is then what `a` says it is); each
+;; description of `b`'s one of `a`'s, the same; and their values the same
+;; names, in order, each `a`'s a subtype of `b`'s, since a module is a
+;; product of its values. Fewer values, or another order, `k-expect` makes by
+;; reshaping (`k-reshape`).
+(define k-sub-modules k-sub-rule
+  (lambda (a b ta tb ea eb trail labels)
+    (tagcase ta
+      ;; `(select $k x)`: only itself.
+      (ty-param (k x) (tagcase tb (ty-param (j y) (and (= k j) (symbol=? x y))) (else z #f)))
+      (ty-module (aa da va)
+        (tagcase tb
+          (ty-module (ab db vb)
+            (and (not (k-comps-meet? aa db))
+                 (k-same-names? va vb)
+                 (let ((paired (k-pair-abs ab aa da a b 0 (the k-benvs (cons ea eb)) labels)))
+                   (and (not (null? paired))
+                        (let* ((ia (car (car paired))) (ib (cdr (car paired)))
+                               (parts (k-module-parts a b aa da ab db vb ia labels)))
+                          (tagcase (k-get parts)
+                            (ty-module (none bd bv)
+                              (and (k-descs-same? bd da ia ib trail labels)
+                                   (k-vals-sub? va bv ia ib trail labels)))
+                            (else z #f)))))))
+          (else z #f)))
+      (else z #f))))
+;; Where in `vs` the value named `n` first is, from `i`; or -1.
+(define k-val-position (->* (k-parts symbol int) int)
+  (lambda (vs n i)
+    (cond ((null? vs) -1)
+          ((symbol=? (extract (car vs) 1) n) i)
+          (else (k-val-position (cdr vs) n (+ i 1))))))
+;; Each of `wanted`'s values' position in `vs`; none if one is not there.
+(define k-positions (->* (k-parts k-parts) (listof k-ids acyclic))
+  (lambda (wanted vs)
+    (if (null? wanted)
+        (the (listof k-ids acyclic) (cons (the k-ids nil) nil))
+        (let ((k (k-val-position vs (extract (car wanted) 1) 0))
+              (rest (k-positions (cdr wanted) vs)))
+          (if (or (< k 0) (null? rest))
+              nil
+              (the (listof k-ids acyclic) (cons (the k-ids (cons k (car rest))) nil)))))))
+;; Whether `at` is each position of `n`, in order, from `i`.
+(define k-in-order? (->* (k-ids int int) bool)
+  (lambda (at n i) (if (null? at) (= i n) (and (= (car at) i) (k-in-order? (cdr at) n (+ i 1))))))
+;; The values of `vs` at positions `at`.
+(define k-vals-at (->* (k-parts k-ids) k-parts)
+  (lambda (vs at) (if (null? at) nil (cons (k-nth vs (car at)) (k-vals-at vs (cdr at))))))
+;; A module of type `got` made one of type `want`, which has fewer of its
+;; values or the same in another order: each of `want`'s values' position in
+;; `got`, if `got`'s values so chosen fit `want`; none otherwise.
+(define k-reshape (->* (int int) (listof k-ids acyclic))
+  (lambda (got want)
+    (tagcase (k-get got)
+      (ty-module (abs ds vs)
+        (tagcase (k-get want)
+          (ty-module (wa wd wanted)
+            (let ((at (k-positions wanted vs)))
+              (if (or (null? at) (k-in-order? (car at) (k-length vs) 0))
+                  nil
+                  (let ((t (k-ty-new (ty-module abs ds (k-vals-at vs (car at))))))
+                    (if (k-subtype t want) at nil)))))
+          (else z nil)))
+      (else z nil))))
+;; The positions `at` of a module made already of another's (`rs`'s first,
+;; if it is `x`'s, an `extend`'s): theirs, the two at once; and the rest of
+;; `rs`. As Rust's `Checker::expect`.
+(define k-reshape-onto
+  (->* (kx k-ids k-reshape-list) k-reshape-list)
+  (lambda (x at rs)
+    (if (and (not (null? rs)) (k-at-is? (extract (car rs) 1) (k-start x) (k-end x) (k-kth x)))
+        (cons (product (1 (k-at-of x)) (2 (k-vals-picked (extract (car rs) 2) at))) (cdr rs))
+        (cons (product (1 (k-at-of x)) (2 (k-picks-of at))) rs))))
+;; Positions `at` of the values `inner` takes.
+(define k-vals-picked (->* (k-picks k-ids) k-picks)
+  (lambda (inner at)
+    (if (null? at) nil (cons (k-pick-nth inner (car at)) (k-vals-picked inner (cdr at))))))
+(define k-pick-nth (->* (k-picks int) k-pick)
+  (lambda (ps i) (if (= i 0) (car ps) (k-pick-nth (cdr ps) (- i 1)))))
+;; Values at positions `at`.
+(define k-picks-of (->* (k-ids) k-picks)
+  (lambda (at) (if (null? at) nil (cons (pick-value (car at)) (k-picks-of (cdr at))))))
+;; Where `x`, of type `got`, is wanted as a `want`: reshaped, if it may be,
+;; and noted so (`k-reshapes`).
+(define k-reshape-at (->* (kx int int) bool)
+  (lambda (x got want)
+    (let ((at (k-reshape got want)))
+      (if (null? at)
+          #f
+          (begin (set k-reshapes (k-reshape-onto x (car at) (get k-reshapes)))
+                 #t))))))))

@@ -1,0 +1,93 @@
+// The machine's state while it is out of machine code, shared by offset with
+// the generated code. Included, not a module: the stencils (compiled apart,
+// `no_std`, by the build script) include this same file, so the hand-encoded
+// machine and the stencil machine cannot disagree about it.
+
+/// Room for this many routines in [`State::routines`].
+pub const ROUTINE_SLOTS: usize = 64;
+
+#[repr(C)]
+pub struct State {
+    pub base: u64,
+    pub cur: u64,
+    /// The ip, saved as `8k`: bytes before the current word's suffix.
+    pub d: u64,
+    pub dsp: u64,
+    pub rsp: u64,
+    pub table: u64,
+    pub fal: u64,
+    pub tru: u64,
+    pub fuel: u64,
+    pub status: u64,
+    pub aux: u64,
+    pub callout: u64,
+    pub start: u64,
+    pub heap: u64,
+    pub ds_base: u64,
+    pub rs_base: u64,
+    pub ds_limit: u64,
+    pub rs_limit: u64,
+    /// The frame pointer, saved as `ds_base - 8 - fp`: the bits of the
+    /// fixnum index of the frame's slot 0 (`fixpt_engine::cellular`).
+    pub fp: u64,
+    /// The closure running (a Value), or `#f`.
+    pub clo: u64,
+    /// The runtime (`*mut fixpt_runtime::Runtime`), or 0 when the machine
+    /// runs on a bare heap, in which case the routines it has no machine
+    /// code for cannot call the runtime's primitives.
+    pub rt: u64,
+    /// For each entry number, a word's table of where its machine code
+    /// resumes at each cell, by `8k`, or 0 (`NativeMachine::compile_word`).
+    pub resume: u64,
+    /// Where the heap's `top` is, in words from the base, and how far
+    /// machine code may take it before calling in to allocate
+    /// (`Heap::top_address`, `Heap::inline_limit`).
+    pub top: u64,
+    pub alloc_limit: u64,
+    /// Where the heap's memory starts (`Heap::words_address`): word `i` as
+    /// the heap counts, its `top` or a region's fill, is here plus `8 i`.
+    pub words: u64,
+    /// The heap's table of each region's current chunk, `[fill, end]` by
+    /// handle, in words from the base (`Heap::region_table_address`).
+    pub regions: u64,
+    /// The heap's card table, biased (`Heap::card_table_address`): the
+    /// write barrier marks the card of each word a store writes.
+    pub cards: u64,
+    /// Where the heap's code area starts (`Heap::code_area_address`): a
+    /// closure whose code is at or above it is native code, which a typed
+    /// call gives the Rust machine to call.
+    pub code_lo: u64,
+    /// The routines' addresses, by number, for machines that find them
+    /// through the state rather than a register.
+    pub routines: [u64; ROUTINE_SLOTS],
+    /// Where the running machine's common trap and exit are: a word's
+    /// machine code reaches them through these, so it runs in any machine
+    /// and from anywhere (`docs/object-model.md`, "A collected code area").
+    pub trap: u64,
+    pub exit: u64,
+    /// The link of register code with no frame (a leaf), kept here while a
+    /// call-out it makes (a closure's, where the free space has no room)
+    /// runs: the call-out's `blr` takes `x30`, and a leaf has no frame to
+    /// keep it in. Call-outs from a leaf do not nest.
+    pub leaf_link: u64,
+    /// Where `pure_call` is: register code's `prim1`, `prim2` and `prim2imm`
+    /// call a primitive that never collects there, with no safepoint.
+    pub pure: u64,
+    /// Fuel not yet given out: `fuel` is a time slice of it
+    /// (`fixpt_runtime::sched::SLICE`), at whose end the machine leaves, for
+    /// the scheduler to have another task run if it would, and comes back
+    /// (`NativeMachine::run_in_runtime`); register code, whose polls are no
+    /// cell boundaries, takes the next slice itself.
+    pub reserve: u64,
+    /// x86_64's register code (`cellular::x64::regcode`) keeps `REG4`…`REG8`
+    /// here, by number: that machine has registers for only three.
+    pub regs: [u64; 9],
+    /// The machine stack pointer the x86_64 machine's entry left, to which
+    /// its exit returns: register code may leave with a link pushed.
+    pub machine_sp: u64,
+    /// The time slice (`fixpt_runtime::sched::slice`), which x86_64's
+    /// register code reads as it takes its next one, rather than having
+    /// it as a constant, so that the compiler written in FX-26 makes the
+    /// same code whatever `FIXPT_SLICE` says.
+    pub slice: u64,
+}

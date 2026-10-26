@@ -1,0 +1,735 @@
+;;; The checker, in FX-26: instantiation, `tagcase`, and what synthesis needs.
+;;; Part of the checker, `check-types.fx` first (PLAN.md §11, step 10).
+
+;;; ------------------------------------------------------------ instantiation
+;;; A projection left out: the binders of a `poly` solved by matching (local
+;;; type inference). A type binder must be solved; an effect binder nothing
+;;; constrains is `pure`; a region binder nothing constrains is a fresh
+;;; region.
+
+;; Its types, those it uses of the files before it, and the signatures of
+;; what it is given.
+(let* ((check-infer-types (load-module "fx26:check-infer-types.fx"))
+       (check-types-types (load-module "fx26:check-types-types.fx"))
+       (eager-reader-types ((proj (load-module "fx26:eager-reader-types.fx") @s @e @m @c)))
+       (parser-types ((proj (load-module "fx26:parser-types.fx") @s @e @m @c @p)))
+       (check-resolve-types (load-module "fx26:check-resolve-types.fx"))
+       (check-env-types (load-module "fx26:check-env-types.fx"))
+       (check-subtype-types (load-module "fx26:check-subtype-types.fx"))
+       (check-sub-env-types (load-module "fx26:check-sub-env-types.fx"))
+       (check-subst-types (load-module "fx26:check-subst-types.fx"))
+       (check-effects-types (load-module "fx26:check-effects-types.fx"))
+       (check-binders-types (load-module "fx26:check-binders-types.fx"))
+       (check-bounds-types (load-module "fx26:check-bounds-types.fx"))
+       (check-print-types (load-module "fx26:check-print-types.fx"))
+       (check-print-parts-types (load-module "fx26:check-print-parts-types.fx"))
+       (check-data-types (load-module "fx26:check-data-types.fx"))
+       (check-read-descs-types (load-module "fx26:check-read-descs-types.fx"))
+       (check-read-helpers-types (load-module "fx26:check-read-helpers-types.fx"))
+       (check-kinds-types (load-module "fx26:check-kinds-types.fx"))
+       (check-unions-types (load-module "fx26:check-unions-types.fx"))
+       (check-holds-types (load-module "fx26:check-holds-types.fx"))
+       (check-expect-types (load-module "fx26:check-expect-types.fx"))
+       (check-calls-types (load-module "fx26:check-calls-types.fx")))
+  ;; What it is given: the modules of the files before it that it uses.
+  (lambda ((check-types (select check-types-types check-types-sig))
+           (check-resolve (select check-resolve-types check-resolve-sig))
+           (check-effects (select check-effects-types check-effects-sig))
+           (check-binders (select check-binders-types check-binders-sig))
+           (check-env (select check-env-types check-env-sig))
+           (check-bounds (select check-bounds-types check-bounds-sig))
+           (check-print (select check-print-types check-print-sig))
+           (check-data (select check-data-types check-data-sig))
+           (check-read-descs (select check-read-descs-types check-read-descs-sig))
+           (check-kinds (select check-kinds-types check-kinds-sig))
+           (check-unions (select check-unions-types check-unions-sig))
+           (check-subtype (select check-subtype-types check-subtype-sig))
+           (check-holds (select check-holds-types check-holds-sig))
+           (check-expect (select check-expect-types check-expect-sig))
+           (check-subst (select check-subst-types check-subst-sig))
+           (check-sub-env (select check-sub-env-types check-sub-env-sig))
+           (check-read-helpers (select check-read-helpers-types check-read-helpers-sig))
+           (check-print-parts (select check-print-parts-types check-print-parts-sig))
+           (check-calls (select check-calls-types check-calls-sig)))
+    (module
+(hide (include check-infer-types) (include check-types-types) (include eager-reader-types)
+      (include parser-types) (include check-resolve-types) (include check-env-types)
+      (include check-subtype-types) (include check-subst-types))
+;; The types it uses of the files before it.
+;; What it uses of the modules it is given: all of each, hidden.
+(hide (include check-types) (include check-resolve) (include check-effects)
+      (include check-binders) (include check-env) (include check-bounds)
+      (include check-print-parts) (include check-print) (include check-read-helpers)
+      (include check-kinds) (include check-unions) (include check-subtype) (include check-holds)
+      (include check-expect) (include check-subst))
+(define k-spin-for-cyclic (with check-calls k-spin-for-cyclic))
+(define k-data-places-solved (with check-data k-data-places-solved))
+(define k-part-find (with check-sub-env k-part-find))
+
+;; Size binder `v` would be `z`, not known to be no less than 0: an error.
+(define k-size-below-zero (->* (int k-size int int) void)
+  (lambda (v z a b)
+    (k-fail (k-cat5 "the size " (k-quote-dvar v) " would be " (k-show-size z)
+                    (string-append ", which is not known here to be no less than 0: "
+                                   "an argument may be shorter than this procedure's type needs"))
+            a b)))
+;; Size binder `v` cannot be `finite`: an error.
+(define k-size-not-finite (->* (int int int) void)
+  (lambda (v a b)
+    (let ((name (k-quote-dvar v)))
+      (k-fail (k-cat5 "the size " name " cannot be `finite` here: " name
+                      (k-cat3 " is the size of more than one argument,"
+                              " or of something inside one,"
+                              " and `finite` would not keep them the same"))
+              a b))))
+;; Whether a size is `finite`.
+(define k-finite-size? (->* (k-size) bool)
+  (lambda (z) (tagcase z (sz-finite () #t) (else w #f))))
+(define k-check-finite-sizes (->* (k-binders k-map int int int) unit)
+  (lambda (kinds m body a b)
+    (if (null? kinds)
+        #u
+        (let* ((v (extract (car kinds) 1)) (f (k-map-find m v))
+               ;; Whether `v` is a size binder solved, and as what.
+               (sized (and (= (extract (car kinds) 2) 5) (not (null? f))
+                           (tagcase (cdr (car f)) (dz (z) #t) (else y #f))))
+               (z (if sized (tagcase (cdr (car f)) (dz (z) z) (else y (sz-finite))) (sz-finite)))
+               (fin (and sized (k-finite-size? z))))
+          (cond
+            ;; A size binder solved from `v + k` against a size is that
+            ;; size less `k`: a natural only where the facts here show it.
+            ((and sized (not (k-finite-size? z)) (not (k-size-nonneg? z)))
+             (k-size-below-zero v z a b))
+            ((and fin (not (k-finite-size-ok? body v))) (k-size-not-finite v a b))
+            (else (k-check-finite-sizes (cdr kinds) m body a b)))))))
+;; What a binder of kind `k`, 1, 6 or 5, nothing says is: an effect, pure;
+;; a convention, the program's; a size, some size.
+(define k-default-desc (->* (int) k-desc)
+  (lambda (k)
+    (case k ((1) (de nil))
+            ((6) (dc (get k-conv-default)))
+            (else (dz (sz-finite))))))
+(define k-finish-each (->* (k-binders k-map int int int) k-map)
+  (lambda (kinds m a b ft)
+    (if (null? kinds)
+        m
+        (let ((v (extract (car kinds) 1)) (k (extract (car kinds) 2)))
+          (cond ((not (null? (k-map-find m v))) (k-finish-each (cdr kinds) m a b ft))
+                ((or (= k 1) (= k 6) (= k 5))
+                 (k-finish-each (cdr kinds) (cons (cons v (k-default-desc k)) m) a b ft))
+                (else (k-fail (k-cat5 (k-quote-dvar v) " cannot be inferred for " (k-show-ty ft)
+                                      ": nothing here says what it is. Use `proj`, or `the`" "")
+                              a b)))))))
+
+;; The whole solution: every type binder solved, effects defaulting to pure.
+(define k-finish (->* (k-binders k-solved int int int) k-map)
+  (lambda (kinds solved a b ft)
+    (k-finish-each kinds (k-data-places-solved kinds kinds (get solved)) a b ft)))
+
+;; Solve a size binder: a pattern `v + k` against a size `s` gives
+;; `v = s - k` (`finite` stays `finite`).
+(define k-unify-size (->* (k-size k-size k-binders k-solved) unit)
+  (lambda (p a kinds solved)
+    (tagcase p
+      (sz-lin (k ts)
+        (if (k-one-var? ts)
+            (let ((v (car (car ts))))
+              (if (k-open? kinds solved v) (k-solve solved v (dz (k-size-plus a (- 0 k)))) #u))
+            #u))
+      (else y #u))))
+(define k-wrong-shape? (->* (int int) bool)
+  (lambda (pattern actual)
+    (let ((p (k-ty-rank pattern)) (a (k-ty-rank actual)))
+      ;; An application may become anything its function gives.
+      (cond ((or (= p 2) (= p 24) (= a 1)) #f)
+            ((= p 3) (null? (k-as-subr actual)))
+            ;; A union: only if what is given is of none of its shapes.
+            ((= p 26) (k-shapes-miss? pattern actual))
+            ;; A test's result is a `bool`.
+            ((and (= p 0) (= a 27)) #f)
+            ((and (= p 6) (= a 18)) #f)
+            ;; A list at `acyclic` is a `nlist`.
+            ((and (= p 18) (= a 6) (k-acyclic-pair? actual)) #f)
+            ;; A `nat` is an `int`.
+            ((and (= p 0) (= a 19)) #f)
+            (else (not (= p a)))))))
+
+;; Whether region `r` is `acyclic`'s, frozen data never written; and
+;; whether `t` is a list there.
+(define k-acyclic-region? (->* (k-region) bool)
+  (lambda (r) (tagcase r (r-frozen (p f) f) (else w #f))))
+(define k-acyclic-pair? (->* (int) bool)
+  (lambda (t) (tagcase (k-get t) (ty-pair (x y r nl) (k-acyclic-region? r)) (else w #f))))
+;; Each type binder of `kinds` not yet solved, onto `acc`, mapped to `?`.
+(define k-holes (->* (k-binders k-solved k-map) k-map)
+  (lambda (kinds solved acc)
+    (if (null? kinds)
+        acc
+        (let* ((v (extract (car kinds) 1))
+               (open (and (= (extract (car kinds) 2) 2) (null? (k-map-find (get solved) v))))
+               (hole (the (pairof int k-desc @t) (cons v (dt (k-ty-new (ty-base '?)))))))
+          (k-holes (cdr kinds) solved (if open (the k-map (cons hole acc)) acc))))))
+;; `t` as a message shows it, each type binder not yet solved shown as `?`:
+;; what it is is not known, and its name is the callee's own.
+(define k-show-open (->* (int k-binders k-solved) string)
+  (lambda (t kinds solved) (k-show-ty (k-subst t (k-holes kinds solved (the k-map nil))))))
+;; Whether no instantiation of a callee's `result` could fit `want`, what the
+;; context expects, by their outermost shapes. An unknown fits anything; a
+;; pair may be told to be a `nlist`.
+(define k-result-misfits? (->* (int int) bool)
+  (lambda (want result)
+    (let ((w (k-ty-rank want)) (r (k-ty-rank result)))
+      (cond ((= r 2) #f) ((and (= w 18) (= r 6)) #f) (else (k-wrong-shape? want result))))))
+;; What an argument that is a list, where a `nlist` is expected, is told
+;; (`LIST_LENGTH_HINT`): the operation that measures a list.
+(define k-list-length-hint string
+  (string-append "; a `listof` is no `nlist`, whose length is in its type: "
+                 "`list-length` measures a list"))
+;; An argument of the wrong shape altogether is the error to report, before
+;; any binder it left unsolved.
+(define k-inst-shapes
+  (->* (kxs k-ids int k-binders k-solved (arrayof int @t)) unit)
+  (lambda (args params i kinds solved done-t)
+    (if (null? args)
+        #u
+        (let ((t (array-ref done-t i)))
+          (if (and (>= t 0) (k-wrong-shape? (car params) t))
+              (let ((p (k-show-open (k-subst (car params) (get solved)) kinds solved))
+                    (hint (if (and (= (k-ty-rank (car params)) 18) (= (k-ty-rank t) 6))
+                              k-list-length-hint
+                              "")))
+                (k-fail (k-cat5 "argument " (int->string (+ i 1)) " is a " (k-show-ty t)
+                                (k-cat3 ", where a " p (string-append " is expected" hint)))
+                        (k-start (car args)) (k-end (car args))))
+              (k-inst-shapes (cdr args) (cdr params) (+ i 1) kinds solved done-t))))))
+;; The error that the callee's `result` cannot fit `expected`, what the
+;; context expects, by their outermost shapes; none if it may.
+(define k-result-shape (->* (int int k-binders k-solved int int) unit)
+  (lambda (expected result kinds solved a b)
+    (if (and (>= expected 0) (k-result-misfits? expected result))
+        (let ((got (k-show-open (k-subst result (get solved)) kinds solved)))
+          (k-fail (k-cat5 "this is a " got ", where a " (k-show-ty expected) " is expected") a b))
+        #u)))
+
+;; Whether `t` mentions a binder of any kind not yet solved.
+(define k-open-region? (->* (k-region k-binders k-solved) bool)
+  (lambda (r kinds solved)
+    (tagcase r
+      (r-var (v) (k-open? kinds solved v))
+      (r-frozen (p f) (and (>= p 0) (k-open? kinds solved p)))
+      (else y #f))))
+;; Whether a size's terms mention a variable still to be solved.
+(define k-terms-open? (->* (k-terms k-binders k-solved) bool)
+  (lambda (xs kinds solved)
+    (and (not (null? xs))
+         (or (k-open? kinds solved (car (car xs))) (k-terms-open? (cdr xs) kinds solved)))))
+;; Whether a size mentions a variable still to be solved.
+(define k-size-open? (->* (k-size k-binders k-solved) bool)
+  (lambda (z kinds solved)
+    (tagcase z (sz-lin (k ts) (k-terms-open? ts kinds solved)) (else w #f))))
+(define k-open-conv? (->* (k-conv k-binders k-solved) bool)
+  (lambda (c kinds solved) (tagcase c (cv-var (v) (k-open? kinds solved v)) (else y #f))))
+;; Whether an atom, an effect, or what an effect function was given,
+;; mentions a binder not yet solved.
+(define-rec
+  (k-open-atom? (->* (k-atom k-binders k-solved) bool)
+    (lambda (a kinds solved)
+      (tagcase a
+        (a-var (v) (k-open? kinds solved v))
+        (a-app (v ds) (or (k-open? kinds solved v) (k-eargs-open? ds kinds solved)))
+        (else y (k-open-region? (k-atom-region a) kinds solved)))))
+  (k-open-effect? (->* (k-eff k-binders k-solved) bool)
+    (lambda (e kinds solved)
+      (cond ((null? e) #f)
+            ((k-open-atom? (car e) kinds solved) #t)
+            (else (k-open-effect? (cdr e) kinds solved)))))
+  (k-eargs-open? (->* (k-descs k-binders k-solved) bool)
+    (lambda (ds kinds solved)
+      (and (not (null? ds))
+           (or (tagcase (car ds)
+                 (dr (r) (k-open-region? r kinds solved))
+                 (de (e) (k-open-effect? e kinds solved))
+                 (dz (z) (k-size-open? z kinds solved))
+                 (dc (c) (k-open-conv? c kinds solved))
+                 (else y #f))
+               (k-eargs-open? (cdr ds) kinds solved))))))
+(define k-push-ids (->* (k-ids k-ids) k-ids)
+  (lambda (xs onto) (if (null? xs) onto (cons (car xs) (k-push-ids (cdr xs) onto)))))
+(define k-push-parts (->* (k-parts k-ids) k-ids)
+  (lambda (ps onto) (if (null? ps) onto (cons (extract (car ps) 2) (k-push-parts (cdr ps) onto)))))
+(define k-descs-open? (->* (k-descs k-binders k-solved) bool)
+  (lambda (ds kinds solved)
+    (and (not (null? ds))
+         (or (tagcase (car ds)
+               (dr (r) (k-open-region? r kinds solved))
+               (de (e) (k-open-effect? e kinds solved))
+               (dc (c) (k-open-conv? c kinds solved))
+               (dz (z) (k-size-open? z kinds solved))
+               (else y #f))
+             (k-descs-open? (cdr ds) kinds solved)))))
+(define k-any-walk (->* (k-ids int k-binders k-solved) bool)
+  (lambda (stack seen kinds solved)
+    (if (null? stack)
+        #f
+        (let ((t (k-resolve (car stack))) (rest (cdr stack)))
+          (if (k-visit? t seen)
+              (k-any-walk rest seen kinds solved)
+              (letrec ((reg (subr kreads (k-region) bool)
+                            (lambda (r) (k-open-region? r kinds solved)))
+                       (go (subr (maxeff kstate spin) (k-ids) bool)
+                           (lambda (s) (k-any-walk s seen kinds solved)))
+                       ;; Descriptions `ds` given, and then `xs`.
+                       (given (subr (maxeff kstate spin) (k-descs k-ids) bool)
+                              (lambda (ds xs)
+                                (or (k-descs-open? ds kinds solved)
+                                    (go (k-push-ids (k-desc-kids ds) xs))))))
+                (tagcase (k-get t)
+                  (ty-var (v) (or (k-open? kinds solved v) (go rest)))
+                  (ty-subr (e ps r cv spc)
+                    (or (k-open-effect? e kinds solved) (k-open-conv? cv kinds solved)
+                        (go (k-push-ids ps (cons r rest)))))
+                  (ty-poly (bs body) (go (cons body rest)))
+                  (ty-ref (x r) (or (reg r) (go (cons x rest))))
+                  (ty-markkey (x r) (or (reg r) (go (cons x rest))))
+                  (ty-array (x nz r) (or (reg r) (k-size-open? nz kinds solved) (go (cons x rest))))
+                  (ty-icell (x r) (or (reg r) (go (cons x rest))))
+                  (ty-place (r) (or (reg r) (go rest)))
+                  (ty-pair (x y r nl) (or (reg r) (go (cons x (cons y rest)))))
+                  (ty-bloblet (fs z r) (or (reg r) (go (k-push-ids fs rest))))
+                  (ty-product (ps) (go (k-push-parts ps rest)))
+                  (ty-sum (ps) (go (k-push-parts ps rest)))
+                  (ty-union (ms) (go (k-push-ids ms rest)))
+                  (ty-tag (x y e r)
+                    (or (reg r) (k-open-effect? e kinds solved) (go (cons x (cons y rest)))))
+                  (ty-comp (x y e r once)
+                    (or (reg r) (k-open-effect? e kinds solved) (go (cons x (cons y rest)))))
+                  (ty-named (g ds) (given ds rest))
+                  (ty-app (g ds) (given ds (cons g rest)))
+                  (ty-lam (bs body) (given (the k-descs (cons body nil)) rest))
+                  (ty-nlist (e z r) (or (reg r) (k-size-open? z kinds solved) (go (cons e rest))))
+                  (ty-nat (z) (or (k-size-open? z kinds solved) (go rest)))
+                  (ty-module (abs ds vs) (go (k-push-parts ds (k-push-parts vs rest))))
+                  (else y (go rest)))))))))
+(define k-mentions-any-unknown? (->* (int k-binders k-solved) bool)
+  (lambda (t kinds solved) (k-any-walk (cons t nil) (k-new-epoch) kinds solved)))
+
+(define-rec
+  (k-vars-walk (->* (int int k-binders k-solved) bool)
+    (lambda (t seen kinds solved)
+      (let ((t (k-resolve t)))
+        (if (k-visit? t seen)
+            #f
+            (letrec ((w (subr (maxeff kstate spin) (int) bool)
+                        (lambda (x) (k-vars-walk x seen kinds solved)))
+                     (ws (subr (maxeff kstate spin) (k-ids) bool)
+                         (lambda (xs) (k-vars-walks xs seen kinds solved))))
+              (begin
+                (tagcase (k-get t)
+                  (ty-var (v) (k-open? kinds solved v))
+                  (ty-subr (e ps r cv spc) (or (ws ps) (w r)))
+                  (ty-poly (bs body) (w body))
+                  (ty-ref (a r) (w a))
+                  (ty-markkey (a r) (w a))
+                  (ty-array (a nz r) (w a))
+                  (ty-icell (a r) (w a))
+                  (ty-bloblet (fs z r) (ws fs))
+                  (ty-product (ps) (ws (k-push-parts ps nil)))
+                  (ty-sum (ps) (ws (k-push-parts ps nil)))
+                  (ty-union (ms) (ws ms))
+                  (ty-pair (a b r nl) (or (w a) (w b)))
+                  (ty-tag (a b e r) (or (w a) (w b)))
+                  (ty-comp (a b e r once) (or (w a) (w b)))
+                  (ty-named (g ds) (ws (k-desc-kids ds)))
+                  (ty-app (g ds) (or (w g) (ws (k-desc-kids ds))))
+                  (ty-lam (bs body) (ws (k-desc-kids (the k-descs (cons body nil)))))
+                  (ty-nlist (e z r) (w e))
+                  (ty-module (abs ds vs) (ws (k-push-parts ds (k-push-parts vs nil))))
+                  (else y #f))))))))
+  (k-vars-walks (->* (k-ids int k-binders k-solved) bool)
+    (lambda (ts seen kinds solved)
+      (cond ((null? ts) #f)
+            ((k-vars-walk (car ts) seen kinds solved) #t)
+            (else (k-vars-walks (cdr ts) seen kinds solved))))))
+
+;; Whether `t` mentions a type binder not yet solved.
+(define k-mentions-unknown-type? (->* (int k-binders k-solved) bool)
+  (lambda (t kinds solved) (k-vars-walk t (k-new-epoch) kinds solved)))
+(define k-any-unknown-type? (->* (k-ids k-binders k-solved) bool)
+  (lambda (ts kinds solved)
+    (cond ((null? ts) #f)
+          ((k-mentions-unknown-type? (car ts) kinds solved) #t)
+          (else (k-any-unknown-type? (cdr ts) kinds solved)))))
+;; A convention binder takes the actual's convention, if nothing has yet.
+(define k-unify-conv (->* (k-conv k-conv k-binders k-solved) unit)
+  (lambda (pc ac kinds solved)
+    (tagcase pc
+      (cv-var (v) (if (k-open? kinds solved v) (k-solve solved v (dc ac)) #u))
+      (else y #u))))
+;; A region binder takes the actual region; a place frozen into, `(acyclic
+;; p)` or `(const p)`, takes the actual's place (the heap, where that is
+;; frozen into the heap).
+(define k-unify-region (->* (k-region k-region k-binders k-solved) unit)
+  (lambda (p a kinds solved)
+    (tagcase p
+      (r-var (v) (if (k-open? kinds solved v) (k-solve solved v (dr a)) #u))
+      (r-frozen (v f)
+        (if (and (>= v 0) (k-open? kinds solved v))
+            (tagcase a
+              (r-frozen (q g) (k-solve solved v (dr (if (< q 0) (r-heap) (r-var q)))))
+              (else y #u))
+            #u))
+      (else y #u))))
+(define k-same-kind-regions (->* (k-eff int) k-regions)
+  (lambda (e rank)
+    (cond ((null? e) nil)
+          ((= (k-atom-rank (car e)) rank)
+           (cons (k-atom-region (car e)) (k-same-kind-regions (cdr e) rank)))
+          (else (k-same-kind-regions (cdr e) rank)))))
+;; An effect binder takes all of `actual`; a region named in an atom is
+;; matched against the actual's atoms of that kind when there is only one.
+(define k-unify-effect (->* (k-eff k-eff k-binders k-solved) unit)
+  (lambda (pattern actual kinds solved)
+    (if (null? pattern)
+        #u
+        (let ((atom (car pattern)))
+          (begin
+            (tagcase atom
+              (a-var (v)
+                (if (k-unknown? kinds v)
+                    (let* ((f (k-map-find (get solved) v))
+                           (prev (if (null? f)
+                                     (the k-eff nil)
+                                     (tagcase (cdr (car f)) (de (e) e) (else y (the k-eff nil))))))
+                      (k-solve solved v (de (k-union prev actual))))
+                    #u))
+              (else y
+                (tagcase (k-atom-region atom)
+                  (r-var (v)
+                    (if (k-open? kinds solved v)
+                        (let ((same (k-same-kind-regions actual (k-atom-rank atom))))
+                          (if (and (not (null? same)) (null? (cdr same)))
+                              (k-solve solved v (dr (car same)))
+                              #u))
+                        #u))
+                  (else z #u))))
+            (k-unify-effect (cdr pattern) actual kinds solved))))))
+
+;;; Matching: solve binders in `pattern` so that `actual` fits it. Never
+;;; fails; what cannot be matched is left for the subtype check after.
+
+;; A function binder `f` still to be found takes function `g`.
+(define k-unify-fun (->* (int int k-binders k-solved) unit)
+  (lambda (f g kinds solved)
+    (tagcase (k-get f)
+      (ty-var (v) (if (k-open? kinds solved v) (k-solve solved v (df g)) #u))
+      (else y #u))))
+;; A function binder `f` still to be found takes the `h`th generative type,
+;; as a function, if it is of `f`'s kind.
+(define k-unify-fun-gen (->* (int int k-binders k-solved) unit)
+  (lambda (f h kinds solved)
+    (tagcase (k-get f)
+      (ty-var (v)
+        (if (k-open? kinds solved v)
+            (let ((g (k-generative-fun h (k-dvar-kind v))))
+              (if (>= g 0) (k-solve solved v (df g)) #u))
+            #u))
+      (else y #u))))
+;; What the actual type `a` says of type binder `v`, as its bounds keep it
+;; (`check-bounds.fx`): its solution now, if that changes.
+(define k-unify-var (->* (int int k-binders k-solved) unit)
+  (lambda (v a kinds solved)
+    (if (k-unknown? kinds v)
+        (let* ((f (k-map-find (get solved) v))
+               (was (if (null? f) -1 (tagcase (cdr (car f)) (dt (w) w) (else y -2)))))
+          (if (= was -2)
+              #u
+              (let ((t (k-bound-solution solved v a was)))
+                (if (< t 0) #u (k-solve solved v (dt t))))))
+        #u)))
+(define-rec
+  (k-unify (->* (int int k-binders k-solved k-trail) unit)
+    (lambda (pattern actual kinds solved trail)
+      (let ((p (k-resolve pattern)) (a (k-resolve actual)))
+        (if (k-pair-seen? (get trail) p a)
+            #u
+            (begin
+              (set trail (cons (cons p a) (get trail)))
+              (let ((pt (k-get p)) (at (k-get a)))
+                (cond ((and (tagcase at (ty-void () #t) (else y #f))
+                            (not (tagcase pt (ty-var (v) (k-open? kinds solved v)) (else y #f))))
+                       #u)
+                      ;; A union expected: the member whose shapes hold the
+                      ;; pattern's (a `cons` where a list or an `int` is
+                      ;; wanted, its pair).
+                      ((and (tagcase at (ty-union (aa) #t) (else y #f))
+                            (tagcase pt (ty-union (pp) #f) (ty-var (v) #f) (else y #t)))
+                       (let ((y (tagcase at (ty-union (aa) (k-member-holding p aa)) (else w -1))))
+                         (if (< y 0) #u (k-unify p y kinds solved trail))))
+                      (else (k-unify-node a pt at kinds solved trail)))))))))
+  ;; Node `pt` matched against `a`, whose node is `at`, by their shapes.
+  (k-unify-node (->* (int k-ty k-ty k-binders k-solved k-trail) unit)
+    (lambda (a pt at kinds solved trail)
+      (letrec ((u (subr (maxeff kstate spin) (int int) unit)
+                  (lambda (x y) (k-unify x y kinds solved trail)))
+               (ur (subr kstate (k-region k-region) unit)
+                   (lambda (r s) (k-unify-region r s kinds solved)))
+               (ue (subr (maxeff kstate spin) (k-eff k-eff) unit)
+                   (lambda (e f) (k-unify-effect e f kinds solved)))
+               (uds (subr (maxeff kstate spin) (k-descs k-descs) unit)
+                    (lambda (xs ys) (k-unify-descs xs ys kinds solved trail)))
+               (ux (subr (maxeff kstate spin) (int int) unit)
+                   (lambda (x y) (k-exactly (lambda () (k-unify x y kinds solved trail))))))
+        (tagcase pt
+          (ty-var (v) (k-unify-var v a kinds solved))
+          (ty-subr (pe pp pr pc spc)
+            (let ((c (k-as-subr a)))
+              (if (null? c)
+                  #u
+                  (begin
+                   ;; A convention binder takes the actual's convention.
+                   (tagcase at
+                     (ty-subr (e ps r ac spc) (k-unify-conv pc ac kinds solved))
+                     (else y #u))
+                   (let ((ap (extract (car c) 2)))
+                     (if (not (= (k-length pp) (k-length ap)))
+                         #u
+                         ;; A parameter is contravariant: bounds the other way.
+                         (begin (k-flipped (lambda () (k-unify-lists pp ap kinds solved trail)))
+                                (u pr (extract (car c) 3))
+                                (ue pe (extract (car c) 1)))))))))
+          ;; Mutable, so invariant, as a pair's contents are: what it meets.
+          (ty-ref (x r) (tagcase at (ty-ref (y s) (begin (ur r s) (ux x y))) (else z #u)))
+          (ty-markkey (x r) (tagcase at (ty-markkey (y s) (begin (ur r s) (ux x y))) (else z #u)))
+          (ty-array (x nz r)
+            (tagcase at
+              (ty-array (y nz2 s) (begin (ur r s) (ux x y) (k-unify-size nz nz2 kinds solved)))
+              (else z #u)))
+          (ty-icell (x r) (tagcase at (ty-icell (y s) (begin (ur r s) (ux x y))) (else z #u)))
+          (ty-place (r) (tagcase at (ty-place (s) (ur r s)) (else z #u)))
+          (ty-pair (x1 x2 r nl)
+            (tagcase at
+              (ty-pair (y1 y2 s nl)
+                (let ((outer (get k-unify-exact)))
+                  (begin (ur r s) (set k-unify-exact #t) (u x1 y1) (u x2 y2)
+                         (set k-unify-exact outer))))
+              ;; A `nlist`'s tail is the `nlist` one shorter.
+              (ty-nlist (y sz s)
+                (begin (ur r s) (u x1 y)
+                       (u x2 (tagcase sz (sz-finite () a) (else w (k-nlist-tail y sz s))))))
+              (else z #u)))
+          (ty-nlist (x sz r)
+            (tagcase at
+              (ty-nlist (y sz2 s) (begin (ur r s) (u x y) (k-unify-size sz sz2 kinds solved)))
+              ;; A list at `acyclic` is a `nlist` of some length (`k-sub`), so
+              ;; `length` takes one (kayak's, 2026-10-11).
+              (ty-pair (y1 y2 s nl)
+                (if (k-acyclic-region? s)
+                    (begin (ur r s) (u x y1) (k-unify-size sz (sz-finite) kinds solved))
+                    #u))
+              (else z #u)))
+          (ty-nat (sz) (tagcase at (ty-nat (sz2) (k-unify-size sz sz2 kinds solved)) (else z #u)))
+          (ty-product (pp)
+            (tagcase at (ty-product (pa) (k-unify-parts pp pa kinds solved trail)) (else z #u)))
+          (ty-sum (pp)
+            (tagcase at (ty-sum (pa) (k-unify-parts pp pa kinds solved trail)) (else z #u)))
+          ;; Members by shape, which no two in a union share.
+          (ty-union (pp)
+            (let ((actual (tagcase at (ty-union (aa) aa) (else z (the k-ids (cons a nil))))))
+              (k-unify-members pp actual kinds solved trail)))
+          (ty-bloblet (fp zp r)
+            (tagcase at
+              (ty-bloblet (fa za s)
+                ;; The fields the pattern lists, of an actual bloblet of
+                ;; at least as many.
+                (if (<= (k-length fp) (k-length fa))
+                    (begin (ur r s) (k-unify-lists fp fa kinds solved trail))
+                    #u))
+              (else z #u)))
+          (ty-tag (a1 h1 d1 r1)
+            (tagcase at
+              (ty-tag (a2 h2 d2 r2) (begin (ur r1 r2) (u a1 a2) (u h1 h2) (ue d1 d2)))
+              (else z #u)))
+          (ty-comp (h1 a1 d1 r1 o1)
+            (tagcase at
+              (ty-comp (h2 a2 d2 r2 o2) (begin (ur r1 r2) (u a1 a2) (u h1 h2) (ue d1 d2)))
+              (else z #u)))
+          (ty-named (g xs)
+            (tagcase at
+              (ty-named (h ys) (if (= g h) (k-unify-descs xs ys kinds solved trail) #u))
+              (else z #u)))
+          ;; A function applied, against another applied to as many: the
+          ;; function, if it is a binder still to be found, is the other's;
+          ;; what each was given, matched. Nothing else is solved for: a
+          ;; function binder applied, against any other type, waits for
+          ;; `proj` or `the` (FX-91's choice, and Jones's).
+          (ty-app (f xs)
+            (tagcase at
+              (ty-app (g ys)
+                (if (= (k-length xs) (k-length ys))
+                    (begin (k-unify-fun f g kinds solved) (uds xs ys))
+                    #u))
+              ;; The same against a generative type applied: the function is
+              ;; the generative type's, given what it is given.
+              (ty-named (h ys)
+                (if (= (k-length xs) (k-length ys))
+                    (begin (k-unify-fun-gen f h kinds solved) (uds xs ys))
+                    #u))
+              (else z #u)))
+          (else z #u)))))
+  (k-unify-descs (->* (k-descs k-descs k-binders k-solved k-trail) unit)
+    (lambda (xs ys kinds solved trail)
+      (if (null? xs)
+          #u
+          (begin
+            (tagcase (car xs)
+              (dt (x) (tagcase (car ys) (dt (y) (k-unify x y kinds solved trail)) (else z #u)))
+              (dr (r) (tagcase (car ys) (dr (q) (k-unify-region r q kinds solved)) (else z #u)))
+              (de (d) (tagcase (car ys) (de (e) (k-unify-effect d e kinds solved)) (else z #u)))
+              ;; A size given a generative type: a flat array's length (§77).
+              (dz (m) (tagcase (car ys) (dz (n) (k-unify-size m n kinds solved)) (else z #u)))
+              (dc (c) (tagcase (car ys) (dc (d) (k-unify-conv c d kinds solved)) (else z #u)))
+              (df (f) (tagcase (car ys) (df (g) (k-unify-fun f g kinds solved)) (else z #u))))
+            (k-unify-descs (cdr xs) (cdr ys) kinds solved trail)))))
+  (k-unify-lists (->* (k-ids k-ids k-binders k-solved k-trail) unit)
+    (lambda (xs ys kinds solved trail)
+      (if (null? xs)
+          #u
+          (begin (k-unify (car xs) (car ys) kinds solved trail)
+                 (k-unify-lists (cdr xs) (cdr ys) kinds solved trail)))))
+  (k-unify-members (->* (k-ids k-ids k-binders k-solved k-trail) unit)
+    (lambda (pp actual kinds solved trail)
+      (if (null? pp)
+          #u
+          (let ((y (k-same-shape-in (car pp) actual)))
+            (begin (if (>= y 0) (k-unify (car pp) y kinds solved trail) #u)
+                   (k-unify-members (cdr pp) actual kinds solved trail))))))
+  (k-unify-parts (->* (k-parts k-parts k-binders k-solved k-trail) unit)
+    (lambda (pp pa kinds solved trail)
+      (if (null? pp)
+          #u
+          (let ((y (k-part-find pa (extract (car pp) 1))))
+            (begin (if (>= y 0) (k-unify (extract (car pp) 2) y kinds solved trail) #u)
+                   (k-unify-parts (cdr pp) pa kinds solved trail)))))))
+
+;; Whether `t` is a list, or a pair that may be `nil`, whose elements are
+;; a binder of its own: a type only the empty list has.
+(define k-list-of-any? (->* (int) bool)
+  (lambda (t)
+    (let ((bo (k-binders-of t)))
+      (tagcase (k-get (extract bo 2))
+        (ty-pair (x d r nl)
+          (and nl (tagcase (k-get x) (ty-var (v) (k-binder-has? (extract bo 1) v)) (else y #f))))
+        (else y #f)))))
+;; The first of a union's members that is a pair (`nil?` false) or `nil`, or -1.
+(define k-member-like (->* (k-ids bool) int)
+  (lambda (ms nil?)
+    (cond ((null? ms) -1)
+          ((tagcase (k-get (car ms)) (ty-pair (x d r nl) (not nil?)) (ty-nil () nil?) (else y #f))
+           (car ms))
+          (else (k-member-like (cdr ms) nil?)))))
+(define k-instantiate-plain (->* (int int int int) int)
+  (lambda (t expected a b)
+    (let* ((bo (k-binders-of t)) (kinds (extract bo 1)) (inner (extract bo 2))
+           (solved (k-new-bounded-solved)))
+      (begin
+        (k-from-above (lambda () (k-unify inner expected kinds solved (the k-trail (new nil)))))
+        (k-default-regions kinds solved)
+        (let ((m (k-finish kinds solved a b t)))
+          (begin (k-check-bounds kinds m a b)
+                 (k-check-distinct kinds m inner a b)
+                 (k-check-finite-sizes kinds m inner a b)
+                 (let ((inst (k-spin-for-cyclic inner (k-subst inner m) m)))
+                   (begin (k-no-knot inst a b) (k-drop-bounds solved inst)))))))))
+;; Instantiate a polymorphic value used, unapplied, where `expected` is
+;; wanted. A list of any elements (`nil`, `no-pair`) is the empty list, so
+;; `nil` where that is wanted, or a pair that may be `nil` but is no list
+;; (its tail another type), which only `nil` fits; where a union is, the
+;; union's pair if it has one, else its `nil`.
+(define k-instantiate-against (->* (int int int int) int)
+  (lambda (t expected a b)
+    (let ((e (k-resolve expected)))
+      (if (k-list-of-any? t)
+          (tagcase (k-get e)
+            (ty-nil () e)
+            (ty-pair (x tail r nl)
+              (if (and nl (not (= (k-resolve tail) e)))
+                  (k-ty-new (ty-nil))
+                  (k-instantiate-plain t e a b)))
+            (ty-union (ns)
+              (let ((p (k-member-like ns #f)) (n (k-member-like ns #t)))
+                (cond ((>= p 0) (k-instantiate-against t p a b))
+                      ((>= n 0) n)
+                      (else (k-instantiate-plain t e a b)))))
+            (else y (k-instantiate-plain t e a b)))
+          (k-instantiate-plain t e a b)))))
+(define k-plambda-matches? (->* (kx k-ty) bool)
+  (lambda (x et)
+    (tagcase x
+      (x-plambda (binders body a b abk)
+        (tagcase et
+          (ty-poly (bs want) (and (= (k-length bs) (k-length binders)) (k-same-kinds? bs binders)))
+          (else y #f)))
+      (else y #f))))
+(define k-same-labels? (->* (k-let-bs k-parts) bool)
+  (lambda (fs ps)
+    (cond ((null? fs) (null? ps))
+          ((null? ps) #f)
+          (else (and (symbol=? (extract (car fs) 1) (extract (car ps) 1))
+                     (k-same-labels? (cdr fs) (cdr ps)))))))
+
+;;; ------------------------------------------------------------ tagcase
+
+(define k-all-fit? (->* (k-ids int) bool)
+  (lambda (types t)
+    (cond ((null? types) #t)
+          ((k-subtype (car types) t) (k-all-fit? (cdr types) t))
+          (else #f))))
+;; The first of `candidates` every one of `types` fits, or -1.
+(define k-upper-bound (->* (k-ids k-ids) int)
+  (lambda (candidates types)
+    (cond ((null? candidates) -1)
+          ((k-all-fit? types (car candidates)) (car candidates))
+          (else (k-upper-bound (cdr candidates) types)))))
+(define k-part-names (->* (k-parts) (listof string acyclic))
+  (lambda (ps)
+    (if (null? ps) nil (cons (symbol->string (extract (car ps) 1)) (k-part-names (cdr ps))))))
+(define k-arm-named? (->* (k-arms symbol) bool)
+  (lambda (arms l)
+    (cond ((null? arms) #f)
+          ((symbol=? (extract (car arms) 1) l) #t)
+          (else (k-arm-named? (cdr arms) l)))))
+(define k-variants-not-named (->* (k-parts k-arms) k-parts)
+  (lambda (vs arms)
+    (cond ((null? vs) nil)
+          ((k-arm-named? arms (extract (car vs) 1)) (k-variants-not-named (cdr vs) arms))
+          (else (cons (car vs) (k-variants-not-named (cdr vs) arms))))))
+(define k-cannot-take-apart (->* (symbol int k-names kx) k-bindings)
+  (lambda (tag t names body)
+    (k-fail (k-cat5 (k-quote (symbol->string tag)) " carries a " (k-show-ty t)
+                    ", which cannot be taken apart into "
+                    (string-append (int->string (k-length names)) " name(s)"))
+            (k-start body) (k-end body))))
+(define k-zip-fields (->* (k-names k-parts) k-bindings)
+  (lambda (ns fs)
+    (if (null? ns)
+        nil
+        (cons (cons (car ns) (extract (car fs) 2)) (k-zip-fields (cdr ns) (cdr fs))))))
+;; The atoms of `e` in neither `bound` nor `own`.
+(define k-beyond (->* (k-eff k-eff k-eff) k-eff)
+  (lambda (e bound own)
+    (cond ((null? e) nil)
+          ((or (k-covered? bound (car e)) (k-contains? own (car e))) (k-beyond (cdr e) bound own))
+          (else (cons (car e) (k-beyond (cdr e) bound own))))))
+(define k-none-reach? (->* (k-names k-names k-region) bool)
+  (lambda (vs tv r)
+    (cond ((null? vs) #t)
+          ((k-has-name? tv (car vs)) (k-none-reach? (cdr vs) tv r))
+          (else (let ((t (k-lookup (car vs))))
+                  (and (or (< t 0) (not (k-has-region-in? (k-regions-in t) r)))
+                       (k-none-reach? (cdr vs) tv r)))))))
+;; Whether the only way `body` can name anything in region `r` is the
+;; variable `tag`, if it is one.
+(define k-reaches-only? (->* (kx kx k-region) bool)
+  (lambda (body tag r)
+    (let ((tv (the k-names (tagcase tag (x-var (s a b abk) (cons s nil)) (else y nil)))))
+      (k-none-reach? (k-free-vars body) tv r)))))))

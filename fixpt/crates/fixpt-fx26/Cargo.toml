@@ -1,0 +1,24 @@
+[package]
+name = "fixpt-fx26"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+fixpt-read = { path = "../fixpt-read" }
+fixpt-heap = { path = "../fixpt-heap" }
+fixpt-runtime = { path = "../fixpt-runtime" }
+fixpt-engine = { path = "../fixpt-engine" }
+fixpt-scheme = { path = "../fixpt-scheme" }
+
+[features]
+default = []
+# Collect at every safepoint: see `fixpt-heap`.
+gc-stress = ["fixpt-scheme/gc-stress"]
+
+[dev-dependencies]
+fixpt-native = { path = "../fixpt-native" }
+fixpt-heap = { path = "../fixpt-heap" }
+
+[lints]
+workspace = true
