@@ -6,7 +6,11 @@ fixpt="$heist/fixpt/target/release/fixpt"
 [ -x "$fixpt" ] || { echo "build fixpt first: (cd $heist/fixpt && cargo build --release -p fixpt-cli)" >&2; exit 2; }
 # The modules are loaded by paths relative to editor/, so it runs there,
 # and a file named relative to here is made absolute first.
-set --  $(for f in "$@"; do case "$f" in /*) echo "$f";; *) echo "$PWD/$f";; esac; done)
+for f in "$@"; do
+  shift
+  case "$f" in /*) ;; *) f="$PWD/$f" ;; esac
+  set -- "$@" "$f"
+done
 cd "$heist/editor" || exit 2
 # The program's files, in order: editor/program (C-c t reads it too).
 exec "$fixpt" run $(cat program) -- "$@"
