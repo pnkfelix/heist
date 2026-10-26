@@ -806,7 +806,7 @@ names of their commands."
                 ((prefix? prefixes) (sum prefix #u))
                 ((and (pair? ks) (null? (cdr ks)))
                  (typecase (car ks)
-                   (char c (sum command (sum on-buffer (insert-string (char->string c)))))
+                   (char c (sum command (sum on-buffer (self-insert c))))
                    (else y (sum undefined #u))))
                 (else (sum undefined #u))))))))
 

@@ -39,7 +39,11 @@ the `import`, and the file (as `load-module` names it)."
 (define-type subscriber (subr turn-eff (snapshot) cmd))
 (define-type subscription (productof (id int) (send subscriber)))
 "A text the buffer had, and its point then."
-(define-type undo-entry (productof (text rope) (point int)))
+"A text the buffer had, and its point then. For a run of characters typed
+(undone as one, as Emacs does, up to `run-limit` of them): where the run
+ends now, and how long it is; -1 and 0 for any other change."
+(define-type undo-entry (productof (text rope) (point int) (run-end int) (run-count int)))
+(define run-limit int 20)
 (define-type buffer
   (productof (name string) (file string) (text rope) (point int)
              (mark int)                                 ; -1: none set
@@ -101,7 +105,7 @@ the echo area (\"\" for none)."
     (buffer-of b t (max 0 (min p (rope-length t)))
                (min (extract b mark) (rope-length t))
                (+ 1 (extract b revision)) #t
-               (cons (product (text (extract b text)) (point (extract b point)))
+               (cons (product (text (extract b text)) (point (extract b point)) (run-end -1) (run-count 0))
                      (take undo-limit (extract b undo)))
                (extract b subscribers))))
 
@@ -146,6 +150,26 @@ read it in theirs."
     (lambda ((b buffer))
       (done (with-text b (rope-insert (extract b text) (extract b point) s)
                        (+ (extract b point) (string-length s)))))))
+
+"A character typed: one more of the run of them before it, if it ends
+here, so that one undo takes back the run; else a change of its own."
+(define* self-insert (subr spin (char) command)
+  (lambda (c)
+    (lambda ((b buffer))
+      (let* ((p (extract b point))
+             (t (rope-insert (extract b text) p (char->string c)))
+             (u (extract b undo))
+             (continues (and (pair? u) (= (extract (car u) run-end) p)
+                             (< (extract (car u) run-count) run-limit)
+                             (not (char=? c #\newline)))))
+        (done (buffer-of b t (+ p 1) (extract b mark) (+ 1 (extract b revision)) #t
+                         (if continues
+                             (cons (product (text (extract (car u) text)) (point (extract (car u) point))
+                                            (run-end (+ p 1)) (run-count (+ 1 (extract (car u) run-count))))
+                                   (cdr u))
+                             (cons (product (text (extract b text)) (point p) (run-end (+ p 1)) (run-count 1))
+                                   (take undo-limit u)))
+                         (extract b subscribers)))))))
 
 (define* delete-backward (subr pure () command)
   (lambda ()
