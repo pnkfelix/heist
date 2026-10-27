@@ -8,12 +8,38 @@ do it, and what it cost. Kayak will need the same changes later
 
 ## Base
 
-- Fixpt `main` at 1e4d4ed6 (2026-10-25), added by Heist's 86eff712.
+- Fixpt `main` at 991ec476 (2026-10-26), pulled by Heist's cea14dba
+  (squash 83dbcee8). Heist has no edits of its own on it.
+- Before: Fixpt 1e4d4ed6 (2026-10-25), added by Heist's 86eff712.
+
+## Upstream
+
+F1–F4 below are all on Fixpt's `main`, as Fixpt `DONE.md` §129–§132
+(Heist's requests), rebased onto Fixpt's syscalls (8c7111da). The
+entries below stay as the record of what Heist asked for and why; Fixpt's
+`DONE.md` and `docs/fx26.md` are now the definition. Where upstream
+differs from what Heist had:
+
+- F1: `attempt1` is in `check-env.fx`'s `k-built-in-only-table`, which
+  replaced the `symbol=?` chain, so the leading-`%` test is gone.
+- F3: `%fx26-type-at` is primitive 509, after the syscall primitives
+  (506–508).
+- F4: `(io process)` is the twelfth I/O kind, code 11, after `(io sys)`.
+
+Still open in Fixpt's `TODO.md`:
+
+- §131: whether `type-at` stays a primitive or becomes a syscall that a
+  module built into Fixpt declares (`define-optional-syscall type-at
+  "fx26:type-at/1"`), so that the editor needs no `--syscalls`. A module
+  file cannot hold a declaration yet (`fixpt/docs/research/syscalls.md`,
+  "What Fixpt does", 4).
+- §132: a `pselect` arm for a process (F4, "What it does not do").
 
 ## Reading and moving the base
 
-- Our changes: `git diff 86eff712 HEAD -- fixpt/`. After a pull, use the
-  newest `Squashed 'fixpt/' content from commit …` commit instead.
+- Our changes: `git diff cea14dba HEAD -- fixpt/`. After a pull, use the
+  pull's merge commit instead. (Not the `Squashed 'fixpt/' …` commit
+  itself: its tree is Fixpt's, not under `fixpt/`.)
 - Taking upstream: `git subtree pull --prefix=fixpt ~/Dev/LangPlay/fixpt main --squash`.
   Upstream rebases its `main` at times; a squashed pull does not care.
 - Offering a change upstream: `git subtree split --prefix=fixpt` gives a
@@ -62,7 +88,7 @@ do it, and what it cost. Kayak will need the same changes later
   front end under the 20M-step limit (`direct.rs`,
   `native_session_adapters_aborts_and_stack_maps`) over the limit. The
   chain now tests for a leading `%` first, which makes it cheaper than it
-  was before F1.
+  was before F1. (Upstream has since made it a table: see "Upstream".)
 - **Found a bug on `fx-ast-eval`**, fixed as F2.
 - **Found a hazard in the test harness**, older than F1: the
   scheduler's prompt tag is kept once in the runtime's state (`%sched`
@@ -176,7 +202,7 @@ do it, and what it cost. Kayak will need the same changes later
   their output names. This is R7's "the world outside", for programs, in
   `fx26-for-yank.md`.
 - **What changed:**
-  - **A new I/O kind, `(io process)`**, the eleventh: `IoKind::Process`
+  - **A new I/O kind, `(io process)`**, the eleventh (upstream, the twelfth): `IoKind::Process`
     (`ast.rs`), and in the checker written in FX-26 `k-io-kind-name` and
     `k-io-kind-code` (`check-types.fx`) and `io-any` (`eval-types.fx`).
   - **Six primitives:**
