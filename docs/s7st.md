@@ -260,6 +260,31 @@ What helped instead was taking work off the call's path: no product
 returned only to be taken apart (`s7-new-frame`'s), no state built for a
 step.
 
+**Against Larceny** (2026-10-27, `s7st/bench/run.sh LARCENY`, on the same
+machine; Larceny v1.3.1a2 from `~/Dev/LangPlay/accomplice`). Times are
+per run: s7st's the mean of 3, Larceny's compiled the mean of 20.
+"Interpreted" is Larceny's own interpreter (`(evaluator interpret)` at its
+R7RS REPL), itself compiled to machine code by Twobit. "Compiled" is
+Larceny running the benchmark as a program (`-r7rs -program`), which
+Twobit compiles to machine code.
+
+| benchmark                       | s7st     | Larceny, interpreted | Larceny, compiled | s7st ÷ interpreted |
+| ------------------------------- | -------- | -------------------- | ----------------- | ------------------ |
+| `(fib 25)`                      | 49.5 ms  | 11.5 ms              | 0.5 ms            | 4.3×               |
+| `(tak 18 12 6)`                 | 12.0 ms  | 4.0 ms               | 0.1 ms            | 3.0×               |
+| a named-`let` loop, 1,000,000   | 108.8 ms | 54.0 ms              | 1.2 ms            | 2.0×               |
+| `map` over 200,000              | 250.1 ms | 35.0 ms              | 12.7 ms           | 7.1×               |
+| `do` over a vector, 500,000     | 68.0 ms  | 32.3 ms              | 1.2 ms            | 2.1×               |
+| countdown from 10,000,000       | 661.9 ms | 246.4 ms             | 4.8 ms            | 2.7×               |
+
+- **On calls and loops,** s7st is 2–4× slower than Larceny's interpreter.
+- **`map` is not a like comparison.** Larceny's interpreter calls `map`
+  and `length` compiled to machine code. s7st's `map` is Scheme, in its
+  prelude, run like the program's own code. As FX-26 built-ins, they
+  would close most of the gap.
+- **Compiled Larceny is 20–140× faster.** Closing that takes code made
+  at run time: machine code by `seal-code` ("Openings").
+
 `(fib 25)` is 250,000 calls, so about 5 million procedure calls a second.
 The same `fib` written in FX-26, which Fixpt compiles to native code, is
 still much faster. FX-26 has no way to make FX-26 code at run time
