@@ -421,7 +421,10 @@ else is expanded and run, or, if it has syntax errors, the first raised."
            (str s (tagcase (s7-file-text (get s))
                     (text t (tagcase (s7-read-all t (get s))
                               (data forms (s7-return-state s7-unspecified
-                                                           (s7-push-k (sum k-top (product (forms forms) (echo #f) (text t) (ns (get s7-current-ns)))) k) dyn))
+                                                           (s7-push-k (sum k-top (product (forms forms) (echo #f) (text t)
+                                                                                          (ns (tagcase a2 (env n n) (else y s7-toplevel)))))
+                                                                      k)
+                                                           dyn))
                               (stop r (s7-raise-state (sum errobj (product (kind 'read) (message (string-append "load: cannot read " (get s)))
                                                                            (irritants s7-nil)))
                                                       #f k dyn))))

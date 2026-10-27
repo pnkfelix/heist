@@ -12,7 +12,6 @@
 ;;; `s7-library-path`. The machine (machine.fx's `s7-run-form`) loads it and
 ;;; tries the import again.
 
-(define s7-libraries (ref (listof s7-library acyclic) @sc) (new nil))
 "Where a library's file is looked for: each directory, with its `/`
 (\"\": `s7-directory`)."
 (define s7-library-path (ref s7-strings @sc) (new (list "")))
@@ -20,12 +19,6 @@
 it was loaded for is not loaded again."
 (define s7-library-files (ref s7-strings @sc) (new nil))
 
-"A file name's directory, with its `/`; \"\" if it has none."
-(define* s7-directory-of (subr spin (string) string)
-  (lambda (file)
-    (letrec ((go (subr spin (int) string)
-               (lambda (i) (cond ((< i 0) "") ((char=? (string-ref file i) #\/) (substring file 0 (+ i 1))) (else (go (- i 1)))))))
-      (go (- (string-length file) 1)))))
 (define* s7-member-string? (subr spin (string s7-strings) bool)
   (lambda (s l) (and (pair? l) (or (string=? (car l) s) (s7-member-string? s (cdr l))))))
 "Directory `dir` added to where libraries are looked for, if it is not."
@@ -34,21 +27,12 @@ it was loaded for is not loaded again."
     (if (s7-member-string? dir (get s7-library-path)) #u
         (set s7-library-path (append (get s7-library-path) (list dir))))))
 
-(define* s7-library-name (subr s7-eff (s7-value) string)
-  (lambda (v) (s7-show v #t)))
 "Whether library name `v` names a standard library: the built-ins."
 (define* s7-standard-library? (subr s7-eff (s7-value) bool)
   (lambda (v)
     (and (s7-symbol? (s7-car v))
          (let ((n (s7-symbol-name (s7-sym (s7-car v)))))
            (or (string=? n "scheme") (string=? n "srfi") (string=? n "rnrs") (string=? n "s7st"))))))
-(define* s7-find-library (subr s7-eff (string) (sumof (none unit) (found s7-library)))
-  (lambda (name)
-    (letrec ((go (subr s7-eff ((listof s7-library acyclic)) (sumof (none unit) (found s7-library)))
-               (lambda (l) (cond ((null? l) (sum none #u))
-                                 ((string=? (extract (car l) name) name) (sum found (car l)))
-                                 (else (go (cdr l)))))))
-      (go (get s7-libraries)))))
 (define* s7-register-library! (subr s7-eff (s7-library) unit)
   (lambda (lib)
     (letrec ((drop (subr s7-eff ((listof s7-library acyclic)) (listof s7-library acyclic))
@@ -185,7 +169,9 @@ include and the rest, in order."
   (lambda (decls)
     (cond ((null? decls) nil)
           ((s7-sym-named? (s7-car (car decls)) "begin") (append (s7-value->values (s7-cdr (car decls))) (s7-library-body (cdr decls))))
-          ((or (s7-sym-named? (s7-car (car decls)) "include") (s7-sym-named? (s7-car (car decls)) "include-ci"))
+          ;; The declaration itself, so that it keeps its place (and file).
+          ((s7-sym-named? (s7-car (car decls)) "include") (cons (car decls) (s7-library-body (cdr decls))))
+          ((s7-sym-named? (s7-car (car decls)) "include-ci")
            (cons (s7-cons (s7-kw "include") (s7-cdr (car decls))) (s7-library-body (cdr decls))))
           (else (s7-library-body (cdr decls))))))
 "What `export` specs say: each name, and its outside name (`(rename a b)`)."

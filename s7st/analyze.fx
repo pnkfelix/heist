@@ -14,7 +14,7 @@
 ;;; application, so its parts are still walked, and it never fails on odd
 ;;; input. It expands no macro, and changes no global: a text not yet run
 ;;; may be analysed (docs/s7st.md, "Openings"). Where each symbol is comes
-;;; from the reader's item spans (read.fx's `s7-item-spans`).
+;;; from where the reader read each list's items (value.fx's `s7-src`).
 
 (define-type s7-face-span (productof (start int) (end int) (face symbol)))
 (define-type s7-face-spans (listof s7-face-span acyclic))
@@ -369,7 +369,6 @@ a macro the top level knows (the prelude's, a program's)."
   (lambda (text file)
     (begin
       (set s7-an-faces nil) (set s7-an-defs nil) (set s7-an-refs nil)
-      (set s7-item-spans (list (the (eqtable (ref s7-value @sc) s7-span @sc @sc) (make-eqtable (ref-identity)))))
       (letrec ((forms (subr s7-eff (int s7-itemized) (productof (forms s7-itemized) (problem string) (at int)))
                  ;; The data from `i`, and the read's error if any.
                  (lambda (i acc)
@@ -384,7 +383,6 @@ a macro the top level knows (the prelude's, a program's)."
         (let ((read (forms 0 nil)))
           (begin
             (s7-an-body (extract read forms) nil #t)
-            (set s7-item-spans nil)
             (product (faces (s7-sort-faces (append (s7-lexical-faces text) (get s7-an-faces))))
                      (defs (reverse (get s7-an-defs)))
                      (refs (reverse (get s7-an-refs)))

@@ -121,22 +121,58 @@ Most of it:
 - **Evaluation:** `eval` in any environment (`environment`,
   `interaction-environment`), `load`, `exit`.
 
+## Conformance
+
+`s7st/conformance/run.sh` runs Larceny's R7RS test suite
+(`test/R7RS/Lib/tests/scheme/`), read from the sibling repository
+`inthematrix-rrof` at d184ff8d into a temporary directory. On 2026-10-27:
+
+| library         | result                     |
+| --------------- | -------------------------- |
+| base            | 1078 tests passed          |
+| case-lambda     | 5 passed                   |
+| char            | 139 passed                 |
+| cxr             | 28 passed                  |
+| eval            | 5 passed                   |
+| file            | 75 passed                  |
+| lazy            | 33 passed                  |
+| load            | 4 passed                   |
+| process-context | 2 passed                   |
+| read            | 44 passed                  |
+| repl            | 10 passed                  |
+| time            | 2 passed, or 1 of 2: see below |
+| write           | 63 passed                  |
+| complex         | not run: no complex numbers |
+| inexact         | not run: its tests write complex literals (`-1.0+0.0i`) unconditionally |
+
+`time`'s second test allows 0.1 s of slack in a busy loop; s7st sometimes
+overshoots it.
+
+Getting there fixed, among other things:
+- datum labels, read and written, with `write` marking cycles and
+  `write-shared` marking sharing;
+- `equal?` on cyclic data;
+- hygiene: a template's free names resolve where the macro was defined,
+  skipping bindings around the use;
+- `...` as a plain variable when bound;
+- `let-values` binding in parallel;
+- `quasiquote` with several operands to `unquote`;
+- `include` relative to the including file;
+- binary ports, and `delete-file` (by running `rm`);
+- Unicode decimal digits and case folding (ß, final sigma).
+
 ## What is not done
 
-- **Complex numbers.**
-- **Datum labels.** Neither `#0=` nor `write`'s cycle-safe output exists.
-  `write` stops after 100,000 items with `...`, so it ends on a cycle.
+- **Complex numbers.** They're optional in R7RS. Larceny's `complex` and
+  `inexact` suites need them.
 - **Console input.** It is empty: `read-line` and the others read string
   ports and files.
-- **Deleting files.** `delete-file` raises a file error, because FX-26 has
-  no primitive for it.
-- **Full hygiene.** A free symbol that a template introduces means what
-  its name means in the macro's namespace (a library's macro can use what
-  the library doesn't export). But if the user's code binds that name
-  *locally* around the use, the macro sees the user's binding. Yank's
-  `(yank analysis macro)` has the same limitation.
-- **`let-values` and `let*-values` both bind sequentially.** Each `init`
-  sees the bindings before it. R7RS requires that only of `let*-values`.
+- **Deleting files** is done by running `rm`, since FX-26 has no primitive
+  for it.
+- **Hygiene's corners.** A free symbol a template introduces means what its
+  name means where the macro was defined: its scopes, then its namespace.
+  This assumes the macro's scopes enclose the use, which holds for any
+  macro used inside the scope it was defined in.
 - **Library details.** Every library sees the built-ins whether it
   imports them or not, and an imported name can be assigned with `set!`
   (R7RS makes that an error).

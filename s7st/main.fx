@@ -1,6 +1,7 @@
 ;;; main.fx: s7st from the command line (bin/s7st).
 ;;;
 ;;;   bin/s7st FILE …   each file run, as `load` runs it; exit 1 if one fails
+;;;   bin/s7st -L DIR … DIR a directory libraries are looked for in, too
 ;;;   bin/s7st          a REPL: each line read until the data are whole,
 ;;;                     then run, each value written
 ;;;   bin/s7st --serve  a server, for a client such as the editor
@@ -225,11 +226,21 @@ requests read between slices. Its exit status, when its input ends."
             (if (stdin-ready?) (if (next) (s7-serve) 0) (s7-serve)))
           (if (next) (s7-serve) 0)))))
 
+"Options first -- `-L DIR`, a directory libraries are looked for in --
+then the files; or the REPL, if there are none."
+(define* s7-options (subr (maxeff s7-eff (io stdout) (io stdin) (read @a)) ((listof string @a)) int)
+  (lambda (as)
+    (cond ((null? as) (s7-repl ""))
+          ((and (string=? (car as) "-L") (pair? (cdr as)))
+           (begin (s7-add-library-directory! (let ((d (car (cdr as))))
+                                                (if (char=? (string-ref d (- (string-length d) 1)) #\/) d (string-append d "/"))))
+             (s7-options (cdr (cdr as)))))
+          (else (s7-run-files as)))))
+
 (define* main (subr (maxeff s7-eff (io stdout) (io stdin) (io args) (alloc @a) (read @a)) () int)
   (lambda ()
     (let ((as (the (listof string @a) (args)))
           (why (s7-init!)))
       (cond ((and (pair? as) (string=? (car as) "--serve")) (begin (s7-answer "ready" why) (s7-serve)))
             ((not (string=? why "")) (begin (s7-say (string-append "s7st: " why "\n")) 2))
-            ((null? as) (s7-repl ""))
-            (else (s7-run-files as))))))
+            (else (s7-options as))))))

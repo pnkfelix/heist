@@ -23,10 +23,15 @@
 ;;; into a program before another's (the editor's) without either seeing
 ;;; the other's names. Its state is at region @sc.
 
+"What the reader does: reads, writes and allocates at @sc (its spans,
+what it makes), and loops."
+(define-effect s7-read-eff (maxeff spin (read @globals) (read @sc) (write @sc) (alloc @sc)))
 "What the machine does: reads and writes its own state, loops, reads and
-writes files (`load`, `open-input-file`, `open-output-file`), and reads the
-clock (`current-jiffy`)."
-(define-effect s7-eff (maxeff spin (read @globals) (read @sc) (write @sc) (alloc @sc) (io fs-read) (io fs-write) (io clock)))
+writes files (`load`, `open-input-file`, `open-output-file`), reads the
+clock (`current-jiffy`) and the command line, and runs `rm` (`delete-file`:
+FX-26 has no primitive for it)."
+(define-effect s7-eff (maxeff spin (read @globals) (read @sc) (write @sc) (alloc @sc) (io fs-read) (io fs-write) (io clock)
+                              (io args) (io process)))
 
 ;;; ------------------------------------------------------------ values
 
@@ -60,7 +65,12 @@ at @sc; a procedure has an identity (its `name` cell), as `eq?` needs."
 (define-type s7-values (listof s7-value acyclic))
 (define-type s7-symbols (listof symbol acyclic))
 (define-type s7-strings (listof string acyclic))
-(define-type s7-pair (productof (car (ref s7-value @sc)) (cdr (ref s7-value @sc))))
+(define-type s7-pair (productof (car (ref s7-value @sc)) (cdr (ref s7-value @sc)) (src s7-src)))
+"Where a pair the reader made came from: the span of the list it begins
+(if it begins one), and of the item it holds -- kept in the pair, so that
+finding it is a field's read, and it goes when the pair goes. A pair
+`cons` makes has none."
+(define-type s7-src (sumof (none unit) (read (productof (list s7-span) (item s7-span)))))
 "A closure: its lambda's clauses (one, but for `case-lambda`), each with its
 body compiled; where it was made; and its name, which is also its identity."
 (define-type s7-closure (productof (clauses (listof s7-clause acyclic)) (env s7-env) (name (ref string @sc))))
@@ -80,7 +90,9 @@ of the machine's own (`call/cc`, `apply`, …), numbered."
 was written, last first, and the file it goes to when flushed (\"\": none)."
 (define-type s7-port
   (productof (id (ref unit @sc)) (input bool) (text string) (pos (ref int @sc))
-             (out (ref (listof string acyclic) @sc)) (open (ref bool @sc)) (file string)))
+             (out (ref (listof string acyclic) @sc)) (open (ref bool @sc)) (file string)
+             ;; Binary: its characters are bytes, 0 to 255.
+             (binary bool)))
 "A library defined: its name, as written; its namespace; and what it
 exports, each by the name importers see and its own."
 (define-type s7-export (productof (external symbol) (internal symbol)))
@@ -222,8 +234,13 @@ may be resumed any number of times."
 (define s7-no-span s7-span (product (file "") (start -1) (end -1)))
 (define s7-no-dyn s7-dyn (product (winds nil) (handlers nil)))
 
+(define s7-no-src s7-src (sum none #u))
 (define* s7-cons (subr (alloc @sc) (s7-value s7-value) s7-value)
-  (lambda (a d) (sum pair (product (car (new a)) (cdr (new d))))))
+  (lambda (a d) (sum pair (product (car (new a)) (cdr (new d)) (src s7-no-src)))))
+"A pair the reader makes: holding an item read at `item`, and beginning a
+list read at `list` (no span if it begins none)."
+(define* s7-cons-read (subr (alloc @sc) (s7-value s7-value s7-span s7-span) s7-value)
+  (lambda (a d list item) (sum pair (product (car (new a)) (cdr (new d)) (src (sum read (product (list list) (item item))))))))
 (define* s7-string (subr (alloc @sc) (string) s7-value)
   (lambda (s) (sum str (new s))))
 (define* s7-symbol (subr pure (string) s7-value)

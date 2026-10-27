@@ -1,25 +1,18 @@
 ;;; read.fx: R7RS's external representations, read from a string.
 ;;;
-;;; Each list read has its span kept, keyed by its first pair (`s7-spans`),
+;;; Each list read has its span kept in its first pair, and each item's in
+;;; the pair that holds it (value.fx's `s7-src`),
 ;;; so that the expander can say where a form is, and an analysis where
 ;;; each node came from. What is read is mutable, as Scheme's data is.
 
-"Where each list read began and ended, by its first pair's car cell."
-(define s7-spans (eqtable (ref s7-value @sc) s7-span @sc @sc) (make-eqtable (ref-identity)))
-"While a buffer is analysed (analyze.fx), where each item of each list
-read is, by the car cell of the pair that holds it: so a symbol's place
-is known, though a symbol has no identity of its own."
-(define s7-item-spans (ref (listof (eqtable (ref s7-value @sc) s7-span @sc @sc) acyclic) @sc) (new nil))
-"Where the item pair `p` holds was read, if items are being noted."
-(define* s7-item-span (subr (maxeff (read @sc) (write @sc)) (s7-pair s7-span) s7-span)
-  (lambda (p default)
-    (let ((t (get s7-item-spans)))
-      (if (null? t) default (eqtable-ref (car t) (extract p car) default)))))
+"Where the item pair `p` holds was read, or `default`."
+(define* s7-item-span (subr pure (s7-pair s7-span) s7-span)
+  (lambda (p default) (tagcase (extract p src) (read r (extract r item)) (none u default))))
 "The span of datum `v`, if it is a list read."
-(define* s7-span-of (subr (maxeff (read @sc) (write @sc)) (s7-value) s7-span)
+(define* s7-span-of (subr pure (s7-value) s7-span)
   (lambda (v)
     (tagcase v
-      (pair p (eqtable-ref s7-spans (extract p car) s7-no-span))
+      (pair p (tagcase (extract p src) (read r (extract r list)) (none u s7-no-span)))
       (else y s7-no-span))))
 
 "What reading from a place gives: a datum, and where it ended; nothing but
@@ -184,19 +177,57 @@ infinity or NaN; each signed, and perhaps prefixed (`#x`, `#e`, …)."
                                (let ((got (the (listof f64 @sc) (string->f64 (if neg (string-append "-" body) body)))))
                                  (if (null? got) #f (sum real (car got)))))))))))))))
 
+"Whether symbols and character names read are case folded (`#!fold-case`,
+until `#!no-fold-case`; and what `include-ci` reads). A read of a whole
+text (`s7-read-all`) begins without."
+(define s7-fold-case (ref bool @sc) (new #f))
+
+"A datum label being read (`#n=`): its number, what stands for it until
+its datum is read, and then that datum."
+(define-type s7-label (productof (n int) (placeholder s7-value) (value (ref s7-value @sc))))
+"Placeholder `old` replaced by `new` throughout `v`'s pairs and vectors,
+each visited once (it may have cycles already)."
+(define* s7-patch-label! (subr (maxeff spin (read @sc) (write @sc) (alloc @sc)) (s7-value s7-value s7-value) unit)
+  (lambda (v old new)
+    (let ((pairs (the (eqtable (ref s7-value @sc) bool @sc @sc) (make-eqtable (ref-identity))))
+          (vecs (the (eqtable (arrayof s7-value @sc) bool @sc @sc) (make-eqtable (array-identity)))))
+      (letrec ((fix (subr (maxeff spin (read @sc) (write @sc) (alloc @sc)) (s7-value) s7-value)
+                 ;; `x`, or `new` if it is the placeholder; what it holds patched.
+                 (lambda (x)
+                   (if (s7-same-pair? x old) new
+                       (begin
+                         (tagcase x
+                           (pair p (if (eqtable-has? pairs (extract p car)) #u
+                                       (begin (eqtable-set! pairs (extract p car) #t)
+                                         (set (extract p car) (fix (get (extract p car))))
+                                         (set (extract p cdr) (fix (get (extract p cdr)))))))
+                           (vec a (if (eqtable-has? vecs a) #u
+                                      (begin (eqtable-set! vecs a #t)
+                                        (letrec ((each (subr (maxeff spin (read @sc) (write @sc) (alloc @sc)) (int) unit)
+                                                   (lambda (i) (if (>= i (array-length a)) #u
+                                                                   (begin (array-set! a i (fix (array-ref a i))) (each (+ i 1)))))))
+                                          (each 0)))))
+                           (else y #u))
+                         x)))))
+        (begin (fix v) #u)))))
+
 "Read one datum of `text` from `i`, in `file` (for spans)."
-(define* s7-read-at (subr (maxeff spin (read @sc) (write @sc) (alloc @sc)) (string int string) s7-read)
+(define* s7-read-at (subr s7-read-eff (string int string) s7-read)
   (lambda (text i file)
-    (let ((n (string-length text)))
-      (letrec ((bad (subr (alloc @sc) (string int) s7-read)
+    (let ((n (string-length text))
+          (labels (the (ref (listof s7-label acyclic) @sc) (new nil))))
+      (letrec ((bad (subr s7-read-eff (string int) s7-read)
                  (lambda (m at) (sum bad (product (message m) (at at)))))
                ;; Past space and comments from `i`: where a datum may start, or a read's error.
-               (skip (subr (maxeff spin (read @sc) (write @sc) (alloc @sc)) (int) (sumof (at int) (err s7-read)))
+               (skip (subr s7-read-eff (int) (sumof (at int) (err s7-read)))
                  (lambda (i)
                    (cond ((>= i n) (sum at i))
                          ((char-whitespace? (string-ref text i)) (skip (+ i 1)))
                          ((char=? (string-ref text i) #\;)
-                          (let ((e (string-search text "\n" i))) (if (< e 0) (sum at n) (skip (+ e 1)))))
+                          ;; To the line's end: a newline, or a return.
+                          (letrec ((eol (subr s7-read-eff (int) int)
+                                     (lambda (j) (cond ((>= j n) n) ((char-in? (string-ref text j) "\n\r") j) (else (eol (+ j 1)))))))
+                            (let ((e (eol i))) (if (>= e n) (sum at n) (skip (+ e 1))))))
                          ((and (char=? (string-ref text i) #\#) (< (+ i 1) n) (char=? (string-ref text (+ i 1)) #\|))
                           (block (+ i 2) 1))
                          ((and (char=? (string-ref text i) #\#) (< (+ i 1) n) (char=? (string-ref text (+ i 1)) #\;))
@@ -206,11 +237,16 @@ infinity or NaN; each signed, and perhaps prefixed (`#x`, `#e`, …)."
                             (none u (sum err (bad "#; with no datum after it" i)))
                             (else y (sum err y))))
                          ((and (char=? (string-ref text i) #\#) (< (+ i 1) n) (char=? (string-ref text (+ i 1)) #\!))
-                          ;; #!fold-case and its kin: directives, skipped.
-                          (skip (token-end (+ i 2))))
+                          ;; A directive: #!fold-case, #!no-fold-case; others skipped.
+                          (let* ((e (token-end (+ i 2))) (d (substring text (+ i 2) e)))
+                            (begin
+                              (cond ((string=? d "fold-case") (set s7-fold-case #t))
+                                    ((string=? d "no-fold-case") (set s7-fold-case #f))
+                                    (else #u))
+                              (skip e))))
                          (else (sum at i)))))
                ;; A block comment's text from `i`, `depth` deep.
-               (block (subr (maxeff spin (read @sc) (write @sc) (alloc @sc)) (int int) (sumof (at int) (err s7-read)))
+               (block (subr s7-read-eff (int int) (sumof (at int) (err s7-read)))
                  (lambda (i depth)
                    (cond ((>= (+ i 1) n) (sum err (sum incomplete #u)))
                          ((and (char=? (string-ref text i) #\|) (char=? (string-ref text (+ i 1)) #\#))
@@ -218,12 +254,12 @@ infinity or NaN; each signed, and perhaps prefixed (`#x`, `#e`, …)."
                          ((and (char=? (string-ref text i) #\#) (char=? (string-ref text (+ i 1)) #\|))
                           (block (+ i 2) (+ depth 1)))
                          (else (block (+ i 1) depth)))))
-               (token-end (subr spin (int) int)
+               (token-end (subr s7-read-eff (int) int)
                  (lambda (i) (if (or (>= i n) (s7-delimiter? (string-ref text i))) i (token-end (+ i 1)))))
-               (done (subr (alloc @sc) (s7-value int int) s7-read)
+               (done (subr s7-read-eff (s7-value int int) s7-read)
                  (lambda (v a e) (sum datum (product (value v) (start a) (end e)))))
                ;; The datum from `i`.
-               (datum (subr (maxeff spin (read @sc) (write @sc) (alloc @sc)) (int) s7-read)
+               (datum (subr s7-read-eff (int) s7-read)
                  (lambda (i)
                    (tagcase (skip i)
                      (err r r)
@@ -243,33 +279,29 @@ infinity or NaN; each signed, and perhaps prefixed (`#x`, `#e`, …)."
                                    ((char=? c #\#) (hash a))
                                    (else (atom a)))))))))
                ;; `'x` and its kin, the mark ending at `a`.
-               (abbrev (subr (maxeff spin (read @sc) (write @sc) (alloc @sc)) (int string) s7-read)
+               (abbrev (subr s7-read-eff (int string) s7-read)
                  (lambda (a name)
                    (tagcase (datum (+ a 1))
-                     (datum d (let ((v (s7-cons (s7-symbol name) (s7-cons (extract d value) s7-nil))))
-                                (begin (note v a (extract d end))
-                                  (note-items v (list (product (file file) (start a) (end (extract d start)))
-                                                      (product (file file) (start (extract d start)) (end (extract d end)))))
-                                  (done v a (extract d end)))))
+                     (datum d (done (build (list (s7-symbol name) (extract d value))
+                                           (list (product (file file) (start a) (end (extract d start)))
+                                                 (product (file file) (start (extract d start)) (end (extract d end))))
+                                           s7-nil a (extract d end))
+                                    a (extract d end)))
                      (none u (sum incomplete #u))
                      (else y y))))
-               (note (subr (maxeff (write @sc) (alloc @sc)) (s7-value int int) unit)
-                 (lambda (v a e)
-                   (tagcase v
-                     (pair p (eqtable-set! s7-spans (extract p car) (product (file file) (start a) (end e))))
-                     (else y #u))))
-               ;; Each item of list `v` noted with its span, if items are being noted.
-               (note-items (subr (maxeff spin (read @sc) (write @sc) (alloc @sc)) (s7-value (listof s7-span acyclic)) unit)
-                 (lambda (v spans)
-                   (let ((t (get s7-item-spans)))
-                     (if (null? t) #u
-                         (tagcase v
-                           (pair p (if (null? spans) #u
-                                       (begin (eqtable-set! (car t) (extract p car) (car spans))
-                                         (note-items (get (extract p cdr)) (cdr spans)))))
-                           (else y #u))))))
+               ;; Items `vs` (read at `spans`), then `tail`, as pairs the reader
+               ;; made: the first beginning a list read from `a` to `e`.
+               (build (subr s7-read-eff (s7-values (listof s7-span acyclic) s7-value int int) s7-value)
+                 (lambda (vs spans tail a e)
+                   (letrec ((go (subr s7-read-eff (s7-values (listof s7-span acyclic) bool) s7-value)
+                              (lambda (vs spans first)
+                                (if (null? vs) tail
+                                    (s7-cons-read (car vs) (go (cdr vs) (if (pair? spans) (cdr spans) nil) #f)
+                                                  (if first (product (file file) (start a) (end e)) s7-no-span)
+                                                  (if (pair? spans) (car spans) s7-no-span))))))
+                     (go vs spans #t))))
                ;; A list's items from `i`, its open at `open`, closed by `close`; read so far, last first.
-               (items (subr (maxeff spin (read @sc) (write @sc) (alloc @sc)) (int int char s7-values (listof s7-span acyclic)) s7-read)
+               (items (subr s7-read-eff (int int char s7-values (listof s7-span acyclic)) s7-read)
                  ;; `spans`: where each of `acc` was read, last first.
                  (lambda (i open close acc spans)
                    (tagcase (skip i)
@@ -278,8 +310,7 @@ infinity or NaN; each signed, and perhaps prefixed (`#x`, `#e`, …)."
                        (cond ((>= a n) (sum incomplete #u))
                              ((or (char=? (string-ref text a) #\)) (char=? (string-ref text a) #\]))
                               (if (char=? (string-ref text a) close)
-                                  (let ((v (s7-list (reverse acc))))
-                                    (begin (note v open (+ a 1)) (note-items v (reverse spans)) (done v open (+ a 1))))
+                                  (done (build (reverse acc) (reverse spans) s7-nil open (+ a 1)) open (+ a 1))
                                   (bad "mismatched close parenthesis" a)))
                              ((and (char=? (string-ref text a) #\.) (pair? acc)
                                    (or (>= (+ a 1) n) (s7-delimiter? (string-ref text (+ a 1)))))
@@ -289,8 +320,7 @@ infinity or NaN; each signed, and perhaps prefixed (`#x`, `#e`, …)."
                                     (err r r)
                                     (at e (cond ((>= e n) (sum incomplete #u))
                                                 ((char=? (string-ref text e) close)
-                                                 (let ((v (s7-list* (reverse acc) (extract d value))))
-                                                   (begin (note v open (+ e 1)) (note-items v (reverse spans)) (done v open (+ e 1)))))
+                                                 (done (build (reverse acc) (reverse spans) (extract d value) open (+ e 1)) open (+ e 1)))
                                                 (else (bad "more than one datum after a dot" e))))))
                                 (none u (sum incomplete #u))
                                 (else y y)))
@@ -301,7 +331,7 @@ infinity or NaN; each signed, and perhaps prefixed (`#x`, `#e`, …)."
                                 (none u (sum incomplete #u))
                                 (else y y))))))))
                ;; A string's characters from `i`, last first.
-               (str (subr (maxeff spin (read @sc) (write @sc) (alloc @sc)) (int int (listof char acyclic)) s7-read)
+               (str (subr s7-read-eff (int int (listof char acyclic)) s7-read)
                  (lambda (i start acc)
                    (cond ((>= i n) (sum incomplete #u))
                          ((char=? (string-ref text i) #\") (done (s7-string (list->string (reverse acc))) start (+ i 1)))
@@ -311,7 +341,7 @@ infinity or NaN; each signed, and perhaps prefixed (`#x`, `#e`, …)."
                             (err r r)))
                          (else (str (+ i 1) start (cons (string-ref text i) acc))))))
                ;; `|sym bol|`'s characters from `i`.
-               (bar (subr (maxeff spin (read @sc) (write @sc) (alloc @sc)) (int int (listof char acyclic)) s7-read)
+               (bar (subr s7-read-eff (int int (listof char acyclic)) s7-read)
                  (lambda (i start acc)
                    (cond ((>= i n) (sum incomplete #u))
                          ((char=? (string-ref text i) #\|) (done (s7-symbol (list->string (reverse acc))) start (+ i 1)))
@@ -321,7 +351,7 @@ infinity or NaN; each signed, and perhaps prefixed (`#x`, `#e`, …)."
                             (err r r)))
                          (else (bar (+ i 1) start (cons (string-ref text i) acc))))))
                ;; The escape after a backslash at `i - 1`, in a string closed by `close`.
-               (escape (subr (maxeff spin (alloc @sc)) (int char)
+               (escape (subr s7-read-eff (int char)
                              (sumof (ch (productof (char char) (next int) (skip bool))) (err s7-read)))
                  (lambda (i close)
                    (if (>= i n) (sum err (sum incomplete #u))
@@ -349,11 +379,12 @@ infinity or NaN; each signed, and perhaps prefixed (`#x`, `#e`, …)."
                                         (sum ch (product (char #\space) (next (lead (+ e 1))) (skip #t)))))))
                                (else (sum err (bad (string-append "unknown escape \\" (char->string c)) i))))))))
                ;; What `#` at `a` starts.
-               (hash (subr (maxeff spin (read @sc) (write @sc) (alloc @sc)) (int) s7-read)
+               (hash (subr s7-read-eff (int) s7-read)
                  (lambda (a)
                    (if (>= (+ a 1) n) (sum incomplete #u)
                        (let ((c (string-ref text (+ a 1))))
-                         (cond ((char=? c #\()
+                         (cond ((char-numeric? c) (label a))
+                               ((char=? c #\()
                                 (tagcase (items (+ a 2) a #\) nil nil)
                                   (datum d (tagcase (s7-list-items (extract d value))
                                              (some l (done (sum vec (list->array l)) a (extract d end)))
@@ -363,7 +394,8 @@ infinity or NaN; each signed, and perhaps prefixed (`#x`, `#e`, …)."
                                 ;; A character: the one after, and any letters after it.
                                 (if (>= (+ a 2) n) (sum incomplete #u)
                                     (let* ((e (token-end (+ a 3)))
-                                           (name (substring text (+ a 2) e)))
+                                           (raw (substring text (+ a 2) e))
+                                           (name (if (and (get s7-fold-case) (> (string-length raw) 1)) (string-downcase raw) raw)))
                                       (typecase (s7-char-named name)
                                         (char ch (done (sum char ch) a e))
                                         (else y (bad (string-append "unknown character #\\" name) a))))))
@@ -377,29 +409,59 @@ infinity or NaN; each signed, and perhaps prefixed (`#x`, `#e`, …)."
                                   (else y y)))
                                (else
                                 (let* ((e (token-end (+ a 1))) (word (substring text a e)))
-                                  (cond ((or (string=? word "#t") (string=? word "#true")) (done s7-true a e))
-                                        ((or (string=? word "#f") (string=? word "#false")) (done s7-false a e))
+                                  (cond ((or (string=? (string-downcase word) "#t") (string=? (string-downcase word) "#true")) (done s7-true a e))
+                                        ((or (string=? (string-downcase word) "#f") (string=? (string-downcase word) "#false")) (done s7-false a e))
                                         (else
                                          (typecase (s7-parse-number word 10)
                                            (bool b (bad (string-append "unknown syntax " word) a))
                                            (else v (done v a e))))))))))))
-               (atom (subr (maxeff spin (read @sc) (write @sc) (alloc @sc)) (int) s7-read)
+               ;; `#n=datum` or `#n#`, at `a`.
+               (label (subr s7-read-eff (int) s7-read)
+                 (lambda (a)
+                   (letrec ((digits (subr s7-read-eff (int) int) (lambda (j) (if (and (< j n) (char-numeric? (string-ref text j))) (digits (+ j 1)) j))))
+                     (let* ((e (digits (+ a 1)))
+                            (k (s7-parse-digits (substring text (+ a 1) e) 10)))
+                       (cond ((>= e n) (sum incomplete #u))
+                             ((char=? (string-ref text e) #\=)
+                              (let* ((ph (s7-cons (s7-symbol " label") s7-nil))
+                                     (cell (the (ref s7-value @sc) (new ph))))
+                                (begin
+                                  (set labels (cons (product (n k) (placeholder ph) (value cell)) (get labels)))
+                                  (tagcase (datum (+ e 1))
+                                    (datum d (begin (set cell (extract d value))
+                                               (s7-patch-label! (extract d value) ph (extract d value))
+                                               (done (extract d value) a (extract d end))))
+                                    (none u (sum incomplete #u))
+                                    (else y y)))))
+                             ((char=? (string-ref text e) #\#)
+                              (letrec ((find (subr s7-read-eff ((listof s7-label acyclic)) s7-read)
+                                         (lambda (l) (cond ((null? l) (bad (string-append "no datum labelled #" (int->string k) "=") a))
+                                                           ((= (extract (car l) n) k) (done (get (extract (car l) value)) a (+ e 1)))
+                                                           (else (find (cdr l)))))))
+                                (find (get labels))))
+                             (else (bad "a datum label is #n= or #n#" a)))))))
+               (atom (subr s7-read-eff (int) s7-read)
                  (lambda (a)
                    (let* ((e (token-end a)) (word (substring text a e)))
                      (typecase (s7-parse-number word 10)
-                       (bool b (done (s7-symbol word) a e))
+                       (bool b (done (s7-symbol (if (get s7-fold-case) (string-downcase word) word)) a e))
                        (else v (done v a e)))))))
         (datum i)))))
 
-"Every datum of `text`, in order: all of them, or the first error (or
-`incomplete`)."
-(define* s7-read-all (subr (maxeff spin (read @sc) (write @sc) (alloc @sc)) (string string)
-                           (sumof (data s7-values) (stop s7-read)))
-  (lambda (text file)
-    (letrec ((go (subr (maxeff spin (read @sc) (write @sc) (alloc @sc)) (int s7-values) (sumof (data s7-values) (stop s7-read)))
+"As `s7-read-all`, case folded from the start if `fold`."
+(define* s7-read-all-folding (subr (maxeff spin (read @sc) (write @sc) (alloc @sc)) (string string bool)
+                                   (sumof (data s7-values) (stop s7-read)))
+  (lambda (text file fold)
+    (letrec ((go (subr (maxeff spin (read @globals) (read @sc) (write @sc) (alloc @sc)) (int s7-values) (sumof (data s7-values) (stop s7-read)))
                (lambda (i acc)
                  (tagcase (s7-read-at text i file)
                    (datum d (go (extract d end) (cons (extract d value) acc)))
                    (none u (sum data (reverse acc)))
                    (else y (sum stop y))))))
-      (go 0 nil))))
+      (begin (set s7-fold-case fold) (go 0 nil)))))
+"Every datum of `text`, in order: all of them, or the first error (or
+`incomplete`)."
+(define* s7-read-all (subr (maxeff spin (read @sc) (write @sc) (alloc @sc)) (string string)
+                           (sumof (data s7-values) (stop s7-read)))
+  (lambda (text file) (s7-read-all-folding text file #f)))
+

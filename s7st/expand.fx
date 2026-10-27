@@ -22,28 +22,30 @@
 (define-type s7-syntax-error (productof (message string) (span s7-span)))
 (define s7-syntax-errors (ref (listof s7-syntax-error acyclic) @sc) (new nil))
 (define s7-rename-count (ref int @sc) (new 0))
-"For each expansion of a macro, by number, the namespace of the macro: where
-a free symbol its template brought in means what its name means there."
-(define s7-rename-nss (ref (arrayof (listof s7-ns acyclic) @sc) @sc)
-  (new (the (arrayof (listof s7-ns acyclic) @sc) (make-array 1024 (the (listof s7-ns acyclic) nil)))))
-"Expansion `n` noted as of a macro of namespace `ns`."
-(define* s7-note-rename-ns! (subr s7-eff (int s7-ns) unit)
-  (lambda (n ns)
-    (let ((a (get s7-rename-nss)))
-      (if (< n (array-length a)) (array-set! a n (list ns))
-          (let ((b (the (arrayof (listof s7-ns acyclic) @sc) (make-array (* 2 (+ n 1)) (the (listof s7-ns acyclic) nil)))))
+"Where a macro was defined: its namespace and its scopes. For each
+expansion of a macro, by number, its home: where a free symbol its template
+brought in means what its name means."
+(define-type s7-home (productof (ns s7-ns) (scopes s7-scopes)))
+(define s7-rename-homes (ref (arrayof (listof s7-home acyclic) @sc) @sc)
+  (new (the (arrayof (listof s7-home acyclic) @sc) (make-array 1024 (the (listof s7-home acyclic) nil)))))
+"Expansion `n` noted as of a macro whose home is `h`."
+(define* s7-note-rename-home! (subr s7-eff (int s7-home) unit)
+  (lambda (n h)
+    (let ((a (get s7-rename-homes)))
+      (if (< n (array-length a)) (array-set! a n (list h))
+          (let ((b (the (arrayof (listof s7-home acyclic) @sc) (make-array (* 2 (+ n 1)) (the (listof s7-home acyclic) nil)))))
             (letrec ((copy (subr s7-eff (int) unit)
                        (lambda (i) (if (>= i (array-length a)) #u (begin (array-set! b i (array-ref a i)) (copy (+ i 1)))))))
-              (begin (copy 0) (array-set! b n (list ns)) (set s7-rename-nss b))))))))
-"The namespace renamed symbol `s` is of: its macro's, or the current one."
-(define* s7-rename-ns (subr s7-eff (symbol) s7-ns)
+              (begin (copy 0) (array-set! b n (list h)) (set s7-rename-homes b))))))))
+"The home of renamed symbol `s`'s macro, if it is known."
+(define* s7-rename-home (subr s7-eff (symbol) (listof s7-home acyclic))
   (lambda (s)
     (let* ((n (symbol->string s))
            (sp (letrec ((go (subr spin (int) int) (lambda (i) (cond ((< i 0) -1) ((char=? (string-ref n i) #\space) i) (else (go (- i 1)))))))
                  (go (- (string-length n) 1))))
            (k (if (< sp 0) -1 (s7-parse-digits (substring n (+ sp 1) (string-length n)) 10)))
-           (a (get s7-rename-nss)))
-      (if (and (>= k 0) (< k (array-length a)) (pair? (array-ref a k))) (car (array-ref a k)) (get s7-current-ns)))))
+           (a (get s7-rename-homes)))
+      (if (and (>= k 0) (< k (array-length a))) (array-ref a k) nil))))
 
 (define* s7-node-at (subr (maxeff (read @sc) (write @sc)) (s7-span s7-form) s7-node)
   (lambda (span form) (product (id (s7-fresh-id)) (span span) (form form))))
@@ -88,29 +90,56 @@ a free symbol its template brought in means what its name means there."
 "The items of `x`, a list, or (none)."
 (define* s7-items (subr (maxeff spin (read @sc)) (s7-value) (sumof (none unit) (some s7-values)))
   (lambda (x) (s7-list-items x)))
-"Whether data `v` holds a renamed symbol."
-(define* s7-has-renamed? (subr (maxeff spin (read @sc)) (s7-value) bool)
+"Whether data `v` holds a renamed symbol. Each pair and vector is looked
+at once, so a cyclic datum (a quoted `#0=(a . #0#)`) is no trouble."
+(define* s7-has-renamed? (subr (maxeff spin (read @sc) (write @sc) (alloc @sc)) (s7-value) bool)
   (lambda (v)
-    (tagcase v
-      (sym s (s7-renamed? s))
-      (pair p (or (s7-has-renamed? (get (extract p car))) (s7-has-renamed? (get (extract p cdr)))))
-      (vec a (letrec ((go (subr (maxeff spin (read @sc)) (s7-values) bool)
-                            (lambda (l) (and (pair? l) (or (s7-has-renamed? (car l)) (go (cdr l)))))))
-               (go (array->list a))))
-      (else y #f))))
-"Data `v` with every renamed symbol unrenamed (copied only if it has one):
-what a quote in a template means."
-(define-rec
-  (s7-strip (->* (s7-value) s7-value)
-    (lambda (v)
-      (if (not (s7-has-renamed? v)) v
-          (tagcase v
-            (sym s (sum sym (string->symbol (s7-symbol-name s))))
-            (pair p (s7-cons (s7-strip (get (extract p car))) (s7-strip (get (extract p cdr)))))
-            (vec a (sum vec (list->array (s7-strip-all (array->list a)))))
-            (else y y)))))
-  (s7-strip-all (->* (s7-values) s7-values)
-    (lambda (l) (if (null? l) nil (cons (s7-strip (car l)) (s7-strip-all (cdr l)))))))
+    (let ((pairs (the (eqtable (ref s7-value @sc) bool @sc @sc) (make-eqtable (ref-identity))))
+          (vecs (the (eqtable (arrayof s7-value @sc) bool @sc @sc) (make-eqtable (array-identity)))))
+      (letrec ((go (subr (maxeff spin (read @sc) (write @sc) (alloc @sc)) (s7-value) bool)
+                 (lambda (v)
+                   (tagcase v
+                     (sym s (s7-renamed? s))
+                     (pair p (if (eqtable-has? pairs (extract p car)) #f
+                                 (begin (eqtable-set! pairs (extract p car) #t)
+                                   (or (go (get (extract p car))) (go (get (extract p cdr)))))))
+                     (vec a (if (eqtable-has? vecs a) #f
+                                (begin (eqtable-set! vecs a #t)
+                                  (letrec ((each (subr (maxeff spin (read @sc) (write @sc) (alloc @sc)) (s7-values) bool)
+                                             (lambda (l) (and (pair? l) (or (go (car l)) (each (cdr l)))))))
+                                    (each (array->list a))))))
+                     (else y #f)))))
+        (go v)))))
+"Data `v` with every renamed symbol unrenamed: what a quote in a template
+means. Copied only if it holds one; a cycle copied as a cycle."
+(define* s7-strip (subr (maxeff spin (read @sc) (write @sc) (alloc @sc)) (s7-value) s7-value)
+  (lambda (v)
+    (if (not (s7-has-renamed? v)) v
+        (let ((pairs (the (eqtable (ref s7-value @sc) s7-value @sc @sc) (make-eqtable (ref-identity))))
+              (vecs (the (eqtable (arrayof s7-value @sc) s7-value @sc @sc) (make-eqtable (array-identity)))))
+          (letrec ((go (subr (maxeff spin (read @sc) (write @sc) (alloc @sc)) (s7-value) s7-value)
+                     (lambda (v)
+                       (tagcase v
+                         (sym s (sum sym (string->symbol (s7-symbol-name s))))
+                         (pair p (if (eqtable-has? pairs (extract p car)) (eqtable-ref pairs (extract p car) v)
+                                     ;; The copy made first, and noted, so that a way back to it finds it.
+                                     (let ((c (s7-cons s7-nil s7-nil)))
+                                       (begin (eqtable-set! pairs (extract p car) c)
+                                         (tagcase c
+                                           (pair q (begin (set (extract q car) (go (get (extract p car))))
+                                                     (set (extract q cdr) (go (get (extract p cdr))))))
+                                           (else y #u))
+                                         c))))
+                         (vec a (if (eqtable-has? vecs a) (eqtable-ref vecs a v)
+                                    (let* ((b (the (arrayof s7-value @sc) (make-array (array-length a) s7-nil)))
+                                           (c (sum vec b)))
+                                      (begin (eqtable-set! vecs a c)
+                                        (letrec ((each (subr (maxeff spin (read @sc) (write @sc) (alloc @sc)) (int) unit)
+                                                   (lambda (i) (if (>= i (array-length a)) #u (begin (array-set! b i (go (array-ref a i))) (each (+ i 1)))))))
+                                          (each 0))
+                                        c))))
+                         (else y y)))))
+            (go v))))))
 
 ;;; ------------------------------------------------------------ scopes
 
@@ -152,9 +181,12 @@ or a global."
          (b-macro s7-macro)
          (b-special symbol)
          (b-global s7-global)))
-(define* s7-resolve-in (subr s7-eff (symbol s7-scopes s7-ns) s7-binding)
-  ;; `ns`: the namespace a free name is looked up in.
-  (lambda (name scopes ns)
+(define* s7-drop-scopes (subr spin (s7-scopes int) s7-scopes)
+  (lambda (l n) (if (or (<= n 0) (null? l)) l (s7-drop-scopes (cdr l) (- n 1)))))
+(define* s7-resolve-in (subr s7-eff (symbol s7-scopes s7-ns int) s7-binding)
+  ;; `ns`: the namespace a free name is looked up in; `depth0`: how many
+  ;; frames out the first of `scopes` is.
+  (lambda (name scopes ns depth0)
     (letrec ((in (subr s7-eff (s7-scopes int) (sumof (none unit) (found s7-binding)))
                (lambda (ss depth)
                  (if (null? ss) (sum none #u)
@@ -163,20 +195,29 @@ or a global."
                            (tagcase (s7-scope-macro (car ss) name)
                              (some m (sum found (sum b-macro m)))
                              (none u (in (cdr ss) (+ depth 1))))))))))
-      (tagcase (in scopes 0)
+      (tagcase (in scopes depth0)
         (found b b)
         (none u
           (if (and (s7-renamed? name) (tagcase (s7-ns-find ns name) (found c #f) (none u #t)))
-              ;; A symbol a macro brought in, defined nowhere as itself: its
-              ;; name, as its macro's namespace means it.
-              (s7-resolve-in (s7-unrename name) scopes (s7-rename-ns name))
+              ;; A symbol a macro brought in, bound nowhere as itself: its
+              ;; name, as it is bound where the macro was defined -- the
+              ;; scopes around the use that are the macro's own, then its
+              ;; namespace -- not by what the use is inside of.
+              (let ((home (s7-rename-home name)))
+                (if (null? home)
+                    (s7-resolve-in (s7-unrename name) scopes ns depth0)
+                    (let* ((def (extract (car home) scopes))
+                           (skip (- (list-length scopes) (list-length def))))
+                      (if (< skip 0)
+                          (s7-resolve-in (s7-unrename name) scopes (extract (car home) ns) depth0)
+                          (s7-resolve-in (s7-unrename name) (s7-drop-scopes scopes skip) (extract (car home) ns) (+ depth0 skip))))))
               (let ((cell (s7-ns-cell! ns name)))
                 (tagcase (get (extract cell syntax))
                   (special s (sum b-special s))
                   (macro m (sum b-macro m))
                   (none u (sum b-global cell))))))))))
 (define* s7-resolve (subr s7-eff (symbol s7-scopes) s7-binding)
-  (lambda (name scopes) (s7-resolve-in name scopes (get s7-current-ns))))
+  (lambda (name scopes) (s7-resolve-in name scopes (get s7-current-ns) 0)))
 "The special form `x`'s head names, or ` none`: a special form's own name
 (`if`, `define`), or the head's macro's -- `macro` -- or none."
 (define* s7-head-kind (subr s7-eff (s7-value s7-scopes) s7-binding)
@@ -188,6 +229,11 @@ or a global."
       (else y (sum b-special (string->symbol " none"))))))
 
 ;;; ------------------------------------------------------------ syntax-rules
+
+"Whether `s` is the ellipsis `ell`: itself, or renamed (a macro's template
+may make `...` with `(... ...)`, for a macro it defines)."
+(define* s7-ellipsis? (subr spin (symbol symbol) bool)
+  (lambda (s ell) (or (eq? s ell) (string=? (s7-symbol-name s) (s7-symbol-name ell)))))
 
 "What a pattern variable matched: one datum, or a sequence (under `...`)."
 (define-type s7-match (sumof (one s7-value) (many (listof s7-match acyclic))))
@@ -224,7 +270,7 @@ or a global."
 (define* s7-pattern-vars (subr (maxeff spin (read @sc)) (s7-value s7-macro) s7-symbols)
   (lambda (p m)
     (tagcase p
-      (sym s (if (or (s7-memq-symbol s (extract m literals)) (eq? s (extract m ellipsis))
+      (sym s (if (or (s7-memq-symbol s (extract m literals)) (s7-ellipsis? s (extract m ellipsis))
                      (string=? (s7-symbol-name s) "_"))
                  nil
                  (list s)))
@@ -261,7 +307,7 @@ of `all`."
 "How many ellipses begin `l`."
 (define* s7-ellipses (subr spin (s7-values symbol) int)
   (lambda (l ell)
-    (if (and (pair? l) (s7-symbol? (car l)) (eq? (s7-sym (car l)) ell)) (+ 1 (s7-ellipses (cdr l) ell)) 0)))
+    (if (and (pair? l) (s7-symbol? (car l)) (s7-ellipsis? (s7-sym (car l)) ell)) (+ 1 (s7-ellipses (cdr l) ell)) 0)))
 "Value `v`, a proper list, as FX-26's list."
 (define* s7-value->values (subr (maxeff spin (read @sc)) (s7-value) s7-values)
   (lambda (v) (tagcase (s7-list-items v) (some l l) (none u nil))))
@@ -306,10 +352,10 @@ or (no)."
   (s7-match-pattern (->* (s7-value s7-value s7-macro) (sumof (no unit) (yes s7-matches)))
     (lambda (p x m)
       (tagcase p
-        (sym s (cond ((string=? (s7-symbol-name s) "_") (sum yes nil))
-                     ((s7-memq-symbol s (extract m literals))
+        (sym s (cond ((s7-memq-symbol s (extract m literals))
                       (if (and (s7-symbol? x) (string=? (s7-symbol-name (s7-sym x)) (s7-symbol-name s)))
                           (sum yes nil) (sum no #u)))
+                     ((string=? (s7-symbol-name s) "_") (sum yes nil))
                      (else (sum yes (list (product (name s) (value (sum one x))))))))
         (pair q (let ((pp (s7-items-and-tail p)))
                   (tagcase x
@@ -327,7 +373,7 @@ or (no)."
     (lambda (ps pt xs xt m)
       (let ((ell (extract m ellipsis)))
         (cond
-          ((and (pair? ps) (pair? (cdr ps)) (s7-symbol? (car (cdr ps))) (eq? (s7-sym (car (cdr ps))) ell))
+          ((and (pair? ps) (pair? (cdr ps)) (s7-symbol? (car (cdr ps))) (s7-ellipsis? (s7-sym (car (cdr ps))) ell))
            ;; `p ...` then `after`: `p` takes all but what `after` needs.
            (let* ((after (cdr (cdr ps)))
                   (na (list-length after))
@@ -376,7 +422,7 @@ or (no)."
                    (sum ok (sum sym (string->symbol (string-append (symbol->string s) suffix))))))
         (pair p
           (let ((ell (extract m ellipsis)) (head (get (extract p car))))
-            (if (and (not escaped) (s7-symbol? head) (eq? (s7-sym head) ell))
+            (if (and (not escaped) (s7-symbol? head) (s7-ellipsis? (s7-sym head) ell))
                 ;; (... template): the template, its ellipses plain symbols.
                 (s7-fill (s7-cadr t) b m suffix #t)
                 (let ((tt (s7-items-and-tail t)))
@@ -427,7 +473,7 @@ or (no)."
            (suffix (string-append " " (int->string n))))
       (begin
         (set s7-rename-count (+ n 1))
-        (s7-note-rename-ns! n (extract m ns))
+        (s7-note-rename-home! n (product (ns (extract m ns)) (scopes (extract m scopes))))
         (letrec ((go (->* ((listof s7-rule acyclic)) s7-filled)
                    (lambda (rules)
                      (if (null? rules) (sum bad (string-append "no rule of " (s7-symbol-name (s7-sym (s7-car x))) " matches this use"))
@@ -446,7 +492,10 @@ or (no)."
     (if (not (and (s7-pair? spec) (s7-sym-named? (s7-car spec) "syntax-rules")))
         (sum bad "only syntax-rules macros are supported")
         (let* ((custom (s7-symbol? (s7-cadr spec)))
-               (ell (if custom (s7-sym (s7-cadr spec)) (string->symbol "...")))
+               ;; `...`, unless a variable of that name is bound here: then there is none.
+               (ell (cond (custom (s7-sym (s7-cadr spec)))
+                          ((tagcase (s7-resolve (string->symbol "...") scopes) (b-local l #t) (else y #f)) (string->symbol " no ellipsis"))
+                          (else (string->symbol "..."))))
                (lits (if custom (s7-car (s7-cddr spec)) (s7-cadr spec)))
                (rules (if custom (s7-cdr (s7-cddr spec)) (s7-cddr spec))))
           (tagcase (s7-items lits)
@@ -473,6 +522,12 @@ or (no)."
 `open-input-file`, `include`), with its `/`; \"\": the process's own. A
 client sets it (the editor: the buffer's directory)."
 (define s7-directory (ref string @sc) (new ""))
+"A file name's directory, with its `/`; \"\" if it has none."
+(define* s7-directory-of (subr spin (string) string)
+  (lambda (file)
+    (letrec ((go (subr spin (int) string)
+               (lambda (i) (cond ((< i 0) "") ((char=? (string-ref file i) #\/) (substring file 0 (+ i 1))) (else (go (- i 1)))))))
+      (go (- (string-length file) 1)))))
 "File name `file`, relative to `s7-directory` if it is relative."
 (define* s7-path (subr (read @sc) (string) string)
   (lambda (file)
@@ -488,6 +543,24 @@ client sets it (the editor: the buffer's directory)."
                 (else y (sum failed (string-append file ": not UTF-8")))))
       (else y (sum failed (string-append "cannot read " file))))))
 
+"The libraries defined (library.fx)."
+(define s7-libraries (ref (listof s7-library acyclic) @sc) (new nil))
+(define* s7-library-name (subr s7-eff (s7-value) string)
+  (lambda (v) (s7-show v #t)))
+(define* s7-find-library (subr s7-eff (string) (sumof (none unit) (found s7-library)))
+  (lambda (name)
+    (letrec ((go (subr s7-eff ((listof s7-library acyclic)) (sumof (none unit) (found s7-library)))
+               (lambda (l) (cond ((null? l) (sum none #u))
+                                 ((string=? (extract (car l) name) name) (sum found (car l)))
+                                 (else (go (cdr l)))))))
+      (go (get s7-libraries)))))
+"The standard libraries s7st has: R7RS-small's, and some SRFIs'."
+(define s7-provided-libraries s7-strings
+  (list "(scheme base)" "(scheme case-lambda)" "(scheme char)" "(scheme cxr)" "(scheme eval)" "(scheme file)"
+        "(scheme inexact)" "(scheme lazy)" "(scheme load)" "(scheme process-context)" "(scheme read)"
+        "(scheme repl)" "(scheme time)" "(scheme write)" "(scheme r5rs)"
+        "(srfi 1)" "(srfi 6)" "(srfi 8)" "(srfi 9)" "(srfi 23)" "(srfi 30)" "(srfi 39)" "(srfi 62)" "(srfi 69)" "(srfi 87)"
+        "(rnrs hashtables)"))
 "Whether feature requirement `r` (of `cond-expand`) holds."
 (define* s7-feature? (subr s7-eff (s7-value) bool)
   (lambda (r)
@@ -502,8 +575,12 @@ client sets it (the editor: the buffer's directory)."
            (letrec ((any (subr s7-eff (s7-values) bool) (lambda (l) (and (pair? l) (or (s7-feature? (car l)) (any (cdr l)))))))
              (any (s7-value->values (s7-cdr r)))))
           ((s7-sym-named? (s7-car r) "not") (not (s7-feature? (s7-cadr r))))
-          ;; Every library is here: everything is global.
-          ((s7-sym-named? (s7-car r) "library") #t)
+          ;; A library s7st has, or one defined.
+          ((s7-sym-named? (s7-car r) "library")
+           (let ((name (s7-library-name (s7-cadr r))))
+             (or (letrec ((has (subr spin (s7-strings) bool) (lambda (l) (and (pair? l) (or (string=? (car l) name) (has (cdr l)))))))
+                   (has s7-provided-libraries))
+                 (tagcase (s7-find-library name) (found l #t) (none u #f)))))
           (else #f))))
 
 "`do`'s bindings, `(var init)` each; and their steps (the variable, if
@@ -565,9 +642,13 @@ none)."
 "What a derived form is rewritten as: data to expand instead, or an error;
 (none) if `name` is no derived form."
 (define-type s7-derived (sumof (none unit) (datum s7-value) (bad string)))
-(define* s7-derive (subr s7-eff (symbol s7-value) s7-derived)
-  (lambda (name x)
+(define* s7-derive (subr s7-eff (symbol s7-value s7-scopes) s7-derived)
+  (lambda (name x scopes)
     (let ((args (s7-cdr x))
+          ;; Whether `v` is auxiliary syntax `name` (`else`, `=>`): so named, and not bound here.
+          (aux? (lambda ((v s7-value) (aux string))
+                  (and (s7-sym-named? v aux)
+                       (tagcase (s7-resolve (s7-sym v) scopes) (b-local l #f) (else y #t)))))
           (begin-of (lambda ((body s7-value)) (s7-cons (s7-kw "begin") body)))
           (ok (lambda ((v s7-value)) (the s7-derived (sum datum v)))))
       (cond
@@ -588,8 +669,8 @@ none)."
                      (none u (sum bad "cond: a clause is no list"))
                      (some ci
                        (cond ((null? ci) (sum bad "cond: an empty clause"))
-                             ((s7-sym-named? (car ci) "else") (ok (begin-of (s7-cdr c))))
-                             ((and (pair? (cdr ci)) (s7-sym-named? (car (cdr ci)) "=>"))
+                             ((aux? (car ci) "else") (ok (begin-of (s7-cdr c))))
+                             ((and (pair? (cdr ci)) (aux? (car (cdr ci)) "=>"))
                               (if (not (and (pair? (cdr (cdr ci))) (null? (cdr (cdr (cdr ci))))))
                                   (sum bad "cond: => takes one procedure")
                                   (let ((t (s7-fresh-symbol "t")))
@@ -607,10 +688,10 @@ none)."
                             (if (null? cs) (ok (begin-of s7-nil))
                                 (let* ((c (car cs))
                                        (body (s7-cdr c))
-                                       (then (if (and (s7-pair? body) (s7-sym-named? (s7-car body) "=>"))
+                                       (then (if (and (s7-pair? body) (aux? (s7-car body) "=>"))
                                                  (s7-l (list (s7-cadr body) t))
                                                  (begin-of body))))
-                                  (cond ((s7-sym-named? (s7-car c) "else") (ok then))
+                                  (cond ((aux? (s7-car c) "else") (ok then))
                                         ((not (s7-pair? c)) (sum bad "case: a clause is no list"))
                                         (else (tagcase (chain (cdr cs))
                                                 (datum rest (ok (s7-l (list (s7-kw "if")
@@ -667,6 +748,11 @@ none)."
                                                   (else (first (cdr cs)))))))
                       (first cs)))))
         ((eq? name 'import) (ok (begin-of s7-nil)))
+        ((eq? name 'syntax-error)
+         (sum bad (string-append (tagcase (s7-car args) (str m (get m)) (else y "syntax error"))
+                                 (s7-concat (letrec ((go (subr s7-eff (s7-values) (listof string acyclic))
+                                                           (lambda (l) (if (null? l) nil (cons (string-append " " (s7-show (car l) #t)) (go (cdr l)))))))
+                                              (go (s7-value->values (s7-cdr args))))))))
         ((eq? name 'define-library)
          ;; Its `begin`s' forms, at top level; exports and imports dropped.
          (tagcase (s7-items (s7-cdr args))
@@ -678,15 +764,23 @@ none)."
                                         (cons (car ds) (go (cdr ds))))
                                        (else (go (cdr ds)))))))
                       (ok (begin-of (s7-list (go ds))))))))
-        ((eq? name 'include)
+        ((or (eq? name 'include) (eq? name 'include-ci))
          (tagcase (s7-items args)
            (none u (sum bad "include: its files are no list"))
            (some fs (letrec ((go (subr s7-eff (s7-values s7-values) s7-derived)
                                (lambda (fs acc)
                                  (if (null? fs) (ok (begin-of (s7-list (reverse acc))))
                                      (tagcase (car fs)
-                                       (str s (tagcase (s7-file-text (get s))
-                                                (text t (tagcase (s7-read-all t (get s))
+                                       ;; Relative to the file the `include` is in, if it is in one.
+                                       ;; Else as it is (relative to `s7-directory`).
+                                       (str s (tagcase (let* ((from (extract (s7-span-of x) file)) (f (get s))
+                                                              (near (if (or (string=? from "") (and (> (string-length f) 0) (char=? (string-ref f 0) #\/)))
+                                                                        f
+                                                                        (string-append (s7-directory-of from) f))))
+                                                         (tagcase (s7-file-text near)
+                                                           (text t (sum text t))
+                                                           (failed m (s7-file-text f))))
+                                                (text t (tagcase (s7-read-all-folding t (get s) (eq? name 'include-ci))
                                                           (data ds (go (cdr fs) (append (reverse ds) acc)))
                                                           (stop r (sum bad (string-append "include: cannot read " (get s))))))
                                                 (failed m (sum bad (string-append "include: " m)))))
@@ -880,7 +974,7 @@ defined in `scopes`: \"\", or an error."
                                               acc))
                                       (bad e (bad e)))))
                                ((or (eq? k 'define-values) (eq? k 'define-record-type))
-                                (tagcase (s7-derive k f)
+                                (tagcase (s7-derive k f scopes)
                                   (datum d (s7-scan (list d) scopes fspan acc))
                                   (bad e (bad e))
                                   (none u (expr))))
@@ -911,14 +1005,24 @@ defined in `scopes`: \"\", or an error."
             (let ((head (get (extract p car))))
               (cond ((s7-sym-named? head "unquote")
                      (if (= depth 1) (s7-expand (s7-cadr t) scopes span)
-                         (wrap "unquote" (s7-quasi (s7-cadr t) (- depth 1) scopes span))))
+                         ;; Its operands as a list's items, one quasiquote less deep.
+                         (s7-qq-cons (s7-const-node (s7-symbol "unquote") span) (s7-quasi (get (extract p cdr)) (- depth 1) scopes span) span)))
                     ((s7-sym-named? head "quasiquote")
-                     (wrap "quasiquote" (s7-quasi (s7-cadr t) (+ depth 1) scopes span)))
+                     (s7-qq-cons (s7-const-node (s7-symbol "quasiquote") span) (s7-quasi (get (extract p cdr)) (+ depth 1) scopes span) span))
+                    ;; An item `(unquote e …)`: each value an item (R7RS 4.2.8).
+                    ((and (s7-pair? head) (s7-sym-named? (s7-car head) "unquote") (= depth 1))
+                     (letrec ((each (->* (s7-values) s7-node)
+                                (lambda (es) (if (null? es) (s7-quasi (get (extract p cdr)) depth scopes span)
+                                                 (s7-qq-cons (s7-expand (car es) scopes span) (each (cdr es)) span)))))
+                       (each (s7-value->values (s7-cdr head)))))
                     ((and (s7-pair? head) (s7-sym-named? (s7-car head) "unquote-splicing"))
                      (let ((rest (s7-quasi (get (extract p cdr)) depth scopes span)))
                        (if (= depth 1)
-                           (s7-call-kw "append" (list (s7-expand (s7-cadr head) scopes span) rest) span)
-                           (s7-qq-cons (wrap "unquote-splicing" (s7-quasi (s7-cadr head) (- depth 1) scopes span)) rest span))))
+                           ;; Each operand's list spliced in.
+                           (s7-call-kw "append" (append (s7-expand-all (s7-value->values (s7-cdr head)) scopes span) (list rest)) span)
+                           (s7-qq-cons (s7-qq-cons (s7-const-node (s7-symbol "unquote-splicing") span)
+                                                   (s7-quasi (s7-cdr head) (- depth 1) scopes span) span)
+                                       rest span))))
                     (else (s7-qq-cons (s7-quasi head depth scopes span)
                                       (s7-quasi (get (extract p cdr)) depth scopes span) span)))))
           (vec a (let ((l (s7-quasi (s7-list (array->list a)) depth scopes span)))
@@ -1035,7 +1139,7 @@ defined in `scopes`: \"\", or an error."
                            (b (s7-expand-body (s7-value->values (s7-cdr args)) (the s7-scopes (cons sc scopes)) span pre)))
                       (s7-node-at span (sum n-scope (product (size (get (extract sc count))) (body b) (names (s7-scope-names sc)))))))))
           (else
-           (tagcase (s7-derive k x)
+           (tagcase (s7-derive k x scopes)
              (datum d (s7-expand-named d scopes span name))
              (bad e (fail e))
              (none u (fail "is no special form s7st knows")))))))))
@@ -1049,7 +1153,8 @@ defined in `scopes`: \"\", or an error."
   (list "quote" "quasiquote" "unquote" "unquote-splicing" "lambda" "define" "set!" "if" "begin"
         "let" "let*" "letrec" "letrec*" "cond" "case" "and" "or" "when" "unless" "do"
         "define-syntax" "let-syntax" "letrec-syntax" "syntax-rules" "define-record-type"
-        "case-lambda" "define-values" "import" "define-library" "cond-expand" "include"))
+        "case-lambda" "define-values" "import" "define-library" "cond-expand" "include" "include-ci"
+        "syntax-error"))
 (define* s7-define-specials! (subr s7-eff (s7-strings) unit)
   (lambda (names)
     (if (null? names) #u
