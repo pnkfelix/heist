@@ -72,6 +72,9 @@ top-form   ::= definition
              | "(" "define-effect" name effect ")"
              | "(" "define-syscall" name string type ")"            ; a runtime's own code only
              | "(" "define-optional-syscall" name string type ")"   ; (`docs/fx26.md`, "Syscalls")
+             | "(" "include" variable ")"           { a module bound here: an `import` of every
+                                                      name it gives; a type defined after it
+                                                      is read in order }
              | expression
 
 definition ::= "(" "define" name expression ")"
@@ -177,6 +180,15 @@ type       ::= base-type
              | "(" "moduleof" module-component* ")"
              | "(" "select" module-var name ")"        { module-var: a variable bound to a module;
                                                          name: its `abs` or `desc` component }
+             | "(" "load-moduleof" string made-arg* ")"
+                                                       { the type of the module the file's
+                                                         `load-module` makes given the args }
+             | "(" "load-input-moduleof" string made-arg* ")"
+                                                       { of the module a `load-input` file's
+                                                         value makes given the args }
+             | "(" "restrict" type name* ")"         { a module type with only the names
+                                                         given: an abstract type not named
+                                                         that one kept mentions, unnamed }
              | "(" function description+ ")"          { a function to a type, applied }
 
 base-type  ::= "int" | "bool" | "char" | "string" | "unit" | "symbol" | "datum"
@@ -184,11 +196,15 @@ base-type  ::= "int" | "bool" | "char" | "string" | "unit" | "symbol" | "datum"
              | "tword" | "wcell" | "wglobal"            ; the compiler written in FX-26's
 
 subr-param ::= type
-             | "(" name type ")"     { name is no type, type form or keyword:
-                                       a named parameter, which later types may
-                                       `select` from (a dependent procedure) }
+             | "(" name ":" type ")" { a named parameter, which later types may
+                                       `select` from (a dependent procedure),
+                                       and a specification's clauses name;
+                                       `(name type)` is always `name` applied }
 
 conv-form  ::= "(" "conv" convention ")"
+
+made-arg   ::= description | variable        { a description for a `poly`'s binder; a
+                                               module's name for a procedure's parameter }
 
 proposition ::= "(" "<=" type type ")"
               | "(" "poly" binders "(" "<=" type type ")" ("(" "<=" type type ")")* ")"
@@ -383,8 +399,9 @@ bloblet-form ::= "(" "make-bloblet" expression expression* ")"           ; bytes
   `module-item`s, as if written in a `module`, and also a
   `define-datatype` with no parameters. A file with any other top-level
   form or a bare expression is refused. It sees only the standard
-  environment. A relative path is from the program's directory (the
-  current one at the REPL); an error in the file is said at the
+  environment. A relative path is from the directory of the file the load
+  is in (a loaded file's, or a program file's; the current one for a form
+  typed at the REPL); an error in the file is said at the
   `load-module`, with where in the file. A file whose first form is
   `(module-parameters ((name kind) …))` is a file of parameters:
   `(load-module "file")` is then `(plambda ((name kind) …) (lambda ()

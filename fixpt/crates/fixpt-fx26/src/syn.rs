@@ -849,14 +849,32 @@ type Load = (u32, String, bool, Option<String>);
 /// after it moved.
 fn load_modules_in(forms: &[Syntax], interner: &Interner, out: &mut Vec<Load>) {
     for f in forms {
+        // The files its types name first, as the parsers load them
+        // (`Checker::type_loads`, `type-loaded`).
+        type_loads_at(f, interner, out);
         load_modules_at(f, interner, out);
+    }
+}
+
+/// Each `(load-moduleof "file" …)` and `(load-input-moduleof "file" …)` in
+/// `f`, outside quotations, in order.
+fn type_loads_at(f: &Syntax, interner: &Interner, out: &mut Vec<Load>) {
+    let Some(items) = f.as_proper_list() else { return };
+    match items.first().and_then(|h| h.as_symbol()).map(|h| interner.name(h)) {
+        Some("quote" | "quasiquote") => {}
+        Some(loader @ ("load-moduleof" | "load-input-moduleof")) => {
+            if let Some(Datum::Str(p)) = items.get(1).map(|p| &p.datum) {
+                out.push((f.span.start, p.to_string(), loader == "load-input-moduleof", None));
+            }
+        }
+        _ => items.iter().for_each(|x| type_loads_at(x, interner, out)),
     }
 }
 
 /// `load_modules_in` of one expression, or definition.
 fn load_modules_at(f: &Syntax, interner: &Interner, out: &mut Vec<Load>) {
     let Some(items) = f.as_proper_list() else { return };
-    let exps = |xs: &[Syntax], out: &mut Vec<Load>| load_modules_in(xs, interner, out);
+    let exps = |xs: &[Syntax], out: &mut Vec<Load>| xs.iter().for_each(|x| load_modules_at(x, interner, out));
     // The last item of each list in `xs`: a binding's expression.
     let inits = |xs: Option<&[Syntax]>, out: &mut Vec<Load>| {
         for b in xs.unwrap_or_default() {
@@ -869,7 +887,7 @@ fn load_modules_at(f: &Syntax, interner: &Interner, out: &mut Vec<Load>) {
     let arms = |xs: &[Syntax], k: usize, out: &mut Vec<Load>| {
         for c in xs {
             if let Some(parts) = c.as_proper_list() {
-                load_modules_in(parts.get(k..).unwrap_or_default(), interner, out);
+                parts.get(k..).unwrap_or_default().iter().for_each(|x| load_modules_at(x, interner, out));
             }
         }
     };
@@ -941,12 +959,60 @@ pub fn supply_loaded(scheme: &mut Session, file: FileId, text: &str) -> R<()> {
     supply_loaded_at(scheme, file, text, 0)
 }
 
-/// [`supply_loaded`], `text`'s positions counted from `base`.
+/// [`supply_loaded`], `text`'s positions counted from `base`. And what
+/// each top-level `include` of it gives (`includes-given!`), as
+/// [`set_includes`] said, then forgotten.
 fn supply_loaded_at(scheme: &mut Session, file: FileId, text: &str, base: i64) -> R<()> {
     let fail = |m: String| FxError::at(Span::new(file, 0, 0), m);
     let list = loaded_files_at(scheme, file, text, base)?;
     scheme.call_global(&format!("{READER_PREFIX}loaded-files!"), &[list]).map_err(|e| fail(e.to_string()))?;
+    let offsets = byte_offsets(text);
+    let mut list = scheme.make(|_| Value::NULL);
+    let char_at = |byte: u32| base + offsets.partition_point(|&o| o < byte as usize) as i64;
+    for given in INCLUDES.with(|i| std::mem::take(&mut *i.borrow_mut())).into_iter().rev() {
+        let mut fields = vec![scheme.make(|_| Value::fixnum(37))];
+        fields.push(scheme.make(|_| Value::fixnum(char_at(given.at))));
+        for names in &given.names {
+            let mut l = scheme.make(|_| Value::NULL);
+            for n in names.iter().rev() {
+                let sym = scheme.make(|m| m.heap().intern(n));
+                l = scheme.call_global("cons", &[sym, l]).map_err(|e| fail(e.to_string()))?;
+            }
+            fields.push(l);
+        }
+        fields.push(scheme.make(|m| m.heap().string_from_chars(&given.why.chars().collect::<Vec<_>>())));
+        fields.push(scheme.make(|_| Value::fixnum(char_at(given.why_at))));
+        fields.push(scheme.make(|_| Value::fixnum(char_at(given.why_end))));
+        let one = scheme.call_global("%make-frozen", &fields).map_err(|e| fail(e.to_string()))?;
+        list = scheme.call_global("cons", &[one, list]).map_err(|e| fail(e.to_string()))?;
+    }
+    scheme.call_global(&format!("{READER_PREFIX}includes-given!"), &[list]).map_err(|e| fail(e.to_string()))?;
     Ok(())
+}
+
+thread_local! {
+    /// What the next text the front end written in FX-26 parses has of
+    /// top-level `include`s: each's start (a byte), and the names of its
+    /// module's values, types and effects (`Checker::include_names`).
+    static INCLUDES: std::cell::RefCell<Vec<IncludeGiven>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// What a top-level `include` of a text gives (`includes-given!`): where it
+/// starts (a byte), the names of its module's values, types and effects;
+/// or why it is refused, and where.
+pub struct IncludeGiven {
+    pub at: u32,
+    pub names: [Vec<String>; 3],
+    pub why: String,
+    pub why_at: u32,
+    pub why_end: u32,
+}
+
+/// For the next text parsed by the front end written in FX-26: what each
+/// top-level `include` of it gives, as the Rust checker, which has checked
+/// it, knows (`compare::both_checkers`).
+pub fn set_includes(given: Vec<IncludeGiven>) {
+    INCLUDES.with(|i| *i.borrow_mut() = given);
 }
 
 /// What `text`'s `load-module`s read, as [`supply_loaded`] hands it to the

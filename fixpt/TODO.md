@@ -630,6 +630,14 @@ the run (also `^C` for §25, and a sampling point for a profiler).
 Deferred because: the user is not yet sure which debugger they want; the
 first two steps serve both.
 
+Since (2026-10-27): names and frames, on Linux x86_64, for `gdb` and
+`lldb` (`docs/research/debugging.md`, "Since"); the user asked for lines
+and values too. Left of the names: arm64 (Mach-O on macOS); a debugger
+come to a running program waits some seconds while every object is made
+again with frames (fewer, larger objects would help: merge them while no
+debugger is here); the underflow stub named where a return address is
+one past it.
+
 ## 27. The collector's next spaces: static, large objects, and regions that reclaim everything (the user's, 2026-10-05; PLAN Q16)
 
 What the heap has today (`crates/fixpt-heap/src/heap.rs`): a nursery,
@@ -3246,3 +3254,49 @@ process's output or exit: Heist's editor polls every 50 ms while one
 runs. An arm, as for `(read-byte)`, needs a waker list per process in
 `sched.rs`, the reader threads waking `wait_stdin`'s `poll` (a pipe it
 polls too), and the arm in both parsers.
+
+## 133. A module file's item using an included value compiles apart (found 2026-10-27)
+
+Found while fixing Heist's problem D (`DONE.md` §135): in a module *file*
+with `(include m)`, an item whose value uses one of `m`'s values, `(define
+z (subr … ) mk)` or `(define z (lambda () (mk)))`, is compiled to different
+words by the compiler written in FX-26 than by the Rust one (`tests/
+rust_compiler.rs`: "99 fields and 98"), though it runs alike. The same
+module as an expression, `(module (include m) …)`, compiles the same, and
+so does a file item that only names an included type. Each item's value is
+`(with %include …)` there (`with_includes`, `in-includes`), so likely the
+FX-26 side keys its facts for that `with` differently in a file (its
+identity, `(start end k)`, or the `%include` item's place after the item
+that says the file). Repro: a file `(include (load-module "c.fx"))
+(define z (subr (alloc @heap) () (ref int @heap)) mk)`, `c.fx` defining
+`mk`; loaded by a program in `programs/modules`.
+
+## 134. `load-typeof` and `load-input-typeof`: a file's value's type (2026-10-27)
+
+Beside `load-moduleof` and `load-input-moduleof` (`DONE.md` §136), which
+give the signature of an *instance*, applying a file of parameters' maker
+and promising a module: the type of the file's *value*, given only the
+arguments written, nothing applied for them, any type. Wanted for a maker
+itself as a parameter, `(poly ((ed region) (world effect)) (subr (alloc
+ed) () (moduleof …)))`, so that a functor can make instances of its own
+(a scheduler per editor window, say); for a file whose value is one
+procedure; and for a file of data whose type is not named elsewhere. No
+client needs one yet (the user, 2026-10-27: noted for when one does). The
+same walk as `type_made` and `check-read-made.fx`'s, without the
+application of a procedure of no parameters and the check for a module.
+
+## 135. A dependent parameter's `select` is checked only at a call (found 2026-10-27)
+
+`(subr pure ((c : sig) (select c x)) int)` is taken though `sig` gives no
+`x`; a call then puts in the argument's own `x`, which a module given at
+a narrower type (`restrict`, an unnamed abstract type) may have. So
+naming through a parameter can reach what its type does not give. The
+type should be refused where it is read, as `(select m x)` of a module
+bound there is (`modules/restrict-unnamed.fx` shows the latter).
+
+## 136. `new`, `make-array`, `rnew` and `rmake-array` in line on arm64 (2026-10-27)
+
+x86_64's native convention makes them in line (DONE §141); arm64's
+(`direct.rs`'s `procedure`, beside its `rcons`) does not.
+
+Deferred because: arm64 code cannot be run on the machine it was done on.

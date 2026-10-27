@@ -2117,3 +2117,107 @@ Fixpt's to decide; the note's last section has the rest. In short:
 - **A `T` given through a callback counts as given**; the toll decides
   `constructs` from `transforms`. The answers are what the types allow, not what
   the code does.
+
+## A file's module type, `load-moduleof` (2026-10-27)
+
+The user chose the form and its names (`load-moduleof`,
+`load-input-moduleof`) and that abstract types are binders. Choices of
+mine, not asked:
+
+- **The arguments**: descriptions for a `poly`, and for a procedure's
+  parameters a module's *name* only, as a dependent call takes one (M5).
+  Not general expressions, nor a check that the module named fits the
+  parameter's type: a value of the type comes only from a real
+  application, which is checked there.
+- **What is left must be a module's type**, so neither name promises a
+  module that is not there (a `load-input` file of data, say).
+- **Type loads before the expressions' loads, in each form**, and in each
+  item of a module, so that the two parsers and the driver that reads files
+  for the FX-26 front end read files, and number them, alike.
+- **A `define-type` naming a file is not declared ahead**: its file's
+  hidden global must be defined before it, and declaring it ahead would
+  load the file outside any form, its definition never run. So it must
+  come before the types that use it.
+- **A file of its own for the FX-26 checker's part**, `check-read-made.fx`,
+  since `check-read-descs.fx` was full; it is given `k-parse-d` as an
+  argument rather than calling it, being before it.
+- **`check-program.fx` made room** by using `k-has-name?` and `reverse`
+  for its own copies of them, rather than a split.
+
+## A file's abstract types shared by its loads (2026-10-27)
+
+The user decided to share them. How, mine:
+
+- **By strengthening where a load is used**, not by changing what a
+  binding does: a load's abstract types become descriptions of the hidden
+  global's own, so every binding of one is an alias, as OCaml's `module
+  type of struct include M end` is of `M`. A binding of any other module
+  is still opaque (Sheldon's `let` rule), and makers still make types of
+  their own.
+- **Only `load-module`'s modules.** A `load-input` file whose value is a
+  module with abstract types is not strengthened: none such is in use, and
+  its files are functions, whose modules are made by applying them.
+- **Named for the file's base name**, `x.fx..t`, not its whole key: two
+  files of one name in two directories print alike, though their types
+  stay apart.
+
+## A top-level `include` (2026-10-27)
+
+The user asked for it (Heist's problem F). How, mine:
+
+- **An `import` of every name, made where the module's type is known**,
+  rather than a form of its own through both front ends' parsers,
+  checkers and compilers: the FX-26 parser, compilers and evaluator work
+  from trees made before checking, and `import` already goes through all
+  of them.
+- **The driver tells the FX-26 parser what each gives**, by position, for
+  `fixpt check`, rather than giving it a text with the `import`s written
+  in: a text changed so moves every place after it.
+- **It ends what is declared ahead.** The Rust checker can make it an
+  `import` only once `m` is defined, after the types are declared ahead;
+  so both read a type after it in order. The FX-26 one could have
+  declared its types ahead too, the driver having told it; the two would
+  then disagree.
+- **A module's name only**, as `import` takes: `(include (load-module …))`
+  would need a hidden binding of its own.
+- **A REPL's lines for each definition** (`run_each`), not the last only.
+
+## `restrict` (2026-10-27)
+
+The user named it; the semantics are the research note's. Mine:
+
+- **A type form**, `(restrict T name …)`, not one on a module value: where
+  it is wanted is a parameter's type or a `define-type`; a module is
+  restricted by `(the (restrict T …) m)`.
+- **The unnamed abstract type marked `%hidden:t`** in the binder's name,
+  and paired by its name without the mark, rather than a module type with
+  a place of its own for unnamed binders: no change to module types'
+  shape in either checker.
+- **`hide`'s refusal kept**: lifting it is the user's decision of
+  2026-10-09 to revisit, not part of this.
+
+## Names and frames for `gdb` and `lldb` (2026-10-27)
+
+The user: "Yeah do 1, 2, and 3" (names, lines, values). Names first.
+- **ELF objects, Linux x86_64 only**: the machine at hand; Mach-O for
+  macOS left (TODO §26).
+- **Frames read from the bytes, not told by the compilers**: one analysis
+  for the Rust compiler's code, the FX-26 compiler's (byte-for-byte the
+  same) and the hand-written stubs, with no change to either compiler.
+- **Frames lazily, on a debugger's breakpoint**: made eagerly they cost
+  7% of stage 0 even after a structured decoder took them from 50%; the
+  default costs 0.7%. The price: a debugger attached to a running loop
+  sees frames only once the program goes on to a time slice.
+- **On by default**, `FIXPT_JIT_DEBUG` to change it: a debugger is most
+  wanted where nobody planned for it.
+
+## Allocation in line natively, for Heist (2026-10-27)
+
+- **The heap's too, not only the region's**: the benchmark and s7st make
+  references and arrays at a region variable, which allocates in the heap
+  (`%make-box`, `%make-bloblet-filled`); the region primitives the request
+  named would not have changed its numbers. Both are done.
+- **16 fields in line**, a loop storing them: s7st's frames are under 8;
+  the loop keeps the code short for every length.
+- **arm64 left** (TODO §136): untestable here, and a mistake there would
+  corrupt the heap.
