@@ -82,6 +82,58 @@ pub struct Defining {
     pub broken: Vec<(Vec<Sym>, String)>,
 }
 
+/// What [`Checker::keep`] saves.
+struct Kept {
+    env: usize,
+    dscope: usize,
+    shared: (std::collections::HashMap<String, Sym>, std::collections::HashSet<Sym>),
+    defs: Option<(Vec<Definition>, Vec<(Vec<Sym>, Vec<Sym>)>)>,
+    defs_len: (usize, usize),
+    hoisted: usize,
+    files_read: u32,
+    mark: crate::ast::ArenaMark,
+    lens: [usize; 24],
+    scoped: (u32, usize, usize, usize, usize),
+    hidden: Option<((usize, usize), (usize, usize))>,
+}
+
+/// Every field of the checker, placed: so that a field added does not
+/// compile until it is said whether a check thrown away or refused must
+/// put it back (`Checker::keep`), for a check that changes it and leaves
+/// it changed is seen by the next (`docs/research/speculation.md`).
+#[allow(dead_code)]
+fn every_field_placed(c: &Checker) {
+    let Checker {
+        // Put back by `keep` and `put_back`.
+        env: _, dscope: _, lifetimes: _, freezing: _, recursive: _, closed_named: _, expanding: _, knots: _, spin_why: _,
+        generatives: _, transparent: _, inside: _, conversions: _, lemmas: _, pending_lemma: _, certified: _,
+        certified_nats: _, certified_lengths: _, narrowed: _, path_narrowed: _, closure_depth: _, pending_unions: _,
+        checked_call: _, skolems: _, to_end_sizes: _, module_vars: _, abstract_funs: _, effect_selects: _,
+        with_effect_fallback: _, subst_keep: _, select_map: _, param_map: _, size_facts: _, operator_at: _,
+        hidden: _, shared_loads: _, loading: _, include_scope: _, with_depth: _, shared_globals: _, hoisted: _,
+        loaded: _, in_built_in: _, load_sites: _, files_read: _, ahead: _, ahead_filled: _, hazard_modules: _,
+        hazard_items: _, broken: _, defs: _, outdated: _, poly_chain: _, inst_for: _,
+        // Put back by `truncate_env`, with the environment.
+        known: _, global_slots: _, fixed_slots: _,
+        // The arena, reset by `scratch` (a refused check's ids are left
+        // unused); the interner, by `scratch`'s caller; the facts, forgotten
+        // by `scratch`; and what remembers them, cleared there.
+        arena: _, interner: _, facts: _, regions_memo: _, regions_open: _, arrow_star_tys: _,
+        // Printing's, set and cleared around each print.
+        print_names: _, print_expanded: _, print_cycles: _, show_marks: _,
+        // Set around a single unification or check, and put back there.
+        unify_exact: _, unify_upper: _, arrow_star: _, holes: _, hole_hint: _,
+        // A count of regions made, which only grows: a name made once is
+        // never made again, put back or not.
+        fresh_regions: _,
+        // The standard environment, and the session's settings: no check
+        // changes them.
+        base: _, void: _, int: _, bool_: _, string: _, unit: _, char_: _, f64_: _, symbol: _, conv_default: _,
+        standard_len: _, standard_dscope: _, base_dir: _, masking: _, defer_reruns: _, syscalls: _,
+        globals_effects: _, record_operands: _, record_types: _,
+    } = c;
+}
+
 /// The effect `->*` finds for `name`, from its body's `latent`: with `spin`
 /// if it reads `name` itself, as a procedure that may reach itself through
 /// a global must say (`no_reaching_itself`).
@@ -109,7 +161,93 @@ impl Checker {
     /// one that uses those) is checked again, in order: each that checks is
     /// defined again, by the same rule; each that does not is broken. To
     /// keep a value as it was, bind it: `(define d (let ((g g)) …))`.
+    ///
+    /// A form refused leaves nothing behind: not the files it loaded for
+    /// the first time, which another try would take as loaded, with their
+    /// hidden globals never made (`put_back`).
     pub fn top_defining(&mut self, form: &Syntax) -> R<Defining> {
+        let kept = self.keep(false);
+        let r = match self.include_forms(form) {
+            Ok(Some(forms)) => self.top_defining_each(&forms),
+            Ok(None) => self.top_defining_kept(form),
+            Err(e) => Err(e),
+        };
+        if r.is_err() {
+            self.put_back(kept);
+        }
+        r
+    }
+
+    /// `top_defining` of each of `forms`, in order, as one.
+    fn top_defining_each(&mut self, forms: &[Syntax]) -> R<Defining> {
+        let mut all = Defining { run: Vec::new(), hoisted: Vec::new(), broken: Vec::new() };
+        for f in forms {
+            let d = self.top_defining_kept(f)?;
+            all.run.extend(d.run);
+            all.hoisted.extend(d.hoisted);
+            all.broken.extend(d.broken);
+        }
+        Ok(all)
+    }
+
+    /// A top-level `(include m)`, `m` a module bound here: what `m` gives,
+    /// defined here by name, as `(import m x … (type t …) (effect e …))` of
+    /// every name its type has would (the user's, 2026-10-27, Heist's
+    /// problem F). The module's names are known only from its type, so it is
+    /// made an `import` here, where that is known: for a program run, the
+    /// forms it is made are what the front end written in FX-26 is given
+    /// (`Fx26Session::run`). `None` if `form` is no `include`.
+    pub fn include_forms(&mut self, form: &Syntax) -> R<Option<Vec<Syntax>>> {
+        let Some((name, vals, types, effects)) = self.include_names(form)? else { return Ok(None) };
+        let span = form.span;
+        let sym = |s: Sym| Syntax::symbol(span, s);
+        let word = |c: &mut Self, w: &str| Syntax::symbol(span, c.interner.intern(w));
+        let mut import = vec![word(self, "import"), sym(name)];
+        import.extend(vals.into_iter().map(sym));
+        for (group, names) in [("type", types), ("effect", effects)] {
+            if !names.is_empty() {
+                let mut g = vec![word(self, group)];
+                g.extend(names.into_iter().map(sym));
+                import.push(Syntax::list(span, g));
+            }
+        }
+        let mut out = Vec::new();
+        self.expand_import(&Syntax::list(span, import), &mut out)?;
+        Ok(Some(out))
+    }
+
+    /// A top-level `(include m)`'s module, and the names of what it gives:
+    /// its values, types and effects, none hidden. `None` if `form` is no
+    /// `include`.
+    #[allow(clippy::type_complexity)]
+    pub fn include_names(&mut self, form: &Syntax) -> R<Option<(Sym, Vec<Sym>, Vec<Sym>, Vec<Sym>)>> {
+        let Some(items) = form.as_proper_list() else { return Ok(None) };
+        if !items.first().and_then(|h| h.as_symbol()).is_some_and(|h| self.interner.name(h) == "include") {
+            return Ok(None);
+        }
+        let usage = "a top-level `include` names a module bound here: `(include m)`";
+        let [_, m] = items else { return Err(FxError::at(form.span, usage)) };
+        let Some(name) = m.as_symbol() else { return Err(FxError::at(m.span, usage)) };
+        let Some(t) = self.lookup(name) else {
+            return Err(FxError::at(m.span, format!("unbound variable `{}`", self.interner.name(name))));
+        };
+        let crate::ast::Ty::Module { abs, descs, vals } = self.arena.get(self.arena.resolve(t)).clone() else {
+            return Err(FxError::at(m.span, format!("`include` includes a module, and `{}` is a {}", self.interner.name(name), self.show_ty(t))));
+        };
+        let shown = |c: &Self, n: &Sym| !c.interner.name(*n).starts_with('%');
+        let mut types: Vec<Sym> = abs.iter().map(|(n, _)| *n).filter(|n| shown(self, n)).collect();
+        let mut effects = Vec::new();
+        for (n, d) in &descs {
+            if !shown(self, n) {
+                continue;
+            }
+            if self.desc_effect(*d).is_some() { effects.push(*n) } else { types.push(*n) }
+        }
+        let vals = vals.iter().map(|(n, _)| *n).filter(|n| shown(self, n)).collect();
+        Ok(Some((name, vals, types, effects)))
+    }
+
+    fn top_defining_kept(&mut self, form: &Syntax) -> R<Defining> {
         let names = self.defined_names(form);
         let olds: Vec<(Sym, TyId)> = names.iter().filter_map(|n| Some((*n, self.global_type(*n)?))).collect();
         let users = if olds.is_empty() || self.defer_reruns { Vec::new() } else { self.users_of(&names) };
@@ -567,6 +705,8 @@ impl Checker {
 
     /// Check one top-level form, keeping what it defines.
     pub fn top(&mut self, form: &Syntax) -> R<Top> {
+        // The files its types name, loaded first (`type_loads`).
+        self.type_loads(form)?;
         let items = form.as_proper_list().unwrap_or(&[]);
         let head = items.first().and_then(|h| h.as_symbol()).map(|h| self.interner.name(h));
         match head {
@@ -1027,7 +1167,7 @@ impl Checker {
     /// TYPE)`, by name, in order, each as often as defined.
     fn type_abbreviations(&self, forms: &[Syntax]) -> Vec<(Sym, Span)> {
         let mut out = Vec::new();
-        for f in forms {
+        for f in forms.iter().take_while(|f| !self.is_include(f)) {
             let items = f.as_proper_list().unwrap_or(&[]);
             // A description function, `(define-type f (dlambda …))`, is no
             // type to declare: it is read where it is defined.
@@ -1036,6 +1176,7 @@ impl Checker {
                 && h.as_symbol().is_some_and(|h| self.interner.name(h) == "define-type")
                 && let Some(n) = n.as_symbol()
                 && !dlambda(d)
+                && !self.names_a_file(d)
             {
                 out.push((n, f.span));
             }
@@ -1097,12 +1238,39 @@ impl Checker {
         None
     }
 
+    /// Whether type `s` is read in order, not ahead: it names a file,
+    /// `(load-moduleof "file" …)` or `(load-input-moduleof "file" …)`, or
+    /// restricts a module type, `(restrict T …)`, which must be known first.
+    fn names_a_file(&self, s: &Syntax) -> bool {
+        let Some(items) = s.as_proper_list() else { return false };
+        match items.first().and_then(|h| h.as_symbol()).map(|h| self.interner.name(h)) {
+            Some("quote" | "quasiquote") => false,
+            Some("load-moduleof" | "load-input-moduleof" | "restrict") => true,
+            _ => items.iter().any(|x| self.names_a_file(x)),
+        }
+    }
+
+    /// Whether `f` is a top-level `(include …)`.
+    fn is_include(&self, f: &Syntax) -> bool {
+        f.as_proper_list().and_then(|l| l.first()?.as_symbol()).is_some_and(|h| self.interner.name(h) == "include")
+    }
+
     fn declare_each(&mut self, forms: &[Syntax]) -> R<Vec<bool>> {
         let mut done = Vec::new();
+        // A top-level `include` ends what is declared ahead: the types it
+        // gives are known only once it is checked, in order, so a type or
+        // effect defined after it is read in order too (as the FX-26
+        // checker's `k-ahead-stop`).
+        let mut included = false;
         for f in forms {
+            included |= self.is_include(f);
             let items = f.as_proper_list().unwrap_or(&[]);
             let head = items.first().and_then(|h| h.as_symbol()).map(|h| self.interner.name(h).to_string());
             match (head.as_deref(), items) {
+                _ if included => done.push(false),
+                // A type that names a file (`load-moduleof`) is read in
+                // order, as a definition is, its file loaded first.
+                (Some("define-type"), [_, _, d]) if self.names_a_file(d) => done.push(false),
                 (Some("define-type" | "define-generative" | "define-effect" | "define-convention"), _) => {
                     self.top(f)?;
                     done.push(true);
@@ -1208,25 +1376,124 @@ impl Checker {
     /// first time (`parse_load`). The caller restores the interner, so a
     /// load kept would name a hidden global by a symbol gone.
     pub fn scratch<T>(&mut self, f: impl FnOnce(&mut Checker) -> T) -> T {
-        let (env, dscope, arena) = (self.env.len(), self.dscope.len(), self.arena.mark());
-        let shared = (self.shared_loads.clone(), self.shared_globals.clone());
-        let (defs, outdated) = (self.defs.clone(), self.outdated.clone());
-        let (hoisted, files_read) = (self.hoisted.len(), self.files_read);
+        let (kept, arena) = (self.keep(true), self.arena.mark());
         let out = f(self);
-        self.truncate_env(env);
-        self.dscope.truncate(dscope);
+        self.put_back(kept);
         self.facts.forget_from(arena.exps());
         // A type read from `->*` goes with the rest: its id may be another's.
         self.arrow_star_tys.retain(|t| arena.has_ty(*t));
         self.arena.reset(arena);
         self.regions_memo.borrow_mut().clear();
-        (self.shared_loads, self.shared_globals) = shared;
-        (self.defs, self.outdated) = (defs, outdated);
-        self.hoisted.truncate(hoisted);
-        self.files_read = files_read;
-        self.load_sites.retain(|f, _| f.0 <= files_read + 1000);
-        self.loaded.retain(|e, _| e.0 < arena.exps());
         out
+    }
+
+    /// What checking a form changes besides the arena, to put back
+    /// ([`put_back`](Self::put_back)) if it is thrown away or refused: the
+    /// environment and the description scope; the files loaded for the
+    /// first time (`parse_load`) and their hidden globals' definitions;
+    /// what the checker learns as it goes (generative types, effects
+    /// selected, conversions, lemmas, facts proved), which a check that
+    /// leaves nothing must not leave either; and the state set around what
+    /// it checks, which a refusal can leave set. Every field is placed in
+    /// `every_field_placed`. The definitions recorded are kept whole only
+    /// if `whole`: a check that succeeds (one thrown away) may redefine,
+    /// which replaces a definition; one refused only adds its loads'.
+    fn keep(&self, whole: bool) -> Kept {
+        Kept {
+            env: self.env.len(),
+            dscope: self.dscope.len(),
+            shared: (self.shared_loads.clone(), self.shared_globals.clone()),
+            defs: whole.then(|| (self.defs.clone(), self.outdated.clone())),
+            defs_len: (self.defs.len(), self.outdated.len()),
+            hoisted: self.hoisted.len(),
+            files_read: self.files_read,
+            mark: self.arena.mark(),
+            lens: [
+                self.lifetimes.len(),
+                self.freezing.len(),
+                self.recursive.len(),
+                self.knots.len(),
+                self.spin_why.len(),
+                self.generatives.len(),
+                self.transparent.len(),
+                self.inside.len(),
+                self.conversions.len(),
+                self.lemmas.len(),
+                self.certified.len(),
+                self.certified_nats.len(),
+                self.certified_lengths.len(),
+                self.narrowed.len(),
+                self.path_narrowed.len(),
+                self.pending_unions.len(),
+                self.skolems.len(),
+                self.effect_selects.len(),
+                self.size_facts.len(),
+                self.ahead.len(),
+                self.ahead_filled.len(),
+                self.hazard_modules.len(),
+                self.hazard_items.len(),
+                self.loading.len(),
+            ],
+            scoped: (self.expanding, self.closure_depth, self.include_scope, self.with_depth, self.in_built_in),
+            hidden: self.hidden,
+        }
+    }
+
+    fn put_back(&mut self, k: Kept) {
+        self.truncate_env(k.env);
+        self.dscope.truncate(k.dscope);
+        self.broken.retain(|_, (i, _)| *i < k.env);
+        (self.shared_loads, self.shared_globals) = k.shared;
+        match k.defs {
+            Some((defs, outdated)) => (self.defs, self.outdated) = (defs, outdated),
+            None => {
+                self.defs.truncate(k.defs_len.0);
+                self.outdated.truncate(k.defs_len.1);
+            }
+        }
+        self.hoisted.truncate(k.hoisted);
+        self.files_read = k.files_read;
+        self.load_sites.retain(|f, _| f.0 <= k.files_read + 1000);
+        let m = k.mark;
+        self.loaded.retain(|e, _| m.has_exp(*e));
+        let [lifetimes, freezing, recursive, knots, spin_why, generatives, transparent, inside, conversions, lemmas, certified, certified_nats, certified_lengths, narrowed, path_narrowed, pending_unions, skolems, effect_selects, size_facts, ahead, ahead_filled, hazard_modules, hazard_items, loading] = k.lens;
+        self.lifetimes.truncate(lifetimes);
+        self.freezing.truncate(freezing);
+        self.recursive.truncate(recursive);
+        self.knots.truncate(knots);
+        self.spin_why.truncate(spin_why);
+        self.generatives.truncate(generatives);
+        self.transparent.truncate(transparent);
+        self.inside.truncate(inside);
+        self.conversions.truncate(conversions);
+        self.lemmas.truncate(lemmas);
+        self.certified.truncate(certified);
+        self.certified_nats.truncate(certified_nats);
+        self.certified_lengths.truncate(certified_lengths);
+        self.narrowed.truncate(narrowed);
+        self.path_narrowed.truncate(path_narrowed);
+        self.pending_unions.truncate(pending_unions);
+        self.skolems.truncate(skolems);
+        self.effect_selects.truncate(effect_selects);
+        self.size_facts.truncate(size_facts);
+        self.ahead.truncate(ahead);
+        self.ahead_filled.truncate(ahead_filled);
+        self.hazard_modules.truncate(hazard_modules);
+        self.hazard_items.truncate(hazard_items);
+        self.loading.truncate(loading);
+        // What is keyed by, or holds, something made since.
+        self.closed_named.retain(|t| m.has_ty(*t));
+        self.to_end_sizes.retain(|v| m.has_dvar(*v));
+        self.module_vars.retain(|v| m.has_dvar(*v));
+        self.abstract_funs.retain(|v| m.has_dvar(*v));
+        self.with_effect_fallback.retain(|v, _| m.has_dvar(*v));
+        self.select_map.retain(|_, t| m.has_ty(*t));
+        self.param_map.retain(|_, t| m.has_ty(*t));
+        self.poly_chain.retain(|e, _| m.has_exp(*e));
+        (self.expanding, self.closure_depth, self.include_scope, self.with_depth, self.in_built_in) = k.scoped;
+        self.hidden = k.hidden;
+        self.pending_lemma = None;
+        (self.checked_call, self.operator_at, self.inst_for, self.subst_keep) = (None, None, None, None);
     }
 
     /// What the argument at `index` (from 1) of the application written
