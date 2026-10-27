@@ -23,11 +23,11 @@ reads or writes ports, or opens or closes them, is not."
                (string=? name "current-jiffy") (string=? name "current-second"))))))
 (define* s7-prim! (subr s7-eff (string int int s7-fn) unit)
   (lambda (name min max f)
-    (s7-define-global! name (sum prim (product (name name) (min min) (max max) (op (sum fn f)) (pure (s7-pure-name? name)))))))
+    (s7-define-global! name (sum prim (product (name name) (min min) (max max) (op (sum fn f)) (pure (s7-pure-name? name)) (fast (sum none #u)))))))
 "An operation of the machine's own, numbered (machine.fx's `s7-control`)."
 (define* s7-ctl! (subr s7-eff (string int int int) unit)
   (lambda (name min max op)
-    (s7-define-global! name (sum prim (product (name name) (min min) (max max) (op (sum ctl op)) (pure #f))))))
+    (s7-define-global! name (sum prim (product (name name) (min min) (max max) (op (sum ctl op)) (pure #f) (fast (sum none #u)))))))
 "Global `new` defined as global `old` is."
 (define* s7-alias! (subr s7-eff (string string) unit)
   (lambda (new old) (s7-define-global! new (get (extract (s7-global-cell (string->symbol old)) value)))))
@@ -599,7 +599,7 @@ or an error."
 "A procedure written in FX-26, made at run time (a record's constructor,
 predicate, accessor or modifier)."
 (define* s7-made-prim (subr spin (string int int s7-fn) s7-value)
-  (lambda (name min max f) (sum prim (product (name name) (min min) (max max) (op (sum fn f)) (pure (s7-pure-name? name))))))
+  (lambda (name min max f) (sum prim (product (name name) (min min) (max max) (op (sum fn f)) (pure (s7-pure-name? name)) (fast (sum none #u))))))
 (define* s7-index-of (subr spin (symbol s7-symbols int) int)
   (lambda (s l i) (cond ((null? l) -1) ((string=? (s7-symbol-name (car l)) (s7-symbol-name s)) i) (else (s7-index-of s (cdr l) (+ i 1))))))
 "Whether `v` is a record of type `t`."
@@ -1381,6 +1381,55 @@ and when what runs ends."
       (s7-ctl! "exit" 0 1 s7-op-exit)
       (s7-alias! "emergency-exit" "exit"))))
 
+;;; ------------------------------------------------------------ fast entries
+
+"Built-in `name` given `fast` (value.fx's `s7-prim`): the same for one or
+two arguments, called by a quick evaluation with no list made."
+(define* s7-fast! (subr s7-eff (string s7-fast) unit)
+  (lambda (name fast)
+    (let ((cell (extract (s7-global-cell (string->symbol name)) value)))
+      (tagcase (get cell)
+        (prim p (set cell (sum prim (product (name (extract p name)) (min (extract p min)) (max (extract p max))
+                                             (op (extract p op)) (pure (extract p pure)) (fast fast)))))
+        (else y #u)))))
+"Two ints' `iop`; else undefined."
+(define* s7-fast-int2 (subr pure ((subr pure (int int) int)) (subr (read @globals) (s7-value s7-value) s7-value))
+  (lambda (iop)
+    (lambda ((a s7-value) (b s7-value))
+      (tagcase a (int i (tagcase b (int j (sum int (iop i j))) (else y s7-undefined))) (else y s7-undefined)))))
+"Whether two ints stand in `iop`; else undefined."
+(define* s7-fast-int2? (subr pure ((subr pure (int int) bool)) (subr (read @globals) (s7-value s7-value) s7-value))
+  (lambda (iop)
+    (lambda ((a s7-value) (b s7-value))
+      (tagcase a (int i (tagcase b (int j (if (iop i j) s7-true s7-false)) (else y s7-undefined))) (else y s7-undefined)))))
+(define* s7-truth (subr (read @globals) (bool) s7-value) (lambda (b) (if b s7-true s7-false)))
+(define* s7-init-fast! (subr s7-eff () unit)
+  (lambda ()
+    (begin
+      (s7-fast! "+" (sum f2 (s7-fast-int2 +)))
+      (s7-fast! "-" (sum f2 (s7-fast-int2 -)))
+      (s7-fast! "*" (sum f2 (s7-fast-int2 *)))
+      (s7-fast! "=" (sum f2 (s7-fast-int2? =)))
+      (s7-fast! "<" (sum f2 (s7-fast-int2? <)))
+      (s7-fast! ">" (sum f2 (s7-fast-int2? >)))
+      (s7-fast! "<=" (sum f2 (s7-fast-int2? <=)))
+      (s7-fast! ">=" (sum f2 (s7-fast-int2? >=)))
+      (s7-fast! "eq?" (sum f2 (lambda ((a s7-value) (b s7-value)) (s7-truth (s7-eqv? a b)))))
+      (s7-fast! "eqv?" (sum f2 (lambda ((a s7-value) (b s7-value)) (s7-truth (s7-eqv? a b)))))
+      (s7-fast! "cons" (sum f2 (lambda ((a s7-value) (b s7-value)) (s7-cons a b))))
+      (s7-fast! "vector-ref" (sum f2 (lambda ((a s7-value) (b s7-value))
+                                       (tagcase a
+                                         (vec v (tagcase b (int i (if (and (>= i 0) (< i (array-length v))) (array-ref v i) s7-undefined))
+                                                  (else y s7-undefined)))
+                                         (else y s7-undefined)))))
+      (s7-fast! "car" (sum f1 (lambda ((a s7-value)) (tagcase a (pair p (get (extract p car))) (else y s7-undefined)))))
+      (s7-fast! "cdr" (sum f1 (lambda ((a s7-value)) (tagcase a (pair p (get (extract p cdr))) (else y s7-undefined)))))
+      (s7-fast! "pair?" (sum f1 (lambda ((a s7-value)) (s7-truth (s7-pair? a)))))
+      (s7-fast! "null?" (sum f1 (lambda ((a s7-value)) (s7-truth (s7-null? a)))))
+      (s7-fast! "not" (sum f1 (lambda ((a s7-value)) (tagcase a (bool b (s7-truth (not b))) (else y s7-false)))))
+      (s7-fast! "zero?" (sum f1 (lambda ((a s7-value)) (tagcase a (int i (s7-truth (= i 0))) (else y s7-undefined)))))
+      (s7-fast! "vector-length" (sum f1 (lambda ((a s7-value)) (tagcase a (vec v (sum int (array-length v))) (else y s7-undefined))))))))
+
 "Every procedure written in FX-26 defined; and those the expander's
 rewritten forms call, by names no program binds (` cons`, ` memv`, …)."
 (define* s7-init-prims! (subr s7-eff () unit)
@@ -1393,6 +1442,7 @@ rewritten forms call, by names no program binds (` cons`, ` memv`, …)."
       (s7-init-records!)
       (s7-init-ports!)
       (s7-init-control!)
+      (s7-init-fast!)
       (letrec ((hidden (subr s7-eff (s7-strings) unit)
                  (lambda (l) (if (null? l) #u (begin (s7-alias! (string-append " " (car l)) (car l)) (hidden (cdr l)))))))
         (hidden (list "cons" "append" "list->vector" "memv" "list" "list-ref" "list-tail" "call-with-values"))))))

@@ -77,10 +77,14 @@ body compiled; where it was made; and its name, which is also its identity."
 (define-type s7-clause (productof (info s7-lambda) (code s7-code)))
 "A procedure written in FX-26: a function of its arguments, or an operation
 of the machine's own (`call/cc`, `apply`, …), numbered."
-(define-type s7-prim (productof (name string) (min int) (max int) (op s7-op) (pure bool)))   ; max -1: any
+(define-type s7-prim (productof (name string) (min int) (max int) (op s7-op) (pure bool) (fast s7-fast)))   ; max -1: any
 ;; `pure`: it changes nothing another could see (no `!`, no I/O), so a quick
 ;; evaluation may call it, and call it again.
+;; `fast`: for a pure one, the same of one or two arguments, called with no
+;; list made; undefined where it cannot say (an error, a case not covered),
+;; and `op` then asked.
 (define-type s7-op (sumof (fn (subr s7-eff (s7-values) s7-out)) (ctl int)))
+(define-type s7-fast (sumof (none unit) (f1 (subr s7-eff (s7-value) s7-value)) (f2 (subr s7-eff (s7-value s7-value) s7-value))))
 "What a procedure written in FX-26 gives: a value, or a condition raised."
 (define-type s7-out (sumof (ok s7-value) (raise s7-value)))
 (define-type s7-cont (productof (k s7-k) (dyn s7-dyn) (id (ref unit @sc))))
@@ -174,12 +178,13 @@ the macros bound in it (`let-syntax`, internal `define-syntax`)."
 "Compiled code (machine.fx's `s7-compile`): what evaluating a node does,
 given its environment, continuation and dynamic state -- the machine's next
 state. And, for a node that allows it, a quick evaluation: its value got
-with no step of the machine's (a value, a condition raised, or `slow`: it
-needs steps, or has an error to report). A quick evaluation that is slow has
-done nothing another could see, so the node may then be run as code."
+with no step of the machine's, or undefined if it cannot be (it needs
+steps, or has an error to report). A quick evaluation that gives undefined
+has done nothing another could see, so the node may then be run as code,
+which reports the error if there is one. (No wrapper is made for a value:
+in Fixpt every sum is an object allocated.)"
 (define-type s7-code (subr s7-eff (s7-env s7-k s7-dyn) s7-state))
-(define-type s7-qv (sumof (val s7-value) (raise s7-value) (slow unit)))
-(define-type s7-quick (subr s7-eff (s7-env) s7-qv))
+(define-type s7-quick (subr s7-eff (s7-env) s7-value))
 (define-type s7-compiled (productof (code s7-code) (quick (listof s7-quick acyclic))))   ; quick: none, or one
 (define-type s7-compileds (listof s7-compiled acyclic))
 "An environment: frames of slots, innermost first."

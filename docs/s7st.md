@@ -141,13 +141,14 @@ Most of it:
 | process-context | 2 passed                   |
 | read            | 44 passed                  |
 | repl            | 10 passed                  |
-| time            | 2 passed, or 1 of 2: see below |
+| time            | 1 of 2: see below          |
 | write           | 63 passed                  |
 | complex         | not run: no complex numbers |
 | inexact         | not run: its tests write complex literals (`-1.0+0.0i`) unconditionally |
 
-`time`'s second test allows 0.1 s of slack in a busy loop; s7st sometimes
-overshoots it.
+`time`'s second test counts down a million between readings of the clock,
+and allows 0.1 s of slack. So it needs 10 million loop iterations a
+second, and s7st does 8 million ("Speed").
 
 Getting there fixed, among other things:
 - datum labels, read and written, with `write` marking cycles and
@@ -189,26 +190,49 @@ once:
   returns the machine's next state.
 - **Its quick evaluation,** where the node allows one, gets the node's
   value with no machine step: constants, variables, lambdas, `if` and
-  sequences of such, and calls of pure built-ins on such.
+  sequences of such, and calls of pure built-ins on such. It returns the
+  value itself, or undefined if it cannot finish. No wrapper is made,
+  since in Fixpt every sum is an object allocated.
 
 A call of a closure with one clause, given the right number of quick
 arguments, fills the new frame's slots directly. A closure's body still
 starts with a step of its own, so the machine still runs in slices and
 can be interrupted. A quick evaluation that cannot finish (a variable not
-yet defined, an operator that turns out not to be a built-in) has done
-nothing another could see, since it calls only pure built-ins. The node's
-code then runs it the slow way.
+yet defined, an operator that turns out not to be a built-in, an error)
+has done nothing another could see, since it calls only pure built-ins.
+The node's code then runs it the slow way, and reports the error if
+there is one.
 
-On this machine, measured in the program itself with `current-jiffy`,
-before compiling and after:
+A call gets a quick evaluation only if its operator is a global that
+holds a pure built-in when the call is compiled. Otherwise a closure's
+call would be evaluated twice: tried quickly, given up, then done.
 
-| benchmark                     | evaluating nodes | compiled |
-| ----------------------------- | ---------------- | -------- |
-| `(fib 25)`                    | 242 ms           | 100 ms   |
-| `(tak 18 12 6)`               | 69 ms            | 26 ms    |
-| a named-`let` loop, 1,000,000 | 1209 ms          | 333 ms   |
-| `map` over 200,000            | 731 ms           | 455 ms   |
-| `do` over a vector, 500,000   | 729 ms           | 221 ms   |
+**Fast entries.** The commonest pure built-ins (`+ - * = < > <= >=`,
+`eq?`, `eqv?`, `cons`, `car`, `cdr`, `pair?`, `null?`, `not`, `zero?`,
+`vector-ref`, `vector-length`) also have an entry for one or two
+arguments (`s7-prim`'s `fast`, `prims.fx`'s `s7-init-fast!`). It is
+called with no list made, and answers undefined for a case it does not
+cover, such as an error or a non-integer. Variables at depth 0 and 1 are
+read with no loop (`s7-local-getter`).
+
+On this machine, measured in the program itself with `current-jiffy`:
+
+| benchmark                     | evaluating nodes | compiled | quick values unwrapped, fast entries |
+| ----------------------------- | ---------------- | -------- | ------------------------------------ |
+| `(fib 25)`                    | 242 ms           | 100 ms   | 65 ms                                |
+| `(tak 18 12 6)`               | 69 ms            | 26 ms    | 15 ms                                |
+| a named-`let` loop, 1,000,000 | 1209 ms          | 333 ms   | 196 ms                               |
+| `map` over 200,000            | 731 ms           | 455 ms   | 398 ms                               |
+| `do` over a vector, 500,000   | 729 ms           | 221 ms   | 119 ms                               |
+
+**Where the time goes now** (`FIXPT_PERF_MAP=1 perf record`, Fixpt's
+`docs/performance.md`): mostly allocation in region `@sc`. A frame is a
+`make-array` and a pair is two `new`s. In the default machine's native
+code, each is a call-out to Rust, 30–50 ns, against ~1.5 ns for an
+immutable sum. Heist has asked Fixpt to do them inline
+(`docs/requests/fixpt-region-alloc-inline.md`). Until then, Larceny's
+`(scheme time)` test fails one case: it needs 10 million loop iterations
+a second, and s7st does 8 million.
 
 `(fib 25)` is 250,000 calls, so about 2.5 million procedure calls a second.
 The same `fib` written in FX-26, which Fixpt compiles to native code, is
@@ -297,7 +321,10 @@ What remains, as Yank's analysis has it:
 - `load-module` is resolved when a program is checked, not when it runs.
 - The only code a program can make at run time is machine code, through
   `seal-code` and `native-procedure` (`fixpt/docs/fx26.md`, "Code a
-  program makes"). That works only on arm64, and this machine is x86_64.
+  program makes"). Fixpt's doc says this works only on arm64, but that is
+  out of date: on this x86_64 machine `native-code?` is true, and
+  `fixpt/crates/fixpt-fx26/tests/programs/made-code-x86_64/leaves.fx`'s
+  hand-assembled adder runs (checked 2026-10-27).
 
 So s7st can't compile Scheme to FX-26 and run the result in the same
 process. What it can do:
@@ -309,7 +336,13 @@ process. What it can do:
    dynamic typing becomes a union type, as `datum` is. `call/cc` needs a
    CPS translation or FX-26's one-shot continuations, which are enough for
    escapes, generators and `guard`.
-3. **On arm64, machine code** through `seal-code`, once a back end exists.
+3. **Machine code** through `seal-code`, once a back end exists: x86_64 and
+   arm64. It must keep the native convention (`define-convention`,
+   `fixpt/docs/research/declared-conventions.md`): frames, the collector's
+   maps, the write barrier. Fixpt's own back end written in FX-26
+   (`native-x64.fx`, the `fx-cells-fxjit-cellcc` machine) shows what an
+   FX-26 program must do to emit such code, and has an assembler to start
+   from.
 
 The core is the input for each of these, and the expander is shared.
 
