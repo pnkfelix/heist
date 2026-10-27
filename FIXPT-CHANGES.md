@@ -8,9 +8,13 @@ do it, and what it cost. Kayak will need the same changes later
 
 ## Base
 
-- Fixpt `main` at 991ec476 (2026-10-26), pulled by Heist's cea14dba
-  (squash 83dbcee8). Heist has no edits of its own on it.
-- Before: Fixpt 1e4d4ed6 (2026-10-25), added by Heist's 86eff712.
+- Fixpt `main` at 8793b0cb (2026-10-27), pulled from GitHub by Heist's
+  550e2fcb (squash c2cfe8cf): queries by type and effect (`,query`,
+  `fixpt query`, `around CONTEXT`) and `consumes T`. Heist has no edits
+  of its own on it.
+- Before: Fixpt 991ec476 (2026-10-26), pulled by Heist's cea14dba
+  (squash 83dbcee8), with F1–F4 upstream.
+- Before that: Fixpt 1e4d4ed6 (2026-10-25), added by Heist's 86eff712.
 
 ## Upstream
 
@@ -37,10 +41,11 @@ Still open in Fixpt's `TODO.md`:
 
 ## Reading and moving the base
 
-- Our changes: `git diff cea14dba HEAD -- fixpt/`. After a pull, use the
+- Our changes: `git diff 550e2fcb HEAD -- fixpt/`. After a pull, use the
   pull's merge commit instead. (Not the `Squashed 'fixpt/' …` commit
   itself: its tree is Fixpt's, not under `fixpt/`.)
-- Taking upstream: `git subtree pull --prefix=fixpt ~/Dev/LangPlay/fixpt main --squash`.
+- Taking upstream: `git subtree pull --prefix=fixpt ~/Dev/LangPlay/fixpt main --squash`,
+  or `git@github.com:pnkfelix/fixpt.git` in place of the local path.
   Upstream rebases its `main` at times; a squashed pull does not care.
 - Offering a change upstream: `git subtree split --prefix=fixpt` gives a
   branch of Fixpt's tree with our commits on it.
