@@ -81,22 +81,84 @@ they are simple; then the call made, or the first that is not evaluated."
                              (else (go (+ i 1) line start))))))
             (go 0 1 0))))))
 
-"Top-level form `x` expanded and run, the forms after it then, as `k-top`
-says; or, if it has syntax errors, the first raised."
-(define* s7-run-form (subr s7-eff (s7-value s7-values bool string s7-k s7-dyn) s7-state)
-  (lambda (x more echo text k dyn)
+"A condition: a syntax error, `message`."
+(define* s7-syntax-error (subr pure (string) s7-value)
+  (lambda (message) (sum errobj (product (kind 'syntax) (message message) (irritants s7-nil)))))
+
+"Library `name` (missing), loaded from its file, then the top-level forms
+`forms` run (in `ns`), the first of which wanted it; or why not."
+(define* s7-load-library-then (subr s7-eff (s7-value s7-values bool string s7-ns s7-k s7-dyn) s7-state)
+  (lambda (name forms echo text ns k dyn)
+    (let ((k2 (s7-push-k (sum k-top (product (forms forms) (echo echo) (text text) (ns ns))) k)))
+      (tagcase (s7-library-file name)
+        (none u (s7-raise-state (s7-syntax-error (string-append "no library named " (s7-library-name name)
+                                                                ", and no file " (s7-library-relative-file name) " where libraries are looked for"))
+                                #f k2 dyn))
+        (found f
+          (if (s7-member-string? (extract f path) (get s7-library-files))
+              (s7-raise-state (s7-syntax-error (string-append (extract f path) " does not define " (s7-library-name name))) #f k2 dyn)
+              (begin
+                (set s7-library-files (cons (extract f path) (get s7-library-files)))
+                (s7-add-library-directory! (extract f root))
+                (tagcase (s7-read-all (extract f text) (extract f path))
+                  (data fs (s7-return-state s7-unspecified
+                                            (s7-push-k (sum k-top (product (forms fs) (echo #f) (text (extract f text)) (ns s7-toplevel))) k2)
+                                            dyn))
+                  (stop r (s7-raise-state (sum errobj (product (kind 'read) (message (string-append "cannot read " (extract f path))) (irritants s7-nil)))
+                                          #f k2 dyn))))))))))
+
+"`(import set …)` at top level: the sets' names bound in `ns`; a library
+not defined loaded first."
+(define* s7-run-import (subr s7-eff (s7-value s7-values bool string s7-ns s7-k s7-dyn) s7-state)
+  (lambda (x more echo text ns k dyn)
+    (let ((k2 (s7-push-k (sum k-top (product (forms more) (echo echo) (text text) (ns ns))) k)))
+      (tagcase (s7-import-sets (s7-value->values (s7-cdr x)))
+        (bindings bs (begin (s7-bind-all! ns bs) (s7-return-state s7-unspecified k2 dyn)))
+        (plain u (s7-return-state s7-unspecified k2 dyn))
+        (missing name (s7-load-library-then name (cons x more) echo text ns k dyn))
+        (bad m (s7-raise-state (s7-syntax-error (string-append "import: " m)) #f k2 dyn))))))
+
+"`(define-library name decl …)`: a namespace made for it, what it imports
+bound there (a library not defined loaded first), it registered, and its
+body run there."
+(define* s7-run-library (subr s7-eff (s7-value s7-values bool string s7-ns s7-k s7-dyn) s7-state)
+  (lambda (x more echo text ns k dyn)
+    (let* ((k2 (s7-push-k (sum k-top (product (forms more) (echo echo) (text text) (ns ns))) k))
+           (name (s7-cadr x))
+           (decls (s7-library-decls (s7-value->values (s7-cddr x)))))
+      (tagcase (s7-import-sets (s7-decl-items decls "import"))
+        (missing m (s7-load-library-then m (cons x more) echo text ns k dyn))
+        (bad m (s7-raise-state (s7-syntax-error (string-append "define-library: " m)) #f k2 dyn))
+        (else imported
+          (let ((lib (s7-make-ns (s7-library-name name) 256 (list s7-builtins))))
+            (begin
+              (tagcase imported (bindings bs (s7-bind-all! lib bs)) (else y #u))
+              (s7-register-library! (product (name (s7-library-name name)) (ns lib) (exports (s7-exports-of (s7-decl-items decls "export")))))
+              (s7-return-state s7-unspecified
+                               (s7-push-k (sum k-top (product (forms (s7-library-body decls)) (echo #f) (text text) (ns lib))) k2)
+                               dyn))))))))
+
+"Top-level form `x` run in namespace `ns`, the forms after it then, as
+`k-top` says. An `import` or a `define-library` is done here; anything
+else is expanded and run, or, if it has syntax errors, the first raised."
+(define* s7-run-form (subr s7-eff (s7-value s7-values bool string s7-ns s7-k s7-dyn) s7-state)
+  (lambda (x more echo text ns k dyn)
     (begin
+      (set s7-current-ns ns)
       (set s7-syntax-errors nil)
-      (let* ((node (s7-expand-top x))
-             (errors (reverse (get s7-syntax-errors)))
-             (k2 (s7-push-k (sum k-top (product (forms more) (echo echo) (text text))) k)))
-        (if (pair? errors)
-            (s7-raise-state (sum errobj (product (kind 'syntax)
-                                                 (message (string-append (s7-where (extract (car errors) span) text)
-                                                                         (extract (car errors) message)))
-                                                 (irritants s7-nil)))
-                            #f k2 dyn)
-            (s7-eval-state node (sum top #u) k2 dyn))))))
+      (let ((kind (tagcase (s7-head-kind x nil) (b-special s s) (else y (string->symbol " none")))))
+        (cond
+          ((eq? kind 'import) (s7-run-import x more echo text ns k dyn))
+          ((eq? kind 'define-library) (s7-run-library x more echo text ns k dyn))
+          (else
+           (let* ((node (s7-expand-top x))
+                  (errors (reverse (get s7-syntax-errors)))
+                  (k2 (s7-push-k (sum k-top (product (forms more) (echo echo) (text text) (ns ns))) k)))
+             (if (pair? errors)
+                 (s7-raise-state (s7-syntax-error (string-append (s7-where (extract (car errors) span) text)
+                                                                 (extract (car errors) message)))
+                                 #f k2 dyn)
+                 (s7-eval-state node (sum top #u) k2 dyn)))))))))
 
 (define* s7-drop-winds (subr spin (s7-winds int) s7-winds)
   (lambda (l n) (if (or (<= n 0) (null? l)) l (s7-drop-winds (cdr l) (- n 1)))))
@@ -175,13 +237,13 @@ says; or, if it has syntax errors, the first raised."
                          (product (winds (extract dyn winds)) (handlers (cons a1 (extract dyn handlers))))))
         ((= op s7-op-raise) (s7-raise-state a1 #f k dyn))
         ((= op s7-op-raise-continuable) (s7-raise-state a1 #t k dyn))
-        ((= op s7-op-eval) (s7-run-form a1 nil #f "" k dyn))
+        ((= op s7-op-eval) (s7-run-form a1 nil #f "" (tagcase a2 (env n n) (else y (get s7-current-ns))) k dyn))
         ((= op s7-op-load)
          (tagcase a1
            (str s (tagcase (s7-file-text (get s))
                     (text t (tagcase (s7-read-all t (get s))
                               (data forms (s7-return-state s7-unspecified
-                                                           (s7-push-k (sum k-top (product (forms forms) (echo #f) (text t))) k) dyn))
+                                                           (s7-push-k (sum k-top (product (forms forms) (echo #f) (text t) (ns (get s7-current-ns)))) k) dyn))
                               (stop r (s7-raise-state (sum errobj (product (kind 'read) (message (string-append "load: cannot read " (get s)))
                                                                            (irritants s7-nil)))
                                                       #f k dyn))))
@@ -271,7 +333,7 @@ or a definition's name."
                      #u)
                  (if (null? (extract x forms))
                      (s7-return-state v k dyn)
-                     (s7-run-form (car (extract x forms)) (cdr (extract x forms)) (extract x echo) (extract x text) k dyn)))))))
+                     (s7-run-form (car (extract x forms)) (cdr (extract x forms)) (extract x echo) (extract x text) (extract x ns) k dyn)))))))
 "One step."
 (define* s7-step (subr s7-eff (s7-state) s7-state)
   (lambda (st)

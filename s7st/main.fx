@@ -43,7 +43,7 @@ ended well."
     (if (null? files) 0
         (tagcase (s7-file-text (car files))
           (failed m (begin (s7-say (string-append "s7st: " m "\n")) 1))
-          (text t (tagcase (s7-start! t (car files) #f)
+          (text t (tagcase (begin (s7-add-library-directory! (s7-directory-of (car files))) (s7-start! t (car files) #f))
                     (bad m (begin (s7-say (string-append "Error: " m "\n")) 1))
                     (none u (if (s7-drive) (s7-run-files (cdr files)) 1))))))))
 

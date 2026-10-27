@@ -351,7 +351,7 @@ numerator and denominator); a float by `f`."
       (unspec u (tagcase b (unspec v #t) (else y #f)))
       (undef u (tagcase b (undef v #t) (else y #f)))
       (eof u (tagcase b (eof v #t) (else y #f)))
-      (env u (tagcase b (env v #t) (else y #f)))
+      (env n (tagcase b (env m (eq? (extract n buckets) (extract m buckets))) (else y #f)))
       (bool x (tagcase b (bool y (bool=? x y)) (else y #f)))
       (int i (tagcase b (int j (= i j)) (else y #f)))
       (ratio q (tagcase b (ratio p (and (= (extract q num) (extract p num)) (= (extract q den) (extract p den)))) (else y #f)))
@@ -995,9 +995,6 @@ and when what runs ends."
       (s7-prim! "error-object-irritants" 1 1 (lambda ((a s7-values)) (tagcase (car a) (errobj e (sum ok (extract e irritants))) (else y (s7-wrong "error-object-irritants" "an error object" y)))))
       (s7-prim! "read-error?" 1 1 (lambda ((a s7-values)) (s7-bool (tagcase (car a) (errobj e (eq? (extract e kind) 'read)) (else y #f)))))
       (s7-prim! "file-error?" 1 1 (lambda ((a s7-values)) (s7-bool (tagcase (car a) (errobj e (eq? (extract e kind) 'file)) (else y #f)))))
-      (s7-prim! "interaction-environment" 0 0 (lambda ((a s7-values)) (sum ok (sum env #u))))
-      (s7-prim! "scheme-report-environment" 0 1 (lambda ((a s7-values)) (sum ok (sum env #u))))
-      (s7-prim! "environment" 0 -1 (lambda ((a s7-values)) (sum ok (sum env #u))))
       (s7-prim! "features" 0 0 (lambda ((a s7-values)) (sum ok (s7-list (list (s7-symbol "r7rs") (s7-symbol "s7st") (s7-symbol "exact-closed") (s7-symbol "full-unicode")))))))))
 
 "A port's characters from where it is: the next `n` (all, if -1)."

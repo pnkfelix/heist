@@ -22,9 +22,28 @@
 (define-type s7-syntax-error (productof (message string) (span s7-span)))
 (define s7-syntax-errors (ref (listof s7-syntax-error acyclic) @sc) (new nil))
 (define s7-rename-count (ref int @sc) (new 0))
-"The renamed symbols defined at top level (by a macro's `define`), which
-mean themselves, not their names."
-(define s7-renamed-globals (ref s7-symbols @sc) (new nil))
+"For each expansion of a macro, by number, the namespace of the macro: where
+a free symbol its template brought in means what its name means there."
+(define s7-rename-nss (ref (arrayof (listof s7-ns acyclic) @sc) @sc)
+  (new (the (arrayof (listof s7-ns acyclic) @sc) (make-array 1024 (the (listof s7-ns acyclic) nil)))))
+"Expansion `n` noted as of a macro of namespace `ns`."
+(define* s7-note-rename-ns! (subr s7-eff (int s7-ns) unit)
+  (lambda (n ns)
+    (let ((a (get s7-rename-nss)))
+      (if (< n (array-length a)) (array-set! a n (list ns))
+          (let ((b (the (arrayof (listof s7-ns acyclic) @sc) (make-array (* 2 (+ n 1)) (the (listof s7-ns acyclic) nil)))))
+            (letrec ((copy (subr s7-eff (int) unit)
+                       (lambda (i) (if (>= i (array-length a)) #u (begin (array-set! b i (array-ref a i)) (copy (+ i 1)))))))
+              (begin (copy 0) (array-set! b n (list ns)) (set s7-rename-nss b))))))))
+"The namespace renamed symbol `s` is of: its macro's, or the current one."
+(define* s7-rename-ns (subr s7-eff (symbol) s7-ns)
+  (lambda (s)
+    (let* ((n (symbol->string s))
+           (sp (letrec ((go (subr spin (int) int) (lambda (i) (cond ((< i 0) -1) ((char=? (string-ref n i) #\space) i) (else (go (- i 1)))))))
+                 (go (- (string-length n) 1))))
+           (k (if (< sp 0) -1 (s7-parse-digits (substring n (+ sp 1) (string-length n)) 10)))
+           (a (get s7-rename-nss)))
+      (if (and (>= k 0) (< k (array-length a)) (pair? (array-ref a k))) (car (array-ref a k)) (get s7-current-ns)))))
 
 (define* s7-node-at (subr (maxeff (read @sc) (write @sc)) (s7-span s7-form) s7-node)
   (lambda (span form) (product (id (s7-fresh-id)) (span span) (form form))))
@@ -133,8 +152,9 @@ or a global."
          (b-macro s7-macro)
          (b-special symbol)
          (b-global s7-global)))
-(define* s7-resolve (subr s7-eff (symbol s7-scopes) s7-binding)
-  (lambda (name scopes)
+(define* s7-resolve-in (subr s7-eff (symbol s7-scopes s7-ns) s7-binding)
+  ;; `ns`: the namespace a free name is looked up in.
+  (lambda (name scopes ns)
     (letrec ((in (subr s7-eff (s7-scopes int) (sumof (none unit) (found s7-binding)))
                (lambda (ss depth)
                  (if (null? ss) (sum none #u)
@@ -146,13 +166,17 @@ or a global."
       (tagcase (in scopes 0)
         (found b b)
         (none u
-          (if (and (s7-renamed? name) (not (s7-memq-symbol name (get s7-renamed-globals))))
-              (s7-resolve (s7-unrename name) scopes)
-              (let ((cell (s7-global-cell name)))
+          (if (and (s7-renamed? name) (tagcase (s7-ns-find ns name) (found c #f) (none u #t)))
+              ;; A symbol a macro brought in, defined nowhere as itself: its
+              ;; name, as its macro's namespace means it.
+              (s7-resolve-in (s7-unrename name) scopes (s7-rename-ns name))
+              (let ((cell (s7-ns-cell! ns name)))
                 (tagcase (get (extract cell syntax))
                   (special s (sum b-special s))
                   (macro m (sum b-macro m))
                   (none u (sum b-global cell))))))))))
+(define* s7-resolve (subr s7-eff (symbol s7-scopes) s7-binding)
+  (lambda (name scopes) (s7-resolve-in name scopes (get s7-current-ns))))
 "The special form `x`'s head names, or ` none`: a special form's own name
 (`if`, `define`), or the head's macro's -- `macro` -- or none."
 (define* s7-head-kind (subr s7-eff (s7-value s7-scopes) s7-binding)
@@ -403,6 +427,7 @@ or (no)."
            (suffix (string-append " " (int->string n))))
       (begin
         (set s7-rename-count (+ n 1))
+        (s7-note-rename-ns! n (extract m ns))
         (letrec ((go (->* ((listof s7-rule acyclic)) s7-filled)
                    (lambda (rules)
                      (if (null? rules) (sum bad (string-append "no rule of " (s7-symbol-name (s7-sym (s7-car x))) " matches this use"))
@@ -439,7 +464,7 @@ or (no)."
                                                  (sum bad "syntax-rules: a rule is (pattern template)")))
                                      (none u (sum bad "syntax-rules: a rule is (pattern template)")))))))
                     (tagcase (rule rs nil)
-                      (ok r (sum ok (product (literals (s7-symbols-of ls)) (ellipsis ell) (rules r) (scopes scopes))))
+                      (ok r (sum ok (product (literals (s7-symbols-of ls)) (ellipsis ell) (rules r) (scopes scopes) (ns (get s7-current-ns)))))
                       (bad e (sum bad e))))))))))))
 
 ;;; ------------------------------------------------------------ derived forms
@@ -924,12 +949,9 @@ defined in `scopes`: \"\", or an error."
            (if (pair? scopes) (fail "a definition is not allowed here")
                (tagcase (s7-define-target x)
                  (bad e (fail e))
-                 (ok t (let ((cell (s7-global-cell (extract t name))))
+                 (ok t (let ((cell (s7-ns-own-cell! (get s7-current-ns) (extract t name))))
                          (begin
                            (set (extract cell syntax) (sum none #u))
-                           (if (s7-renamed? (extract t name))
-                               (set s7-renamed-globals (cons (extract t name) (get s7-renamed-globals)))
-                               #u)
                            (s7-node-at span (sum n-define (product (cell cell)
                                                                   (value (s7-expand-named (extract t value) scopes span
                                                                                           (s7-symbol-name (extract t name)))))))))))))
@@ -937,7 +959,7 @@ defined in `scopes`: \"\", or an error."
            (cond ((pair? scopes) (fail "not allowed here"))
                  ((not (s7-symbol? (s7-car args))) (fail "its name is a symbol"))
                  (else (tagcase (s7-parse-rules (s7-cadr args) scopes)
-                         (ok m (begin (set (extract (s7-global-cell (s7-sym (s7-car args))) syntax) (sum macro m))
+                         (ok m (begin (set (extract (s7-ns-own-cell! (get s7-current-ns) (s7-sym (s7-car args))) syntax) (sum macro m))
                                  (s7-const-node s7-unspecified span)))
                          (bad e (fail e))))))
           ((or (eq? k 'let-syntax) (eq? k 'letrec-syntax))

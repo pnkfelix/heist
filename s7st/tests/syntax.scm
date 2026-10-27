@@ -80,4 +80,5 @@
 (cond-expand ((and s7st (not foo)) (show "s7st")) (else (show "no")))
 (import (scheme base) (scheme write))
 (define-library (my lib) (export double) (import (scheme base)) (begin (define (double x) (* 2 x))))
+(import (my lib))
 (show (double 4))

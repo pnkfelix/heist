@@ -66,7 +66,7 @@ parts deep, at most."
                                   (lambda (l k h) (if (or (null? l) (<= k 0)) h (go (cdr l) (- k 1) (s7-mix h (car l)))))))
                      (go (array->list a) 8 (array-length a))))
           (prim p (modulo (string-hash (extract p name)) s7-hash-bound))
-          (null u 3) (unspec u 4) (eof u 5) (env u 6)
+          (null u 3) (unspec u 4) (eof u 5) (env n 6)
           (else y 7)))))
 
 "Whether keys `a` and `b` are the same, as a table of `kind` compares."

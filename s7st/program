@@ -1,1 +1,1 @@
-value.fx read.fx print.fx expand.fx prims.fx table.fx machine.fx prelude.fx session.fx
+value.fx read.fx print.fx expand.fx prims.fx table.fx library.fx machine.fx prelude.fx session.fx

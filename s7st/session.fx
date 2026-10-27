@@ -43,13 +43,12 @@ irritants, written; anything else, written."
                 (bad b (sum bad (extract b message)))
                 (else y (sum complete #u)))))))
 
-"The forms of `text` (from `file`, \"\" if typed) made what the machine
-runs next, each value shown if `echo`. (none), or what is wrong with it."
-(define* s7-start! (subr s7-eff (string string bool) (sumof (none unit) (bad string)))
-  (lambda (text file echo)
+"The same, in namespace `ns`."
+(define* s7-start-in! (subr s7-eff (string string bool s7-ns) (sumof (none unit) (bad string)))
+  (lambda (text file echo ns)
     (tagcase (s7-read-all text file)
       (data forms (begin (set s7-console-fresh #t)
-                    (set s7-machine (s7-return-state s7-unspecified (list (sum k-top (product (forms forms) (echo echo) (text text))))
+                    (set s7-machine (s7-return-state s7-unspecified (list (sum k-top (product (forms forms) (echo echo) (text text) (ns ns))))
                                                           s7-no-dyn))
                     (sum none #u)))
       (stop r (sum bad (tagcase r
@@ -58,6 +57,11 @@ runs next, each value shown if `echo`. (none), or what is wrong with it."
                                                (extract b message)))
                          (else y "")))))))
 
+"The forms of `text` (from `file`, \"\" if typed) made what the machine
+runs next, at top level, each value shown if `echo`. (none), or what is
+wrong with it."
+(define* s7-start! (subr s7-eff (string string bool) (sumof (none unit) (bad string)))
+  (lambda (text file echo) (s7-start-in! text file echo s7-toplevel)))
 (define* s7-busy? (subr (read @sc) () bool)
   (lambda () (not (s7-stopped? (get s7-machine)))))
 
@@ -126,7 +130,7 @@ form, a macro, or a variable's value; \"\" if it is none of them."
 (define* s7-describe (subr s7-eff (string) string)
   (lambda (name)
     (if (string=? name "") ""
-        (tagcase (s7-global-find (string->symbol name))
+        (tagcase (s7-ns-find s7-toplevel (string->symbol name))
           (none u "")
           (found cell
             (tagcase (get (extract cell syntax))
@@ -147,7 +151,8 @@ in FX-26, then the prelude (prelude.fx) run. \"\", or what went wrong."
       (s7-define-specials! s7-special-names)
       (s7-init-prims!)
       (s7-init-tables!)
-      (tagcase (s7-start! s7-prelude "prelude.scm" #f)
+      (s7-init-libraries!)
+      (tagcase (s7-start-in! s7-prelude "prelude.scm" #f s7-builtins)
         (bad m m)
         (none u (letrec ((go (subr s7-eff () string)
                            (lambda ()

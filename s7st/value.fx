@@ -55,7 +55,7 @@ at @sc; a procedure has an identity (its `name` cell), as `eq?` needs."
          (rtd s7-rtd)
          (port s7-port)
          (table s7-table)               ; a hash table (table.fx)
-         (env unit)                     ; the one environment, for `eval`
+         (env s7-ns)                    ; an environment, for `eval`: a namespace
          (errobj s7-errobj)))
 (define-type s7-values (listof s7-value acyclic))
 (define-type s7-symbols (listof symbol acyclic))
@@ -78,6 +78,10 @@ was written, last first, and the file it goes to when flushed (\"\": none)."
 (define-type s7-port
   (productof (id (ref unit @sc)) (input bool) (text string) (pos (ref int @sc))
              (out (ref (listof string acyclic) @sc)) (open (ref bool @sc)) (file string)))
+"A library defined: its name, as written; its namespace; and what it
+exports, each by the name importers see and its own."
+(define-type s7-export (productof (external symbol) (internal symbol)))
+(define-type s7-library (productof (name string) (ns s7-ns) (exports (listof s7-export acyclic))))
 "A hash table (table.fx): its kind, its entries in order, and their index."
 (define-type s7-ids
   (productof (pairs (eqtable (ref s7-value @sc) int @sc @sc))
@@ -139,8 +143,9 @@ index -- resolved once, when expanded."
 or a macro."
 (define-type s7-syntax (sumof (none unit) (special symbol) (macro s7-macro)))
 "A `syntax-rules` macro: its literals, its ellipsis, its rules, and the
-scopes it was defined in."
-(define-type s7-macro (productof (literals s7-symbols) (ellipsis symbol) (rules (listof s7-rule acyclic)) (scopes s7-scopes)))
+scopes and namespace it was defined in (where the free names its
+templates bring in mean what they mean)."
+(define-type s7-macro (productof (literals s7-symbols) (ellipsis symbol) (rules (listof s7-rule acyclic)) (scopes s7-scopes) (ns s7-ns)))
 (define-type s7-rule (productof (pattern s7-value) (template s7-value)))
 "A scope of the expander: a frame's names, last first, and how many; and
 the macros bound in it (`let-syntax`, internal `define-syntax`)."
@@ -180,8 +185,9 @@ may be resumed any number of times."
          (k-rewind (productof (steps (listof s7-step acyclic)) (k s7-k) (dyn s7-dyn) (value s7-value)))
          (k-raise s7-value)                               ; a handler returned from `raise`
          ;; Top-level forms still to run; whether each value is shown; the
-         ;; text they were read from (for where an error is).
-         (k-top (productof (forms s7-values) (echo bool) (text string)))))
+         ;; text they were read from (for where an error is); the namespace
+         ;; they are in.
+         (k-top (productof (forms s7-values) (echo bool) (text string) (ns s7-ns)))))
 (define-type s7-k (listof s7-kframe acyclic))
 "The machine's state between steps."
 (define-type s7-state
@@ -306,48 +312,87 @@ it is free it means what `name` means (expand.fx). Its name, unrenamed."
 (define* s7-symbol-name (subr spin (symbol) string)
   (lambda (s) (let ((u (s7-unrename s))) (if (eq? u s) (symbol->string s) (s7-symbol-name u)))))
 
-;;; ------------------------------------------------------------ globals
+;;; ------------------------------------------------------------ namespaces
 
-"The globals, by name's hash: each bucket a list of cells."
-(define s7-global-buckets int 4096)
-(define s7-globals (arrayof (listof s7-global acyclic) @sc) (make-array 4096 (the (listof s7-global acyclic) nil)))
-"The cell of global `name`, made (undefined, no syntax) if there is none."
-(define* s7-global-cell (subr (maxeff spin (read @sc) (write @sc) (alloc @sc)) (symbol) s7-global)
+"A namespace: names bound to global cells, by name's hash; and the
+namespaces looked in after it (the built-ins'). There are three kinds: the
+built-ins' (special forms, procedures written in FX-26, the prelude's), the
+top level's (what a program or the REPL defines), and each library's.
+Importing binds a name to the cell of the library that exports it, so a
+name may be bound in more than one."
+(define-type s7-ns-entry (productof (name symbol) (cell s7-global)))
+(define-type s7-ns
+  (productof (name string) (buckets (arrayof (listof s7-ns-entry acyclic) @sc)) (base (listof s7-ns acyclic))))
+(define* s7-make-ns (subr (alloc @sc) (string int (listof s7-ns acyclic)) s7-ns)
+  (lambda (name size base)
+    (product (name name) (buckets (the (arrayof (listof s7-ns-entry acyclic) @sc) (make-array size (the (listof s7-ns-entry acyclic) nil))))
+             (base base))))
+(define s7-builtins s7-ns (s7-make-ns "builtins" 4096 nil))
+(define s7-toplevel s7-ns (s7-make-ns "top level" 1024 (list s7-builtins)))
+"The namespace forms are expanded in now."
+(define s7-current-ns (ref s7-ns @sc) (new s7-builtins))
+(define* s7-new-cell (subr (alloc @sc) (symbol) s7-global)
   (lambda (name)
-    (let* ((h (modulo (symbol-name-hash name) s7-global-buckets))
-           (bucket (array-ref s7-globals h)))
-      (letrec ((find (subr spin ((listof s7-global acyclic)) (sumof (none unit) (found s7-global)))
-                 (lambda (l) (cond ((null? l) (sum none #u))
-                                   ((eq? (extract (car l) name) name) (sum found (car l)))
-                                   (else (find (cdr l)))))))
-        (tagcase (find bucket)
-          (found c c)
-          (none u (let ((c (the s7-global (product (name name) (value (the (ref s7-value @sc) (new s7-undefined)))
-                                                 (syntax (the (ref s7-syntax @sc) (new (the s7-syntax (sum none #u)))))))))
-                    (begin (array-set! s7-globals h (cons c bucket)) c))))))))
-"The cell of global `name`, if there is one (none is made)."
-(define* s7-global-find (subr (maxeff spin (read @sc)) (symbol) (sumof (none unit) (found s7-global)))
-  (lambda (name)
-    (letrec ((find (subr spin ((listof s7-global acyclic)) (sumof (none unit) (found s7-global)))
+    (product (name name) (value (the (ref s7-value @sc) (new s7-undefined)))
+             (syntax (the (ref s7-syntax @sc) (new (the s7-syntax (sum none #u))))))))
+"The cell `name` is bound to in `ns` itself (not its base)."
+(define* s7-ns-own (subr (maxeff spin (read @sc)) (s7-ns symbol) (sumof (none unit) (found s7-global)))
+  (lambda (ns name)
+    (letrec ((find (subr spin ((listof s7-ns-entry acyclic)) (sumof (none unit) (found s7-global)))
                (lambda (l) (cond ((null? l) (sum none #u))
-                                 ((eq? (extract (car l) name) name) (sum found (car l)))
+                                 ((eq? (extract (car l) name) name) (sum found (extract (car l) cell)))
                                  (else (find (cdr l)))))))
-      (find (array-ref s7-globals (modulo (symbol-name-hash name) s7-global-buckets))))))
-"Global `name` defined as `v`, by its name in FX-26 strings."
+      (let ((bs (extract ns buckets)))
+        (find (array-ref bs (modulo (symbol-name-hash name) (array-length bs))))))))
+"The cell `name` is bound to in `ns`, or in its base."
+(define* s7-ns-find (subr (maxeff spin (read @sc)) (s7-ns symbol) (sumof (none unit) (found s7-global)))
+  (lambda (ns name)
+    (tagcase (s7-ns-own ns name)
+      (found c (sum found c))
+      (none u (letrec ((bases (subr (maxeff spin (read @sc)) ((listof s7-ns acyclic)) (sumof (none unit) (found s7-global)))
+                         (lambda (l) (if (null? l) (sum none #u)
+                                         (tagcase (s7-ns-find (car l) name) (found c (sum found c)) (none u (bases (cdr l))))))))
+                (bases (extract ns base)))))))
+"`name` bound to `cell` in `ns`, in place of what it was bound to there."
+(define* s7-ns-bind! (subr (maxeff spin (read @sc) (write @sc) (alloc @sc)) (s7-ns symbol s7-global) unit)
+  (lambda (ns name cell)
+    (let* ((bs (extract ns buckets))
+           (h (modulo (symbol-name-hash name) (array-length bs))))
+      (letrec ((drop (subr spin ((listof s7-ns-entry acyclic)) (listof s7-ns-entry acyclic))
+                 (lambda (l) (cond ((null? l) nil) ((eq? (extract (car l) name) name) (cdr l)) (else (cons (car l) (drop (cdr l))))))))
+        (array-set! bs h (cons (product (name name) (cell cell)) (drop (array-ref bs h))))))))
+"The cell `name` is bound to in `ns` itself, made (undefined) if it is not
+bound there: what a definition there defines."
+(define* s7-ns-own-cell! (subr (maxeff spin (read @sc) (write @sc) (alloc @sc)) (s7-ns symbol) s7-global)
+  (lambda (ns name)
+    (tagcase (s7-ns-own ns name)
+      (found c c)
+      (none u (let ((c (s7-new-cell name))) (begin (s7-ns-bind! ns name c) c))))))
+"The cell `name` means in `ns`: bound there or in its base, else made
+there (a name defined later, or never)."
+(define* s7-ns-cell! (subr (maxeff spin (read @sc) (write @sc) (alloc @sc)) (s7-ns symbol) s7-global)
+  (lambda (ns name)
+    (tagcase (s7-ns-find ns name)
+      (found c c)
+      (none u (s7-ns-own-cell! ns name)))))
+"The names bound in `ns` itself, and their cells."
+(define* s7-ns-entries (subr (maxeff spin (read @sc)) (s7-ns) (listof s7-ns-entry acyclic))
+  (lambda (ns)
+    (let ((bs (extract ns buckets)))
+      (letrec ((go (subr (maxeff spin (read @sc)) (int (listof s7-ns-entry acyclic)) (listof s7-ns-entry acyclic))
+                 (lambda (i acc)
+                   (if (< i 0) acc
+                       (go (- i 1) (letrec ((add (subr spin ((listof s7-ns-entry acyclic) (listof s7-ns-entry acyclic)) (listof s7-ns-entry acyclic))
+                                                   (lambda (l acc) (if (null? l) acc (add (cdr l) (cons (car l) acc))))))
+                                     (add (array-ref bs i) acc)))))))
+        (go (- (array-length bs) 1) nil)))))
+
+"The built-in cell of `name`, made if there is none."
+(define* s7-global-cell (subr (maxeff spin (read @sc) (write @sc) (alloc @sc)) (symbol) s7-global)
+  (lambda (name) (s7-ns-own-cell! s7-builtins name)))
+"Built-in `name` defined as `v`, by its name in FX-26 strings."
 (define* s7-define-global! (subr (maxeff spin (read @sc) (write @sc) (alloc @sc)) (string s7-value) unit)
   (lambda (name v) (set (extract (s7-global-cell (string->symbol name)) value) v)))
-"Every global defined (as a variable), for completion and apropos."
-(define* s7-global-names (subr (maxeff spin (read @sc)) () s7-symbols)
-  (lambda ()
-    (letrec ((bucket (subr (maxeff spin (read @sc)) ((listof s7-global acyclic) s7-symbols) s7-symbols)
-               (lambda (l acc)
-                 (cond ((null? l) acc)
-                       ((tagcase (get (extract (car l) value)) (undef u #f) (else y #t))
-                        (bucket (cdr l) (cons (extract (car l) name) acc)))
-                       (else (bucket (cdr l) acc)))))
-             (go (subr (maxeff spin (read @sc)) (int s7-symbols) s7-symbols)
-               (lambda (i acc) (if (< i 0) acc (go (- i 1) (bucket (array-ref s7-globals i) acc))))))
-      (go (- s7-global-buckets 1) nil))))
 
 "A counter, for numbering nodes and lambdas."
 (define s7-next-id (ref int @sc) (new 0))
