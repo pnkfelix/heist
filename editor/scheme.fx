@@ -13,13 +13,19 @@
 ;;;   C-c C-r             the region's forms run
 ;;;   C-c C-z             to *s7st*
 ;;;
-;;; The interpreter's state is at @sc, which only commands may write; so
-;;; what it runs, it runs in commands, `s7-slice` steps at a time, from
-;;; the main loop (`s7-poll!`), keys read between slices. What it writes
-;;; goes to *s7st*, if there is one.
+;;; s7st runs in a process of its own, `bin/s7st --serve`, started the
+;;; first time it is asked for, so that the editor does not compile it
+;;; when it starts, and a program that fails or does not end cannot stop
+;;; the editor. s7st/main.fx says its requests and answers, a line each;
+;;; the main loop looks for its answers every 50 ms while one is awaited
+;;; (`s7-poll!`). What it writes goes to *s7st*, if there is one.
 
 (define s7-prompt string "s7st> ")
-(define s7-slice int 20000)
+"The server's process, once started; whether it has said it is ready; and
+what it has written of a line not yet ended."
+(define s7-server (ref ints @ed) (new nil))
+(define s7-ready (ref bool @ed) (new #f))
+(define s7-partial (ref string @ed) (new ""))
 "*s7st*, once made."
 (define s7-repl (ref (listof (actor buffer) acyclic) @ed) (new nil))
 "Where in *s7st* output goes: before the prompt, if one is shown; and
@@ -27,12 +33,16 @@ where what is typed and not yet run starts, after the prompt."
 (define s7-output-at (ref int @ed) (new 0))
 (define s7-input-start (ref int @ed) (new 0))
 "Who is told how what runs ends: the REPL (which writes each value), the
-echo area (of a frame), or nobody."
+echo area (of a frame), or nobody (nothing runs)."
 (define-type s7-client (sumof (none unit) (repl unit) (echo (actor frame))))
 (define s7-client-now (ref s7-client @ed) (new (the s7-client (sum none #u))))
+"The REPL's input sent and not yet started, and where it ends."
+(define s7-submitted (ref string @ed) (new ""))
+(define s7-submitted-end (ref int @ed) (new 0))
 "What was written while the echo area's client ran, for it to show."
 (define s7-echo-output (ref string @ed) (new ""))
-(define s7-started (ref bool @ed) (new #f))
+"The frame eldoc's `describe` answers to, if one is awaited."
+(define s7-eldoc-frame (ref (listof (actor frame) acyclic) @ed) (new nil))
 "The directory *s7st*'s relative file names are relative to: that of the
 buffer selected when it was made."
 (define s7-repl-directory (ref string @ed) (new ""))
@@ -40,11 +50,50 @@ buffer selected when it was made."
 (define s7-history (ref strings @ed) (new nil))
 (define s7-history-at (ref int @ed) (new -1))
 
-"The interpreter made ready, the first time. \"\", or what went wrong."
-(define* s7-ensure-started! (subr cmd-eff () string)
+;;; ------------------------------------------------------------ the server
+
+"`s` with backslashes, newlines and tabs escaped, as the server's lines
+have them; and back."
+(define* s7-escape (subr spin (string) string)
+  (lambda (s)
+    (letrec ((go (subr spin (int (listof char acyclic)) (listof char acyclic))
+               (lambda (i acc)
+                 (if (>= i (string-length s)) acc
+                     (let ((c (string-ref s i)))
+                       (go (+ i 1) (cond ((char=? c #\\) (cons #\\ (cons #\\ acc)))
+                                         ((char=? c #\newline) (cons #\n (cons #\\ acc)))
+                                         ((char=? c #\tab) (cons #\t (cons #\\ acc)))
+                                         (else (cons c acc)))))))))
+      (list->string (reverse (go 0 nil))))))
+(define* s7-unescape (subr spin (string) string)
+  (lambda (s)
+    (let ((n (string-length s)))
+      (letrec ((go (subr spin (int (listof char acyclic)) (listof char acyclic))
+                 (lambda (i acc)
+                   (cond ((>= i n) acc)
+                         ((and (char=? (string-ref s i) #\\) (< (+ i 1) n))
+                          (let ((c (string-ref s (+ i 1))))
+                            (go (+ i 2) (cons (cond ((char=? c #\n) #\newline) ((char=? c #\t) #\tab) (else c)) acc))))
+                         (else (go (+ i 1) (cons (string-ref s i) acc)))))))
+        (list->string (reverse (go 0 nil)))))))
+
+"The server's process: started (`../bin/s7st --serve`, from editor/, where
+the editor runs) if it is not. Whether there is one."
+(define* s7-server-up! (subr cmd-eff () bool)
   (lambda ()
-    (if (get s7-started) ""
-        (begin (set s7-started #t) (s7-init!)))))
+    (or (pair? (get s7-server))
+        (tagcase (process-start (list "../bin/s7st" "--serve") "")
+          (started id (begin (set s7-server (list id)) (set s7-ready #f) (set s7-partial "") #t))
+          (failed e #f)))))
+"Request `word` sent, with `fields`."
+(define* s7-send! (subr cmd-eff (string strings) unit)
+  (lambda (word fields)
+    (let ((s (get s7-server)))
+      (if (null? s) #u
+          (letrec ((join (subr spin (strings) string)
+                     (lambda (l) (cond ((null? l) "") ((null? (cdr l)) (s7-escape (car l)))
+                                       (else (string-append (s7-escape (car l)) "\t" (join (cdr l))))))))
+            (begin (process-write (car s) (string-append word " " (join fields) "\n")) #u))))))
 
 "Message for *s7st*: `s` put where output goes (before the prompt, and
 anything typed after it); if `prompted`, `s` ends with a new prompt, which
@@ -78,43 +127,101 @@ comint keeps it. Output is no change of the user's."
       (begin
         (set s7-client-now (sum none #u))
         (tagcase client
-          (repl u (s7-repl-say! (string-append (s7-fresh-line) (if (string=? error "") "" (string-append "Error: " error "\n")) s7-prompt) #t))
+          (repl u (s7-repl-say! (string-append (if (string=? error "") "" (string-append "Error: " error "\n")) s7-prompt) #t))
           (echo fr (let ((out (one-line (get s7-echo-output))))
                      (begin
-                       (s7-repl-say! (string-append (s7-fresh-line) (if (string=? error "") "" (string-append "Error: " error "\n"))) #f)
+                       (if (string=? error "") #u (s7-repl-say! (string-append "Error: " error "\n") #f))
                        (tell! fr (echo (string-append (if (string=? out "") "" (string-append out " "))
                                                       (if (string=? error "") (string-append "=> " value) (string-append "Error: " error))))))))
           (none u #u))))))
 
-"A slice of what runs run, its output written, and its end told; whether
-it still runs."
+"An answer of the server's, `line`, acted on."
+(define* s7-answer! (subr cmd-eff (string) unit)
+  (lambda (line)
+    (let* ((sp (string-search line " " 0))
+           (word (if (< sp 0) line (substring line 0 sp)))
+           (text (if (< sp 0) "" (s7-unescape (substring line (+ sp 1) (string-length line))))))
+      (cond
+        ((string=? word "ready")
+         (begin (set s7-ready #t)
+           (if (string=? text "") #u (s7-repl-say! (string-append ";; s7st did not start: " text "\n") #f))))
+        ((string=? word "started")
+         (tagcase (get s7-client-now)
+           (repl u (let ((input (get s7-submitted)))
+                     (begin
+                       (set s7-input-start (get s7-submitted-end))
+                       (set s7-output-at (get s7-submitted-end))
+                       (set s7-history-at -1)
+                       (if (string=? (one-line input) "") #u (set s7-history (cons input (get s7-history)))))))
+           (else y #u)))
+        ((string=? word "incomplete") (set s7-client-now (sum none #u)))
+        ((string=? word "busy")
+         (tagcase (get s7-client-now)
+           (echo fr (begin (set s7-client-now (sum none #u)) (tell! fr (echo "s7st is busy: C-c C-c in *s7st* interrupts it"))))
+           (else y (set s7-client-now (sum none #u)))))
+        ((string=? word "out")
+         (begin (s7-repl-say! text #f)
+           (tagcase (get s7-client-now)
+             (echo fr (set s7-echo-output (string-append (get s7-echo-output) text)))
+             (else y #u))))
+        ((string=? word "value") (s7-finished! text ""))
+        ((string=? word "error") (s7-finished! "" text))
+        ((string=? word "interrupted")
+         (let ((client (get s7-client-now)))
+           (begin (set s7-client-now (sum none #u))
+             (tagcase client
+               (repl u (s7-repl-say! (string-append ";; interrupted\n" s7-prompt) #t))
+               (echo fr (tell! fr (echo "Interrupted")))
+               (none u #u)))))
+        ((string=? word "describe")
+         (let ((fs (get s7-eldoc-frame)))
+           (if (null? fs) #u (begin (set s7-eldoc-frame nil) (tell! (car fs) (eldoc-show text))))))
+        (else #u)))))
+
+"The server's answers so far acted on. Whether one is still awaited, for
+the main loop to look again in 50 ms."
 (define* s7-poll! (subr cmd-eff () bool)
   (lambda ()
-    (if (not (s7-busy?)) #f
-        (let* ((status (s7-continue! s7-slice))
-               (out (s7-take-output!)))
-          (begin
-            (if (string=? out "") #u
-                (begin (s7-repl-say! out #f)
-                  (tagcase (get s7-client-now)
-                    (echo fr (set s7-echo-output (string-append (get s7-echo-output) out)))
-                    (else y #u))))
-            (tagcase status
-              (running u #t)
-              (done v (begin (s7-finished! (if (s7-shown? v) (s7-show v #t) "") "") #f))
-              (failed m (begin (s7-finished! "" m) #f))))))))
+    (let ((s (get s7-server)))
+      (if (null? s) #f
+          (let ((text (string-append (get s7-partial) (process-output (car s)))))
+            (letrec ((lines (subr cmd-eff (int) unit)
+                       (lambda (from)
+                         (let ((e (string-search text "\n" from)))
+                           (if (< e 0) (set s7-partial (substring text from (string-length text)))
+                               (begin (s7-answer! (substring text from e)) (lines (+ e 1))))))))
+              (begin
+                (lines 0)
+                (tagcase (process-status (car s))
+                  (running u #u)
+                  (else y (begin (set s7-server nil)
+                            (tagcase (get s7-client-now)
+                              (none u #u)
+                              (else z (s7-finished! "" "s7st's process ended")))
+                            (s7-repl-say! ";; s7st's process ended; it starts again when next asked for\n" #f))))
+                (and (pair? (get s7-server))
+                     (or (not (get s7-ready))
+                         (pair? (get s7-eldoc-frame))
+                         (tagcase (get s7-client-now) (none u #f) (else z #t)))))))))))
 
-"Text `text` (of `file`, \"\" if none) run for `client`, relative file
-names relative to `dir`; `echo`: each value written, as the REPL writes
-them. What to say if it cannot be: it is busy, or the text does not read."
-(define* s7-start-for! (subr cmd-eff (string string string bool s7-client) string)
-  (lambda (text file dir echo client)
-    (let ((why (s7-ensure-started!)))
-      (cond ((not (string=? why "")) (string-append "s7st did not start: " why))
-            ((s7-busy?) "s7st is busy: C-c C-c in *s7st* interrupts it")
-            (else (tagcase (begin (set s7-directory dir) (s7-start! text file echo))
-                    (bad m (string-append "Error: " m))
-                    (none u (begin (set s7-client-now client) (set s7-echo-output "") ""))))))))
+"The server stopped (the editor ends)."
+(define* s7-stop! (subr cmd-eff () unit)
+  (lambda ()
+    (let ((s (get s7-server)))
+      (if (null? s) #u (begin (process-close-input (car s)) (process-signal (car s) 1) (set s7-server nil))))))
+
+"Text `text` (of `file`, \"\" if none) sent to run for `client`, relative
+file names relative to `dir`; `repl`: only if its data are whole, each
+value written. What to say if it cannot be (\"\": nothing)."
+(define* s7-run! (subr cmd-eff (string string string bool s7-client) string)
+  (lambda (text file dir repl client)
+    (cond ((tagcase (get s7-client-now) (none u #f) (else y #t)) "s7st is busy: C-c C-c in *s7st* interrupts it")
+          ((not (s7-server-up!)) "s7st could not be started (../bin/s7st)")
+          (else (begin
+                  (set s7-client-now client)
+                  (set s7-echo-output "")
+                  (s7-send! "run" (list (if repl "repl" "quiet") dir file text))
+                  (if (get s7-ready) "" "Starting s7st..."))))))
 
 ;;; ------------------------------------------------------------ the REPL
 
@@ -125,7 +232,8 @@ them. What to say if it cannot be: it is busy, or the text does not read."
 (define* done-reply (subr turn-eff (buffer) (reply buffer))
   (lambda (b) (reply-with b (notify b))))
 
-"M-x run-s7st: *s7st* shown in the selected window, made if need be."
+"M-x run-s7st: *s7st* shown in the selected window, made if need be; and
+s7st started."
 (define* run-s7st (subr pure () frame-action)
   (lambda ()
     (lambda ((fr (actor frame)) (f frame))
@@ -143,25 +251,18 @@ them. What to say if it cannot be: it is busy, or the text does not read."
                                     (set s7-input-start n)
                                     (tell! b (lambda ((st buffer)) (done-reply (with-point st n))))
                                     (tell! fr (buffer-made fr "*s7st*" "" b))
-                                    (let ((why (s7-ensure-started!)))
-                                      (if (string=? why "") #u (s7-repl-say! (string-append ";; s7st did not start: " why "\n") #f)))))))))))))
-"Input `input`, ending at `end`, run if it is whole."
+                                    (if (s7-server-up!) #u
+                                        (s7-repl-say! ";; s7st could not be started (../bin/s7st)\n" #f))))))))))))
+"Input `input`, ending at `end`, sent to run if it is whole."
 (define* s7-submit! (subr cmd-eff (string int) unit)
   (lambda (input end)
-    (let ((why (s7-ensure-started!)))
-      (cond ((not (string=? why "")) (s7-repl-say! (string-append ";; s7st did not start: " why "\n") #f))
-            ((s7-busy?) #u)
-            (else
-             (tagcase (s7-input-state input)
-               (incomplete u #u)
-               (else y
-                 (begin
-                   (set s7-input-start end)
-                   (set s7-output-at end)
-                   (set s7-history-at -1)
-                   (if (string=? (one-line input) "") #u (set s7-history (cons input (get s7-history))))
-                   (let ((said (s7-start-for! input "" (get s7-repl-directory) #t (sum repl #u))))
-                     (if (string=? said "") #u (s7-repl-say! (string-append said "\n" s7-prompt) #t)))))))))))
+    (begin
+      (set s7-submitted input)
+      (set s7-submitted-end end)
+      (let ((said (s7-run! input "" (get s7-repl-directory) #t (sum repl #u))))
+        (cond ((string=? said "") #u)
+              ((string=? said "Starting s7st...") #u)
+              (else (s7-repl-say! (string-append ";; " said "\n") #f)))))))
 
 "RET in *s7st*: a new line; and what is typed after the prompt run, if
 its data are whole."
@@ -200,28 +301,19 @@ before (after) the one shown last."
 (define* s7-interrupt (subr pure () frame-action)
   (lambda ()
     (lambda ((fr (actor frame)) (f frame))
-      (let ((r (draw (with-echo f "Interrupted"))))
-        (reply-with (extract r state)
-                    (cons (lambda ()
-                            (if (s7-busy?)
-                                (begin
-                                  (s7-interrupt!)
-                                  (s7-repl-say! (s7-take-output!) #f)
-                                  (tagcase (get s7-client-now)
-                                    (repl u (s7-repl-say! (string-append (s7-fresh-line) ";; interrupted\n" s7-prompt) #t))
-                                    (else y #u))
-                                  (set s7-client-now (sum none #u)))
-                                #u))
-                          (extract r cmds)))))))
+      (reply-with f (list (lambda ()
+                            (tagcase (get s7-client-now)
+                              (none u (tell! fr (echo "s7st runs nothing")))
+                              (else y (s7-send! "interrupt" nil)))))))))
 
 "Eldoc in a Scheme buffer (eldoc.fx): what s7st knows of the name at
-point, else of the operator of the call around it."
+point, else of the operator of the call around it -- if s7st runs."
 (define* s7-eldoc (subr pure ((actor frame) string string) cmd)
   (lambda (fr here op)
     (lambda ()
-      (if (not (string=? (s7-ensure-started!) "")) #u
-          (let ((s (s7-describe here)))
-            (tell! fr (eldoc-show (if (string=? s "") (s7-describe op) s))))))))
+      (if (and (pair? (get s7-server)) (get s7-ready))
+          (begin (set s7-eldoc-frame (list fr)) (s7-send! "describe" (list here op)))
+          #u))))
 (set scheme-eldoc (list s7-eldoc))
 
 ;;; ------------------------------------------------------------ Scheme buffers
@@ -246,7 +338,7 @@ reason there is none)."
         (tagcase (pick (extract st text) (extract st point) (extract st mark) (extract st file))
           (none why (draw (with-echo f why)))
           (text x (reply-with f (list (lambda ()
-                                        (let ((said (s7-start-for! (extract x text) (extract x file) (directory-of (extract st file)) #f (sum echo fr))))
+                                        (let ((said (s7-run! (extract x text) (extract x file) (directory-of (extract st file)) #f (sum echo fr))))
                                           (if (string=? said "") #u (tell! fr (echo said)))))))))))))
 
 "The start of the top-level form around point `p`: the last line at or

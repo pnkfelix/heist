@@ -4,7 +4,7 @@ x
 run-s7st\r
 @1500
 (define (f x) (* x x))\r
-@300
+@3000
 (list (f 12)\r
 @300
 "a" #\\b)\r

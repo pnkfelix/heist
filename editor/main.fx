@@ -7,8 +7,8 @@
 ;;; view or the painter (display class), so a key waits for at most one
 ;;; such turn. With none waiting, it waits for a key, and every half second
 ;;; looks at the terminal's size; with processes running (process.fx), it
-;;; looks for their output every 50 ms; while s7st runs (scheme.fx), it
-;;; runs a slice of it each time round.
+;;; looks for their output every 50 ms, and for s7st's answers while one is
+;;; awaited (scheme.fx).
 
 "The next byte typed, or #f if none comes within `timeout` ms (0: only
 one already there)."
@@ -76,11 +76,9 @@ queue; C-g at once. Whether any came."
       (run-turns! 100)
       (cond ((not (get running)) #u)
             ((or (turns-waiting?) (pair? (get pending-keys))) (begin (send-keys! fr 0) (run-loop fr rows columns)))
-            ;; s7st running (scheme.fx): its next slice at once, keys read between.
-            (scheming (begin (send-keys! fr 0) (run-loop fr rows columns)))
             ;; Processes' output looked for every 50 ms while any runs;
             ;; after a key, eldoc's turn when 100 ms pass with no other.
-            ((send-keys! fr (cond (polling 50) ((get eldoc-due) 100) (else 500))) (run-loop fr rows columns))
+            ((send-keys! fr (cond ((or polling scheming) 50) ((get eldoc-due) 100) (else 500))) (run-loop fr rows columns))
             ((not (get running)) #u)
             ((get eldoc-due) (begin (set eldoc-due #f) (tell! fr (eldoc-now fr)) (run-loop fr rows columns)))
             (else
@@ -119,6 +117,7 @@ queue; C-g at once. Whether any came."
         (if (extract got found) #u (tell! fr (echo "(New file)")))
         (run-loop fr h w)
         (signal-processes! 1)
+        (s7-stop!)
         (write-out "\x1b;[?1049l")
         (terminal-restore)
         0))))

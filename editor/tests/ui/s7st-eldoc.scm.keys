@@ -1,6 +1,6 @@
 (define (sq x . more)\n  (* x x))\n(map sq (list 1))\n
 \x03\x02
-@800
+@3000
 \x0e\x0e\x06\x06
 @700
 =

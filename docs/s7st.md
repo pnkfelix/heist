@@ -1,21 +1,24 @@
 # s7st: R7RS Scheme, interpreted in FX-26
 
 s7st (branch `s7st`, 2026-10-27) is an interpreter of R7RS-small Scheme,
-written in FX-26. Its core is in `s7st/`. The editor uses it through one
-file, `editor/scheme.fx`, which provides a REPL (`M-x run-s7st`) and runs
-forms from Scheme buffers. It also runs from the command line
-(`bin/s7st`).
+written in FX-26. It is all in `s7st/`, and runs from the command line
+(`bin/s7st`). The editor runs it as a separate process, `bin/s7st
+--serve`, through one file, `editor/scheme.fx`. That gives the editor a
+REPL (`M-x run-s7st`) and runs forms from Scheme buffers.
 
     bin/s7st                 a REPL on the terminal
     bin/s7st FILE …          each file run, as `load` runs it
+    bin/s7st --serve         a server: requests and answers, a line each
     s7st/tests/run.sh        its tests (UPDATE=1 writes their .out files)
 
 ## How it is built
 
 The files are plain FX-26 programs, read in the order `s7st/program`
-lists them. Each file sees the globals of the files before it. The editor's
-`program` lists them ahead of its own files. Every name s7st defines begins
-`s7-`, so the editor's names and s7st's never meet. s7st's state lives in
+lists them. Each file sees the globals of the files before it. Every name
+s7st defines begins `s7-`, so another program can include the files
+alongside its own without names colliding. (The editor did so at first,
+which cost it 1.9 s at every start; it now runs s7st as a process
+instead.) s7st's state lives in
 region `@sc`, and its effect is `s7-eff`. When Fixpt's `load-module` can
 take a group of files as one module, s7st can become a module with
 `(module-parameters ((sc region)))` and nothing else changes.
@@ -30,7 +33,7 @@ take a group of files as one module, s7st can become a module with
 | `machine.fx`  | the CEK machine, one step at a time                                                                                                          |
 | `prelude.scm` | what is written in Scheme: `map`, `guard`, `parameterize`, promises, the I/O procedures over ports, a few of SRFI 1's. `prelude.fx` is generated from it by `gen-prelude.py` |
 | `session.fx`  | the API clients call: `s7-init!`, `s7-start!`, `s7-continue!`, `s7-take-output!`, `s7-interrupt!`                                            |
-| `main.fx`     | the command-line REPL                                                                                                                        |
+| `main.fx`     | the command-line REPL, and the server (its protocol is described at the top of the file)                                                     |
 
 **The machine is a CEK machine whose continuation is data.** A state is one
 of four things:
@@ -49,10 +52,10 @@ This gives several properties for free:
 - **R7RS's exceptions:** `with-exception-handler`, `raise`,
   `raise-continuable`, and `guard` (written in the prelude as R7RS 7.3
   gives it).
-- **Clients run it in slices** (`s7-continue! fuel`). The editor runs
-  20,000 steps (a few milliseconds) between reads of the keyboard, so a
-  long computation leaves it responsive, and C-c C-c interrupts one that
-  doesn't end.
+- **Clients run it in slices** (`s7-continue! fuel`). The server runs
+  20,000 steps (a few milliseconds) at a time and reads requests between
+  slices, so an `interrupt` stops a loop that doesn't end, and the
+  session's state survives it.
 
 **Variables are resolved when expanded, not when run.** A local is a frame
 slot, given by depth and index. A global is its cell. A `lambda`'s frame
@@ -69,9 +72,11 @@ rewritten forms call are bound twice, under `if` and also under ` if`.
 Rewritten forms use the space-prefixed names, so a program that binds
 `if` or `list` locally doesn't break them (`tests/syntax.scm`).
 
-**Primitives must never fail in FX-26's sense.** The editor runs s7st in
-commands, and nothing catches a failure there. So every primitive checks
-its arguments and raises a Scheme condition rather than trapping. A
+**Primitives don't fail in FX-26's sense.** Every primitive checks its
+arguments and raises a Scheme condition rather than trapping, so that a
+client running s7st in its own process never has the run fail under it.
+(A failure in the server would end only the server: the editor says so,
+and starts it again when next asked.) A
 condition that nothing handles stops the run with `Error: …`. A syntax
 error is reported with its file, line and column before its form runs.
 
@@ -131,8 +136,10 @@ On this machine:
   is what compiling to closures (below) would narrow.
 - **Start-up** is 1.9 s, nearly all of it Fixpt compiling s7st's 3,600
   lines. Making the interpreter ready (special forms, primitives, prelude)
-  takes milliseconds. The editor starts the interpreter the first time
-  it's asked for one.
+  takes milliseconds. The editor starts the server the first time it's
+  asked for Scheme, so only that first request waits.
+- **The editor's latency:** the editor looks for the server's answers
+  every 50 ms while one is awaited, as it does for `*compilation*`.
 
 ## Openings
 
@@ -182,7 +189,8 @@ What remains for an analysis:
 - **What the editor can then show.** M-. through the analysis, the
   procedures each call can reach, and the types of data each variable can
   hold, as Yank shows them after `M-x flow-run-loads`. Eldoc for Scheme
-  exists already, but it asks the live interpreter (`s7-describe`): every
+  exists already, but it asks the running server (`describe`, which calls
+  `s7-describe`): every
   global's value is in `s7-globals`, and each closure carries its lambda's
   parameter names. So it knows only what has been run. An analysis would
   know what the text says before it runs.
@@ -216,7 +224,20 @@ The core is the input for each of these, and the expander is shared.
 
 ## In the editor
 
-`editor/scheme.fx`; its keys:
+**How it runs.** `editor/scheme.fx` starts `../bin/s7st --serve` the first
+time Scheme is asked for, then talks to it in the protocol `s7st/main.fx`
+describes:
+- each run is a `run` request, and the answers are its output, then its
+  value or error;
+- C-c C-c sends `interrupt`;
+- eldoc sends `describe`.
+
+So the editor doesn't compile s7st when it starts, and a Scheme program
+that fails or never ends can't stop the editor. If the server's process
+ends, the editor says so and starts a new one when next asked; the
+definitions made in the old one are lost.
+
+Its keys:
 
 | key, command                   | what it does                                                                                    |
 | ------------------------------ | ----------------------------------------------------------------------------------------------- |
@@ -229,7 +250,7 @@ The core is the input for each of these, and the expander is shared.
 | `C-c C-b`, `C-c C-l`           | the buffer's forms, as `load` runs a file, so errors give their line                           |
 | `C-c C-r`                      | the region                                                                                      |
 | `C-c C-z`                      | to *s7st*                                                                                       |
-| eldoc, in those buffers and *s7st* | what the live interpreter knows of the name at point, or of the operator of the call around it: `(map f l . ls)`, `car: 1 argument`, `guard: a macro`, `x = (1 2)` |
+| eldoc, in those buffers and *s7st* | once s7st runs, what it knows of the name at point, or of the operator of the call around it: `(map f l . ls)`, `car: 1 argument`, `guard: a macro`, `x = (1 2)`. Eldoc does not start s7st. |
 
 **Where output goes.** In *s7st*, output goes before the prompt, as
 comint's does. Text typed while something runs waits after the prompt.
@@ -243,6 +264,8 @@ selected when it was made. `bin/s7st` uses the directory it was started
 in.
 
 **Tests:**
+- `s7st/tests/server.serve`: the server's protocol, interrupting a loop
+  included.
 - `editor/tests/ui/s7st-eldoc.scm.keys`: eldoc on a closure and on a
   procedure written in Scheme.
 - `editor/tests/ui/s7st-repl.keys`: values, multi-line input, an error
