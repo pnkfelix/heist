@@ -1598,8 +1598,14 @@ impl Checker {
                 Ok(self.arena.exp(span, Exp::Let { bindings: out, body }))
             }
             "begin" => self.parse_body(span, &items[1..]),
+            // A syscall declared (`syscall.rs`): its hidden global, whether
+            // the runtime has it.
+            "syscall-available?" => {
+                let asked = self.syscall_available_form(s, items)?;
+                self.parse_exp(&asked)
+            }
             // Processes and `par` (`processes.rs`).
-            head @ ("spawn" | "spawn-monitored" | "send" | "receive" | "self" | "par" | "race" | "pselect" | "icell-get" | "icell-put!") => {
+            head @ ("spawn" | "spawn-monitored" | "send" | "receive" | "self" | "par" | "race" | "attempt" | "pselect" | "icell-get" | "icell-put!") => {
                 let head = head.to_string();
                 self.parse_process_form(span, &head, &items)
             }

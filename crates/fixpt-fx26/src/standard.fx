@@ -171,6 +171,7 @@
          (("f32-max") "%fx26-f32-max")
          (("f32-abs") "%fx26-f32-abs")
          (("f32-neg") "%fx26-f32-neg")
+         (("type-at") "%fx26-type-at")
          (("int->i8") "%fx26-int->i8")
          (("i8->int") "%fx26-i8->int")
          (("int->u8") "%fx26-int->u8")
@@ -270,6 +271,13 @@
          (("wcell-nil") "%fx26-nil-cell")
          (("wcell-sum") "%fx26-sum-cell")
          (("wglobal=?") "eq?")
+         (("%syscall0") "%fx26-syscall")
+         (("%syscall1") "%fx26-syscall")
+         (("%syscall2") "%fx26-syscall")
+         (("%syscall3") "%fx26-syscall")
+         (("%syscall4") "%fx26-syscall")
+         (("%syscall5") "%fx26-syscall")
+         (("%syscall6") "%fx26-syscall")
          (else "")))
       ((10)
        (case n
@@ -368,6 +376,8 @@
          (("f32-infinite?") "%fx26-f32-infinite?")
          (("flatarray-ref") "%fx26-flatarray-ref")
          (("terminal-size") "%fx26-terminal-size")
+         (("process-start") "%fx26-process-start")
+         (("process-write") "%fx26-process-write")
          (("i32-remainder") "%fx26-i32-remainder")
          (("u32-remainder") "%fx26-u32-remainder")
          (("i64-remainder") "%fx26-i64-remainder")
@@ -383,6 +393,9 @@
        (case n
          (("make-flatarray") "%fx26-make-flatarray")
          (("flatarray-set!") "%fx26-flatarray-set!")
+         (("process-output") "%fx26-process-output")
+         (("process-status") "%fx26-process-status")
+         (("process-signal") "%fx26-process-signal")
          (("string-compare") "%fx26-string-compare")
          (("symbol-compare") "%fx26-symbol-compare")
          (("certify-length") "%fx26-first")
@@ -412,6 +425,7 @@
          (("arithmetic-shift") "%fx26-arithmetic-shift")
          (("symbol-name-hash") "%symbol-hash")
          (("close-over-word!") "%fx26-close-over-word!")
+         (("%syscall-require") "%fx26-syscall-require")
          (else "")))
       ((17)
        (case n
@@ -429,7 +443,9 @@
          (else "")))
       ((19)
        (case n
+         (("process-close-input") "%fx26-process-close-input")
          (("%string-append-list") "%fx26-string-append-list")
+         (("%syscall-available?") "%fx26-syscall-available?")
          (else "")))
       ((22)
        (case n

@@ -169,7 +169,8 @@ fn run_word_by(rt: &mut Runtime, a: &[Value], run: Option<crate::RunWord>) -> Ou
         }
         cells.extend([f(const { routine("lit") }), a[0], f(const { routine("call") }), f(args.len() as u64), f(const { routine("exit") })]);
         let name = rt.heap.intern(CALL_CLOSURE);
-        match rt.heap.make_cellular_word(name, &cells) {
+        // Only run, never a closure's: in the heap.
+        match rt.heap.make_transient_word(name, &cells) {
             Ok(w) => (w, Vec::new()),
             Err(e) => return rt.fail(&e, &[a[0]]),
         }
@@ -1897,21 +1898,21 @@ prims! {
         use fixpt_heap::layout::regcode::op;
         let f = |n: u64| Value::fixnum(n as i64);
         let cells = [f(const { routine("rest") }), f(const { routine("free") }), Value::fixnum(0), f(const { routine("tailcall") }), Value::fixnum(1)];
-        let name = rt.heap.intern("vlambda");
-        let word = match rt.heap.make_cellular_word(name, &cells) {
-            Ok(w) => w,
-            Err(e) => return rt.fail(&e, &[a[0]]),
-        };
-        let o = |n: &str| Value::fixnum(op(n) as i64);
-        let (zero, one) = (Value::fixnum(0), Value::fixnum(1));
-        let regs = [
-            o("vargs"), o("save"), zero, o("cellular"), f(const { routine("rest") }), zero, o("setreg"), one,
-            o("lexical"), zero, o("pop"), zero, o("tailinvoke"), one,
-            Value::fixnum(fixpt_heap::layout::regcode::conv("fx") as i64),
-        ];
-        match rt.heap.make_register_word(name, word, &regs) {
-            Ok(rw) => rt.heap.set_bloblet_slot(word, WORD_TWIN, rw),
-            Err(e) => return rt.fail(&e, &[a[0]]),
+        // One word for every `vlambda`, its register code made once.
+        let word = rt.heap.shared_word("vlambda", &cells);
+        if rt.heap.bloblet_slot(word, WORD_TWIN) == Value::FALSE {
+            let name = rt.heap.intern("vlambda");
+            let o = |n: &str| Value::fixnum(op(n) as i64);
+            let (zero, one) = (Value::fixnum(0), Value::fixnum(1));
+            let regs = [
+                o("vargs"), o("save"), zero, o("cellular"), f(const { routine("rest") }), zero, o("setreg"), one,
+                o("lexical"), zero, o("pop"), zero, o("tailinvoke"), one,
+                Value::fixnum(fixpt_heap::layout::regcode::conv("fx") as i64),
+            ];
+            match rt.heap.make_register_word(name, word, &regs) {
+                Ok(rw) => rt.heap.set_bloblet_slot(word, WORD_TWIN, rw),
+                Err(e) => return rt.fail(&e, &[a[0]]),
+            }
         }
         let c = rt.heap.make_bloblet(const { fixpt_heap::layout::kind("cellular-closure") }, 2, 0, true);
         rt.heap.set_bloblet_slot(c, CLOSURE_WORD, word);
@@ -2719,6 +2720,85 @@ prims! {
     // not hold from an input that a harness does not take.
     "%fx26-assert", 1, Some(1), simple!(|rt, a| if a[0].is_false() { rt.fail("assertion failed", &[]) } else { Ok(rt.heap.intern_static("#u")) });
     "%fx26-assume", 1, Some(1), simple!(|rt, a| if a[0].is_false() { rt.fail("assumption not met", &[]) } else { Ok(rt.heap.intern_static("#u")) });
+    // Syscalls (`docs/research/syscalls.md`): a required one's check as its
+    // declaration runs; whether one is there; a call of one. Each given its
+    // label for messages, its host name and its type in canonical form.
+    "%fx26-syscall-require", 3, Some(3), simple!(|rt, a| {
+        let (label, host, canonical) = (get_string(rt, a[0])?, get_string(rt, a[1])?, get_string(rt, a[2])?);
+        crate::syscall::require(rt, &label, &host, &canonical)
+    });
+    "%fx26-syscall-available?", 2, Some(2), simple!(|rt, a| {
+        let (host, canonical) = (get_string(rt, a[0])?, get_string(rt, a[1])?);
+        Ok(Value::boolean(crate::syscall::available(&host, &canonical)))
+    });
+    "%fx26-syscall", 3, Some(3 + crate::syscall::MAX_ARGS), simple!(|rt, a| {
+        let (label, host, canonical) = (get_string(rt, a[0])?, get_string(rt, a[1])?, get_string(rt, a[2])?);
+        let args = a[3..].to_vec();
+        crate::syscall::call(rt, &label, &host, &canonical, &args)
+    });
+    // FX-26's `type-at` (Heist's, `FIXPT-CHANGES.md` F3): program text
+    // `a[0]` checked, and the innermost expression at character `a[1]`:
+    // "START END TYPE", or "error START END MESSAGE", in characters. The
+    // checker is above this crate; the session installs it (`type_at`).
+    "%fx26-type-at", 2, Some(2), simple!(|rt, a| {
+        let text = get_string(rt, a[0])?;
+        let pos = int(rt, a[1])?;
+        let out = match rt.type_at {
+            Some(f) => f(&text, pos),
+            None => "error 0 0 no checker here".to_string(),
+        };
+        Ok(rt.heap.make_string(&out))
+    });
+    // Programs run beside this one (Heist's, `FIXPT-CHANGES.md` F4): one
+    // started, by a list of its name and arguments and a directory; what it
+    // wrote since last asked, never waiting; whether it runs; its input
+    // written, and closed; a signal sent to its group.
+    "%fx26-process-start", 2, Some(2), simple!(|rt, a| {
+        let mut argv = Vec::new();
+        let mut x = a[0];
+        while x.is_pair() {
+            let s = rt.heap.car(x);
+            argv.push(get_string(rt, s)?);
+            x = rt.heap.cdr(x);
+        }
+        let dir = get_string(rt, a[1])?;
+        Ok(match rt.world.process_start(&argv, &dir) {
+            Ok(p) => fx26_sum(rt, "started", Value::fixnum(p)),
+            Err(e) => fx26_io_result(rt, Err(e)),
+        })
+    });
+    "%fx26-process-output", 1, Some(1), simple!(|rt, a| {
+        let p = int(rt, a[0])?;
+        let s = rt.world.process_output(p);
+        Ok(rt.heap.make_string(&s))
+    });
+    "%fx26-process-status", 1, Some(1), simple!(|rt, a| {
+        use crate::world::ProcessStatus as S;
+        let p = int(rt, a[0])?;
+        Ok(match rt.world.process_status(p) {
+            S::Running => fx26_sum(rt, "running", Value::UNIT),
+            S::Exited(c) => fx26_sum(rt, "exited", Value::fixnum(c as i64)),
+            S::Signalled(c) => fx26_sum(rt, "signalled", Value::fixnum(c as i64)),
+            S::Unknown => fx26_sum(rt, "unknown", Value::UNIT),
+        })
+    });
+    "%fx26-process-write", 2, Some(2), simple!(|rt, a| {
+        let p = int(rt, a[0])?;
+        let s = get_string(rt, a[1])?;
+        let r = rt.world.process_write(p, s.as_bytes());
+        Ok(fx26_io_result(rt, r))
+    });
+    "%fx26-process-close-input", 1, Some(1), simple!(|rt, a| {
+        let p = int(rt, a[0])?;
+        rt.world.process_close_input(p);
+        Ok(Value::UNIT)
+    });
+    "%fx26-process-signal", 2, Some(2), simple!(|rt, a| {
+        let p = int(rt, a[0])?;
+        let sig = int(rt, a[1])?;
+        rt.world.process_signal(p, sig as i32);
+        Ok(Value::UNIT)
+    });
 }
 
 /// Promise states. `[state, payload]`.

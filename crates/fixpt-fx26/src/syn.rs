@@ -541,14 +541,15 @@ pub fn read_to_syns_at(scheme: &mut Session, file: FileId, text: &str, at: i64) 
 /// field, keyed by where it is, in characters. A handle in the caller's
 /// scope; or the check's error. In the cellular convention.
 pub fn rust_facts(scheme: &mut Session, file: FileId, text: &str) -> R<Handle> {
-    rust_facts_in(scheme, file, text, crate::ast::Conv::Cellular)
+    rust_facts_in(scheme, file, text, crate::ast::Conv::Cellular, false)
 }
 
 /// [`rust_facts`] of a program of convention `conv`, as its own checker
 /// (`Fx26Session::fresh_checker`) checks it: what each call is compiled in
-/// follows.
-pub fn rust_facts_in(scheme: &mut Session, file: FileId, text: &str, conv: crate::ast::Conv) -> R<Handle> {
+/// follows. With `syscalls`, a runtime's program (`Checker::syscalls`).
+pub fn rust_facts_in(scheme: &mut Session, file: FileId, text: &str, conv: crate::ast::Conv, syscalls: bool) -> R<Handle> {
     let mut c = crate::Checker::with_convention(conv);
+    c.syscalls = syscalls;
     c.base_dir = LOAD_BASE.with(|b| b.borrow().clone());
     let forms = c.read_in(file, text)?;
     let done = c.declare_ahead(&forms)?;
@@ -890,7 +891,7 @@ fn load_modules_at(f: &Syntax, interner: &Interner, out: &mut Vec<Load>) {
         out.push((f.span.start, p.to_string(), input, Some(file.to_string())));
     }
     let head = items.first().and_then(|h| h.as_symbol()).map(|h| interner.name(h));
-    if matches!(head, Some("spawn" | "spawn-monitored" | "send" | "receive" | "self" | "par" | "race" | "pselect" | "icell-get" | "icell-put!")) {
+    if matches!(head, Some("spawn" | "spawn-monitored" | "send" | "receive" | "self" | "par" | "race" | "attempt" | "pselect" | "icell-get" | "icell-put!")) {
         out.push((f.span.start, crate::check::PROCESSES.to_string(), false, None));
     }
     let rest = items.get(1..).unwrap_or_default();

@@ -231,6 +231,21 @@ pub const ENTRIES: &[(&str, &str)] = &[
     ("args", "(poly ((r region)) (subr (maxeff (io args) (alloc r)) () (listof string r)))"),
     ("read-file", "(poly ((r region)) (subr (maxeff (io fs-read) (alloc r)) (string) (sumof (data (bytevectorof r)) (failed io-error))))"),
     ("list-dir", "(poly ((r region)) (subr (maxeff (io fs-read) (alloc r)) (string) (sumof (names (listof string r)) (failed io-error))))"),
+    // Heist's (`FIXPT-CHANGES.md` F3): the checker's type of the innermost
+    // expression of a program text at a character (`typeat.rs`). Reading the
+    // files it loads is its effect.
+    ("type-at", "(subr (io fs-read) (string int) string)"),
+    // Heist's (`FIXPT-CHANGES.md` F4): programs run beside this one, by
+    // number. Started by name and arguments, in a directory (\"\": this
+    // one's), standard output and error one stream; what it wrote since last
+    // asked, never waiting; whether it runs, which it does until it has
+    // exited and all it wrote is read; its input; a signal to its group.
+    ("process-start", "(poly ((r region)) (subr (maxeff (io process) (read r)) ((listof string r) string) (sumof (started int) (failed io-error))))"),
+    ("process-output", "(subr (io process) (int) string)"),
+    ("process-status", "(subr (io process) (int) (sumof (running unit) (exited int) (signalled int) (unknown unit)))"),
+    ("process-write", "(subr (io process) (int string) (sumof (done unit) (failed io-error)))"),
+    ("process-close-input", "(subr (io process) (int) unit)"),
+    ("process-signal", "(subr (io process) (int int) unit)"),
     ("write-file", "(poly ((r region)) (subr (maxeff (io fs-write) (read r)) (string (bytevectorof r)) (sumof (done unit) (failed io-error))))"),
     // Bytevectors (`TODO.md` §84): made, read and written at a region, as
     // arrays are; R7RS's names. `bytevector-copy` takes a start and an end,
@@ -599,6 +614,9 @@ pub const ENTRIES: &[(&str, &str)] = &[
     // `race`'s (`docs/fx26.md`, "`race`"), whose branches the checkers
     // check as their own rule says (`synth_race`).
     ("%processes:race2", "(poly ((a type) (e1 effect) (e2 effect)) (subr (maxeff e1 e2 nondet) ((subr e1 () a) (subr e2 () a)) a))"),
+    // `attempt`'s (`synth_attempt`): its body cancellable, as a `race`
+    // branch is.
+    ("%processes:attempt1", "(poly ((a type) (e1 effect) (e2 effect)) (subr (maxeff e1 e2 nondet) ((subr e1 () a) (subr e2 (string) a)) a))"),
     // `pselect`'s (`docs/fx26.md`, "`pselect`"): which of its events is
     // ready, waiting for one, a choice when more than one is.
     ("%processes:cell-event", "(poly ((r region)) (poly ((t type)) (subr pure ((icell t r)) (event (await r)))))"),
@@ -631,6 +649,21 @@ pub const ENTRIES: &[(&str, &str)] = &[
         "(poly ((q region) (r region) (l region)) (poly ((v type) (t type) (a type) (d effect))
            (subr (maxeff (read q) (alloc l)) ((composable t a d r) (mark-key v q)) (listof v l))))",
     ),
+    // Syscalls (`docs/research/syscalls.md`): a required one's check, and a
+    // call of one with `n` arguments, which only the definitions a
+    // `define-syscall` or `define-optional-syscall` expands into name; each
+    // given its label for messages, its host name and its type in canonical
+    // form. Trusted, as `native-procedure` is: the declaration's type is the
+    // call's. And whether one is there, which `syscall-available?` asks.
+    ("%syscall-require", "(subr (io sys) (string string string) unit)"),
+    ("%syscall-available?", "(subr pure (string string) bool)"),
+    ("%syscall0", "(poly ((t type)) (subr (io sys) (string string string) t))"),
+    ("%syscall1", "(poly ((a1 type) (t type)) (subr (io sys) (string string string a1) t))"),
+    ("%syscall2", "(poly ((a1 type) (a2 type) (t type)) (subr (io sys) (string string string a1 a2) t))"),
+    ("%syscall3", "(poly ((a1 type) (a2 type) (a3 type) (t type)) (subr (io sys) (string string string a1 a2 a3) t))"),
+    ("%syscall4", "(poly ((a1 type) (a2 type) (a3 type) (a4 type) (t type)) (subr (io sys) (string string string a1 a2 a3 a4) t))"),
+    ("%syscall5", "(poly ((a1 type) (a2 type) (a3 type) (a4 type) (a5 type) (t type)) (subr (io sys) (string string string a1 a2 a3 a4 a5) t))"),
+    ("%syscall6", "(poly ((a1 type) (a2 type) (a3 type) (a4 type) (a5 type) (a6 type) (t type)) (subr (io sys) (string string string a1 a2 a3 a4 a5 a6) t))"),
 ];
 
 /// The initial environment as text, for the checker written in FX-26:

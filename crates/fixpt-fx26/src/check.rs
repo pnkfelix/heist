@@ -66,6 +66,8 @@ pub const FLATLAYOUT: &str = "(flatlayout (t type)) int";
 /// safety's analyses (its regions), opaque to anything else; its elements
 /// raw at run time, as its layout says.
 pub const FLATARRAYOF: &str = "(flatarrayof (t type) (r region)) (arrayof t r)";
+/// `FLATARRAYOF`'s number among the generative types.
+pub(crate) const FLATARRAYOF_INDEX: u32 = 2;
 /// A test's narrowing of a path from a variable, `root` at binding `at`
 /// (`TODO.md` §54): its steps, the regions they read through, its type
 /// there, the closure depth it was found at, and whether an effect since
@@ -137,6 +139,8 @@ pub(crate) const FLAT_KEYED_INDEX: u32 = 7;
 /// array of `u8` at `r`, which its writes and reads name, and opaque to
 /// anything else. A reader's bytevector, in a `datum`, is `bytevector`.
 pub const BYTEVECTOROF: &str = "(bytevectorof (r region)) (arrayof u8 r)";
+/// `BYTEVECTOROF`'s number among the generative types.
+pub(crate) const BYTEVECTOROF_INDEX: u32 = 8;
 /// An escape-only prompt tag (`TODO.md` §89), generative type 9: its
 /// prompts deliver an `a`, its escapes carry an `h`, in region `r`. No
 /// continuation is captured with one (`call-with-composable-continuation`
@@ -177,7 +181,9 @@ pub const PROCESSES: &str = "fx26:processes.fx";
 /// see them. The runtime's part says nothing of what the tasks it is given
 /// do, so a program that could name it could hide an effect.
 pub(crate) fn built_in_only(name: &str) -> bool {
-    name == "%sched" || name.starts_with("%processes:")
+    // What a syscall's declaration expands into, but `%syscall-available?`,
+    // which only asks.
+    name == "%sched" || name.starts_with("%processes:") || (name.starts_with("%syscall") && name != "%syscall-available?")
 }
 /// A scalar flat's layout (`fixpt_heap::layout::FLAT_*`), as the runtime
 /// reads and writes its bytes.
@@ -368,6 +374,12 @@ pub struct Checker {
     /// While a `moduleof` is shown: its descriptions' names, each naming
     /// what it describes in the components after it (`unparse`).
     pub(crate) print_names: std::cell::RefCell<Vec<(Sym, TyId)>>,
+    /// Whether types print with no name at all, every one written out:
+    /// for `type-at`, which puts names back by what they print as
+    /// (Heist's, `FIXPT-CHANGES.md` F3).
+    pub(crate) print_expanded: std::cell::Cell<bool>,
+    /// While it prints so: the depths of the nodes a cycle came back to.
+    pub(crate) print_cycles: std::cell::RefCell<HashSet<usize>>,
     /// Whether two types are being shown apart ([`Checker::show_apart`]):
     /// each description variable printed as a mark, named after.
     pub(crate) show_marks: std::cell::Cell<bool>,
@@ -474,6 +486,10 @@ pub struct Checker {
     /// checking them again (`Checker::top_defining`): what the REPL asks
     /// for, re-running them when told (`,rerun-outdated`).
     pub defer_reruns: bool,
+    /// Whether this program is a runtime's, whose driver was told so
+    /// (`--syscalls`): it may declare syscalls, as a module file built in
+    /// may (`docs/research/syscalls.md`, "Containment").
+    pub syscalls: bool,
     /// The definitions out of date (`defer_reruns`): each one's names, and
     /// the names it uses that were defined again since, at new globals.
     pub(crate) outdated: Vec<(Vec<Sym>, Vec<Sym>)>,
@@ -862,6 +878,8 @@ impl Checker {
             effect_selects: Vec::new(),
             with_effect_fallback: HashMap::new(),
             print_names: std::cell::RefCell::new(Vec::new()),
+            print_expanded: std::cell::Cell::new(false),
+            print_cycles: std::cell::RefCell::new(HashSet::new()),
             show_marks: std::cell::Cell::new(false),
             subst_keep: None,
             select_map: HashMap::new(),
@@ -892,6 +910,7 @@ impl Checker {
             broken: HashMap::new(),
             defs: Vec::new(),
             defer_reruns: false,
+            syscalls: false,
             outdated: Vec::new(),
             globals_effects: true,
             record_operands: false,

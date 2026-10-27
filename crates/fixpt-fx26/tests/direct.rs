@@ -838,12 +838,18 @@ fn run_native(rt: &mut fixpt_runtime::Runtime, closure: Value, fuel: u64) -> fix
 /// always declines) as cellular code: cellular code
 /// calling a native closure, native code a cellular one, and a whole
 /// continuation cellular code took thrown from native code
-/// (`programs/native/mixed.fx`); and the same collecting often.
+/// (`programs/native/mixed.fx`); and the same collecting often. On the
+/// Rust machine, and on the register machine, as the REPL runs it.
 #[test]
 fn native_and_cellular_code_call_each_other() {
     use fixpt_fx26::session::Strategy;
-    for gc_every in [500] {
+    let machines: &[Option<fixpt_runtime::RunWord>] =
+        if fixpt_native::CELLULAR_AVAILABLE { &[None, Some(fixpt_native::cellular::run_word_registers)] } else { &[None] };
+    for (gc_every, machine) in machines.iter().map(|m| (500, *m)) {
         let mut s = Fx26Session::with_backend(Backend::Bytecode).expect("starts");
+        if let Some(m) = machine {
+            s.scheme.runtime_unrooted().run_word = Some(m);
+        }
         s.set_native_convention(true);
         s.strategy = Strategy::Cellular;
         s.native_runner = Some(run_native);
@@ -1150,8 +1156,12 @@ fn native_session_adapters_aborts_and_stack_maps() {
     assert!(c1 / n1 > c0 / n0 + 80_000, "{seen:?}");
     // A frame of 70 slots, past what a header's mask holds: traced whole,
     // under those collections (`programs/native/wide-frame.fx`).
+    // The front end, lowered Scheme here, counts its own steps against the
+    // limit too, and checking `wide`'s 70 bindings takes nearly 20 million.
     let forms = s.checker.read_in(FileId(0), include_str!("programs/native/wide-frame.fx")).expect("reads");
+    s.set_step_limit(Some(40_000_000));
     assert_eq!(values_of(&mut s, &forms), ["2485", "37450000"], "wide frame");
+    s.set_step_limit(Some(fixpt_fx26::session::DEFAULT_STEP_LIMIT));
     // More values than registers, the rest a list in the last register, under
     // those collections too.
     let forms = s.checker.read_in(FileId(0), include_str!("programs/native/many-values.fx")).expect("reads");
