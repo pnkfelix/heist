@@ -3415,3 +3415,39 @@ wrote since asked, never waiting), `process-status` (`running`, `exited`,
   agreeing.
 - **Not yet**: a `pselect` arm (`TODO.md` §132); a pseudo-terminal;
   environment variables; output and error apart.
+
+## 133. Queries by type and effect: `,query` and `fixpt query` (2026-10-27)
+
+At the REPL and from the command line, which definitions of a program
+have an effect (`effect (write @ed)`), mention a type (`uses T`), give one
+(`returns T`; without needing one, `constructs T`; only for one,
+`transforms T`), take one for nothing back (`consumes T`), or may write what one holds (`mutates T`): each with its
+type and its place, module items too (`docs/fx26.md`, "Queries";
+`fixpt_fx26::query`).
+
+- **The program checked again**, its sources each a file of its own, so
+  that a place is a file's line and column: the REPL keeps what it
+  defined, form by form and file by file, where each was.
+- **Giving and needing, as the customer given a value sees it**, by
+  polarity, and a `T` given *tolled* when reaching it means calling a
+  procedure whose arguments oblige the customer to make one, and a `T`
+  taken a *trade* when the exchange gives one back: so `((() -> T) (T ->
+  unit) -> unit) -> unit` constructs and consumes, and `((T -> T) -> unit)
+  -> unit` only transforms, though each mentions `T` once each way.
+- **A type named at a program's end** has a module's effects and types
+  selected before the module was known put in, as `type-at` prints them.
+- **Tests**: `fixpt-cli/tests/query.rs` on `programs/query/` (seven shapes
+  of procedure; effects, definite and may; mutation through a procedure
+  returned), and at the REPL.
+- **Local names bound to a polymorphic definition instantiated** so that
+  it answers, where it does not as it is: `(let ((wipe (proj clear!
+  @ed))) …)`. Calls and other unnamed uses are left out: hundreds of `car`
+  at a list of ropes, on Heist's editor, said nothing.
+- **Named types printed once a question**: `typeat::Namer`, the table of
+  names made once, not for each type printed (16 s to 2.2 s for 280
+  answers on the editor).
+- **`around CONTEXT`**: the local names in scope at a place
+  (`FILE:LINE:COL`), or bound in a definition, a module's item or a file,
+  that answer: a lambda's parameters, a `let`'s and `letrec`'s names.
+- **Not yet**: a `tagcase` arm's names and a `typecase`'s among the
+  locals; an entry the REPL holds (`,pending`) among the sources.
