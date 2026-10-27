@@ -186,6 +186,7 @@ or a global."
     (tagcase a
       (int i (tagcase b (int j (= i j)) (else y #f)))
       (real r (tagcase b (real s (f64= r s)) (else y #f)))
+      (ratio q (tagcase b (ratio p (and (= (extract q num) (extract p num)) (= (extract q den) (extract p den)))) (else y #f)))
       (char c (tagcase b (char d (char=? c d)) (else y #f)))
       (bool c (tagcase b (bool d (bool=? c d)) (else y #f)))
       (str s (tagcase b (str t (string=? (get s) (get t))) (else y #f)))

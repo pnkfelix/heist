@@ -97,9 +97,29 @@ least one digit, then perhaps an exponent."
                    #f)))
             (else #f)))))
 
-"Number `s`, in `radix`, or #f: an integer, a ratio (exact if it divides,
-else inexact: s7st has no ratios), a decimal, or an infinity or NaN; each
-signed, and perhaps prefixed (`#x`, `#e`, …)."
+"Decimal `s` (unsigned: digits, a point, an exponent) exactly: `1.1` is
+11/10."
+(define* s7-exact-decimal (subr spin (string) s7-value)
+  (lambda (s)
+    (let* ((e (let ((a (string-search s "e" 0)) (b (string-search s "E" 0))) (if (>= a 0) a b)))
+           (mant (if (>= e 0) (substring s 0 e) s))
+           (expo (if (>= e 0)
+                     (let* ((x (substring s (+ e 1) (string-length s)))
+                            (neg (and (> (string-length x) 0) (char=? (string-ref x 0) #\-)))
+                            (digits (if (and (> (string-length x) 0) (char-in? (string-ref x 0) "+-")) (substring x 1 (string-length x)) x))
+                            (v (s7-parse-digits digits 10)))
+                       (if neg (- 0 v) v))
+                     0))
+           (pt (string-search mant "." 0))
+           (before (if (>= pt 0) (substring mant 0 pt) mant))
+           (after (if (>= pt 0) (substring mant (+ pt 1) (string-length mant)) ""))
+           (m (s7-parse-digits (string-append (if (string=? before "") "0" before) after) 10))
+           (scale (- expo (string-length after)))
+           (ten (lambda ((k int)) (letrec ((go (subr spin (int int) int) (lambda (k acc) (if (<= k 0) acc (go (- k 1) (* acc 10)))))) (go k 1)))))
+      (if (>= scale 0) (sum int (* m (ten scale))) (s7-make-ratio m (ten (- 0 scale)))))))
+
+"Number `s`, in `radix`, or #f: an integer, a ratio, a decimal, or an
+infinity or NaN; each signed, and perhaps prefixed (`#x`, `#e`, …)."
 (define* s7-parse-number (subr (maxeff spin (alloc @sc)) (string int) (union false s7-value))
   (lambda (s radix)
     (let ((n (string-length s)))
@@ -111,17 +131,25 @@ signed, and perhaps prefixed (`#x`, `#e`, …)."
                      ((char=? c #\o) (s7-parse-number rest 8))
                      ((char=? c #\d) (s7-parse-number rest 10))
                      ((char=? c #\e)
-                      (let ((v (s7-parse-number rest radix)))
-                        (typecase v
-                          (bool b #f)
-                          (else y (tagcase y
-                                    (real r (if (f64-finite? r) (sum int (f64->int (f64-round r))) #f))
-                                    (else z y))))))
+                      (let* ((neg (and (> (string-length rest) 0) (char=? (string-ref rest 0) #\-)))
+                             (body (if (and (> (string-length rest) 0) (char-in? (string-ref rest 0) "+-")) (substring rest 1 (string-length rest)) rest)))
+                        (if (and (= radix 10) (s7-decimal? body) (< (s7-parse-digits body 10) 0))
+                            (let ((v (s7-exact-decimal body)))
+                              (if neg (tagcase v (int i (sum int (- 0 i))) (ratio q (s7-make-ratio (- 0 (extract q num)) (extract q den))) (else y v)) v))
+                            (let ((v (s7-parse-number rest radix)))
+                              (typecase v
+                                (bool b #f)
+                                (else y (tagcase y
+                                          (real r (if (f64-finite? r) (s7-f64->exact r) #f))
+                                          (else z y))))))))
                      ((char=? c #\i)
                       (let ((v (s7-parse-number rest radix)))
                         (typecase v
                           (bool b #f)
-                          (else y (tagcase y (int i (sum real (int->f64 i))) (else z y))))))
+                          (else y (tagcase y
+                                    (int i (sum real (int->f64 i)))
+                                    (ratio q (sum real (s7-ratio->f64 (extract q num) (extract q den))))
+                                    (else z y))))))
                      (else #f))))
             ((string=? s "+inf.0") (sum real (f64/ 1.0 0.0)))
             ((string=? s "-inf.0") (sum real (f64/ -1.0 0.0)))
@@ -136,8 +164,7 @@ signed, and perhaps prefixed (`#x`, `#e`, …)."
                       (let ((a (s7-parse-digits (substring body 0 slash) radix))
                             (b (s7-parse-digits (substring body (+ slash 1) (string-length body)) radix)))
                         (cond ((or (< a 0) (<= b 0)) #f)
-                              ((= (remainder a b) 0) (sum int (if neg (- 0 (quotient a b)) (quotient a b))))
-                              (else (sum real (f64/ (int->f64 (if neg (- 0 a) a)) (int->f64 b)))))))
+                              (else (s7-make-ratio (if neg (- 0 a) a) b)))))
                      (else
                       (let ((i (s7-parse-digits body radix)))
                         (cond ((>= i 0) (sum int (if neg (- 0 i) i)))

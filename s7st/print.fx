@@ -105,6 +105,7 @@ read as a number, or has a character a symbol read cannot."
                          (eof u (one "#<eof>"))
                          (bool b (one (if b "#t" "#f")))
                          (int i (one (int->string i)))
+                         (ratio q (one (string-append (int->string (extract q num)) "/" (int->string (extract q den)))))
                          (real r (one (f64->string r)))
                          (char c (one (if write? (string-append "#\\" (s7-char-name c)) (char->string c))))
                          (str s (one (if write? (s7-quote-string (get s) "\"") (get s))))

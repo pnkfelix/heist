@@ -38,6 +38,7 @@ at @sc; a procedure has an identity (its `name` cell), as `eq?` needs."
          (eof unit)                     ; the end-of-file object
          (bool bool)
          (int int)                      ; exact: FX-26's ints are bignums
+         (ratio (productof (num int) (den int)))  ; exact, in lowest terms, den > 1
          (real f64)                     ; inexact
          (char char)
          (str (ref string @sc))
@@ -188,6 +189,44 @@ may be resumed any number of times."
   (lambda (s) (sum str (new s))))
 (define* s7-symbol (subr pure (string) s7-value)
   (lambda (s) (sum sym (string->symbol s))))
+"Greatest common divisor, of magnitudes."
+(define* s7-gcd (subr spin (int int) int)
+  (lambda (a b) (if (= b 0) (if (< a 0) (- 0 a) a) (s7-gcd b (remainder a b)))))
+"The exact number `n/d` (d not 0), in lowest terms: an int if it is one."
+(define* s7-make-ratio (subr spin (int int) s7-value)
+  (lambda (n d)
+    (let* ((g (s7-gcd n d))
+           (sign (if (< d 0) -1 1))
+           (nn (* sign (quotient n g)))
+           (dd (* sign (quotient d g))))
+      (if (= dd 1) (sum int nn) (sum ratio (product (num nn) (den dd)))))))
+"How many bits the magnitude of `n` has."
+(define* s7-bit-length (subr spin (int) int)
+  (lambda (n)
+    (letrec ((go (subr spin (int int) int)
+               (lambda (m k) (if (= m 0) k (go (arithmetic-shift m -1) (+ k 1))))))
+      (go (if (< n 0) (- 0 n) n) 0))))
+"`n/d` (d > 0) as the nearest float, or near it: 62 bits of the quotient
+kept, then scaled."
+(define* s7-ratio->f64 (subr spin (int int) f64)
+  (lambda (n d)
+    (if (and (< (s7-bit-length n) 53) (< (s7-bit-length d) 53))
+        (f64/ (int->f64 n) (int->f64 d))
+        (let ((k (- 62 (- (s7-bit-length n) (s7-bit-length d)))))
+          (if (>= k 0)
+              (f64* (int->f64 (quotient (arithmetic-shift n k) d)) (f64-expt 2.0 (int->f64 (- 0 k))))
+              (f64* (int->f64 (quotient n (arithmetic-shift d (- 0 k)))) (f64-expt 2.0 (int->f64 (- 0 k)))))))))
+"Float `r` (finite) exactly, as an int or a ratio: a float is a binary
+fraction, so doubling it enough makes it whole."
+(define* s7-f64->exact (subr spin (f64) s7-value)
+  (lambda (r)
+    (letrec ((go (subr spin (f64 int) s7-value)
+               (lambda (x k)
+                 (if (or (f64= x (f64-floor x)) (> k 1100))
+                     (s7-make-ratio (f64->int (f64-floor x)) (arithmetic-shift 1 k))
+                     (go (f64* x 2.0) (+ k 1))))))
+      (go r 0))))
+
 "Whether `v` counts as true: all but #f."
 (define* s7-true? (subr pure (s7-value) bool)
   (lambda (v) (tagcase v (bool b b) (else x #t))))
