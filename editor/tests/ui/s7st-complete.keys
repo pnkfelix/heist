@@ -1,0 +1,12 @@
+alpha
+\x1b
+x
+run-s7st\r
+@6000
+(string-up\t
+@600
+=
+)\r
+@400
+(vector-\t
+@600

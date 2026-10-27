@@ -12,6 +12,18 @@
 ---- a.scm   L3                         |
 (map f l . ls)                          |
 cursor 2,2
+ kkkkkk  ff                             |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm|
+                                        |
 == at the end
 (define (sq x . more)                   |
   (* x x))                              |
@@ -26,3 +38,15 @@ cursor 2,2
 ---- a.scm   L3                         |
 (sq x . more)                           |
 cursor 2,7
+ kkkkkk  ff                             |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm|
+                                        |

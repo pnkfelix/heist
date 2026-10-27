@@ -11,8 +11,8 @@ status=0
 for k in "$here"/ui/*.keys; do
   name=$(basename "$k" .keys)
   # A scenario named *.fx is of an FX-26 file, its faces shown too; *.scm,
-  # of a Scheme file.
-  case "$name" in *.fx) file=a.fx; faces=--faces;; *.scm) file=a.scm; faces=;; *) file=a.txt; faces=;; esac
+  # of a Scheme file, its faces too (s7st's analysis, scheme.fx).
+  case "$name" in *.fx) file=a.fx; faces=--faces;; *.scm) file=a.scm; faces=--faces;; *) file=a.txt; faces=;; esac
   mkdir -p "$tmp/$name"
   head -1 "$k" | sed 's/\\n/\n/g' > "$tmp/$name/$file"
   printf 'second file\nhere\n' > "$tmp/$name/b.txt"

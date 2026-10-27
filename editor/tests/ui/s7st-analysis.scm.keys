@@ -1,0 +1,11 @@
+(define (f x y)\n  (let ((z (+ x 1)))\n    (when (> z y) "big") ; note\n    (g z)))\n(define-record-type point (make-point a b) point? (a point-a))\n(foo (bar\n
+@6000
+=
+\x0e\x0e\x0e\x06\x06\x06\x06\x06\x06\x06
+\x1b.
+@500
+=
+\x1b,
+\x0e\x02\x02
+\x1b.
+@600

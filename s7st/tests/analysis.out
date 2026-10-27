@@ -1,0 +1,5 @@
+ready 
+analysis 3	1 7 0 9 10 1 17 20 0 39 42 3 49 52 2	f 9 10	32 33 11 12 34 35 23 24	a form is not closed	38
+completions vector-fill!	vector-for-each
+completions 
+[exit 0]

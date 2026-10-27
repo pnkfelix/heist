@@ -1,0 +1,78 @@
+== screen 1
+(define (f x y)                         |
+  (let ((z (+ x 1)))                    |
+    (when (> z y) "big") ; note         |
+    (g z)))                             |
+(define-record-type point (make-point a |
+(foo (bar                               |
+                                        |
+                                        |
+                                        |
+                                        |
+---- a.scm   L1   ! a form is not closed|
+                                        |
+cursor 0,0
+Pkkkkkk  f                              |
+   kkk                                  |
+     kkkk         sssss  cccccc         |
+          P                             |
+ kkkkkkkkkkkkkkkkkk fffff  ffffffffff   |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm|
+                                        |
+== screen 2
+(define (f x y)                         |
+  (let ((z (+ x 1)))                    |
+    (when (> z y) "big") ; note         |
+    (g z)))                             |
+(define-record-type point (make-point a |
+(foo (bar                               |
+                                        |
+                                        |
+                                        |
+                                        |
+---- a.scm   L2   ! a form is not closed|
+                                        |
+cursor 1,9
+ kkkkkk  f                              |
+   kkk                                  |
+     kkkk         sssss  cccccc         |
+                                        |
+ kkkkkkkkkkkkkkkkkk fffff  ffffffffff   |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm|
+                                        |
+== at the end
+(define (f x y)                         |
+  (let ((z (+ x 1)))                    |
+    (when (> z y) "big") ; note         |
+    (g z)))                             |
+(define-record-type point (make-point a |
+(foo (bar                               |
+                                        |
+                                        |
+                                        |
+                                        |
+---- a.scm   L5   ! a form is not closed|
+No definition of define-record-type in a|
+cursor 4,5
+ kkkkkk  f                              |
+   kkk                                  |
+     kkkk         sssss  cccccc         |
+                                        |
+ kkkkkkkkkkkkkkkkkk fffff  ffffffffff   |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm|
+                                        |

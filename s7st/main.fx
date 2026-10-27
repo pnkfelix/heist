@@ -14,6 +14,9 @@
 ;;;                           relative to DIR). MODE `repl`: only if its data
 ;;;                           are whole, each value written; `quiet`: not
 ;;;   describe NAME OPERATOR  what NAME is, else OPERATOR (eldoc)
+;;;   analyze KEY FILE TEXT   what TEXT is (analyze.fx), never run; KEY is
+;;;                           given back
+;;;   complete PREFIX         the names the top level sees that begin so
 ;;;   interrupt               what runs, stopped
 ;;; Answers:
 ;;;   ready WHY               started: WHY empty, or why it did not
@@ -25,6 +28,14 @@
 ;;;   error MESSAGE           what ran ended with an error
 ;;;   interrupted             what ran was stopped
 ;;;   describe TEXT           a `describe`'s answer (empty: nothing known)
+;;;   analysis KEY FACES DEFINITIONS REFERENCES PROBLEM AT
+;;;                           an `analyze`'s answer, each list's items
+;;;                           separated by spaces: FACES `start end f` (f:
+;;;                           k keyword, f function-name, s string, c
+;;;                           comment); DEFINITIONS `name start end`;
+;;;                           REFERENCES `start end binder-start binder-end`;
+;;;                           PROBLEM the read's error (empty: none), at AT
+;;;   completions NAME …       a `complete`'s answer, sorted
 
 (define* s7-say (subr (io stdout) (string) unit)
   (lambda (s) (if (string=? s "") #u (begin (write-out s) #u))))
@@ -100,6 +111,19 @@ ended well."
         (product (word word) (fields (if (< sp 0) nil (split 0 0 nil))))))))
 (define* s7-answer (subr (maxeff spin (io stdout)) (string string) unit)
   (lambda (word text) (s7-say (string-append word " " (s7-escape text) "\n"))))
+"An answer whose fields are `fields`, each escaped, separated by tabs."
+(define* s7-answer-fields (subr (maxeff spin (io stdout)) (string s7-strings) unit)
+  (lambda (word fields)
+    (letrec ((join (subr spin (s7-strings) string)
+               (lambda (l) (cond ((null? l) "") ((null? (cdr l)) (s7-escape (car l)))
+                                 (else (string-append (s7-escape (car l)) "\t" (join (cdr l))))))))
+      (s7-say (string-append word " " (join fields) "\n")))))
+"Strings `l`, sorted."
+(define* s7-sort-strings (subr spin (s7-strings) s7-strings)
+  (lambda (l)
+    (letrec ((insert (subr spin (string s7-strings) s7-strings)
+               (lambda (s l) (cond ((null? l) (list s)) ((string<? s (car l)) (cons s l)) (else (cons (car l) (insert s (cdr l))))))))
+      (if (null? l) nil (insert (car l) (s7-sort-strings (cdr l)))))))
 (define* s7-field (subr spin (s7-strings int) string)
   (lambda (l i) (cond ((null? l) "") ((= i 0) (car l)) (else (s7-field (cdr l) (- i 1))))))
 
@@ -135,6 +159,51 @@ first, if output did not end its line, so that what comes after starts one."
         ((string=? w "describe")
          (let ((d (s7-describe (s7-field f 0))))
            (s7-answer "describe" (if (string=? d "") (s7-describe (s7-field f 1)) d))))
+        ((string=? w "analyze")
+         (let* ((a (s7-analyze (s7-field f 2) (s7-field f 1)))
+                (ints (lambda ((l (listof int acyclic)))
+                        (letrec ((go (subr spin ((listof int acyclic)) (listof string acyclic))
+                                   (lambda (l) (if (null? l) nil (cons (int->string (car l)) (if (null? (cdr l)) nil (cons " " (go (cdr l)))))))))
+                          (s7-concat (go l))))))
+           (s7-answer-fields "analysis"
+                             (list (s7-field f 0)
+                                   (ints (letrec ((go (subr spin (s7-face-spans) (listof int acyclic))
+                                                        (lambda (l) (if (null? l) nil
+                                                                        (cons (extract (car l) start)
+                                                                              (cons (extract (car l) end)
+                                                                                    (cons (let ((fc (extract (car l) face)))
+                                                                                            (cond ((eq? fc 'keyword) 0) ((eq? fc 'function-name) 1)
+                                                                                                  ((eq? fc 'string) 2) ((eq? fc 'comment) 3) (else 4)))
+                                                                                          (go (cdr l)))))))))
+                                           (go (extract a faces))))
+                                   (s7-concat (letrec ((go (subr spin ((listof s7-def acyclic)) (listof string acyclic))
+                                                             (lambda (l) (if (null? l) nil
+                                                                             (cons (string-append (extract (car l) name) " " (int->string (extract (car l) start))
+                                                                                                  " " (int->string (extract (car l) end)) (if (null? (cdr l)) "" " "))
+                                                                                   (go (cdr l)))))))
+                                                (go (extract a defs))))
+                                   (ints (letrec ((go (subr spin ((listof s7-aref acyclic)) (listof int acyclic))
+                                                        (lambda (l) (if (null? l) nil
+                                                                        (cons (extract (car l) start) (cons (extract (car l) end)
+                                                                              (cons (extract (car l) binder-start) (cons (extract (car l) binder-end) (go (cdr l))))))))))
+                                           (go (extract a refs))))
+                                   (extract a problem)
+                                   (int->string (extract a problem-at))))))
+        ((string=? w "complete")
+         (let* ((prefix (s7-field f 0))
+                (k (string-length prefix))
+                (names (letrec ((go (subr s7-eff ((listof s7-ns-entry acyclic) s7-strings) s7-strings)
+                                  (lambda (l acc)
+                                    (if (null? l) acc
+                                        (let ((n (symbol->string (extract (car l) name))))
+                                          (go (cdr l)
+                                              (if (and (>= (string-length n) k) (string=? (substring n 0 k) prefix)
+                                                       (not (char=? (string-ref n 0) #\space)) (not (char=? (string-ref n 0) #\%))
+                                                       (tagcase (get (extract (extract (car l) cell) value)) (undef u (tagcase (get (extract (extract (car l) cell) syntax)) (none v #f) (else z #t))) (else y #t))
+                                                       (not (s7-member-string? n acc)))
+                                                  (cons n acc) acc)))))))
+                         (go (append (s7-ns-entries s7-toplevel) (s7-ns-entries s7-builtins)) nil))))
+           (s7-answer-fields "completions" (s7-sort-strings names))))
         ((string=? w "interrupt")
          (if (s7-busy?)
              (begin (s7-interrupt!)

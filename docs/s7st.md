@@ -32,6 +32,7 @@ take a group of files as one module, s7st can become a module with
 | `prims.fx`    | about 220 procedures written in FX-26                                                                                                        |
 | `table.fx`    | hash tables                                                                                                                                  |
 | `library.fx`  | libraries: namespaces, import sets, finding a library's file                                                                                 |
+| `analyze.fx`  | what a text is, for an editor, read and walked but never run: faces, definitions, each local variable's binder, the read's error           |
 | `machine.fx`  | the compiler to closures, and the CEK machine that runs its code, one step at a time                                                         |
 | `prelude.scm` | what is written in Scheme: `map`, `guard`, `parameterize`, promises, the I/O procedures over ports, a few of SRFI 1's. `prelude.fx` is generated from it by `gen-prelude.py` |
 | `session.fx`  | the API clients call: `s7-init!`, `s7-start!`, `s7-continue!`, `s7-take-output!`, `s7-interrupt!`                                            |
@@ -218,10 +219,13 @@ produces it:
   returns and what it raises.
 
 What remains for an analysis:
-- **An expander mode for buffers being edited.** Today the expander records
-  errors and expands a form it can't read into `n-fail`. An analysis
-  wants Yank's lenient desugaring instead, where an unknown form becomes
-  an application so its parts are still analyzed.
+- **A front end for buffers being edited.** `analyze.fx` is a first one,
+  for the editor. It walks what the reader read, knowing R7RS's binding
+  forms; an unknown form is an application, so its parts are still
+  walked, as in Yank's desugaring. It changes no global, and the reader
+  now keeps every list item's position (`s7-item-spans`). What it lacks
+  for a flow analysis is the core itself: it resolves binders but builds
+  no nodes, and it doesn't expand macros.
 - **Expansion that leaves the live globals alone.** `define-syntax` and
   `define` at top level change the global table when expanded. An
   analysis of a buffer that hasn't run yet should expand into a table of
@@ -288,7 +292,21 @@ Its keys:
 | `C-c C-b`, `C-c C-l`           | the buffer's forms, as `load` runs a file, so errors give their line                           |
 | `C-c C-r`                      | the region                                                                                      |
 | `C-c C-z`                      | to *s7st*                                                                                       |
+| TAB in *s7st*, M-TAB            | the name before point completed, from those s7st's top level sees                               |
+| M-.                            | in a Scheme buffer, a local variable's binder, or a definition in a buffer, as in an FX-26 buffer; for a name defined nowhere, what s7st knows of it |
 | eldoc, in those buffers and *s7st* | once s7st runs, what it knows of the name at point, or of the operator of the call around it: `(map f l . ls)`, `car: 1 argument`, `guard: a macro`, `x = (1 2)`. Eldoc does not start s7st. |
+
+**Scheme buffers look like Scheme.** Each `.scm`, `.sld`, `.ss` or `.sps`
+buffer has an analysis actor. After each edit (the last of a burst) it
+sends the text to the server's `analyze`. The answer becomes the buffer's
+annotation, as the FX-26 syntax actor's does:
+- faces: keywords, defined names, strings and comments;
+- the definitions, for M-.;
+- each local variable's binder, for M-.;
+- the read's error, in the mode line.
+
+Opening a Scheme file starts the server. TAB and RET indent as in an FX-26
+buffer, with Scheme's body forms. Paredit's keys work there too.
 
 **Where output goes.** In *s7st*, output goes before the prompt, as
 comint's does. Text typed while something runs waits after the prompt.
@@ -302,6 +320,9 @@ selected when it was made. `bin/s7st` uses the directory it was started
 in.
 
 **Tests:**
+- `editor/tests/ui/s7st-analysis.scm.keys`: a Scheme buffer's faces, its
+  read error, M-. to a binder, and M-. on a name no buffer defines.
+- `editor/tests/ui/s7st-complete.keys`: TAB completion in *s7st*.
 - `s7st/tests/server.serve`: the server's protocol, interrupting a loop
   included.
 - `editor/tests/ui/s7st-eldoc.scm.keys`: eldoc on a closure and on a

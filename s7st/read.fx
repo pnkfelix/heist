@@ -6,6 +6,15 @@
 
 "Where each list read began and ended, by its first pair's car cell."
 (define s7-spans (eqtable (ref s7-value @sc) s7-span @sc @sc) (make-eqtable (ref-identity)))
+"While a buffer is analysed (analyze.fx), where each item of each list
+read is, by the car cell of the pair that holds it: so a symbol's place
+is known, though a symbol has no identity of its own."
+(define s7-item-spans (ref (listof (eqtable (ref s7-value @sc) s7-span @sc @sc) acyclic) @sc) (new nil))
+"Where the item pair `p` holds was read, if items are being noted."
+(define* s7-item-span (subr (maxeff (read @sc) (write @sc)) (s7-pair s7-span) s7-span)
+  (lambda (p default)
+    (let ((t (get s7-item-spans)))
+      (if (null? t) default (eqtable-ref (car t) (extract p car) default)))))
 "The span of datum `v`, if it is a list read."
 (define* s7-span-of (subr (maxeff (read @sc) (write @sc)) (s7-value) s7-span)
   (lambda (v)
@@ -221,7 +230,7 @@ infinity or NaN; each signed, and perhaps prefixed (`#x`, `#e`, …)."
                      (at a
                        (if (>= a n) (sum none #u)
                            (let ((c (string-ref text a)))
-                             (cond ((or (char=? c #\() (char=? c #\[)) (items (+ a 1) a (if (char=? c #\() #\) #\]) nil))
+                             (cond ((or (char=? c #\() (char=? c #\[)) (items (+ a 1) a (if (char=? c #\() #\) #\]) nil nil))
                                    ((or (char=? c #\)) (char=? c #\])) (bad "unexpected close parenthesis" a))
                                    ((char=? c #\') (abbrev a "quote"))
                                    ((char=? c #\`) (abbrev a "quasiquote"))
@@ -238,7 +247,10 @@ infinity or NaN; each signed, and perhaps prefixed (`#x`, `#e`, …)."
                  (lambda (a name)
                    (tagcase (datum (+ a 1))
                      (datum d (let ((v (s7-cons (s7-symbol name) (s7-cons (extract d value) s7-nil))))
-                                (begin (note v a (extract d end)) (done v a (extract d end)))))
+                                (begin (note v a (extract d end))
+                                  (note-items v (list (product (file file) (start a) (end (extract d start)))
+                                                      (product (file file) (start (extract d start)) (end (extract d end)))))
+                                  (done v a (extract d end)))))
                      (none u (sum incomplete #u))
                      (else y y))))
                (note (subr (maxeff (write @sc) (alloc @sc)) (s7-value int int) unit)
@@ -246,9 +258,20 @@ infinity or NaN; each signed, and perhaps prefixed (`#x`, `#e`, …)."
                    (tagcase v
                      (pair p (eqtable-set! s7-spans (extract p car) (product (file file) (start a) (end e))))
                      (else y #u))))
+               ;; Each item of list `v` noted with its span, if items are being noted.
+               (note-items (subr (maxeff spin (read @sc) (write @sc) (alloc @sc)) (s7-value (listof s7-span acyclic)) unit)
+                 (lambda (v spans)
+                   (let ((t (get s7-item-spans)))
+                     (if (null? t) #u
+                         (tagcase v
+                           (pair p (if (null? spans) #u
+                                       (begin (eqtable-set! (car t) (extract p car) (car spans))
+                                         (note-items (get (extract p cdr)) (cdr spans)))))
+                           (else y #u))))))
                ;; A list's items from `i`, its open at `open`, closed by `close`; read so far, last first.
-               (items (subr (maxeff spin (read @sc) (write @sc) (alloc @sc)) (int int char s7-values) s7-read)
-                 (lambda (i open close acc)
+               (items (subr (maxeff spin (read @sc) (write @sc) (alloc @sc)) (int int char s7-values (listof s7-span acyclic)) s7-read)
+                 ;; `spans`: where each of `acc` was read, last first.
+                 (lambda (i open close acc spans)
                    (tagcase (skip i)
                      (err r r)
                      (at a
@@ -256,7 +279,7 @@ infinity or NaN; each signed, and perhaps prefixed (`#x`, `#e`, …)."
                              ((or (char=? (string-ref text a) #\)) (char=? (string-ref text a) #\]))
                               (if (char=? (string-ref text a) close)
                                   (let ((v (s7-list (reverse acc))))
-                                    (begin (note v open (+ a 1)) (done v open (+ a 1))))
+                                    (begin (note v open (+ a 1)) (note-items v (reverse spans)) (done v open (+ a 1))))
                                   (bad "mismatched close parenthesis" a)))
                              ((and (char=? (string-ref text a) #\.) (pair? acc)
                                    (or (>= (+ a 1) n) (s7-delimiter? (string-ref text (+ a 1)))))
@@ -267,13 +290,14 @@ infinity or NaN; each signed, and perhaps prefixed (`#x`, `#e`, …)."
                                     (at e (cond ((>= e n) (sum incomplete #u))
                                                 ((char=? (string-ref text e) close)
                                                  (let ((v (s7-list* (reverse acc) (extract d value))))
-                                                   (begin (note v open (+ e 1)) (done v open (+ e 1)))))
+                                                   (begin (note v open (+ e 1)) (note-items v (reverse spans)) (done v open (+ e 1)))))
                                                 (else (bad "more than one datum after a dot" e))))))
                                 (none u (sum incomplete #u))
                                 (else y y)))
                              (else
                               (tagcase (datum a)
-                                (datum d (items (extract d end) open close (cons (extract d value) acc)))
+                                (datum d (items (extract d end) open close (cons (extract d value) acc)
+                                                (cons (product (file file) (start (extract d start)) (end (extract d end))) spans)))
                                 (none u (sum incomplete #u))
                                 (else y y))))))))
                ;; A string's characters from `i`, last first.
@@ -330,7 +354,7 @@ infinity or NaN; each signed, and perhaps prefixed (`#x`, `#e`, …)."
                    (if (>= (+ a 1) n) (sum incomplete #u)
                        (let ((c (string-ref text (+ a 1))))
                          (cond ((char=? c #\()
-                                (tagcase (items (+ a 2) a #\) nil)
+                                (tagcase (items (+ a 2) a #\) nil nil)
                                   (datum d (tagcase (s7-list-items (extract d value))
                                              (some l (done (sum vec (list->array l)) a (extract d end)))
                                              (none u (bad "a vector may not be dotted" a))))
@@ -344,7 +368,7 @@ infinity or NaN; each signed, and perhaps prefixed (`#x`, `#e`, …)."
                                         (char ch (done (sum char ch) a e))
                                         (else y (bad (string-append "unknown character #\\" name) a))))))
                                ((and (char=? c #\u) (< (+ a 3) n) (string=? (substring text (+ a 1) (+ a 4)) "u8("))
-                                (tagcase (items (+ a 4) a #\) nil)
+                                (tagcase (items (+ a 4) a #\) nil nil)
                                   (datum d (tagcase (s7-list-items (extract d value))
                                              (some l (if (s7-all-bytes? l)
                                                          (done (sum bytes (list->array (s7-byte-ints l))) a (extract d end))

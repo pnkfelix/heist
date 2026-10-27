@@ -12,6 +12,12 @@
 ;;;   C-c C-b, C-c C-l    the buffer's forms run, as `load` runs a file's
 ;;;   C-c C-r             the region's forms run
 ;;;   C-c C-z             to *s7st*
+;;;   TAB in *s7st*,      the name before point completed, from those
+;;;   M-TAB               s7st's top level sees
+;;;   M-.                 in a Scheme buffer, as in an FX-26 one: its
+;;;                       binder, or a definition in a buffer (from s7st's
+;;;                       analysis of each Scheme buffer, which also gives
+;;;                       its faces); else what s7st knows of the name
 ;;;
 ;;; s7st runs in a process of its own, `bin/s7st --serve`, started the
 ;;; first time it is asked for, so that the editor does not compile it
@@ -41,8 +47,18 @@ echo area (of a frame), or nobody (nothing runs)."
 (define s7-submitted-end (ref int @ed) (new 0))
 "What was written while the echo area's client ran, for it to show."
 (define s7-echo-output (ref string @ed) (new ""))
-"The frame eldoc's `describe` answers to, if one is awaited."
-(define s7-eldoc-frame (ref (listof (actor frame) acyclic) @ed) (new nil))
+"Who a `describe` awaited answers to: eldoc in a frame, or M-. there,
+about a name."
+(define-type s7-describing (productof (frame (actor frame)) (m-dot bool) (name string)))
+(define s7-describe-for (ref (listof s7-describing acyclic) @ed) (new nil))
+"The analyses asked for and not yet answered: each request's key, and the
+buffer and revision it is of."
+(define-type s7-pending-analysis (productof (key int) (buffer (actor buffer)) (revision int)))
+(define s7-analyses (ref (listof s7-pending-analysis acyclic) @ed) (new nil))
+(define s7-next-key (ref int @ed) (new 0))
+"A completion asked for: the frame, the buffer, and where its prefix is."
+(define-type s7-completing (productof (frame (actor frame)) (buffer (actor buffer)) (start int) (end int) (prefix string)))
+(define s7-completion (ref (listof s7-completing acyclic) @ed) (new nil))
 "The directory *s7st*'s relative file names are relative to: that of the
 buffer selected when it was made."
 (define s7-repl-directory (ref string @ed) (new ""))
@@ -135,12 +151,107 @@ comint keeps it. Output is no change of the user's."
                                                       (if (string=? error "") (string-append "=> " value) (string-append "Error: " error))))))))
           (none u #u))))))
 
+"The fields of an answer's rest, `s`: split at its tabs, each unescaped."
+(define* s7-fields (subr spin (string) strings)
+  (lambda (s)
+    (letrec ((go (subr spin (int int strings) strings)
+               (lambda (i start acc)
+                 (cond ((>= i (string-length s)) (reverse-strings (cons (s7-unescape (substring s start i)) acc)))
+                       ((char=? (string-ref s i) #\tab) (go (+ i 1) (+ i 1) (cons (s7-unescape (substring s start i)) acc)))
+                       (else (go (+ i 1) start acc))))))
+      (go 0 0 nil))))
+"The words of `s`, separated by spaces."
+(define* s7-words (subr spin (string) strings)
+  (lambda (s)
+    (letrec ((go (subr spin (int int strings) strings)
+               (lambda (i start acc)
+                 (cond ((>= i (string-length s)) (reverse-strings (if (> i start) (cons (substring s start i) acc) acc)))
+                       ((char=? (string-ref s i) #\space) (go (+ i 1) (+ i 1) (if (> i start) (cons (substring s start i) acc) acc)))
+                       (else (go (+ i 1) start acc))))))
+      (go 0 0 nil))))
+"Integer `s`, perhaps negative; 0 if it is none."
+(define* s7-integer (subr spin (string) int)
+  (lambda (s)
+    (if (and (> (string-length s) 0) (char=? (string-ref s 0) #\-))
+        (- 0 (max 0 (parse-nat (substring s 1 (string-length s)) 10)))
+        (max 0 (parse-nat s 10)))))
+(define* s7-nth-field (subr spin (strings int) string)
+  (lambda (l i) (cond ((null? l) "") ((= i 0) (car l)) (else (s7-nth-field (cdr l) (- i 1))))))
+
+"The annotation an `analysis` answer's fields say, of revision `rev`."
+(define* s7-annotation (subr spin (strings int) annotation)
+  (lambda (fs rev)
+    (let* ((ints (lambda ((s string)) (letrec ((go (subr spin (strings) ints)
+                                                    (lambda (l) (if (null? l) nil (cons (s7-integer (car l)) (go (cdr l)))))))
+                                         (go (s7-words s)))))
+           (faces (letrec ((go (subr spin (ints) text-faces)
+                             (lambda (l)
+                               (if (or (null? l) (null? (cdr l)) (null? (cdr (cdr l)))) nil
+                                   (cons (product (start (car l)) (end (car (cdr l)))
+                                                  (face (let ((c (car (cdr (cdr l)))))
+                                                          (cond ((= c 0) 'keyword) ((= c 1) 'function-name) ((= c 2) 'string) (else 'comment)))))
+                                         (go (cdr (cdr (cdr l)))))))))
+                    (go (ints (s7-nth-field fs 1)))))
+           (defs (letrec ((go (subr spin (strings) definitions)
+                            (lambda (l)
+                              (if (or (null? l) (null? (cdr l)) (null? (cdr (cdr l)))) nil
+                                  (cons (product (name (car l)) (start (s7-integer (car (cdr l)))) (end (s7-integer (car (cdr (cdr l))))))
+                                        (go (cdr (cdr (cdr l)))))))))
+                   (go (s7-words (s7-nth-field fs 2)))))
+           (refs (letrec ((go (subr spin (ints) references)
+                            (lambda (l)
+                              (if (or (null? l) (null? (cdr l)) (null? (cdr (cdr l))) (null? (cdr (cdr (cdr l))))) nil
+                                  (cons (product (start (car l)) (end (car (cdr l)))
+                                                 (binder-start (car (cdr (cdr l)))) (binder-end (car (cdr (cdr (cdr l))))))
+                                        (go (cdr (cdr (cdr (cdr l))))))))))
+                   (go (ints (s7-nth-field fs 3)))))
+           (problem (s7-nth-field fs 4))
+           (at (s7-integer (s7-nth-field fs 5))))
+      (product (revision rev)
+               (faces (if (< at 0) faces (merge-faces faces (list (product (start at) (end (+ at 1)) (face 'error))))))
+               (definitions defs) (references refs) (links nil) (problem problem) (problem-at at)))))
+
+"The longest prefix strings `l` share."
+(define* s7-common-prefix (subr spin (strings) string)
+  (lambda (l)
+    (if (null? l) ""
+        (letrec ((two (subr spin (string string int) int)
+                   (lambda (a b i) (if (and (< i (string-length a)) (< i (string-length b)) (char=? (string-ref a i) (string-ref b i)))
+                                       (two a b (+ i 1)) i)))
+                 (go (subr spin (string strings) string)
+                   (lambda (p l) (if (null? l) p (go (substring p 0 (two p (car l) 0)) (cdr l))))))
+          (go (car l) (cdr l))))))
+"Completions `names` of the prefix `c` asked for, done: the prefix made
+their common one, and the rest said."
+(define* s7-complete-with! (subr cmd-eff (s7-completing strings) unit)
+  (lambda (c names)
+    (let* ((fr (extract c frame))
+           (common (s7-common-prefix names))
+           (prefix (extract c prefix)))
+      (if (null? names)
+          (tell! fr (echo (string-append "No completions for " prefix)))
+          (begin
+            (if (> (string-length common) (string-length prefix))
+                (tell! (extract c buffer)
+                       (in-buffer fr (lambda ((b buffer))
+                                       (let ((t (extract b text)) (a (extract c start)) (e (extract c end)))
+                                         (if (and (<= e (rope-length t)) (string=? (rope-substring t a e) prefix))
+                                             (done (with-text b (rope-insert (rope-delete t a e) a common) (+ a (string-length common))))
+                                             (done b))))))
+                #u)
+            (tell! fr (echo (if (null? (cdr names)) (if (> (string-length common) (string-length prefix)) "" "Sole completion")
+                                (one-line (letrec ((go (subr spin (strings int) string)
+                                                         (lambda (l k) (cond ((null? l) "") ((= k 0) " ...")
+                                                                             (else (string-append (car l) " " (go (cdr l) (- k 1))))))))
+                                            (go names 12)))))))))))
+
 "An answer of the server's, `line`, acted on."
 (define* s7-answer! (subr cmd-eff (string) unit)
   (lambda (line)
     (let* ((sp (string-search line " " 0))
            (word (if (< sp 0) line (substring line 0 sp)))
-           (text (if (< sp 0) "" (s7-unescape (substring line (+ sp 1) (string-length line))))))
+           (fields (the strings (if (< sp 0) (list "") (s7-fields (substring line (+ sp 1) (string-length line))))))
+           (text (car fields)))
       (cond
         ((string=? word "ready")
          (begin (set s7-ready #t)
@@ -174,8 +285,31 @@ comint keeps it. Output is no change of the user's."
                (echo fr (tell! fr (echo "Interrupted")))
                (none u #u)))))
         ((string=? word "describe")
-         (let ((fs (get s7-eldoc-frame)))
-           (if (null? fs) #u (begin (set s7-eldoc-frame nil) (tell! (car fs) (eldoc-show text))))))
+         (let ((ds (get s7-describe-for)))
+           (if (null? ds) #u
+               (let ((d (car ds)))
+                 (begin
+                   (set s7-describe-for nil)
+                   (if (extract d m-dot)
+                       (tell! (extract d frame)
+                              (echo (if (string=? text "") (string-append "No definition of " (extract d name) " found")
+                                        (string-append "No definition of " (extract d name) " in a buffer; in s7st it is " text))))
+                       (tell! (extract d frame) (eldoc-show text))))))))
+        ((string=? word "analysis")
+         (let ((key (s7-integer text)))
+           (letrec ((find (subr spin ((listof s7-pending-analysis acyclic)) (sumof (none unit) (found s7-pending-analysis)))
+                      (lambda (l) (cond ((null? l) (sum none #u)) ((= (extract (car l) key) key) (sum found (car l))) (else (find (cdr l))))))
+                    (drop (subr spin ((listof s7-pending-analysis acyclic)) (listof s7-pending-analysis acyclic))
+                      (lambda (l) (cond ((null? l) nil) ((= (extract (car l) key) key) (cdr l)) (else (cons (car l) (drop (cdr l))))))))
+             (tagcase (find (get s7-analyses))
+               (found a (begin (set s7-analyses (drop (get s7-analyses)))
+                          (tell! (extract a buffer) (annotate (s7-annotation fields (extract a revision))))))
+               (none u #u)))))
+        ((string=? word "completions")
+         (let ((cs (get s7-completion)))
+           (if (null? cs) #u
+               (begin (set s7-completion nil)
+                 (s7-complete-with! (car cs) (if (string=? text "") nil fields))))))
         (else #u)))))
 
 "The server's answers so far acted on. Whether one is still awaited, for
@@ -201,7 +335,9 @@ the main loop to look again in 50 ms."
                             (s7-repl-say! ";; s7st's process ended; it starts again when next asked for\n" #f))))
                 (and (pair? (get s7-server))
                      (or (not (get s7-ready))
-                         (pair? (get s7-eldoc-frame))
+                         (pair? (get s7-describe-for))
+                         (pair? (get s7-analyses))
+                         (pair? (get s7-completion))
                          (tagcase (get s7-client-now) (none u #f) (else z #t)))))))))))
 
 "The server stopped (the editor ends)."
@@ -312,9 +448,69 @@ point, else of the operator of the call around it -- if s7st runs."
   (lambda (fr here op)
     (lambda ()
       (if (and (pair? (get s7-server)) (get s7-ready))
-          (begin (set s7-eldoc-frame (list fr)) (s7-send! "describe" (list here op)))
+          (begin (set s7-describe-for (list (product (frame fr) (m-dot #f) (name here)))) (s7-send! "describe" (list here op)))
           #u))))
 (set scheme-eldoc (list s7-eldoc))
+
+"M-. on a name a Scheme buffer defines nowhere: what s7st knows of it."
+(define* s7-no-definition (subr pure ((actor frame) string) cmd)
+  (lambda (fr name)
+    (lambda ()
+      (if (and (pair? (get s7-server)) (get s7-ready))
+          (begin (set s7-describe-for (list (product (frame fr) (m-dot #t) (name name)))) (s7-send! "describe" (list name "")))
+          (tell! fr (echo (string-append "No definition of " name " found")))))))
+(set scheme-no-definition (list s7-no-definition))
+
+;;; ------------------------------------------------------------ analysis, completion
+
+"A Scheme buffer's analysis actor's state: its buffer, and the revision
+last sent to be analysed."
+(define-type s7-analysis-state (productof (buffer (actor buffer)) (revision int)))
+"Message for an analysis actor: a snapshot of its buffer, sent to s7st to
+be analysed (the server started if need be) unless it is of the revision
+sent last. The answer comes to `s7-answer!`."
+(define* s7-analysis-snapshot (subr pure (snapshot) (msg s7-analysis-state))
+  (lambda (snap)
+    (lambda ((st s7-analysis-state))
+      (let ((rev (extract snap revision)) (b (extract st buffer)))
+        (if (= rev (extract st revision))
+            (same st)
+            (reply-with (product (buffer b) (revision rev))
+                        (list (lambda ()
+                                (if (s7-server-up!)
+                                    (let ((key (get s7-next-key)))
+                                      (begin
+                                        (set s7-next-key (+ key 1))
+                                        (set s7-analyses (cons (product (key key) (buffer b) (revision rev)) (get s7-analyses)))
+                                        (s7-send! "analyze" (list (int->string key) (extract snap name) (rope->string (extract snap text))))))
+                                    #u)))))))))
+"A Scheme buffer's analysis actor, idle, subscribed to it."
+(define* s7-attach (subr (maxeff (alloc @ed) (read @globals)) ((actor buffer) string) cmds)
+  (lambda (b name)
+    (let ((sx (spawn-actor (string-append "s7st analysis of " name) (product (buffer b) (revision -1)))))
+      (list (lambda () (set-class! sx idle))
+            (tell b (subscribe -1 (lambda ((s snapshot)) (tell-latest sx "snapshot" (s7-analysis-snapshot s)))))))))
+(set scheme-attach (list s7-attach))
+
+"Completion (TAB in *s7st*, M-TAB in a Scheme buffer): the name before
+point completed from those s7st's top level sees."
+(define* s7-complete (subr pure () frame-action)
+  (lambda ()
+    (lambda ((fr (actor frame)) (f frame))
+      (let* ((b (extract (selected-window f) buffer))
+             (st (actor-state b))
+             (t (extract st text))
+             (p (extract st point))
+             (a (name-start t p))
+             (prefix (rope-substring t a p)))
+        (if (string=? prefix "")
+            (draw (with-echo f "Nothing to complete"))
+            (reply-with f (list (lambda ()
+                                  (if (s7-server-up!)
+                                      (begin (set s7-completion (list (product (frame fr) (buffer b) (start a) (end p) (prefix prefix))))
+                                        (s7-send! "complete" (list prefix))
+                                        (if (get s7-ready) #u (tell! fr (echo "Starting s7st..."))))
+                                      (tell! fr (echo "s7st could not be started (../bin/s7st)")))))))))))
 
 ;;; ------------------------------------------------------------ Scheme buffers
 
@@ -380,6 +576,10 @@ before its line that begins with `(`; -1 if none."
   (sum on-frame (s7-run-from-buffer (lambda ((t rope) (p int) (m int) (file string))
                                       (if (< m 0) (sum none "The mark is not set")
                                           (sum text (product (text (rope-substring t (min p m) (max p m))) (file ""))))))))
+(define-command! "s7st-complete" (sum on-frame (s7-complete)))
+(define-buffer-key! "*s7st*" "TAB" "s7st-complete")
+(define-buffer-key! "*s7st*" "M-TAB" "s7st-complete")
+(define-buffer-key! "<scheme>" "M-TAB" "s7st-complete")
 (define-buffer-key! "*s7st*" "RET" "s7st-send-input")
 (define-buffer-key! "*s7st*" "C-c C-c" "s7st-interrupt")
 (define-buffer-key! "*s7st*" "M-p" "s7st-previous-input")
@@ -403,3 +603,4 @@ before its line that begins with `(`; -1 if none."
 (define-doc! "s7st-eval-defun" "Run the top-level form around point in s7st; its value in the echo area.")
 (define-doc! "s7st-eval-buffer" "Run the buffer's forms in s7st, as `load` runs a file's.")
 (define-doc! "s7st-eval-region" "Run the region's forms in s7st.")
+(define-doc! "s7st-complete" "Complete the name before point from those s7st's top level sees (TAB in *s7st*, M-TAB in a Scheme buffer).")
