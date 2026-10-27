@@ -123,6 +123,7 @@ read as a number, or has a character a symbol read cannot."
                          (record r (record-of r acc left))
                          (rtd r (one (string-append "#<record-type " (extract r name) ">")))
                          (port p (one (if (extract p input) "#<input-port>" "#<output-port>")))
+                         (table t (one (string-append "#<hash-table " (int->string (get (extract t count))) ">")))
                          (env u (one "#<environment>"))
                          (errobj e (let ((irritants (tagcase (s7-list-items (extract e irritants)) (some l l) (none u nil))))
                                      (if write?

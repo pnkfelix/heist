@@ -53,6 +53,7 @@ at @sc; a procedure has an identity (its `name` cell), as `eq?` needs."
          (record s7-record)
          (rtd s7-rtd)
          (port s7-port)
+         (table s7-table)               ; a hash table (table.fx)
          (env unit)                     ; the one environment, for `eval`
          (errobj s7-errobj)))
 (define-type s7-values (listof s7-value acyclic))
@@ -76,6 +77,23 @@ was written, last first."
 (define-type s7-port
   (productof (id (ref unit @sc)) (input bool) (text string) (pos (ref int @sc))
              (out (ref (listof string acyclic) @sc)) (open (ref bool @sc))))
+"A hash table (table.fx): its kind, its entries in order, and their index."
+(define-type s7-ids
+  (productof (pairs (eqtable (ref s7-value @sc) int @sc @sc))
+             (cells (eqtable (ref string @sc) int @sc @sc))
+             (arrays (eqtable (arrayof s7-value @sc) int @sc @sc))
+             (bytes (eqtable (arrayof int @sc) int @sc @sc))
+             (units (eqtable (ref unit @sc) int @sc @sc))))
+(define-type s7-table
+  (productof (id (ref unit @sc))
+             (kind symbol)                                         ; eqv, equal, string or string-ci
+             (keys (ref (arrayof s7-value @sc) @sc))               ; a deleted entry's key: undefined
+             (vals (ref (arrayof s7-value @sc) @sc))
+             (used (ref int @sc))                                  ; entries used, deleted or not
+             (count (ref int @sc))                                 ; entries not deleted
+             (buckets (ref (arrayof (listof int acyclic) @sc) @sc))
+             (ids (ref s7-ids @sc))))
+
 "A condition `error` makes (`kind`: error, read, file), or the machine."
 (define-type s7-errobj (productof (kind symbol) (message string) (irritants s7-value)))
 

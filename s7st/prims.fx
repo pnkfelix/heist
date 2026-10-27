@@ -368,6 +368,7 @@ numerator and denominator); a float by `f`."
       (record r (tagcase b (record s (eq? (extract r fields) (extract s fields))) (else y #f)))
       (rtd r (tagcase b (rtd s (eq? (extract r id) (extract s id))) (else y #f)))
       (port p (tagcase b (port q (eq? (extract p id) (extract q id))) (else y #f)))
+      (table t (tagcase b (table u (eq? (extract t id) (extract u id))) (else y #f)))
       (else y #f))))
 "Whether `a` and `b` are alike, part by part; `left` parts more looked at
 before the answer is no (a cycle)."

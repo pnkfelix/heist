@@ -146,6 +146,7 @@ in FX-26, then the prelude (prelude.fx) run. \"\", or what went wrong."
     (begin
       (s7-define-specials! s7-special-names)
       (s7-init-prims!)
+      (s7-init-tables!)
       (tagcase (s7-start! s7-prelude "prelude.scm" #f)
         (bad m m)
         (none u (letrec ((go (subr s7-eff () string)

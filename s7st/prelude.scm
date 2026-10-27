@@ -244,6 +244,38 @@
                 (unless (%promise-done? promise) (%promise-update! (make-promise promise*) promise))
                 (force promise)))))
 
+;;; ------------------------------------------------------------ hash tables
+
+;; SRFI 69's and R6RS's, those that call procedures back (table.fx has the rest).
+(define %absent (list 'absent))
+(define (hash-table-ref table key . rest)
+  (let ((v (%table-ref table key %absent)))
+    (cond ((not (eq? v %absent)) (if (and (pair? rest) (pair? (cdr rest))) ((cadr rest) v) v))
+          ((pair? rest) ((car rest)))
+          (else (error "hash-table-ref: no such key" key)))))
+(define (hash-table-update! table key proc . rest)
+  (hash-table-set! table key (proc (apply hash-table-ref table key rest))))
+(define (hash-table-update!/default table key proc default)
+  (hash-table-set! table key (proc (hash-table-ref/default table key default))))
+(define (hashtable-update! table key proc default)
+  (hash-table-set! table key (proc (hash-table-ref/default table key default))))
+(define (hash-table-intern! table key make)
+  (let ((v (%table-ref table key %absent)))
+    (if (eq? v %absent) (let ((new (make))) (hash-table-set! table key new) new) v)))
+(define (hash-table-walk table proc)
+  (for-each (lambda (entry) (proc (car entry) (cdr entry))) (hash-table->alist table)))
+(define (hash-table-fold table kons knil)
+  (fold (lambda (entry acc) (kons (car entry) (cdr entry) acc)) knil (hash-table->alist table)))
+(define (alist->hash-table alist . args)
+  (let ((table (apply make-hash-table args)))
+    (for-each (lambda (entry)
+                (unless (hash-table-contains? table (car entry)) (hash-table-set! table (car entry) (cdr entry))))
+              alist)
+    table))
+(define (hash-table-merge! a b)
+  (hash-table-walk b (lambda (k v) (unless (hash-table-contains? a k) (hash-table-set! a k v))))
+  a)
+
 ;;; ------------------------------------------------------------ odds and ends
 
 (define gensym

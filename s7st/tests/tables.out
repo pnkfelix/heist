@@ -1,0 +1,13 @@
+list string ratio absent 
+1 #f 2 3 #f 
+1000 998001 none 
+500 gone 9 
+2500 1999 
+11 (y) thunk 
+("x" "y") ((a . 1) (b . 2)) 
+33 30 
+p1 #f 
+#(k) #(v) 
+#t #f #t "hash-table-ref: no such key" 
+#<hash-table 2> 11 
+[exit 0]
