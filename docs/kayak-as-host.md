@@ -1,11 +1,8 @@
 # Kayak as Heist's host, instead of Fixpt: where it stands (2026-10-26)
 
-`kayak/` is a squashed git subtree of Kayak (`git@github.com:pnkfelix/kayak.git`),
-main at 18da385, added by Heist's ee65a9cb. As with `fixpt/`: our
-changes are `git diff ee65a9cb HEAD -- kayak/`; upstream comes in by
-`git subtree pull --prefix=kayak ~/Dev/LangPlay/kayak main --squash`.
-Kayak's own Fixpt pin (`kayak/FIXPT_REV`, f03cabe2) is newer than
-Heist's Fixpt base (1e4d4ed6).
+Assessed against Kayak (`git@github.com:pnkfelix/kayak.git`) main at
+18da385, read from `~/Dev/LangPlay/kayak` by that commit. Heist does not
+vendor Kayak; a `kayak/` subtree was tried and dropped.
 
 **The question:** can the editor run on Kayak's FX-26 engine
 (`kayak-fx26 --run FILE… -- ARG…`) instead of `fixpt run`?
