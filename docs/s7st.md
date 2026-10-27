@@ -30,7 +30,9 @@ take a group of files as one module, s7st can become a module with
 | `print.fx`    | `write` and `display`                                                                                                                        |
 | `expand.fx`   | data to core: special forms, derived forms rewritten, `syntax-rules`, bodies' internal definitions                                          |
 | `prims.fx`    | about 220 procedures written in FX-26                                                                                                        |
-| `machine.fx`  | the CEK machine, one step at a time                                                                                                          |
+| `table.fx`    | hash tables                                                                                                                                  |
+| `library.fx`  | libraries: namespaces, import sets, finding a library's file                                                                                 |
+| `machine.fx`  | the compiler to closures, and the CEK machine that runs its code, one step at a time                                                         |
 | `prelude.scm` | what is written in Scheme: `map`, `guard`, `parameterize`, promises, the I/O procedures over ports, a few of SRFI 1's. `prelude.fx` is generated from it by `gen-prelude.py` |
 | `session.fx`  | the API clients call: `s7-init!`, `s7-start!`, `s7-continue!`, `s7-take-output!`, `s7-interrupt!`                                            |
 | `main.fx`     | the command-line REPL, and the server (its protocol is described at the top of the file)                                                     |
@@ -142,12 +144,40 @@ Each could be added.
 
 ## Speed
 
-On this machine:
-- **`(fib 28)`** (830,000 calls) runs in 1.0 s, nearly a million
-  procedure calls a second. The same `fib` written in FX-26, which Fixpt
-  compiles to native code, runs more than a hundred times faster. That gap
-  is what compiling to closures (below) would narrow.
-- **Start-up** is 2.6 s, nearly all of it Fixpt compiling s7st's 4,500
+**Each top-level form is compiled before it runs** (`machine.fx`'s
+`s7-compile`). Every node of the core becomes two FX-26 closures, made
+once:
+- **Its code** takes the environment, continuation and dynamic state, and
+  returns the machine's next state.
+- **Its quick evaluation,** where the node allows one, gets the node's
+  value with no machine step: constants, variables, lambdas, `if` and
+  sequences of such, and calls of pure built-ins on such.
+
+A call of a closure with one clause, given the right number of quick
+arguments, fills the new frame's slots directly. A closure's body still
+starts with a step of its own, so the machine still runs in slices and
+can be interrupted. A quick evaluation that cannot finish (a variable not
+yet defined, an operator that turns out not to be a built-in) has done
+nothing another could see, since it calls only pure built-ins. The node's
+code then runs it the slow way.
+
+On this machine, measured in the program itself with `current-jiffy`,
+before compiling and after:
+
+| benchmark                     | evaluating nodes | compiled |
+| ----------------------------- | ---------------- | -------- |
+| `(fib 25)`                    | 242 ms           | 100 ms   |
+| `(tak 18 12 6)`               | 69 ms            | 26 ms    |
+| a named-`let` loop, 1,000,000 | 1209 ms          | 333 ms   |
+| `map` over 200,000            | 731 ms           | 455 ms   |
+| `do` over a vector, 500,000   | 729 ms           | 221 ms   |
+
+`(fib 25)` is 250,000 calls, so about 2.5 million procedure calls a second.
+The same `fib` written in FX-26, which Fixpt compiles to native code, is
+still much faster. FX-26 has no way to make FX-26 code at run time
+("Openings").
+
+- **Start-up** is 2.6 s, nearly all of it Fixpt compiling s7st's 4,600
   lines. Making the interpreter ready (special forms, primitives, prelude)
   takes milliseconds. The editor starts the server the first time it's
   asked for Scheme, so only that first request waits.
@@ -219,12 +249,7 @@ What remains for an analysis:
 So s7st can't compile Scheme to FX-26 and run the result in the same
 process. What it can do:
 
-1. **Compile to closures, within the interpreter.** This is the next step
-   for speed. Each node becomes an FX-26 closure, made once, in place of
-   the machine's dispatch on node type. Tail calls and `call/cc` need the
-   continuation kept as data, so the closures take and return machine
-   states, as the CEK machine does. The variable resolution this needs is
-   already done.
+1. **Compile to closures, within the interpreter.** This is done ("Speed").
 2. **Compile to FX-26 text and run it as a separate process.** Heist runs
    processes already (`editor/process.fx`). The FX-26 checker would then
    type the result, and Fixpt's native machines would run it. Scheme's

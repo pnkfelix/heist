@@ -117,10 +117,10 @@ last asked."
                        ((> left 0) (params (cdr ns) (- left 1) rest (cons (string-append " " (s7-symbol-name (car ns))) acc)))
                        (rest (cons (string-append " . " (s7-symbol-name (car ns))) acc))
                        (else acc))))
-             (clauses (subr s7-eff ((listof s7-lambda acyclic) (listof string acyclic)) (listof string acyclic))
+             (clauses (subr s7-eff ((listof s7-clause acyclic) (listof string acyclic)) (listof string acyclic))
                (lambda (cs acc)
                  (if (null? cs) acc
-                     (let ((l (car cs)))
+                     (let ((l (extract (car cs) info)))
                        (clauses (cdr cs)
                                 (cons (string-append "(" name (s7-concat (reverse (params (extract l names) (extract l required) (extract l rest) nil))) ")")
                                       (if (null? acc) acc (cons " | " acc)))))))))

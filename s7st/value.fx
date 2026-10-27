@@ -61,12 +61,15 @@ at @sc; a procedure has an identity (its `name` cell), as `eq?` needs."
 (define-type s7-symbols (listof symbol acyclic))
 (define-type s7-strings (listof string acyclic))
 (define-type s7-pair (productof (car (ref s7-value @sc)) (cdr (ref s7-value @sc))))
-"A closure: its lambda's clauses (one, but for `case-lambda`), where it was
-made, and its name, which is also its identity."
-(define-type s7-closure (productof (clauses (listof s7-lambda acyclic)) (env s7-env) (name (ref string @sc))))
+"A closure: its lambda's clauses (one, but for `case-lambda`), each with its
+body compiled; where it was made; and its name, which is also its identity."
+(define-type s7-closure (productof (clauses (listof s7-clause acyclic)) (env s7-env) (name (ref string @sc))))
+(define-type s7-clause (productof (info s7-lambda) (code s7-code)))
 "A procedure written in FX-26: a function of its arguments, or an operation
 of the machine's own (`call/cc`, `apply`, …), numbered."
-(define-type s7-prim (productof (name string) (min int) (max int) (op s7-op)))   ; max -1: any
+(define-type s7-prim (productof (name string) (min int) (max int) (op s7-op) (pure bool)))   ; max -1: any
+;; `pure`: it changes nothing another could see (no `!`, no I/O), so a quick
+;; evaluation may call it, and call it again.
 (define-type s7-op (sumof (fn (subr s7-eff (s7-values) s7-out)) (ctl int)))
 "What a procedure written in FX-26 gives: a value, or a condition raised."
 (define-type s7-out (sumof (ok s7-value) (raise s7-value)))
@@ -156,6 +159,17 @@ the macros bound in it (`let-syntax`, internal `define-syntax`)."
 
 ;;; ------------------------------------------------------------ the machine
 
+"Compiled code (machine.fx's `s7-compile`): what evaluating a node does,
+given its environment, continuation and dynamic state -- the machine's next
+state. And, for a node that allows it, a quick evaluation: its value got
+with no step of the machine's (a value, a condition raised, or `slow`: it
+needs steps, or has an error to report). A quick evaluation that is slow has
+done nothing another could see, so the node may then be run as code."
+(define-type s7-code (subr s7-eff (s7-env s7-k s7-dyn) s7-state))
+(define-type s7-qv (sumof (val s7-value) (raise s7-value) (slow unit)))
+(define-type s7-quick (subr s7-eff (s7-env) s7-qv))
+(define-type s7-compiled (productof (code s7-code) (quick (listof s7-quick acyclic))))   ; quick: none, or one
+(define-type s7-compileds (listof s7-compiled acyclic))
 "An environment: frames of slots, innermost first."
 (define-type s7-env (sumof (top unit) (frame s7-frame)))
 (define-type s7-frame (productof (slots (arrayof s7-value @sc)) (up s7-env)))
@@ -170,10 +184,10 @@ continuation's)."
 "A continuation's frames, innermost first. Immutable, so a continuation
 may be resumed any number of times."
 (define-type s7-kframe
-  (sumof (k-if (productof (then s7-node) (else s7-node) (env s7-env)))
-         (k-seq (productof (rest s7-nodes) (env s7-env)))
+  (sumof (k-if (productof (then s7-code) (else s7-code) (env s7-env)))
+         (k-seq (productof (rest s7-compileds) (env s7-env)))
          ;; A call's operator and arguments evaluated so far, last first.
-         (k-args (productof (done s7-values) (rest s7-nodes) (env s7-env)))
+         (k-args (productof (done s7-values) (rest s7-compileds) (env s7-env)))
          (k-set-local (productof (depth int) (index int) (env s7-env)))
          (k-set-global s7-global)
          (k-define s7-global)
@@ -191,7 +205,7 @@ may be resumed any number of times."
 (define-type s7-k (listof s7-kframe acyclic))
 "The machine's state between steps."
 (define-type s7-state
-  (sumof (s-eval (productof (node s7-node) (env s7-env) (k s7-k) (dyn s7-dyn)))
+  (sumof (s-run (productof (code s7-code) (env s7-env) (k s7-k) (dyn s7-dyn)))
          (s-return (productof (value s7-value) (k s7-k) (dyn s7-dyn)))
          (s-apply (productof (proc s7-value) (args s7-values) (k s7-k) (dyn s7-dyn)))
          (s-raise (productof (obj s7-value) (continuable bool) (k s7-k) (dyn s7-dyn)))

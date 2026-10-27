@@ -10,13 +10,24 @@
 
 (define-type s7-fn (subr s7-eff (s7-values) s7-out))
 
+"Whether a procedure named `name` is pure: it changes nothing another
+could see. By R7RS's convention a mutator's name ends in `!`; and what
+reads or writes ports, or opens or closes them, is not."
+(define* s7-pure-name? (subr spin (string) bool)
+  (lambda (name)
+    (let ((n (string-length name))
+          (starts (lambda ((p string)) (and (>= (string-length name) (string-length p)) (string=? (substring name 0 (string-length p)) p)))))
+      (not (or (and (> n 0) (char=? (string-ref name (- n 1)) #\!))
+               (starts "%write") (starts "%read") (starts "%flush") (starts "%char-ready")
+               (starts "open-") (starts "close-") (string=? name "get-output-string")
+               (string=? name "current-jiffy") (string=? name "current-second"))))))
 (define* s7-prim! (subr s7-eff (string int int s7-fn) unit)
   (lambda (name min max f)
-    (s7-define-global! name (sum prim (product (name name) (min min) (max max) (op (sum fn f)))))))
+    (s7-define-global! name (sum prim (product (name name) (min min) (max max) (op (sum fn f)) (pure (s7-pure-name? name)))))))
 "An operation of the machine's own, numbered (machine.fx's `s7-control`)."
 (define* s7-ctl! (subr s7-eff (string int int int) unit)
   (lambda (name min max op)
-    (s7-define-global! name (sum prim (product (name name) (min min) (max max) (op (sum ctl op)))))))
+    (s7-define-global! name (sum prim (product (name name) (min min) (max max) (op (sum ctl op)) (pure #f))))))
 "Global `new` defined as global `old` is."
 (define* s7-alias! (subr s7-eff (string string) unit)
   (lambda (new old) (s7-define-global! new (get (extract (s7-global-cell (string->symbol old)) value)))))
@@ -71,13 +82,18 @@ denominators) if both are exact; else as floats, by `rop`."
         (tagcase (s7-arith who iop qop rop acc (car l))
           (ok v (s7-fold-arith who iop qop rop v (cdr l)))
           (raise e (sum raise e))))))
-"Whether numbers `a` and `b` stand in `iop` (as exact numbers, by cross
-multiplication) or `rop` (as floats, if either is one)."
-(define* s7-relates? (subr spin ((subr pure (int int) bool) (subr pure (f64 f64) bool) s7-value s7-value) bool)
+(define* s7-relates-slow? (subr spin ((subr pure (int int) bool) (subr pure (f64 f64) bool) s7-value s7-value) bool)
   (lambda (iop rop a b)
     (if (and (s7-exact-number? a) (s7-exact-number? b))
         (iop (* (s7-num a) (s7-den b)) (* (s7-num b) (s7-den a)))
         (rop (s7-real-of a) (s7-real-of b)))))
+"Whether numbers `a` and `b` stand in `iop` (as exact numbers, by cross
+multiplication) or `rop` (as floats, if either is one)."
+(define* s7-relates? (subr spin ((subr pure (int int) bool) (subr pure (f64 f64) bool) s7-value s7-value) bool)
+  (lambda (iop rop a b)
+    (tagcase a
+      (int i (tagcase b (int j (iop i j)) (else y (s7-relates-slow? iop rop a b))))
+      (else x (s7-relates-slow? iop rop a b)))))
 (define* s7-less? (subr spin (s7-value s7-value) bool)
   (lambda (a b) (s7-relates? < f64< a b)))
 "Whether each of `l` stands in `iop` (exact) or `rop` to the next."
@@ -94,6 +110,22 @@ multiplication) or `rop` (as floats, if either is one)."
       (tagcase (check l)
         (ok v (s7-bool (go l)))
         (raise e (sum raise e))))))
+"Two ints' `iop`, if `a` is two ints; else `slow`'s answer."
+(define* s7-int2 (subr s7-eff ((subr pure (int int) int) s7-values (subr s7-eff () s7-out)) s7-out)
+  (lambda (iop a slow)
+    (if (and (pair? a) (pair? (cdr a)) (null? (cdr (cdr a))))
+        (tagcase (car a)
+          (int i (tagcase (car (cdr a)) (int j (sum ok (sum int (iop i j)))) (else y (slow))))
+          (else y (slow)))
+        (slow))))
+"Whether two ints stand in `iop`, if `a` is two ints; else `slow`'s answer."
+(define* s7-int2? (subr s7-eff ((subr pure (int int) bool) s7-values (subr s7-eff () s7-out)) s7-out)
+  (lambda (iop a slow)
+    (if (and (pair? a) (pair? (cdr a)) (null? (cdr (cdr a))))
+        (tagcase (car a)
+          (int i (tagcase (car (cdr a)) (int j (sum ok (sum bool (iop i j)))) (else y (slow))))
+          (else y (slow)))
+        (slow))))
 "An int's digits in `radix`."
 (define* s7-int->string (subr spin (int int) string)
   (lambda (i radix)
@@ -173,11 +205,12 @@ numerator and denominator); a float by `f`."
 (define* s7-init-numbers! (subr s7-eff () unit)
   (lambda ()
     (begin
-      (s7-prim! "+" 0 -1 (lambda ((a s7-values)) (s7-fold-arith "+" + s7-q+ f64+ (sum int 0) a)))
-      (s7-prim! "*" 0 -1 (lambda ((a s7-values)) (s7-fold-arith "*" * s7-q* f64* (sum int 1) a)))
+      (s7-prim! "+" 0 -1 (lambda ((a s7-values)) (s7-int2 + a (lambda () (s7-fold-arith "+" + s7-q+ f64+ (sum int 0) a)))))
+      (s7-prim! "*" 0 -1 (lambda ((a s7-values)) (s7-int2 * a (lambda () (s7-fold-arith "*" * s7-q* f64* (sum int 1) a)))))
       (s7-prim! "-" 1 -1 (lambda ((a s7-values))
-                           (if (null? (cdr a)) (s7-arith "-" - s7-q- f64- (sum int 0) (car a))
-                               (s7-fold-arith "-" - s7-q- f64- (car a) (cdr a)))))
+                           (s7-int2 - a (lambda ()
+                                          (if (null? (cdr a)) (s7-arith "-" - s7-q- f64- (sum int 0) (car a))
+                                              (s7-fold-arith "-" - s7-q- f64- (car a) (cdr a)))))))
       (s7-prim! "/" 1 -1
                 (lambda ((a s7-values))
                   (letrec ((div (subr s7-eff (s7-value s7-value) s7-out)
@@ -193,11 +226,11 @@ numerator and denominator); a float by `f`."
                                (if (null? l) (sum ok acc)
                                    (tagcase (div acc (car l)) (ok v (go v (cdr l))) (raise e (sum raise e)))))))
                     (if (null? (cdr a)) (div (sum int 1) (car a)) (go (car a) (cdr a))))))
-      (s7-prim! "=" 1 -1 (lambda ((a s7-values)) (s7-compare "=" = f64= a)))
-      (s7-prim! "<" 1 -1 (lambda ((a s7-values)) (s7-compare "<" < f64< a)))
-      (s7-prim! ">" 1 -1 (lambda ((a s7-values)) (s7-compare ">" > f64> a)))
-      (s7-prim! "<=" 1 -1 (lambda ((a s7-values)) (s7-compare "<=" <= f64<= a)))
-      (s7-prim! ">=" 1 -1 (lambda ((a s7-values)) (s7-compare ">=" >= f64>= a)))
+      (s7-prim! "=" 1 -1 (lambda ((a s7-values)) (s7-int2? = a (lambda () (s7-compare "=" = f64= a)))))
+      (s7-prim! "<" 1 -1 (lambda ((a s7-values)) (s7-int2? < a (lambda () (s7-compare "<" < f64< a)))))
+      (s7-prim! ">" 1 -1 (lambda ((a s7-values)) (s7-int2? > a (lambda () (s7-compare ">" > f64> a)))))
+      (s7-prim! "<=" 1 -1 (lambda ((a s7-values)) (s7-int2? <= a (lambda () (s7-compare "<=" <= f64<= a)))))
+      (s7-prim! ">=" 1 -1 (lambda ((a s7-values)) (s7-int2? >= a (lambda () (s7-compare ">=" >= f64>= a)))))
       (s7-prim! "quotient" 2 2 (lambda ((a s7-values)) (s7-int-div "quotient" quotient (car a) (s7-arg2 a))))
       (s7-prim! "remainder" 2 2 (lambda ((a s7-values)) (s7-int-div "remainder" remainder (car a) (s7-arg2 a))))
       (s7-prim! "modulo" 2 2 (lambda ((a s7-values)) (s7-int-div "modulo" modulo (car a) (s7-arg2 a))))
@@ -470,8 +503,8 @@ or an error."
 
 "A procedure written in FX-26, made at run time (a record's constructor,
 predicate, accessor or modifier)."
-(define* s7-made-prim (subr pure (string int int s7-fn) s7-value)
-  (lambda (name min max f) (sum prim (product (name name) (min min) (max max) (op (sum fn f))))))
+(define* s7-made-prim (subr spin (string int int s7-fn) s7-value)
+  (lambda (name min max f) (sum prim (product (name name) (min min) (max max) (op (sum fn f)) (pure (s7-pure-name? name))))))
 (define* s7-index-of (subr spin (symbol s7-symbols int) int)
   (lambda (s l i) (cond ((null? l) -1) ((string=? (s7-symbol-name (car l)) (s7-symbol-name s)) i) (else (s7-index-of s (cdr l) (+ i 1))))))
 "Whether `v` is a record of type `t`."
