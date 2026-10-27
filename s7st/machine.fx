@@ -26,6 +26,27 @@
   (lambda (message irritants k dyn) (s7-raise-state (s7-error-value message irritants) #f k dyn)))
 (define* s7-push-k (subr pure (s7-kframe s7-k) s7-k) (lambda (f k) (cons f k)))
 
+"Steps left in the slice `s7-run` is running. A call or a return made
+directly, with no state built for `s7-step`, uses one as a step does; with
+none left it builds the state, and the slice ends in the usual way."
+(define s7-fuel (ref int @sc) (new 0))
+"How a value is returned to a frame: `s7-continue`, defined after the
+compiler, whose code calls it through this."
+(define-type s7-continuer (subr s7-eff (s7-value s7-kframe s7-k s7-dyn) s7-state))
+(define s7-continue-hook (ref (listof s7-continuer acyclic) @sc) (new nil))
+"Value `v` returned to `k`: directly, while there is fuel."
+(define* s7-return (subr s7-eff (s7-value s7-k s7-dyn) s7-state)
+  (lambda (v k dyn)
+    (let ((f (get s7-fuel)) (h (get s7-continue-hook)))
+      (if (and (> f 0) (pair? k) (pair? h))
+          (begin (set s7-fuel (- f 1)) ((car h) v (car k) (cdr k) dyn))
+          (s7-return-state v k dyn)))))
+"Code `c` run in `env`: directly, while there is fuel."
+(define* s7-enter (subr s7-eff (s7-code s7-env s7-k s7-dyn) s7-state)
+  (lambda (c env k dyn)
+    (let ((f (get s7-fuel)))
+      (if (> f 0) (begin (set s7-fuel (- f 1)) (c env k dyn)) (s7-run-state c env k dyn)))))
+
 "The slots of the frame `depth` out from `env`."
 (define* s7-frame-slots (subr spin (s7-env int) (sumof (none unit) (some (arrayof s7-value @sc))))
   (lambda (env depth)
@@ -129,7 +150,7 @@ a pure procedure written in FX-26 on such: the calls a program makes most)."
                     (go ns)))))
       (tagcase (extract n form)
         (n-const v
-          (compiled (lambda ((env s7-env) (k s7-k) (dyn s7-dyn)) (s7-return-state v k dyn))
+          (compiled (lambda ((env s7-env) (k s7-k) (dyn s7-dyn)) (s7-return v k dyn))
                     (list (lambda ((env s7-env)) v))))
         (n-local l
           (let ((d (extract l depth)) (i (extract l index))
@@ -137,14 +158,14 @@ a pure procedure written in FX-26 on such: the calls a program makes most)."
             (let ((get (s7-local-getter d i)))
               (compiled (lambda ((env s7-env) (k s7-k) (dyn s7-dyn))
                           (let ((v (get env)))
-                            (tagcase v (undef u (s7-error-state why nil k dyn)) (else y (s7-return-state v k dyn)))))
+                            (tagcase v (undef u (s7-error-state why nil k dyn)) (else y (s7-return v k dyn)))))
                         (list get)))))
         (n-global c
           (let ((cell (extract c value))
                 (why (string-append "unbound variable: " (s7-symbol-name (extract c name)))))
             (compiled (lambda ((env s7-env) (k s7-k) (dyn s7-dyn))
                         (let ((v (get cell)))
-                          (tagcase v (undef u (s7-error-state why nil k dyn)) (else y (s7-return-state v k dyn)))))
+                          (tagcase v (undef u (s7-error-state why nil k dyn)) (else y (s7-return v k dyn)))))
                       (list (lambda ((env s7-env)) (get cell))))))
         (n-lambda ls
           (let* ((clauses (letrec ((go (subr s7-eff ((listof s7-lambda acyclic)) (listof s7-clause acyclic))
@@ -154,7 +175,7 @@ a pure procedure written in FX-26 on such: the calls a program makes most)."
                             (go ls)))
                  (name (if (null? ls) "" (extract (car ls) name)))
                  (make (lambda ((env s7-env)) (sum proc (product (clauses clauses) (env env) (name (the (ref string @sc) (new name))))))))
-            (compiled (lambda ((env s7-env) (k s7-k) (dyn s7-dyn)) (s7-return-state (make env) k dyn))
+            (compiled (lambda ((env s7-env) (k s7-k) (dyn s7-dyn)) (s7-return (make env) k dyn))
                       (list make))))
         (n-if x
           (let* ((t (s7-compile (extract x test))) (th (s7-compile (extract x then))) (el (s7-compile (extract x else)))
@@ -230,13 +251,13 @@ a pure procedure written in FX-26 on such: the calls a program makes most)."
                                             (if (and (pair? cls) (null? (cdr cls))
                                                      (not (extract (extract (car cls) info) rest))
                                                      (= n (extract (extract (car cls) info) required)))
-                                                (let ((fr (s7-new-frame (extract (extract (car cls) info) size) (extract c env))))
-                                                  (if (s7-quick-into args env (extract fr slots) 0)
-                                                      (s7-run-state (extract (car cls) code) (extract fr env) k dyn)
+                                                (let ((slots (the (arrayof s7-value @sc) (make-array (extract (extract (car cls) info) size) s7-undefined))))
+                                                  (if (s7-quick-into args env slots 0)
+                                                      (s7-enter (extract (car cls) code) (sum frame (product (slots slots) (up (extract c env)))) k dyn)
                                                       (s7-run-args nil cs env k dyn)))
                                                 (s7-run-args nil cs env k dyn))))
                                   (prim p (let ((v (prim-quick p env)))
-                                            (if (s7-undef? v) (s7-run-args nil cs env k dyn) (s7-return-state v k dyn))))
+                                            (if (s7-undef? v) (s7-run-args nil cs env k dyn) (s7-return v k dyn))))
                                   (else y (s7-run-args nil cs env k dyn))))))
                           (lambda ((env s7-env) (k s7-k) (dyn s7-dyn)) (s7-run-args nil cs env k dyn)))
                       (if (and all-quick prim-op?)
@@ -256,8 +277,8 @@ a pure procedure written in FX-26 on such: the calls a program makes most)."
                                 (if (s7-undef? w) (push env k dyn)
                                     (tagcase (s7-frame-slots env d)
                                       (some slots (begin (if (< i (array-length slots)) (array-set! slots i w) #u)
-                                                    (s7-return-state s7-unspecified k dyn)))
-                                      (none u (s7-return-state s7-unspecified k dyn)))))))
+                                                    (s7-return s7-unspecified k dyn)))
+                                      (none u (s7-return s7-unspecified k dyn)))))))
                           push)
                       nil)))
         (n-set-global x
@@ -494,7 +515,7 @@ list if `rest`."
                              (if (or (= n r) (and (extract l rest) (> n r)))
                                  (let ((fr (s7-new-frame (extract l size) (extract c env))))
                                    (begin (s7-fill-params (extract fr slots) args 0 r (extract l rest))
-                                     (s7-run-state (extract (car cs) code) (extract fr env) k dyn)))
+                                     (s7-enter (extract (car cs) code) (extract fr env) k dyn)))
                                  (pick (cdr cs))))))))
             (pick (extract c clauses))))
         (prim p
@@ -502,7 +523,7 @@ list if `rest`."
                  (s7-error-state (string-append "wrong number of arguments to " (extract p name) ": " (int->string n) " given") nil k dyn))
                 (else (tagcase (extract p op)
                         (fn code (tagcase (code args)
-                                   (ok v (s7-return-state v k dyn))
+                                   (ok v (s7-return v k dyn))
                                    (raise e (s7-raise-state e #f k dyn))))
                         (ctl op (s7-control op args k dyn))))))
         (cont c (s7-throw c (s7-values-of args) dyn))
@@ -545,6 +566,7 @@ or a definition's name."
                  (if (null? (extract x forms))
                      (s7-return-state v k dyn)
                      (s7-run-form (car (extract x forms)) (cdr (extract x forms)) (extract x echo) (extract x text) (extract x ns) k dyn)))))))
+(set s7-continue-hook (list s7-continue))
 "One step."
 (define* s7-step (subr s7-eff (s7-state) s7-state)
   (lambda (st)
@@ -569,7 +591,12 @@ or a definition's name."
 "Whether the machine has stopped."
 (define* s7-stopped? (subr pure (s7-state) bool)
   (lambda (st) (tagcase st (s-done v #t) (s-failed f #t) (else y #f))))
-"At most `fuel` steps from `st`: where the machine got to."
+"Steps from `st` while `s7-fuel` lasts."
+(define* s7-run-on (subr s7-eff (s7-state) s7-state)
+  (lambda (st)
+    (let ((f (get s7-fuel)))
+      (if (or (<= f 0) (s7-stopped? st)) st (begin (set s7-fuel (- f 1)) (s7-run-on (s7-step st)))))))
+"At most `fuel` steps from `st` (calls and returns made directly among
+them): where the machine got to."
 (define* s7-run (subr s7-eff (s7-state int) s7-state)
-  (lambda (st fuel)
-    (if (or (<= fuel 0) (s7-stopped? st)) st (s7-run (s7-step st) (- fuel 1)))))
+  (lambda (st fuel) (begin (set s7-fuel fuel) (s7-run-on st))))

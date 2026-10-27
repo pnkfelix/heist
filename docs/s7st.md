@@ -141,15 +141,14 @@ Most of it:
 | process-context | 2 passed                   |
 | read            | 44 passed                  |
 | repl            | 10 passed                  |
-| time            | 2 passed, or 1 of 2: see below |
+| time            | 2 passed                   |
 | write           | 63 passed                  |
 | complex         | not run: no complex numbers |
 | inexact         | not run: its tests write complex literals (`-1.0+0.0i`) unconditionally |
 
 `time`'s second test counts down a million between readings of the clock,
 and allows 0.1 s of slack. So it needs 10 million loop iterations a
-second; s7st does about 9.3 million, and passes it some of the time
-("Speed").
+second. s7st does about 14 million ("Speed").
 
 Getting there fixed, among other things:
 - datum labels, read and written, with `write` marking cycles and
@@ -196,9 +195,20 @@ once:
   since in Fixpt every sum is an object allocated.
 
 A call of a closure with one clause, given the right number of quick
-arguments, fills the new frame's slots directly. A closure's body still
-starts with a step of its own, so the machine still runs in slices and
-can be interrupted. A quick evaluation that cannot finish (a variable not
+arguments, fills the new frame's slots directly.
+
+**Calls and returns made directly, paid for by fuel.** The machine's code
+is in continuation-passing style over a continuation that is data, so
+each piece of code ends by calling the next in tail position, and FX-26's
+tail calls take no native stack. So a call goes straight into the
+callee's code (`s7-enter`), and a return straight into the frame on top
+of the continuation (`s7-return`). Neither builds a state for `s7-step`.
+Each uses a unit of `s7-fuel`, the slice's budget, as a step does. With
+none left, the state is built and the slice ends as before, so slices
+are as long as they were and an interrupt is seen within about a
+millisecond.
+
+A quick evaluation that cannot finish (a variable not
 yet defined, an operator that turns out not to be a built-in, an error)
 has done nothing another could see, since it calls only pure built-ins.
 The node's code then runs it the slow way, and reports the error if
@@ -218,25 +228,39 @@ read with no loop (`s7-local-getter`).
 
 On this machine, measured in the program itself with `current-jiffy`:
 
-| benchmark                     | evaluating nodes | compiled | quick values unwrapped, fast entries | Fixpt b7b60d98 |
-| ----------------------------- | ---------------- | -------- | ------------------------------------ | -------------- |
-| `(fib 25)`                    | 242 ms           | 100 ms   | 65 ms                                | 56 ms          |
-| `(tak 18 12 6)`               | 69 ms            | 26 ms    | 15 ms                                | 14 ms          |
-| a named-`let` loop, 1,000,000 | 1209 ms          | 333 ms   | 196 ms                               | 142 ms         |
-| `map` over 200,000            | 731 ms           | 455 ms   | 398 ms                               | 336 ms         |
-| `do` over a vector, 500,000   | 729 ms           | 221 ms   | 119 ms                               | 93 ms          |
+| benchmark                     | evaluating nodes | compiled | quick values unwrapped, fast entries | Fixpt b7b60d98 | calls and returns direct |
+| ----------------------------- | ---------------- | -------- | ------------------------------------ | -------------- | ------------------------ |
+| `(fib 25)`                    | 242 ms           | 100 ms   | 65 ms                                | 56 ms          | 49 ms                    |
+| `(tak 18 12 6)`               | 69 ms            | 26 ms    | 15 ms                                | 14 ms          | 11 ms                    |
+| a named-`let` loop, 1,000,000 | 1209 ms          | 333 ms   | 196 ms                               | 142 ms         | 107 ms                   |
+| `map` over 200,000            | 731 ms           | 455 ms   | 398 ms                               | 336 ms         | 314 ms                   |
+| `do` over a vector, 500,000   | 729 ms           | 221 ms   | 119 ms                               | 93 ms          | 68 ms                    |
 
 **Where the time goes now** (`FIXPT_PERF_MAP=1 perf record`, Fixpt's
-`docs/performance.md`): s7st's own machinery. Frames and pairs at region
-`@sc` were call-outs to Rust, 30–50 ns each. Since Fixpt b7b60d98 (Heist's
-request, `docs/requests/fixpt-region-alloc-inline.md`) they are made in
-line. A self-calling loop now takes ~107 ns an iteration, about 9.3
-million a second. Larceny's `(scheme time)` test needs 10 million, so it
-passes only some of the time. What's next for it is s7st's: reuse a
-loop's frame where nothing captured it, and fuse the commonest node
-shapes into one closure.
+`docs/performance.md`): s7st's own machinery, a few nanoseconds at a
+time. Frames and pairs at region `@sc` were call-outs to Rust, 30–50 ns
+each. Since Fixpt b7b60d98 (Heist's request,
+`docs/requests/fixpt-region-alloc-inline.md`) they are made in line. A
+self-calling loop now takes ~70 ns an iteration, about 14 million a
+second. Larceny's `(scheme time)` test needs 10 million.
 
-`(fib 25)` is 250,000 calls, so about 4.5 million procedure calls a second.
+**Tried, and slower** (2026-10-27), on Fixpt b7b60d98:
+- *A loop's frame used again* by a call of its lambda in tail position:
+  each frame stamped with how many continuations had been captured, and
+  reused only if none had been since, and if no lambda or inner scope in
+  the body could hold it. Countdown went from 775 to 840–940 ms. A fresh
+  frame is cheap now, and checking whether one can be reused costs more.
+- *A closure specialized for one or two arguments* to fill a frame,
+  instead of `s7-quick-into`'s walk over a list: 700 to 780 ms. In Fixpt,
+  a known global function is cheaper than another closure captured.
+- *Naming the compiled lambdas* with `let`, for profiles, costs ~8%. The
+  names help in `perf`, so name them in a scratch copy when profiling.
+
+What helped instead was taking work off the call's path: no product
+returned only to be taken apart (`s7-new-frame`'s), no state built for a
+step.
+
+`(fib 25)` is 250,000 calls, so about 5 million procedure calls a second.
 The same `fib` written in FX-26, which Fixpt compiles to native code, is
 still much faster. FX-26 has no way to make FX-26 code at run time
 ("Openings").
