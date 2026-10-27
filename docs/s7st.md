@@ -94,38 +94,51 @@ Most of it:
 - **Delayed evaluation and the rest:** `delay`, `delay-force` (constant
   space), `make-promise`, `parameterize`, `guard`, `let-values`,
   `let*-values`, `cond-expand`, `include`.
-- **Libraries:** `import` and `define-library` are accepted. Everything is
-  global: a library's `begin`s run, and its exports and imports are
-  ignored.
-- **Numbers:** exact integers of any size, and floats.
+- **Libraries** (`library.fx`): `define-library` makes a namespace of its
+  own. `import` binds names to the exporting library's own cells, with
+  `only`, `except`, `prefix` and `rename`; `export` may rename too. A
+  library imported but not yet defined is loaded from a file named after
+  it: `(foo bar)` from `foo/bar.sld`, under the importing file's directory
+  or another of `s7-library-path`. The standard libraries (`(scheme …)`,
+  `(srfi …)`, `(rnrs …)`) are the built-ins, which every namespace sees.
+  The built-ins, the top level and each library are separate namespaces,
+  so a program's `(define (map …) …)` changes only its own `map`.
+- **Numbers:** exact integers of any size, exact rationals (`1/3`,
+  `#e1.1` is `11/10`), and floats.
 - **Data types:** lists, symbols, characters (Unicode), mutable strings,
-  vectors, bytevectors, records.
-- **Ports:** string ports, and `open-input-file`.
-- **Evaluation:** `eval`, `load`, `exit`.
+  vectors, bytevectors, records, and hash tables (`table.fx`: SRFI 69's
+  and R6RS's procedures, by `eqv?`, `equal?`, `string=?` or
+  `string-ci=?`).
+- **Ports:** string ports, and files for input and output. An output
+  file is written when its port is flushed or closed, and when a run
+  ends.
+- **Time:** `current-jiffy`, `jiffies-per-second`, and `current-second`.
+  FX-26's clock is monotonic, so `current-second` counts from the start of
+  the run, not from the epoch.
+- **Evaluation:** `eval` in any environment (`environment`,
+  `interaction-environment`), `load`, `exit`.
 
 ## What is not done
 
-- **Exact rationals.** `(/ 1 3)` is `0.3333333333333333`, and `exact` of a
-  float with a fraction is an error. Complex numbers are missing too.
+- **Complex numbers.**
 - **Datum labels.** Neither `#0=` nor `write`'s cycle-safe output exists.
   `write` stops after 100,000 items with `...`, so it ends on a cycle.
-- **Output files.** Nothing writes to a file, which would need `(io
-  fs-write)` in `s7-eff`. Console input is empty: `read-line` and the
-  others read string ports and files.
-- **Full hygiene.** A free symbol that a template introduces is resolved
-  where the macro is used, not where it was defined. If the user's code
-  binds that name around the use, the macro sees the user's binding. A
-  global `define` of `if` or `list` changes what macros that name it mean.
-  Built-in forms are unaffected, since rewritten forms use the
-  space-prefixed names. Yank's `(yank analysis macro)` has the same
-  limitation.
+- **Console input.** It is empty: `read-line` and the others read string
+  ports and files.
+- **Deleting files.** `delete-file` raises a file error, because FX-26 has
+  no primitive for it.
+- **Full hygiene.** A free symbol that a template introduces means what
+  its name means in the macro's namespace (a library's macro can use what
+  the library doesn't export). But if the user's code binds that name
+  *locally* around the use, the macro sees the user's binding. Yank's
+  `(yank analysis macro)` has the same limitation.
 - **`let-values` and `let*-values` both bind sequentially.** Each `init`
   sees the bindings before it. R7RS requires that only of `let*-values`.
-- **Environments.** There is one: `eval`'s second argument is ignored.
-- **Time.** `current-second`, `current-jiffy` and the like are missing:
-  `(io clock)` is not in `s7-eff`.
+- **Library details.** Every library sees the built-ins whether it
+  imports them or not, and an imported name can be assigned with `set!`
+  (R7RS makes that an error).
 
-Each could be added. The first three are the largest.
+Each could be added.
 
 ## Speed
 
@@ -134,7 +147,7 @@ On this machine:
   procedure calls a second. The same `fib` written in FX-26, which Fixpt
   compiles to native code, runs more than a hundred times faster. That gap
   is what compiling to closures (below) would narrow.
-- **Start-up** is 1.9 s, nearly all of it Fixpt compiling s7st's 3,600
+- **Start-up** is 2.6 s, nearly all of it Fixpt compiling s7st's 4,500
   lines. Making the interpreter ready (special forms, primitives, prelude)
   takes milliseconds. The editor starts the server the first time it's
   asked for Scheme, so only that first request waits.
