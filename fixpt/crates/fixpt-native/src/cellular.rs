@@ -1098,9 +1098,11 @@ fn assemble_word_as(heap: &Heap, word: Value, far: [i64; 2], long: bool) -> Resu
 
 /// Routines whose call-out leaves the machine somewhere other than the next
 /// cell: after them, the machine goes on from wherever it is (`enter_cur`).
+/// The captures' `n` forms too, which a program in the native convention
+/// uses: each enters the procedure it is given, as its plain form does.
 pub const CONTROL_CALLOUTS: &[&str] = &[
-    "prompt", "abort", "callcomp", "callcc", "callone", "withmark", "withmark-tail", "call", "tailcall", "execute", "docol", "exit", "halt",
-    "return", "tcall", "ttailcall", "resume", "undefined",
+    "prompt", "abort", "callcomp", "callcc", "callone", "ncallcomp", "ncallcc", "ncallone", "withmark", "withmark-tail", "call",
+    "tailcall", "execute", "docol", "exit", "halt", "return", "tcall", "ttailcall", "resume", "undefined",
 ];
 
 /// What the compiler written in FX-26 needs to know of this machine to
@@ -1666,7 +1668,7 @@ impl Stacks {
             alloc_limit: heap.inline_limit() as u64,
             regions: heap.region_table_address() as u64,
             cards: heap.card_table_address() as u64,
-            code_lo: heap.code_area_address() as u64,
+            code_lo: heap.native_code_address() as u64,
             leaf_link: 0,
             pure: pure_call as *const () as u64,
             reserve: 0,

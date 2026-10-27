@@ -169,7 +169,8 @@ fn run_word_by(rt: &mut Runtime, a: &[Value], run: Option<crate::RunWord>) -> Ou
         }
         cells.extend([f(const { routine("lit") }), a[0], f(const { routine("call") }), f(args.len() as u64), f(const { routine("exit") })]);
         let name = rt.heap.intern(CALL_CLOSURE);
-        match rt.heap.make_cellular_word(name, &cells) {
+        // Only run, never a closure's: in the heap.
+        match rt.heap.make_transient_word(name, &cells) {
             Ok(w) => (w, Vec::new()),
             Err(e) => return rt.fail(&e, &[a[0]]),
         }
@@ -1897,21 +1898,21 @@ prims! {
         use fixpt_heap::layout::regcode::op;
         let f = |n: u64| Value::fixnum(n as i64);
         let cells = [f(const { routine("rest") }), f(const { routine("free") }), Value::fixnum(0), f(const { routine("tailcall") }), Value::fixnum(1)];
-        let name = rt.heap.intern("vlambda");
-        let word = match rt.heap.make_cellular_word(name, &cells) {
-            Ok(w) => w,
-            Err(e) => return rt.fail(&e, &[a[0]]),
-        };
-        let o = |n: &str| Value::fixnum(op(n) as i64);
-        let (zero, one) = (Value::fixnum(0), Value::fixnum(1));
-        let regs = [
-            o("vargs"), o("save"), zero, o("cellular"), f(const { routine("rest") }), zero, o("setreg"), one,
-            o("lexical"), zero, o("pop"), zero, o("tailinvoke"), one,
-            Value::fixnum(fixpt_heap::layout::regcode::conv("fx") as i64),
-        ];
-        match rt.heap.make_register_word(name, word, &regs) {
-            Ok(rw) => rt.heap.set_bloblet_slot(word, WORD_TWIN, rw),
-            Err(e) => return rt.fail(&e, &[a[0]]),
+        // One word for every `vlambda`, its register code made once.
+        let word = rt.heap.shared_word("vlambda", &cells);
+        if rt.heap.bloblet_slot(word, WORD_TWIN) == Value::FALSE {
+            let name = rt.heap.intern("vlambda");
+            let o = |n: &str| Value::fixnum(op(n) as i64);
+            let (zero, one) = (Value::fixnum(0), Value::fixnum(1));
+            let regs = [
+                o("vargs"), o("save"), zero, o("cellular"), f(const { routine("rest") }), zero, o("setreg"), one,
+                o("lexical"), zero, o("pop"), zero, o("tailinvoke"), one,
+                Value::fixnum(fixpt_heap::layout::regcode::conv("fx") as i64),
+            ];
+            match rt.heap.make_register_word(name, word, &regs) {
+                Ok(rw) => rt.heap.set_bloblet_slot(word, WORD_TWIN, rw),
+                Err(e) => return rt.fail(&e, &[a[0]]),
+            }
         }
         let c = rt.heap.make_bloblet(const { fixpt_heap::layout::kind("cellular-closure") }, 2, 0, true);
         rt.heap.set_bloblet_slot(c, CLOSURE_WORD, word);
@@ -2719,6 +2720,22 @@ prims! {
     // not hold from an input that a harness does not take.
     "%fx26-assert", 1, Some(1), simple!(|rt, a| if a[0].is_false() { rt.fail("assertion failed", &[]) } else { Ok(rt.heap.intern_static("#u")) });
     "%fx26-assume", 1, Some(1), simple!(|rt, a| if a[0].is_false() { rt.fail("assumption not met", &[]) } else { Ok(rt.heap.intern_static("#u")) });
+    // Syscalls (`docs/research/syscalls.md`): a required one's check as its
+    // declaration runs; whether one is there; a call of one. Each given its
+    // label for messages, its host name and its type in canonical form.
+    "%fx26-syscall-require", 3, Some(3), simple!(|rt, a| {
+        let (label, host, canonical) = (get_string(rt, a[0])?, get_string(rt, a[1])?, get_string(rt, a[2])?);
+        crate::syscall::require(rt, &label, &host, &canonical)
+    });
+    "%fx26-syscall-available?", 2, Some(2), simple!(|rt, a| {
+        let (host, canonical) = (get_string(rt, a[0])?, get_string(rt, a[1])?);
+        Ok(Value::boolean(crate::syscall::available(&host, &canonical)))
+    });
+    "%fx26-syscall", 3, Some(3 + crate::syscall::MAX_ARGS), simple!(|rt, a| {
+        let (label, host, canonical) = (get_string(rt, a[0])?, get_string(rt, a[1])?, get_string(rt, a[2])?);
+        let args = a[3..].to_vec();
+        crate::syscall::call(rt, &label, &host, &canonical, &args)
+    });
     // FX-26's `type-at` (Heist's, `FIXPT-CHANGES.md` F3): program text
     // `a[0]` checked, and the innermost expression at character `a[1]`:
     // "START END TYPE", or "error START END MESSAGE", in characters. The

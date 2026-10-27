@@ -2051,3 +2051,54 @@ After the user moved the baseline to kayak `d5840ee` and asked to go on;
   memory matters more.
 - The measurement scripts now report kernel cycles beside user cycles:
   this cost had been invisible in `cycles:u` alone.
+
+## Syscalls as two definitions (2026-10-26)
+
+Kayak's request (`docs/research/syscalls.md`), whose "Open questions" were
+Fixpt's to decide; the rest of what Fixpt chose is in that note's last
+section. In short:
+
+- **A declaration expands into ordinary definitions**, the host name and
+  canonical type as literals, rather than a new form for every machine to
+  compile: three runtime primitives serve all nine machines, and the check
+  at load is the declaration's own run. The cost: a check runs when the
+  declaration does, not before the program's first form.
+- **`syscall-available?` is a hidden global's name**, so that the FX-26
+  compiler, which compiles the parser's trees, needs nothing from the
+  checker at a use.
+- **`(io sys)` one atom; declarations per program; `syscall-available?`
+  of declared names only**: the open questions, each the simpler side.
+- **`code:exec-view/1` always -1** in Fixpt, rather than pinning arrays
+  for it: allowed by the request, and nothing in Fixpt needs a view.
+- **At most six arguments**, constant regions and specifications refused:
+  limits nothing asked for yet needs past, each easy to lift.
+- **The evaluator written in FX-26 gets a table of its own**, the same
+  three, so that every machine answers alike.
+
+
+## Every procedure's code runs (2026-10-26)
+
+Kayak's request (`docs/research/code-stubs.md`), whose open questions were
+Fixpt's to decide; the note's last section has the rest. In short:
+
+- **The code area in two parts**, words and the shared stub below native
+  code, `code-lo` the native part's start: so the older clause's test
+  keeps its meaning exactly, and the machines that tell native closures
+  from cellular ones by `code-lo` need no change. The request put
+  `code-lo` at the area's start instead, the word's stub then entering
+  `foreign`; same result, more change.
+- **One shared stub at field 2 for the other kinds**, the VM's closures,
+  primitives and continuations and cellular continuations, rather than
+  proving they never reach native code: their layouts change by a field,
+  which every reader of them takes by name.
+- **Words only run stay in the heap; words made again and again alike are
+  made once.** Putting every word made in the area would put one there for
+  every call from native code.
+- **Images carry the code area** (version 8) rather than copying code out
+  as ordinary bloblets and back: the bytecode VM's closures hold the stub,
+  so every image would need the special case.
+- **The convention read as data keeps `native-when-code-at-least`** at
+  `code-lo` under the new clause, with a new flag: a generator written
+  before keeps making the code it made, which still runs.
+- **`foreign` takes a native closure too**, so that the older clause's
+  code, wherever its test sends one, never fails.

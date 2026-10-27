@@ -254,7 +254,9 @@ impl Checker {
     pub fn defined_names(&self, form: &Syntax) -> Vec<Sym> {
         let Some(items) = form.as_proper_list() else { return Vec::new() };
         match items.first().and_then(|h| h.as_symbol()).map(|h| self.interner.name(h)) {
-            Some("define" | "define*") => items.get(1).and_then(|n| n.as_symbol()).into_iter().collect(),
+            Some("define" | "define*" | "define-syscall" | "define-optional-syscall") => {
+                items.get(1).and_then(|n| n.as_symbol()).into_iter().collect()
+            }
             Some("define-rec") => items[1..].iter().filter_map(|b| b.as_proper_list()?.first()?.as_symbol()).collect(),
             _ => Vec::new(),
         }
@@ -582,6 +584,7 @@ impl Checker {
                 }
                 Ok(top)
             }
+            Some("define-syscall" | "define-optional-syscall") => self.define_syscall(form, items, head == Some("define-syscall")),
             Some("define-effect") => {
                 let [_, name, def] = items else {
                     return Err(FxError::at(form.span, "`(define-effect name effect)`"));
@@ -1201,9 +1204,14 @@ impl Checker {
     }
 
     /// Run `f`, then forget everything it added to the environment, the
-    /// description scope and the arena. The caller restores the interner.
+    /// description scope and the arena, and every file it loaded for the
+    /// first time (`parse_load`). The caller restores the interner, so a
+    /// load kept would name a hidden global by a symbol gone.
     pub fn scratch<T>(&mut self, f: impl FnOnce(&mut Checker) -> T) -> T {
         let (env, dscope, arena) = (self.env.len(), self.dscope.len(), self.arena.mark());
+        let shared = (self.shared_loads.clone(), self.shared_globals.clone());
+        let (defs, outdated) = (self.defs.clone(), self.outdated.clone());
+        let (hoisted, files_read) = (self.hoisted.len(), self.files_read);
         let out = f(self);
         self.truncate_env(env);
         self.dscope.truncate(dscope);
@@ -1212,6 +1220,12 @@ impl Checker {
         self.arrow_star_tys.retain(|t| arena.has_ty(*t));
         self.arena.reset(arena);
         self.regions_memo.borrow_mut().clear();
+        (self.shared_loads, self.shared_globals) = shared;
+        (self.defs, self.outdated) = (defs, outdated);
+        self.hoisted.truncate(hoisted);
+        self.files_read = files_read;
+        self.load_sites.retain(|f, _| f.0 <= files_read + 1000);
+        self.loaded.retain(|e, _| e.0 < arena.exps());
         out
     }
 
@@ -1337,7 +1351,7 @@ pub const KEYWORDS: &[&str] = &[
     "lambda", "plambda", "proj", "if", "letrec", "let", "begin", "define", "define*", "define-type", "define-generative",
     "subr", "->", "->*", "poly", "ref", "pairof", "dletrec", "void", "pure", "maxeff", "read", "write",
     "alloc", "goto", "comefrom", "region", "effect", "type", "prompt", "prompt-tag",
-    "composable", "oneshot", "mark-key", "listof", "cond", "case", "else", "and", "or", "let*", "define-effect", "define-convention", "module-parameters", "the",
+    "composable", "oneshot", "mark-key", "listof", "cond", "case", "else", "and", "or", "let*", "define-effect", "define-convention", "define-syscall", "define-optional-syscall", "syscall-available?", "module-parameters", "the",
     "bloblet", "fields", "frozen", "arrayof", "icell", "await", "define-rec", "letrena", "letreap", "rlambda", "quote", "productof", "sumof", "product", "extract", "sum", "tagcase", "module", "moduleof", "with", "select", "load-module", "import",
     "define-datatype", "make-bloblet", "bloblet-ref", "bloblet-set!", "bloblet-freeze", "bloblet-byte",
     "bloblet-set-byte!", "bloblet-bytes", "rmake-bloblet", "dlambda", "=>",
