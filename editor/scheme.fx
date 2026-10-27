@@ -51,6 +51,49 @@ echo area (of a frame), or nobody (nothing runs)."
 about a name."
 (define-type s7-describing (productof (frame (actor frame)) (m-dot bool) (name string)))
 (define s7-describe-for (ref (listof s7-describing acyclic) @ed) (new nil))
+"Each Scheme buffer's flow notes, from its latest analysis: the revision
+they are of, and each note's span and text."
+(define-type s7-note (productof (start int) (end int) (text string)))
+(define-type s7-buffer-notes (productof (buffer (actor buffer)) (revision int) (notes (listof s7-note acyclic))))
+(define s7-notes (ref (listof s7-buffer-notes acyclic) @ed) (new nil))
+"What a note says at point `p` of buffer `b`, if it is of revision `rev`:
+the first whose span holds `p` (or ends at it); \"\" if none."
+(define* s7-note-at (subr (maxeff spin (read @ed)) ((actor buffer) int int) string)
+  (lambda (b rev p)
+    (letrec ((buffer (subr spin ((listof s7-buffer-notes acyclic)) string)
+               (lambda (l) (cond ((null? l) "")
+                                 ((same-actor? (extract (car l) buffer) b)
+                                  (if (= (extract (car l) revision) rev) (note (extract (car l) notes)) ""))
+                                 (else (buffer (cdr l))))))
+             (note (subr spin ((listof s7-note acyclic)) string)
+               (lambda (l) (cond ((null? l) "")
+                                 ((and (<= (extract (car l) start) p) (<= p (extract (car l) end))) (extract (car l) text))
+                                 (else (note (cdr l)))))))
+      (buffer (get s7-notes)))))
+"Notes `notes` kept for buffer `b`, of revision `rev`."
+(define* s7-keep-notes! (subr cmd-eff ((actor buffer) int (listof s7-note acyclic)) unit)
+  (lambda (b rev notes)
+    (letrec ((drop (subr spin ((listof s7-buffer-notes acyclic)) (listof s7-buffer-notes acyclic))
+               (lambda (l) (cond ((null? l) nil) ((same-actor? (extract (car l) buffer) b) (cdr l)) (else (cons (car l) (drop (cdr l))))))))
+      (set s7-notes (cons (product (buffer b) (revision rev) (notes notes)) (drop (get s7-notes)))))))
+"The notes an `analysis` answer's last field says: lines `start end text`."
+(define* s7-notes-of (subr spin (string) (listof s7-note acyclic))
+  (lambda (s)
+    (letrec ((lines (subr spin (int int (listof s7-note acyclic)) (listof s7-note acyclic))
+               (lambda (i start acc)
+                 (cond ((or (>= i (string-length s)) (char=? (string-ref s i) #\newline))
+                        (let* ((line (substring s start (min i (string-length s))))
+                               (sp1 (string-search line " " 0))
+                               (sp2 (if (< sp1 0) -1 (string-search line " " (+ sp1 1))))
+                               (acc2 (the (listof s7-note acyclic) (if (< sp2 0) acc
+                                         (cons (product (start (max 0 (parse-nat (substring line 0 sp1) 10)))
+                                                        (end (max 0 (parse-nat (substring line (+ sp1 1) sp2) 10)))
+                                                        (text (substring line (+ sp2 1) (string-length line))))
+                                               acc)))))
+                          (if (>= i (string-length s)) (reverse acc2) (lines (+ i 1) (+ i 1) acc2))))
+                       (else (lines (+ i 1) start acc))))))
+      (lines 0 0 nil))))
+
 "The analyses asked for and not yet answered: each request's key, and the
 buffer and revision it is of."
 (define-type s7-pending-analysis (productof (key int) (buffer (actor buffer)) (revision int)))
@@ -303,6 +346,7 @@ their common one, and the rest said."
                       (lambda (l) (cond ((null? l) nil) ((= (extract (car l) key) key) (cdr l)) (else (cons (car l) (drop (cdr l))))))))
              (tagcase (find (get s7-analyses))
                (found a (begin (set s7-analyses (drop (get s7-analyses)))
+                          (s7-keep-notes! (extract a buffer) (extract a revision) (s7-notes-of (s7-nth-field fields 6)))
                           (tell! (extract a buffer) (annotate (s7-annotation fields (extract a revision))))))
                (none u #u)))))
         ((string=? word "completions")
@@ -442,14 +486,18 @@ before (after) the one shown last."
                               (none u (tell! fr (echo "s7st runs nothing")))
                               (else y (s7-send! "interrupt" nil)))))))))
 
-"Eldoc in a Scheme buffer (eldoc.fx): what s7st knows of the name at
-point, else of the operator of the call around it -- if s7st runs."
-(define* s7-eldoc (subr pure ((actor frame) string string) cmd)
-  (lambda (fr here op)
+"Eldoc in a Scheme buffer (eldoc.fx): what s7st's flow analysis found at
+point, if it analysed this revision of the buffer (what can reach the
+variable, what the call can call); else what s7st knows of the name at
+point, or of the operator of the call around it -- if s7st runs."
+(define* s7-eldoc (subr pure ((actor frame) (actor buffer) int int string string) cmd)
+  (lambda (fr b rev p here op)
     (lambda ()
-      (if (and (pair? (get s7-server)) (get s7-ready))
-          (begin (set s7-describe-for (list (product (frame fr) (m-dot #f) (name here)))) (s7-send! "describe" (list here op)))
-          #u))))
+      (let ((note (s7-note-at b rev p)))
+        (cond ((not (string=? note "")) (tell! fr (eldoc-show note)))
+              ((and (pair? (get s7-server)) (get s7-ready))
+               (begin (set s7-describe-for (list (product (frame fr) (m-dot #f) (name here)))) (s7-send! "describe" (list here op))))
+              (else #u))))))
 (set scheme-eldoc (list s7-eldoc))
 
 "M-. on a name a Scheme buffer defines nowhere: what s7st knows of it."

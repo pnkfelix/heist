@@ -33,6 +33,7 @@ take a group of files as one module, s7st can become a module with
 | `table.fx`    | hash tables                                                                                                                                  |
 | `library.fx`  | libraries: namespaces, import sets, finding a library's file                                                                                 |
 | `analyze.fx`  | what a text is, for an editor, read and walked but never run: faces, definitions, each local variable's binder, the read's error           |
+| `flow.fx`     | a flow analysis of a text, 0CFA: what can reach each variable, what each call can call                                                      |
 | `machine.fx`  | the compiler to closures, and the CEK machine that runs its code, one step at a time                                                         |
 | `prelude.scm` | what is written in Scheme: `map`, `guard`, `parameterize`, promises, the I/O procedures over ports, a few of SRFI 1's. `prelude.fx` is generated from it by `gen-prelude.py` |
 | `session.fx`  | the API clients call: `s7-init!`, `s7-start!`, `s7-continue!`, `s7-take-output!`, `s7-interrupt!`                                            |
@@ -254,29 +255,41 @@ produces it:
   primitives give the abstract domain its cases: each says what it
   returns and what it raises.
 
-What remains for an analysis:
-- **A front end for buffers being edited.** `analyze.fx` is a first one,
-  for the editor. It walks what the reader read, knowing R7RS's binding
-  forms; an unknown form is an application, so its parts are still
-  walked, as in Yank's desugaring. It changes no global, and the reader
-  now keeps every list item's position (`s7-item-spans`). What it lacks
-  for a flow analysis is the core itself: it resolves binders but builds
-  no nodes, and it doesn't expand macros.
-- **Expansion that leaves the live globals alone.** `define-syntax` and
-  `define` at top level change the global table when expanded. An
-  analysis of a buffer that hasn't run yet should expand into a table of
-  its own.
-- **The analysis itself.** `editor/flow.fx` is Heist's 0CFA of FX-26 code
-  (`docs/fx26-analysis.md`), over a core of the same shape. A version for
-  `s7-node` would be the third stage of that plan, run on Scheme.
-- **What the editor can then show.** M-. through the analysis, the
-  procedures each call can reach, and the types of data each variable can
-  hold, as Yank shows them after `M-x flow-run-loads`. Eldoc for Scheme
-  exists already, but it asks the running server (`describe`, which calls
-  `s7-describe`): every
-  global's value is in `s7-globals`, and each closure carries its lambda's
-  parameter names. So it knows only what has been run. An analysis would
-  know what the text says before it runs.
+**A first analysis is built: `flow.fx`, 0CFA.**
+- **Front end.** The buffer's text is expanded by the expander that runs
+  code, into a namespace of its own, so its `define`s and `define-syntax`es
+  change nothing in the session. Every reference keeps its symbol's span,
+  because the reader keeps each list item's place in the pair that holds
+  it (`s7-src`) and the expander passes it down.
+- **Abstract values.** Kinds of data (number, string, pair, `()`, vector,
+  …), the text's lambda clauses, and the session's built-ins, by name.
+- **The fixpoint.** The store (frame slots, the text's globals, each
+  lambda's results) only grows. The top level and every lambda body are
+  evaluated against it until it stops growing.
+- **Calls.** A call of a lambda flows its arguments into the parameters
+  and takes back its result. A built-in's result comes from a table by
+  name. A lambda given to a built-in or to unknown code escapes: it is
+  taken to be called with anything.
+- **What it says:** at each variable's use, what can reach it (`x: number
+  | string`); at each call's operator, what it can call (`calls
+  #<procedure square>`).
+
+**In the editor.** The server's `analyze` answers with these notes along
+with the faces. Eldoc in a Scheme buffer shows the note at point when it
+is of the buffer's current revision (`ui/s7st-flow.scm`).
+
+What remains, as Yank's analysis has it:
+- **Allocation sites**, so a pair says what it holds, and `car` of a list
+  of numbers is a number.
+- **Contexts (1CFA, m-CFA)**, so a procedure called from two places
+  keeps their arguments apart.
+- **Narrowing**: a variable under `(if (string? x) …)` is a string there.
+- **The built-ins written in Scheme** (the prelude's `map`, `for-each`,
+  `fold`) analysed rather than escaping lambdas to them. Their text is the
+  prelude's, so the same expander and analysis apply.
+- **Errors underlined**: calls of what is no procedure, and arity
+  mismatches, which the analysis already sees.
+- **M-. through the analysis**: to a lambda a call can reach.
 
 ### For a compiler
 
@@ -330,7 +343,7 @@ Its keys:
 | `C-c C-z`                      | to *s7st*                                                                                       |
 | TAB in *s7st*, M-TAB            | the name before point completed, from those s7st's top level sees                               |
 | M-.                            | in a Scheme buffer, a local variable's binder, or a definition in a buffer, as in an FX-26 buffer; for a name defined nowhere, what s7st knows of it |
-| eldoc, in those buffers and *s7st* | once s7st runs, what it knows of the name at point, or of the operator of the call around it: `(map f l . ls)`, `car: 1 argument`, `guard: a macro`, `x = (1 2)`. Eldoc does not start s7st. |
+| eldoc, in those buffers and *s7st* | the flow analysis's note at point, if there is one (`x: number`, `calls #<procedure square>`); else what s7st knows of the name at point, or of the operator of the call around it: `(map f l . ls)`, `car: 1 argument`, `guard: a macro`, `x = (1 2)`. Eldoc does not start s7st. |
 
 **Scheme buffers look like Scheme.** Each `.scm`, `.sld`, `.ss` or `.sps`
 buffer has an analysis actor. After each edit (the last of a burst) it

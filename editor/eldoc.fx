@@ -21,8 +21,9 @@
 (define standard-text (ref string @ed) (new ""))
 
 "What says what a Scheme name is (scheme.fx sets it): given the frame, the
-name at point and the operator of the call around point, a command."
-(define scheme-eldoc (ref (listof (subr pure ((actor frame) string string) cmd) acyclic) @ed) (new nil))
+buffer, its revision and point, the name at point and the operator of the
+call around point, a command."
+(define scheme-eldoc (ref (listof (subr pure ((actor frame) (actor buffer) int int string string) cmd) acyclic) @ed) (new nil))
 (define* scheme-buffer? (subr spin (string) bool)
   (lambda (name) (or (string=? (buffer-kind name) "<scheme>") (string=? name "*s7st*"))))
 
@@ -172,7 +173,7 @@ the name at point, or else of the operator of the call around it."
                   (sc (scan-at t p)))
              (if (or (>= (extract sc string-at) 0) (extract sc comment))
                  ((eldoc-show "") f)
-                 (reply-with f (list ((car (get scheme-eldoc)) fr (symbol-at t (name-start t p))
+                 (reply-with f (list ((car (get scheme-eldoc)) fr current (extract st revision) p (symbol-at t (name-start t p))
                                                                (if (null? (extract sc opens)) ""
                                                                    (symbol-at t (skip-space t (+ 1 (car (extract sc opens))))))))))))
           ((not (fx26-file? (extract st name))) (same f))
