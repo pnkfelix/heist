@@ -1,7 +1,9 @@
 # A request to the Fixpt team: `rnew` and `rmake-array` inline in the direct native code
 
-Status: drafted 2026-10-27 by Heist, for the user to take to the Fixpt
-team. Measured at Fixpt main 8793b0cb (Heist's `fixpt/` subtree), x86_64
+Status: done by Fixpt in b7b60d98 (2026-10-27), pulled by Heist's
+82b06f73. After it, on the benchmark below, `make-array` 487 → 58 ms and
+`new` 304 → 37 ms. Drafted 2026-10-27 by Heist, for the user to take to
+the Fixpt team. Measured at Fixpt main 8793b0cb (Heist's `fixpt/` subtree), x86_64
 Linux, the default machine (`fast`).
 
 ---

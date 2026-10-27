@@ -8,10 +8,14 @@ do it, and what it cost. Kayak will need the same changes later
 
 ## Base
 
-- Fixpt `main` at 8793b0cb (2026-10-27), pulled from GitHub by Heist's
-  550e2fcb (squash c2cfe8cf): queries by type and effect (`,query`,
-  `fixpt query`, `around CONTEXT`) and `consumes T`. Heist has no edits
-  of its own on it.
+- Fixpt `main` at b7b60d98 (2026-10-27), pulled from GitHub by Heist's
+  82b06f73 (squash d43df60d): `new`, `make-array`, `rnew` and
+  `rmake-array` inline in x86_64 native code
+  (`docs/requests/fixpt-region-alloc-inline.md`, Heist's request), file
+  signatures (`load-moduleof`, `restrict`), compiled code named to
+  `gdb`/`lldb`. Heist has no edits of its own on it.
+- Before: Fixpt 8793b0cb (2026-10-27), pulled by Heist's 550e2fcb
+  (squash c2cfe8cf): queries by type and effect, `consumes T`.
 - Before: Fixpt 991ec476 (2026-10-26), pulled by Heist's cea14dba
   (squash 83dbcee8), with F1–F4 upstream.
 - Before that: Fixpt 1e4d4ed6 (2026-10-25), added by Heist's 86eff712.

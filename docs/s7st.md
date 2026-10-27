@@ -141,14 +141,15 @@ Most of it:
 | process-context | 2 passed                   |
 | read            | 44 passed                  |
 | repl            | 10 passed                  |
-| time            | 1 of 2: see below          |
+| time            | 2 passed, or 1 of 2: see below |
 | write           | 63 passed                  |
 | complex         | not run: no complex numbers |
 | inexact         | not run: its tests write complex literals (`-1.0+0.0i`) unconditionally |
 
 `time`'s second test counts down a million between readings of the clock,
 and allows 0.1 s of slack. So it needs 10 million loop iterations a
-second, and s7st does 8 million ("Speed").
+second; s7st does about 9.3 million, and passes it some of the time
+("Speed").
 
 Getting there fixed, among other things:
 - datum labels, read and written, with `write` marking cycles and
@@ -217,29 +218,30 @@ read with no loop (`s7-local-getter`).
 
 On this machine, measured in the program itself with `current-jiffy`:
 
-| benchmark                     | evaluating nodes | compiled | quick values unwrapped, fast entries |
-| ----------------------------- | ---------------- | -------- | ------------------------------------ |
-| `(fib 25)`                    | 242 ms           | 100 ms   | 65 ms                                |
-| `(tak 18 12 6)`               | 69 ms            | 26 ms    | 15 ms                                |
-| a named-`let` loop, 1,000,000 | 1209 ms          | 333 ms   | 196 ms                               |
-| `map` over 200,000            | 731 ms           | 455 ms   | 398 ms                               |
-| `do` over a vector, 500,000   | 729 ms           | 221 ms   | 119 ms                               |
+| benchmark                     | evaluating nodes | compiled | quick values unwrapped, fast entries | Fixpt b7b60d98 |
+| ----------------------------- | ---------------- | -------- | ------------------------------------ | -------------- |
+| `(fib 25)`                    | 242 ms           | 100 ms   | 65 ms                                | 56 ms          |
+| `(tak 18 12 6)`               | 69 ms            | 26 ms    | 15 ms                                | 14 ms          |
+| a named-`let` loop, 1,000,000 | 1209 ms          | 333 ms   | 196 ms                               | 142 ms         |
+| `map` over 200,000            | 731 ms           | 455 ms   | 398 ms                               | 336 ms         |
+| `do` over a vector, 500,000   | 729 ms           | 221 ms   | 119 ms                               | 93 ms          |
 
 **Where the time goes now** (`FIXPT_PERF_MAP=1 perf record`, Fixpt's
-`docs/performance.md`): mostly allocation in region `@sc`. A frame is a
-`make-array` and a pair is two `new`s. In the default machine's native
-code, each is a call-out to Rust, 30–50 ns, against ~1.5 ns for an
-immutable sum. Heist has asked Fixpt to do them inline
-(`docs/requests/fixpt-region-alloc-inline.md`). Until then, Larceny's
-`(scheme time)` test fails one case: it needs 10 million loop iterations
-a second, and s7st does 8 million.
+`docs/performance.md`): s7st's own machinery. Frames and pairs at region
+`@sc` were call-outs to Rust, 30–50 ns each. Since Fixpt b7b60d98 (Heist's
+request, `docs/requests/fixpt-region-alloc-inline.md`) they are made in
+line. A self-calling loop now takes ~107 ns an iteration, about 9.3
+million a second. Larceny's `(scheme time)` test needs 10 million, so it
+passes only some of the time. What's next for it is s7st's: reuse a
+loop's frame where nothing captured it, and fuse the commonest node
+shapes into one closure.
 
-`(fib 25)` is 250,000 calls, so about 2.5 million procedure calls a second.
+`(fib 25)` is 250,000 calls, so about 4.5 million procedure calls a second.
 The same `fib` written in FX-26, which Fixpt compiles to native code, is
 still much faster. FX-26 has no way to make FX-26 code at run time
 ("Openings").
 
-- **Start-up** is 2.6 s, nearly all of it Fixpt compiling s7st's 4,600
+- **Start-up** is 3.7 s, nearly all of it Fixpt compiling s7st's 6,500
   lines. Making the interpreter ready (special forms, primitives, prelude)
   takes milliseconds. The editor starts the server the first time it's
   asked for Scheme, so only that first request waits.
