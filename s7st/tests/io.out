@@ -1,0 +1,17 @@
+hee
+llo
+(a . b)
+42
+"str"
+#\x
+#t
+"sym \"q\\\"uote\" tail\n"
+one|two|#t
+abc
+x1
+("a\nb" #\newline #\delete |a b| || 15000000000.0 -0.0 +nan.0)
+(a b)
+(quote x)
+#(a "b" #\c)
+(1 2)
+[exit 0]
