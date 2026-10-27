@@ -1,0 +1,7 @@
+(a b 1/2)
+(line one line two)
+#t
+file error
+#<eof>
+never closed
+[exit 0]

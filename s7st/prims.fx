@@ -480,12 +480,15 @@ predicate, accessor or modifier)."
 
 ;;; ------------------------------------------------------------ ports
 
-(define* s7-make-port (subr (alloc @sc) (bool string) s7-value)
-  (lambda (input text)
+(define* s7-file-port (subr (alloc @sc) (bool string string) s7-value)
+  (lambda (input text file)
     (sum port (product (id (the (ref unit @sc) (new #u))) (input input) (text text)
                        (pos (the (ref int @sc) (new 0)))
                        (out (the (ref (listof string acyclic) @sc) (new nil)))
-                       (open (the (ref bool @sc) (new #t)))))))
+                       (open (the (ref bool @sc) (new #t)))
+                       (file file)))))
+(define* s7-make-port (subr (alloc @sc) (bool string) s7-value)
+  (lambda (input text) (s7-file-port input text "")))
 "Where `display` and its kin write by default: what a client takes
 (`s7-take-output!`)."
 (define s7-console s7-value (s7-make-port #f ""))
@@ -503,6 +506,25 @@ has been written since what runs began)."
 writes before a value, an error or a prompt."
 (define* s7-fresh-line (subr (read @sc) () string)
   (lambda () (if (get s7-console-fresh) "" "\n")))
+"The output ports to files opened: each written when flushed or closed,
+and when what runs ends."
+(define s7-file-ports (ref s7-values @sc) (new nil))
+"Port `p`'s file written with all it has had written. \"\", or why not."
+(define* s7-flush-port! (subr s7-eff (s7-port) string)
+  (lambda (p)
+    (if (or (extract p input) (string=? (extract p file) "")) ""
+        (tagcase (write-file (extract p file) (the (bytevectorof @sc) (string->utf8 (s7-port-text p))))
+          (done u "")
+          (else y (string-append "cannot write " (extract p file)))))))
+"Every file port still open, written: what runs has ended."
+(define* s7-flush-files! (subr s7-eff () unit)
+  (lambda ()
+    (letrec ((go (subr s7-eff (s7-values) unit)
+               (lambda (l)
+                 (if (null? l) #u
+                     (begin (tagcase (car l) (port p (if (get (extract p open)) (begin (s7-flush-port! p) #u) #u)) (else y #u))
+                       (go (cdr l)))))))
+      (go (get s7-file-ports)))))
 "Text `s` written to port `v`, or an error."
 (define* s7-port-write (subr s7-eff (string s7-value s7-value) s7-out)
   (lambda (who v s)
@@ -1057,10 +1079,40 @@ writes before a value, an error or a prompt."
       (s7-prim! "binary-port?" 1 1 (lambda ((a s7-values)) (s7-bool #f)))
       (s7-prim! "input-port-open?" 1 1 (lambda ((a s7-values)) (tagcase (car a) (port p (s7-bool (and (extract p input) (get (extract p open))))) (else y (s7-wrong "input-port-open?" "a port" y)))))
       (s7-prim! "output-port-open?" 1 1 (lambda ((a s7-values)) (tagcase (car a) (port p (s7-bool (and (not (extract p input)) (get (extract p open))))) (else y (s7-wrong "output-port-open?" "a port" y)))))
-      (s7-prim! "close-port" 1 1 (lambda ((a s7-values)) (tagcase (car a) (port p (begin (set (extract p open) #f) (sum ok s7-unspecified))) (else y (s7-wrong "close-port" "a port" y)))))
+      (s7-prim! "close-port" 1 1 (lambda ((a s7-values))
+                                   (tagcase (car a)
+                                     (port p (let ((why (if (get (extract p open)) (s7-flush-port! p) "")))
+                                               (begin (set (extract p open) #f)
+                                                 (if (string=? why "") (sum ok s7-unspecified)
+                                                     (sum raise (sum errobj (product (kind 'file) (message why) (irritants s7-nil))))))))
+                                     (else y (s7-wrong "close-port" "a port" y)))))
       (s7-alias! "close-input-port" "close-port")
       (s7-alias! "close-output-port" "close-port")
-      (s7-prim! "flush-output-port" 0 1 (lambda ((a s7-values)) (sum ok s7-unspecified))))))
+      (s7-prim! "%flush-output-port" 1 1 (lambda ((a s7-values))
+                                           (tagcase (car a)
+                                             (port p (let ((why (s7-flush-port! p)))
+                                                       (if (string=? why "") (sum ok s7-unspecified)
+                                                           (sum raise (sum errobj (product (kind 'file) (message why) (irritants s7-nil)))))))
+                                             (else y (s7-wrong "flush-output-port" "a port" y)))))
+      (s7-prim! "open-output-file" 1 1 (lambda ((a s7-values))
+                                         (tagcase (car a)
+                                           (str s (let ((p (s7-file-port #f "" (s7-path (get s)))))
+                                                    ;; Made empty at once, as opening a file for output does; or why not.
+                                                    (tagcase p
+                                                      (port q (let ((why (s7-flush-port! q)))
+                                                                (if (string=? why "")
+                                                                    (begin (set s7-file-ports (cons p (get s7-file-ports))) (sum ok p))
+                                                                    (sum raise (sum errobj (product (kind 'file) (message why) (irritants (s7-list (list (car a))))))))))
+                                                      (else y (sum ok p)))))
+                                           (else y (s7-wrong "open-output-file" "a file name" y)))))
+      (s7-prim! "delete-file" 1 1 (lambda ((a s7-values))
+                                    (sum raise (sum errobj (product (kind 'file) (message "delete-file: s7st cannot delete files (FX-26 has no such primitive)")
+                                                                    (irritants (s7-list (list (car a)))))))))
+      (s7-prim! "current-jiffy" 0 0 (lambda ((a s7-values)) (s7-ok-int (i64->int (clock)))))
+      (s7-prim! "jiffies-per-second" 0 0 (lambda ((a s7-values)) (s7-ok-int 1000000000)))
+      (s7-prim! "current-second" 0 0 (lambda ((a s7-values)) (sum ok (sum real (f64/ (int->f64 (i64->int (clock))) 1000000000.0)))))
+      (s7-prim! "get-environment-variable" 1 1 (lambda ((a s7-values)) (s7-bool #f)))
+      (s7-prim! "get-environment-variables" 0 0 (lambda ((a s7-values)) (sum ok s7-nil))))))
 
 "The machine's own operations, by number (machine.fx's `s7-control`)."
 (define s7-op-apply int 0)

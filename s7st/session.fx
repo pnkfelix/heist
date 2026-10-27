@@ -68,8 +68,8 @@ runs next, each value shown if `echo`. (none), or what is wrong with it."
       (begin
         (set s7-machine st)
         (tagcase st
-          (s-done v (sum done v))
-          (s-failed f (sum failed (s7-condition-message (extract f obj))))
+          (s-done v (begin (s7-flush-files!) (sum done v)))
+          (s-failed f (begin (s7-flush-files!) (sum failed (s7-condition-message (extract f obj)))))
           (else y (sum running #u)))))))
 
 "What `display` and its kin have written to the console since this was

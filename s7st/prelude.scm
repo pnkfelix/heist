@@ -157,6 +157,13 @@
 (define (call-with-input-file file proc) (call-with-port (open-input-file file) proc))
 (define (with-input-from-file file thunk)
   (parameterize ((current-input-port (open-input-file file))) (thunk)))
+(define (flush-output-port . port) (%flush-output-port (%out port)))
+(define (call-with-output-file file proc) (call-with-port (open-output-file file) proc))
+(define (with-output-to-file file thunk)
+  (let ((port (open-output-file file)))
+    (call-with-values
+      (lambda () (parameterize ((current-output-port port)) (thunk)))
+      (lambda results (close-port port) (apply values results)))))
 (define (call-with-output-string proc)
   (let ((port (open-output-string))) (proc port) (get-output-string port)))
 (define (with-output-to-string thunk)

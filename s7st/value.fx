@@ -23,9 +23,10 @@
 ;;; into a program before another's (the editor's) without either seeing
 ;;; the other's names. Its state is at region @sc.
 
-"What the machine does: reads and writes its own state, loops, and reads
-files (`load`, `open-input-file`)."
-(define-effect s7-eff (maxeff spin (read @globals) (read @sc) (write @sc) (alloc @sc) (io fs-read)))
+"What the machine does: reads and writes its own state, loops, reads and
+writes files (`load`, `open-input-file`, `open-output-file`), and reads the
+clock (`current-jiffy`)."
+(define-effect s7-eff (maxeff spin (read @globals) (read @sc) (write @sc) (alloc @sc) (io fs-read) (io fs-write) (io clock)))
 
 ;;; ------------------------------------------------------------ values
 
@@ -73,10 +74,10 @@ of the machine's own (`call/cc`, `apply`, …), numbered."
 (define-type s7-record (productof (rtd s7-rtd) (fields (arrayof s7-value @sc))))
 (define-type s7-rtd (productof (name string) (fields s7-symbols) (id (ref unit @sc))))
 "A port: of input, a text and where reading has reached; of output, what
-was written, last first."
+was written, last first, and the file it goes to when flushed (\"\": none)."
 (define-type s7-port
   (productof (id (ref unit @sc)) (input bool) (text string) (pos (ref int @sc))
-             (out (ref (listof string acyclic) @sc)) (open (ref bool @sc))))
+             (out (ref (listof string acyclic) @sc)) (open (ref bool @sc)) (file string)))
 "A hash table (table.fx): its kind, its entries in order, and their index."
 (define-type s7-ids
   (productof (pairs (eqtable (ref s7-value @sc) int @sc @sc))
