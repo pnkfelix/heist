@@ -460,13 +460,25 @@ predicate, accessor or modifier)."
   (lambda (p)
     (let ((s (s7-concat (reverse (get (extract p out))))))
       (begin (set (extract p out) (if (string=? s "") nil (list s))) s))))
+"Whether what was last written to the console ended its line (or nothing
+has been written since what runs began)."
+(define s7-console-fresh (ref bool @sc) (new #t))
+"\"\" if the console is at a line's start, else a newline: what a REPL
+writes before a value, an error or a prompt."
+(define* s7-fresh-line (subr (read @sc) () string)
+  (lambda () (if (get s7-console-fresh) "" "\n")))
 "Text `s` written to port `v`, or an error."
 (define* s7-port-write (subr s7-eff (string s7-value s7-value) s7-out)
   (lambda (who v s)
     (tagcase v
       (port p (cond ((extract p input) (s7-wrong who "an output port" v))
                     ((not (get (extract p open))) (s7-fail (string-append who ": the port is closed") (list v)))
-                    (else (begin (set (extract p out) (cons (s7-string-of s) (get (extract p out)))) (sum ok s7-unspecified)))))
+                    (else (let ((text (s7-string-of s)))
+                            (begin (set (extract p out) (cons text (get (extract p out))))
+                              (if (and (> (string-length text) 0) (s7-eqv? v s7-console))
+                                  (set s7-console-fresh (char=? (string-ref text (- (string-length text) 1)) #\newline))
+                                  #u)
+                              (sum ok s7-unspecified))))))
       (else y (s7-wrong who "a port" v)))))
 "Input port `v`, open; or an error."
 (define* s7-input-port (subr s7-eff (string s7-value) (sumof (ok s7-port) (bad s7-out)))

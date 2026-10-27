@@ -11,6 +11,8 @@
 ;;;   (s7-interrupt!)            what runs stopped
 ;;;   (s7-eval-string! text)     all of that at once: the output, then the
 ;;;                              last value or the error (for tests)
+;;;   (s7-describe name)         what a global is, in a line (for eldoc)
+;;;   (set s7-directory dir)     what relative file names are relative to
 ;;;
 ;;; There is one interpreter: its globals are FX-26 globals.
 
@@ -46,7 +48,8 @@ runs next, each value shown if `echo`. (none), or what is wrong with it."
 (define* s7-start! (subr s7-eff (string string bool) (sumof (none unit) (bad string)))
   (lambda (text file echo)
     (tagcase (s7-read-all text file)
-      (data forms (begin (set s7-machine (s7-return-state s7-unspecified (list (sum k-top (product (forms forms) (echo echo) (text text))))
+      (data forms (begin (set s7-console-fresh #t)
+                    (set s7-machine (s7-return-state s7-unspecified (list (sum k-top (product (forms forms) (echo echo) (text text))))
                                                           s7-no-dyn))
                     (sum none #u)))
       (stop r (sum bad (tagcase r
@@ -93,6 +96,48 @@ last asked."
                              (done v (string-append (s7-take-output!) (if (s7-shown? v) (s7-show v #t) "")))
                              (failed m (string-append (s7-take-output!) "Error: " m))))))
                 (go))))))
+
+"How many arguments a procedure takes, in words."
+(define* s7-arity-words (subr spin (int int) string)
+  (lambda (min max)
+    (cond ((= min max) (string-append (int->string min) (if (= min 1) " argument" " arguments")))
+          ((< max 0) (string-append (int->string min) " or more arguments"))
+          (else (string-append (int->string min) " to " (int->string max) " arguments")))))
+"A closure's parameters, as a call: `(name a b . rest)`, each clause's."
+(define* s7-signature (subr s7-eff (string s7-closure) string)
+  (lambda (name c)
+    (letrec ((params (subr spin (s7-symbols int bool (listof string acyclic)) (listof string acyclic))
+               ;; Names `ns`, `left` of them required, then the rest's if `rest`; last first.
+               (lambda (ns left rest acc)
+                 (cond ((null? ns) acc)
+                       ((> left 0) (params (cdr ns) (- left 1) rest (cons (string-append " " (s7-symbol-name (car ns))) acc)))
+                       (rest (cons (string-append " . " (s7-symbol-name (car ns))) acc))
+                       (else acc))))
+             (clauses (subr s7-eff ((listof s7-lambda acyclic) (listof string acyclic)) (listof string acyclic))
+               (lambda (cs acc)
+                 (if (null? cs) acc
+                     (let ((l (car cs)))
+                       (clauses (cdr cs)
+                                (cons (string-append "(" name (s7-concat (reverse (params (extract l names) (extract l required) (extract l rest) nil))) ")")
+                                      (if (null? acc) acc (cons " | " acc)))))))))
+      (s7-concat (reverse (clauses (extract c clauses) nil))))))
+"What global `name` is, in a line: a procedure's parameters, a special
+form, a macro, or a variable's value; \"\" if it is none of them."
+(define* s7-describe (subr s7-eff (string) string)
+  (lambda (name)
+    (if (string=? name "") ""
+        (tagcase (s7-global-find (string->symbol name))
+          (none u "")
+          (found cell
+            (tagcase (get (extract cell syntax))
+              (special k (string-append name ": a special form"))
+              (macro m (string-append name ": a macro"))
+              (none u (tagcase (get (extract cell value))
+                        (undef u "")
+                        (proc c (s7-signature name c))
+                        (prim p (string-append name ": " (s7-arity-words (extract p min) (extract p max))))
+                        (else v (let ((s (s7-show v #t)))
+                                  (string-append name " = " (if (> (string-length s) 60) (string-append (substring s 0 60) "...") s))))))))))))
 
 "The interpreter made ready: the special forms and the procedures written
 in FX-26, then the prelude (prelude.fx) run. \"\", or what went wrong."

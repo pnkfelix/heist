@@ -2,13 +2,9 @@
 # s7st: R7RS Scheme, interpreted by FX-26 code, run on Heist's own Fixpt.
 #   bin/s7st            a REPL
 #   bin/s7st FILE …     each file run
+# It runs where it is started, so that a program's relative file names
+# (`load`, `open-input-file`) are relative to here.
 heist=$(cd "$(dirname "$0")/.." && pwd)
 fixpt="$heist/fixpt/target/release/fixpt"
 [ -x "$fixpt" ] || { echo "build fixpt first: (cd $heist/fixpt && cargo build --release -p fixpt-cli)" >&2; exit 2; }
-for f in "$@"; do
-  shift
-  case "$f" in /*) ;; *) f="$PWD/$f" ;; esac
-  set -- "$@" "$f"
-done
-cd "$heist/s7st" || exit 2
-exec "$fixpt" run $(cat program) main.fx -- "$@"
+exec "$fixpt" run $(for f in $(cat "$heist/s7st/program"); do echo "$heist/s7st/$f"; done) "$heist/s7st/main.fx" -- "$@"

@@ -1,0 +1,13 @@
+"a" #\b)                                |
+(144 "a" #\b)                           |
+s7st> (display "hi") (car 5)            |
+hi                                      |
+Error: car: not a pair 5                |
+s7st> (let lp () (lp))                  |
+;; interrupted                          |
+s7st> (let lp () (lp))                  |
+                                        |
+                                        |
+-**- *s7st*   L13                       |
+                                        |
+cursor 7,22

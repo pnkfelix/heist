@@ -267,7 +267,7 @@ or a definition's name."
       (k-raise obj (s7-error-state "a handler returned from a non-continuable raise" (list obj) k dyn))
       (k-top x (begin
                  (if (and (extract x echo) (s7-shown? v))
-                     (begin (s7-port-write "" s7-console (s7-string (string-append (s7-show v #t) "\n"))) #u)
+                     (begin (s7-port-write "" s7-console (s7-string (string-append (s7-fresh-line) (s7-show v #t) "\n"))) #u)
                      #u)
                  (if (null? (extract x forms))
                      (s7-return-state v k dyn)

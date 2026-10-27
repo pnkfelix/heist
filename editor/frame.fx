@@ -450,11 +450,16 @@ fx26-for-yank.md, R7.)"
       (else y (product (text empty-rope) (found #f))))))
 
 "What kind of buffer one named `name` is, for its keys: a directory's
-listing (its name ends in `/`), or none."
+listing (its name ends in `/`), Scheme (.scm, .sld, .ss, .sps: scheme.fx),
+or none."
 (define* buffer-kind (subr spin (string) string)
   (lambda (name)
-    (let ((n (string-length name)))
-      (if (and (> n 0) (char=? (string-ref name (- n 1)) #\/)) "<listing>" ""))))
+    (let* ((n (string-length name))
+           (ends (lambda ((x string))
+                   (let ((k (string-length x))) (and (> n k) (string=? (substring name (- n k) n) x))))))
+      (cond ((and (> n 0) (char=? (string-ref name (- n 1)) #\/)) "<listing>")
+            ((or (ends ".scm") (ends ".sld") (ends ".ss") (ends ".sps")) "<scheme>")
+            (else "")))))
 
 "Directory `dir` (ending in `/`) with `..` and `.` steps taken out."
 (define* simplify-directory (subr spin (string) string)

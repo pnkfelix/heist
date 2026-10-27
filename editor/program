@@ -1,3 +1,11 @@
+../s7st/value.fx
+../s7st/read.fx
+../s7st/print.fx
+../s7st/expand.fx
+../s7st/prims.fx
+../s7st/machine.fx
+../s7st/prelude.fx
+../s7st/session.fx
 base.fx
 buffer.fx
 resolve.fx
@@ -12,4 +20,5 @@ process.fx
 files.fx
 help.fx
 eldoc.fx
+scheme.fx
 main.fx

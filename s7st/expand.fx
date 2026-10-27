@@ -443,10 +443,16 @@ or (no)."
 
 ;;; ------------------------------------------------------------ derived forms
 
+"The directory a relative file name is relative to (`load`,
+`open-input-file`, `include`), with its `/`; \"\": the process's own. A
+client sets it (the editor: the buffer's directory)."
+(define s7-directory (ref string @sc) (new ""))
 "The text of file `file`, or why not."
-(define* s7-file-text (subr (maxeff (io fs-read) spin) (string) (sumof (text string) (failed string)))
+(define* s7-file-text (subr (maxeff (io fs-read) (read @sc) spin) (string) (sumof (text string) (failed string)))
   (lambda (file)
-    (tagcase (read-file file)
+    (tagcase (read-file (if (or (string=? (get s7-directory) "") (and (> (string-length file) 0) (char=? (string-ref file 0) #\/)))
+                            file
+                            (string-append (get s7-directory) file)))
       (data d (tagcase (utf8->string d)
                 (text s (sum text s))
                 (else y (sum failed (string-append file ": not UTF-8")))))

@@ -267,6 +267,14 @@ it is free it means what `name` means (expand.fx). Its name, unrenamed."
           (none u (let ((c (the s7-global (product (name name) (value (the (ref s7-value @sc) (new s7-undefined)))
                                                  (syntax (the (ref s7-syntax @sc) (new (the s7-syntax (sum none #u)))))))))
                     (begin (array-set! s7-globals h (cons c bucket)) c))))))))
+"The cell of global `name`, if there is one (none is made)."
+(define* s7-global-find (subr (maxeff spin (read @sc)) (symbol) (sumof (none unit) (found s7-global)))
+  (lambda (name)
+    (letrec ((find (subr spin ((listof s7-global acyclic)) (sumof (none unit) (found s7-global)))
+               (lambda (l) (cond ((null? l) (sum none #u))
+                                 ((eq? (extract (car l) name) name) (sum found (car l)))
+                                 (else (find (cdr l)))))))
+      (find (array-ref s7-globals (modulo (symbol-name-hash name) s7-global-buckets))))))
 "Global `name` defined as `v`, by its name in FX-26 strings."
 (define* s7-define-global! (subr (maxeff spin (read @sc) (write @sc) (alloc @sc)) (string s7-value) unit)
   (lambda (name v) (set (extract (s7-global-cell (string->symbol name)) value) v)))

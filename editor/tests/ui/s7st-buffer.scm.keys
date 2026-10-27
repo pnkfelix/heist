@@ -1,0 +1,20 @@
+(define (sq x)\n  (* x x))\n(display "side")\n(sq 7)\n
+\x1b
+x
+run-s7st\r
+@1500
+\x18b\r
+@300
+\x03\x02
+@800
+=
+\x1b>
+\x18\x05
+@600
+=
+\x1b<
+\x1b\x18
+@500
+=
+\x03\x1a
+@500

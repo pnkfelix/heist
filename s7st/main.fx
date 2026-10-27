@@ -14,7 +14,7 @@ ended well."
     (tagcase (s7-continue! 20000)
       (running u (begin (s7-say (s7-take-output!)) (s7-drive)))
       (done v (begin (s7-say (s7-take-output!)) #t))
-      (failed m (begin (s7-say (s7-take-output!)) (s7-say (string-append "Error: " m "\n")) #f)))))
+      (failed m (begin (s7-say (s7-take-output!)) (s7-say (string-append (s7-fresh-line) "Error: " m "\n")) #f)))))
 
 (define* s7-run-files (subr (maxeff s7-eff (io stdout) (read @a)) ((listof string @a)) int)
   (lambda (files)

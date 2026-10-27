@@ -1,0 +1,19 @@
+alpha
+\x1b
+x
+run-s7st\r
+@1500
+(define (f x) (* x x))\r
+@300
+(list (f 12)\r
+@300
+"a" #\\b)\r
+@500
+(display "hi") (car 5)\r
+@600
+(let lp () (lp))\r
+@800
+\x03\x03
+@400
+\x1bp
+@300

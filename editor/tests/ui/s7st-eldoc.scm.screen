@@ -1,0 +1,28 @@
+== screen 1
+(define (sq x . more)                   |
+  (* x x))                              |
+(map sq (list 1))                       |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+---- a.scm   L3                         |
+(map f l . ls)                          |
+cursor 2,2
+== at the end
+(define (sq x . more)                   |
+  (* x x))                              |
+(map sq (list 1))                       |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+---- a.scm   L3                         |
+(sq x . more)                           |
+cursor 2,7

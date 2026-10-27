@@ -7,7 +7,8 @@
 ;;; view or the painter (display class), so a key waits for at most one
 ;;; such turn. With none waiting, it waits for a key, and every half second
 ;;; looks at the terminal's size; with processes running (process.fx), it
-;;; looks for their output every 50 ms.
+;;; looks for their output every 50 ms; while s7st runs (scheme.fx), it
+;;; runs a slice of it each time round.
 
 "The next byte typed, or #f if none comes within `timeout` ms (0: only
 one already there)."
@@ -69,11 +70,14 @@ queue; C-g at once. Whether any came."
 
 (define* run-loop (subr (maxeff cmd-eff (io stdin) (io clock) (io terminal)) ((actor frame) int int) unit)
   (lambda (fr rows columns)
-    (let ((polling (poll-processes!)))
+    (let* ((polling (poll-processes!))
+           (scheming (s7-poll!)))
       (pump-keys! fr)
       (run-turns! 100)
       (cond ((not (get running)) #u)
             ((or (turns-waiting?) (pair? (get pending-keys))) (begin (send-keys! fr 0) (run-loop fr rows columns)))
+            ;; s7st running (scheme.fx): its next slice at once, keys read between.
+            (scheming (begin (send-keys! fr 0) (run-loop fr rows columns)))
             ;; Processes' output looked for every 50 ms while any runs;
             ;; after a key, eldoc's turn when 100 ms pass with no other.
             ((send-keys! fr (cond (polling 50) ((get eldoc-due) 100) (else 500))) (run-loop fr rows columns))
