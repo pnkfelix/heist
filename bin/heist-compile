@@ -1,0 +1,108 @@
+#!/bin/sh
+# Heist's FX-26 files compiled to `.fasl`s (Fixpt's `compile-file`), which a
+# load reads in place of the source while fresh; a stale one Fixpt says on
+# the standard error, and loads that file, and those after it, from source.
+#   bin/heist-compile [MODE] [TARGET…]
+#   bin/heist-compile clean [--dry-run]
+#                  remove every `.fasl` in Heist (not fixpt/'s), whatever
+#                  made it: back to loading everything from source
+# TARGET: `editor` (the default): the modules base.fx loads, then each file
+#   of editor/program, in order; `s7st`: s7st's program, one `.fasl` a file
+#   (slow: minutes); `all`: both.
+# MODE:
+#   --force        compile every file (the default, until Fixpt can say
+#                  which are stale by its own digests)
+#   --timestamps   compile only a file whose `.fasl` is missing, or older
+#                  than its source, than Fixpt's executable, or than the
+#                  `.fasl` (or source) of a file it loads: as make would,
+#                  trusting the files' times
+#   --clean        remove the target's files' `.fasl`s
+#   --dry-run      say what would be compiled (or removed), and do nothing
+heist=$(cd "$(dirname "$0")/.." && pwd)
+fixpt="$heist/fixpt/target/release/fixpt"
+[ -x "$fixpt" ] || { echo "build fixpt first: (cd $heist/fixpt && cargo build --release -p fixpt-cli)" >&2; exit 2; }
+
+mode=force dry=
+targets=
+if [ "$1" = clean ]; then
+  shift
+  case "$1" in --dry-run|-n) dry=1;; "") ;; *) echo "heist-compile clean: unknown argument \`$1' (--help)" >&2; exit 2;; esac
+  find "$heist" -path "$heist/fixpt" -prune -o -path "$heist/target" -prune -o -name '*.fasl' -print |
+    while IFS= read -r f; do
+      echo "rm ${f#$heist/}"; [ -n "$dry" ] || rm -f "$f"
+    done
+  exit 0
+fi
+for a in "$@"; do
+  case "$a" in
+    --force) mode=force;;
+    --timestamps) mode=timestamps;;
+    --clean) mode=clean;;
+    --dry-run|-n) dry=1;;
+    editor|s7st) targets="$targets $a";;
+    all) targets="editor s7st";;
+    -h|--help) sed -n '2,/^heist=/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 0;;
+    *) echo "heist-compile: unknown argument \`$a' (--help)" >&2; exit 2;;
+  esac
+done
+[ -n "$targets" ] || targets=editor
+
+# The files of a target, in an order where each comes after those it loads.
+files_of() {
+  case "$1" in
+    editor) # base.fx's own modules (not Fixpt's `fx26:` ones), then the program.
+      sed -n 's/.*(load-module "\([^":]*\.fx\)").*/\1/p' "$heist/editor/base.fx"
+      cat "$heist/editor/program" | tr ' ' '\n' | sed '/^$/d';;
+    s7st) cat "$heist/s7st/program" | tr ' ' '\n' | sed '/^$/d'; echo main.fx;;
+  esac
+}
+
+# Is DIR/F's `.fasl` older than what it was made of, by the files' times,
+# or does it load a file being compiled now (in $todo)? The files it loads
+# are the `dep` lines of the `.fasl` itself.
+outdated() {
+  fasl="$1/${2%.fx}.fasl"
+  [ -e "$fasl" ] || return 0
+  if [ "$1/$2" -nt "$fasl" ] || [ "$fixpt" -nt "$fasl" ]; then return 0; fi
+  for d in $(sed -n 's/^dep [a-z]* [0-9a-f]* \([^:]*\)$/\1/p' "$fasl"); do
+    case " $todo " in *" $d "*) return 0;; esac
+    dep="$1/$d"; depf="${dep%.fx}.fasl"
+    [ -e "$depf" ] && [ "$depf" -nt "$fasl" ] && return 0
+    [ "$dep" -nt "$fasl" ] && return 0
+  done
+  return 1
+}
+
+status=0
+for t in $targets; do
+  dir="$heist/$t"
+  all=$(files_of "$t")
+  case "$mode" in
+    clean)
+      for f in $all; do
+        fasl="$dir/${f%.fx}.fasl"
+        [ -e "$fasl" ] || continue
+        echo "rm $t/${f%.fx}.fasl"; [ -n "$dry" ] || rm -f "$fasl"
+      done
+      continue;;
+    force) todo=$all;;
+    timestamps)
+      todo=
+      # s7st's files are one program, each `.fasl` of the globals of the files
+      # before: if one is outdated, they all are compiled.
+      for f in $all; do
+        if outdated "$dir" "$f"; then
+          if [ "$t" = s7st ]; then todo=$all; break; fi
+          todo="$todo $f"
+        fi
+      done;;
+  esac
+  if [ -z "$todo" ]; then echo "$t: every .fasl up to date"; continue; fi
+  if [ -n "$dry" ]; then echo "$t: would compile" $todo; continue; fi
+  echo "$t: compiling" $todo
+  case "$t" in
+    s7st) (cd "$dir" && "$fixpt" compile-file --program $todo) || status=1;;
+    *) (cd "$dir" && "$fixpt" compile-file $todo) || status=1;;
+  esac
+done
+exit $status
