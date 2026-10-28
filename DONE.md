@@ -3779,3 +3779,85 @@ cellular code: 39 µs a key typing in a burst, against 7 as globals.
 - **Tests**: `modules/module-parameters-modules.fx` (57, on every machine),
   `modules/expression-item-pure.fx`. Docs: `docs/fx26.md`, "Module
   parameters", "An expression as a module's item".
+
+## 148. A module's `define*` as a value; `qualified` module parameters (Heist's, 2026-10-28)
+
+- **`define*` as a value**: a module's `define*` named by an item that is
+  not a typed lambda was bound, while that item was checked, at its type
+  reading any global (`(read @globals)`), so a hook list of `pure`
+  procedures refused it where `define` was accepted. It is now bound at
+  its type as written there, and refused once found only if its body reads
+  a global that type does not say; in both checkers (`valued_star`,
+  `k-stars-written`, `k-valued-stars`).
+- **`(m T qualified)`**: a module parameter not included; the file names
+  what it uses by `import` or `with`. Both parsers (`binder_is_kind`,
+  `binder-kind?`, `binder-params`).
+- **Tests**: `modules/define-star-as-value.fx`,
+  `modules/define-star-value-reads.fx`, `modules/module-parameters-qualified.fx`.
+
+## 149. Types interned in the checker written in FX-26; names printed by structure (Heist's, the user's, 2026-10-28)
+
+Heist's editor as module-parameter files started in 6.2 s against 4.5 s
+as globals, nearly all in the FX-26 checker's subtyping: each file's module
+types are instantiated from the files before it, so one type, `buffer`,
+reached a file as several nodes, and every call of an included procedure
+compared them structurally, deep into large records.
+
+- **Interning** (`k-ty-new`): every node but a link and those whose meaning
+  is not their parts is looked up by its parts, each followed through its
+  links, and the node of the same parts given again; a cache, let go past
+  400 000 entries and at the checker's reset.
+- **Names printed by structure** (the user's design), in both checkers: a
+  type is shown by the innermost abbreviation in scope whose type it is,
+  where it has parts (`Checker::abbreviation`, `same_ty`; `k-fits?`,
+  `k-same-shape?`, the abbreviation tree keyed by a shape's hash). An
+  alias of a base type names nothing: the one expected output changed
+  (`dialects.rs`, `t` an alias of `bool`).
+- **What a type's id meant, kept on nodes of their own** (`k-ty-fresh`):
+  `->*`'s mark; a standard binding (`k-bind-std`; a local `+` of `+`'s type
+  was taken for it, and `run/standard-refs.fx` ran wrong); a recursive
+  group's names (`k-recursive`; two loops named `go` of one type were one).
+- **Heist's editor starts in 5.0 s** (4.1 s as globals on the same run),
+  types as before. **Stage 0** costs 29.36G instructions against 29.10G
+  (+0.9%), 13.05G cycles against 12.6G (+3%): a lookup at every node made.
+- **`cargo nextest`** (installed 2026-10-28): the suite in 100 s, its
+  binaries' tests in one pool; `.config/nextest.toml` runs the test that
+  times itself by the wall clock alone.
+
+## 150. Frozen regions covariant in the order of lifetimes (Kayak's, 2026-10-28)
+
+- **`(const a)` as `(const b)`, `(acyclic a)` as `(acyclic b)` or `(const
+  b)`**, where `a` outlives `b` (the heap every place, an outer place an
+  inner one), through every rule that compared frozen regions (pairs,
+  lists, `nlist`, frozen bloblets) and a generative type's region
+  arguments; in both checkers (`Checker::frozen_le`, `outlives`;
+  `k-frozen-le?`, `k-place-outlives?`). Writable regions stay invariant.
+- **Making data at `(acyclic p)` or `(const p)` is within `(alloc p)`**
+  (`Effect::within`, `k-covered?`), so a procedure over a place conses
+  straight into its frozen region onto the heap's list.
+- **Kayak's third form**, a `letfreeze (r p)` around `rcons`, stays refused:
+  inside it the place's region is writable until it ends; allocating at
+  `(acyclic p)` directly is the form that shares.
+- **Tests**: `regions/frozen-covariant.fx` and five refusals,
+  `terminate/frozen-place-walk.fx` (`regions.rs`,
+  `frozen_data_is_covariant_in_lifetimes`).
+
+## 151. The cyclic walk kept, by type, now that equal types are one (Heist's, 2026-10-28)
+
+What was left of Heist's include cost, found by comparing the two forms'
+profiles procedure by procedure (perf, the native code's map): the walk of
+a callee's type for a cycle (`k-may-spin?`), at every call of a name that
+is not known code, which an included name never is; and, new with §148,
+the names a module's items use, found for `define*`s used as values even
+in a module of none.
+
+- **`k-cyclic?` kept by type** (a direct-mapped cache, an entry good while
+  no older type is linked, `k-links`): interning makes an instantiation of
+  one type the same id each call, so the walk is done once. A walk that met
+  what may change (a link unfilled, a `select`, an application, a
+  parameter's `select`) is not kept. Its depth counted, not the path's
+  length taken at every step.
+- **`k-star-valued`** looks only in a module with a `define*`.
+- **Heist's editor**, through `eldoc.fx`: 4.17 s as modules against 4.10 s
+  as globals (4.87 s before). **Stage 0**: 28.76G instructions against
+  29.42G (−2.2%), below where it was before interning (29.10G).
