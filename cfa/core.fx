@@ -69,11 +69,14 @@ payload; or (`fields`) its product's fields by position, labels `1`, `2`,
   m-pass: its result is what it is given (FX-26's `list`, `reverse`);
   m-map:  it calls its first argument with the elements (the `car`s) of
           the lists it is given after, and what that returns escapes; its
-          result is data of these kinds."
+          result is data of these kinds;
+  m-apply: it calls its first argument with those after it but the last,
+          then the elements of the last (a list); its result is that call's."
 (define-datatype cf-model
   (m-data bool strings)
   (m-pass)
-  (m-map strings))
+  (m-map strings)
+  (m-apply))
 
 "A language: its name, and what each of its primitives does."
 (define-type cf-lang (productof (name string) (model (subr (maxeff spin (read @globals)) (string) cf-model))))
@@ -119,6 +122,9 @@ an instantiation gives (`@ed`) -- each numbered as first met."
 "The definition being read, to name the lambdas in it: `go/λ`."
 (define cf-definition (ref string @cf) (new ""))
 
+(define-type cf-rest (productof (lambda int) (site int)))
+(define cf-rest-sites (ref (listof cf-rest acyclic) @cf) (new nil))
+(define cf-null-kind (ref string @cf) (new "null"))
 "Everything numbered forgotten: a world to be read."
 (define* cf-reset! (subr cf-eff () unit)
   (lambda ()
@@ -127,7 +133,8 @@ an instantiation gives (`@ed`) -- each numbered as first met."
       (array-set! cf-counts 0 0) (array-set! cf-counts 1 0) (array-set! cf-counts 2 0) (array-set! cf-counts 3 0)
       (set cf-globals (the (table string int @cf) (make-table string-hash string=?)))
       (set cf-global-count 0) (set cf-files nil) (set cf-definition "")
-      (set cf-kinds nil) (set cf-kind-count 0) (set cf-poly-lambdas nil) (set cf-poly-sites nil) (set cf-effects nil))))
+      (set cf-kinds nil) (set cf-kind-count 0) (set cf-poly-lambdas nil) (set cf-poly-sites nil) (set cf-effects nil)
+      (set cf-rest-sites nil))))
 
 "Kind `name`'s number, made on first use."
 (define* cf-kind (subr cf-eff (string) int)
@@ -157,12 +164,24 @@ an instantiation gives (`@ed`) -- each numbered as first met."
 
 (define* cf-next-number (subr cf-eff (int) int)
   (lambda (k) (let ((n (array-ref cf-counts k))) (begin (array-set! cf-counts k (+ n 1)) n))))
-(define* cf-add-lambda (subr cf-eff (lambda-info) int)
-  (lambda (info) (begin (set cf-lambdas (cons info (get cf-lambdas))) (cf-next-number 0))))
 (define* cf-add-call (subr cf-eff (call-info) int)
   (lambda (info) (begin (set cf-calls (cons info (get cf-calls))) (cf-next-number 1))))
 (define* cf-add-site (subr cf-eff (site-info) int)
   (lambda (info) (begin (set cf-sites (cons info (get cf-sites))) (cf-next-number 2))))
+"A lambda with a rest parameter has a site, the list the rest are given
+in (`cf-rest-sites`): its `car` what they are, its `cdr` itself, or the end
+of a list (the kind the language names `cf-null-kind`)."
+(define* cf-rest-site (subr spin ((listof cf-rest acyclic) int) int)
+  (lambda (l n) (cond ((null? l) -1) ((= (extract (car l) lambda) n) (extract (car l) site)) (else (cf-rest-site (cdr l) n)))))
+(define* cf-add-lambda (subr cf-eff (lambda-info) int)
+  (lambda (info)
+    (let ((n (begin (set cf-lambdas (cons info (get cf-lambdas))) (cf-next-number 0))))
+      (begin
+        (if (>= (extract info rest) 0)
+            (set cf-rest-sites (cons (product (lambda n) (site (cf-add-site (product (span (extract info span)) (kind "pair") (tag "")))))
+                                     (get cf-rest-sites)))
+            #u)
+        n))))
 (define* cf-add-ref (subr cf-eff (ref-info) int)
   (lambda (info) (begin (set cf-refs (cons info (get cf-refs))) (cf-next-number 3))))
 "A use of variable `v`, named `name`, at `span`."

@@ -28,14 +28,15 @@
 where code not known may; and those whose result holds their arguments'
 elements."
 (define fx-higher-order strings
-  (list "apply" "call-with-composable-continuation" "call-with-oneshot-continuation"
+  (list "call-with-composable-continuation" "call-with-oneshot-continuation"
         "abort-current-continuation" "with-mark" "cwcc" "%vlambda"))
 (define fx-passing strings (list "reverse" "append" "datum-list"))
 
 (define cf-fx26 cf-lang
   (product (name "fx26")
            (model (lambda ((n string))
-                    (cond ((cf-member? n fx-higher-order) (m-data #t (list "unknown")))
+                    (cond ((string=? n "apply") (m-apply))
+                          ((cf-member? n fx-higher-order) (m-data #t (list "unknown")))
                           ((cf-member? n fx-passing) (m-pass))
                           (else (m-data #f nil)))))))
 
@@ -536,6 +537,7 @@ top levels, a core each, in order."
                    (go texts))))
       (begin
         (cf-reset!)
+        (set cf-null-kind "null")
         (set fx-binder-names nil)
         (letrec ((declare (subr fx-eff (strings (listof (listof syn acyclic) acyclic)) unit)
                    (lambda (ps l) (if (null? l) #u (begin (fx-declare! (cf-file (car ps)) (car l)) (declare (cdr ps) (cdr l)))))))

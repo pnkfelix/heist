@@ -6,8 +6,13 @@
 (define-type cf-note (productof (start int) (end int) (text string)))
 (define-type cf-notes (listof cf-note acyclic))
 
+"Strings `l` joined, `sep` between each two: pairwise, as s7st's
+`s7-concat` (print.fx), so that a long list costs its length, not its square."
 (define* cf-concat (subr spin (strings string) string)
-  (lambda (l sep) (cond ((null? l) "") ((null? (cdr l)) (car l)) (else (string-append (car l) sep (cf-concat (cdr l) sep))))))
+  (lambda (l sep)
+    (s7-concat (letrec ((go (subr spin (strings) strings)
+                          (lambda (l) (cond ((null? l) nil) ((null? (cdr l)) l) (else (cons (car l) (cons sep (go (cdr l)))))))))
+                 (go l)))))
 
 "One abstract value, said."
 (define* cf-say-val (subr cf-eff (int) string)

@@ -121,7 +121,8 @@ result is data of the kinds `s7-builtin-result` says."
   (product (name "scheme")
            (model (lambda ((n string))
                     (let ((kinds (sc-kind-names (s7-builtin-result n))))
-                      (cond ((cf-member? n sc-mapping) (m-map kinds))
+                      (cond ((string=? n "apply") (m-apply))
+                            ((cf-member? n sc-mapping) (m-map kinds))
                             ((cf-member? n sc-passing) (m-pass))
                             ((or (cf-member? n sc-first-order)
                                  (and (not (cf-member? "unknown" kinds)) (sc-all-in? kinds sc-first-order-kinds)
@@ -274,6 +275,7 @@ their own, thrown away after, with what its renaming made."
       (begin
         (set s7-current-ns saved)
         (cf-reset!)
+        (set cf-null-kind "()")
         (letrec ((go (subr sc-eff (strings) unit) (lambda (ps) (if (null? ps) #u (begin (cf-file (car ps)) (go (cdr ps)))))))
           (go paths))
         (letrec ((go (subr sc-eff ((listof s7-nodes acyclic)) unit) (lambda (l) (if (null? l) #u (begin (sc-declare! (car l)) (go (cdr l)))))))

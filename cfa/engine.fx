@@ -241,6 +241,10 @@ lambda's own number; else one past them, numbered on first use."
     (cond ((null? ps) (if (>= rest 0) (cf-join! (var-key rest c) (union-all as)) #u))
           ((null? as) #u)
           (else (begin (cf-join! (var-key (car ps) c) (car as)) (pass-args (cdr ps) rest (cdr as) c))))))
+"`as` without its first `n`."
+(define* drop-vals (subr spin (int (listof vals acyclic)) (listof vals acyclic))
+  (lambda (n l) (if (or (<= n 0) (null? l)) l (drop-vals (- n 1) (cdr l)))))
+
 (define-rec
   ;; What `s` holds escapes to code not known: its closures may be called
   ;; with anything (their bodies evaluated where they were made, their
@@ -288,6 +292,18 @@ lambda's own number; else one past them, numbered on first use."
              (begin (pass-args (cf-poly-binders (get cf-poly-sites) (quotient (car vs) 4)) -1 as 0)
                (instantiate! (cdr vs) as)))
             (else (instantiate! (cdr vs) as)))))
+  ;; Rest parameter `rest` of lambda `l`, in contour `c`, given the
+  ;; arguments past its others, `extra`: the list its site is, or (none) the
+  ;; end of one.
+  (pass-rest! (subr cf-eff (int int (listof vals acyclic) int) unit)
+    (lambda (l rest extra c)
+      (let ((site (cf-rest-site (get cf-rest-sites) l)) (null (kind-vals (list (get cf-null-kind)))))
+        (cond ((< site 0) (cf-join! (var-key rest c) (union-all extra)))
+              ((null? extra) (cf-join! (var-key rest c) null))
+              (else (let ((s (the vals (list (+ 1 (* 4 site))))))
+                      (begin (store! s "car" (union-all extra))
+                        (store! s "cdr" (vals-union s null))
+                        (cf-join! (var-key rest c) s))))))))
   ;; Field `label` of the sites in `targets` given `s`.
   (store! (subr cf-eff (vals string vals) unit)
     (lambda (targets label s)
@@ -385,7 +401,8 @@ lambda's own number; else one past them, numbered on first use."
                                                  (begin (cf-join! (var-key (car vs) c1) (cf-read (var-key (car vs) made)))
                                                    (copy (cdr vs)))))))
                        (copy (array-ref (get cf-free) l))))
-                 (pass-args (extract info params) (extract info rest) as c1)
+                 (pass-args (extract info params) -1 as c1)
+                 (if (>= (extract info rest) 0) (pass-rest! l (extract info rest) (drop-vals (length (extract info params)) as) c1) #u)
                  (cf-ensure-task! task)
                  (vals-union (cf-read (result-key task)) (call-all call c (cdr ops) as)))))
             ((prim-val? (car ops))
@@ -399,6 +416,14 @@ lambda's own number; else one past them, numbered on first use."
       (tagcase ((extract (get cf-language) model) name)
         (m-data (escapes kinds) (begin (if escapes (escape! (union-all as)) #u) (kind-vals kinds)))
         (m-pass () (union-all as))
+        (m-apply ()
+          ;; The last argument's elements, as many times as any lambda may take.
+          (if (null? as) nil
+              (let* ((r (reverse as)) (elements (fields-of (car r) "car")))
+                (call-all call c (car as)
+                          (append (reverse (cdr (reverse (cdr as))))
+                                  (letrec ((rep (subr spin (int) (listof vals acyclic)) (lambda (k) (if (<= k 0) nil (cons elements (rep (- k 1)))))))
+                                    (rep (if (null? (cdr as)) 0 16))))))))
         (m-map (kinds)
           (if (null? as) (kind-vals kinds)
               (let ((elements (letrec ((go (subr cf-eff ((listof vals acyclic)) (listof vals acyclic))

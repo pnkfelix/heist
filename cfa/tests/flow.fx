@@ -1,5 +1,6 @@
 ;;; From editor/tests/flow-test.fx: which lambdas reach which calls,
-;;; through parameters, fields, refs and sums; and what escapes.
+;;; through parameters, fields, refs and sums; and `apply`, its list's
+;;; elements given.
 (define twice (lambda (f x) (f (f x))))
 (define inc (lambda (n) (+ n 1)))
 (define dbl (lambda (n) (* n 2)))
