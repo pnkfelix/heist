@@ -12,5 +12,5 @@ for f in "$@"; do
   set -- "$@" "$f"
 done
 cd "$heist/editor" || exit 2
-# The program's files, in order: editor/program (C-c t reads it too).
-exec "$fixpt" run $(cat program) -- "$@"
+# The program: editor.fx makes each of its files once, from those before it.
+exec "$fixpt" run editor.fx -- "$@"

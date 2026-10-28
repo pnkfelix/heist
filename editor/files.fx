@@ -8,6 +8,19 @@
 ;;;   M-x revert-buffer    the buffer's file read again
 ;;;   C-x d, M-x dired     a directory read, and its listing visited
 ;;;   C-x C-d              a directory's names (`ls -F`), shown in *Directory*
+(lambda ((m-base (load-input-moduleof "base.fx"))
+         (m-buffer (load-input-moduleof "buffer.fx" m-base))
+         (m-resolve (load-input-moduleof "resolve.fx" m-base m-buffer))
+         (m-syntax (load-input-moduleof "syntax.fx" m-base m-buffer m-resolve))
+         (m-sexp (load-input-moduleof "sexp.fx" m-base m-buffer m-resolve m-syntax))
+         (m-flow (load-input-moduleof "flow.fx" m-base m-buffer m-resolve m-syntax m-sexp))
+         (m-index (load-input-moduleof "index.fx" m-base m-buffer m-resolve m-syntax m-sexp m-flow))
+         (m-view (load-input-moduleof "view.fx" m-base m-buffer m-resolve m-syntax m-sexp m-flow m-index))
+         (m-frame (load-input-moduleof "frame.fx" m-base m-buffer m-resolve m-syntax m-sexp m-flow m-index m-view))
+         (m-calls (load-input-moduleof "calls.fx" m-base m-buffer m-resolve m-syntax m-sexp m-flow m-index m-view m-frame))
+         (m-process (load-input-moduleof "process.fx" m-base m-buffer m-resolve m-syntax m-sexp m-flow m-index m-view m-frame m-calls)))
+(module
+(hide (include m-base) (include m-buffer) (include m-resolve) (include m-syntax) (include m-sexp) (include m-flow) (include m-index) (include m-view) (include m-frame) (include m-calls) (include m-process))
 
 "The text of the line point is on in `st`, and its number."
 (define* point-line (subr spin (buffer) (productof (text string) (line int)))
@@ -150,15 +163,16 @@ the selected window staying selected."
                              (run-in-buffer fr f "*Directory*" "command" (list "ls" "-F" d) d
                                             (string-append "Directory " d "\n") #f))))))))
 
-(define-command! "dired" (sum on-frame (dired)))
-(define-command! "list-directory" (sum on-frame (list-directory)))
-(define-key! "C-x d" "dired")
-(define-key! "C-x C-d" "list-directory")
-(define-command! "dired-find-file" (sum on-frame (listing-visit)))
-(define-command! "Buffer-menu-this-window" (sum on-frame (buffer-list-visit)))
-(define-command! "revert-buffer" (sum on-frame (revert-buffer)))
-(define-command! "save-some-buffers" (sum on-frame (save-some-buffers)))
-(define-buffer-key! "<listing>" "RET" "dired-find-file")
-(define-buffer-key! "<listing>" "g" "revert-buffer")
-(define-buffer-key! "*Buffer List*" "RET" "Buffer-menu-this-window")
-(define-key! "C-x s" "save-some-buffers")
+(hide (define files-reg-1 (define-command! "dired" (sum on-frame (dired)))))
+(hide (define files-reg-2 (define-command! "list-directory" (sum on-frame (list-directory)))))
+(hide (define files-reg-3 (define-key! "C-x d" "dired")))
+(hide (define files-reg-4 (define-key! "C-x C-d" "list-directory")))
+(hide (define files-reg-5 (define-command! "dired-find-file" (sum on-frame (listing-visit)))))
+(hide (define files-reg-6 (define-command! "Buffer-menu-this-window" (sum on-frame (buffer-list-visit)))))
+(hide (define files-reg-7 (define-command! "revert-buffer" (sum on-frame (revert-buffer)))))
+(hide (define files-reg-8 (define-command! "save-some-buffers" (sum on-frame (save-some-buffers)))))
+(hide (define files-reg-9 (define-buffer-key! "<listing>" "RET" "dired-find-file")))
+(hide (define files-reg-10 (define-buffer-key! "<listing>" "g" "revert-buffer")))
+(hide (define files-reg-11 (define-buffer-key! "*Buffer List*" "RET" "Buffer-menu-this-window")))
+(hide (define files-reg-12 (define-key! "C-x s" "save-some-buffers")))
+))

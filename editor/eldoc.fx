@@ -10,6 +10,21 @@
 ;;; its own (`eldoc-said`, frame.fx), and *Messages* keeps none of it.
 ;;;
 ;;;   M-x eldoc-mode   eldoc off, or on (as the editor starts)
+(lambda ((m-base (load-input-moduleof "base.fx"))
+         (m-buffer (load-input-moduleof "buffer.fx" m-base))
+         (m-resolve (load-input-moduleof "resolve.fx" m-base m-buffer))
+         (m-syntax (load-input-moduleof "syntax.fx" m-base m-buffer m-resolve))
+         (m-sexp (load-input-moduleof "sexp.fx" m-base m-buffer m-resolve m-syntax))
+         (m-flow (load-input-moduleof "flow.fx" m-base m-buffer m-resolve m-syntax m-sexp))
+         (m-index (load-input-moduleof "index.fx" m-base m-buffer m-resolve m-syntax m-sexp m-flow))
+         (m-view (load-input-moduleof "view.fx" m-base m-buffer m-resolve m-syntax m-sexp m-flow m-index))
+         (m-frame (load-input-moduleof "frame.fx" m-base m-buffer m-resolve m-syntax m-sexp m-flow m-index m-view))
+         (m-calls (load-input-moduleof "calls.fx" m-base m-buffer m-resolve m-syntax m-sexp m-flow m-index m-view m-frame))
+         (m-process (load-input-moduleof "process.fx" m-base m-buffer m-resolve m-syntax m-sexp m-flow m-index m-view m-frame m-calls))
+         (m-files (load-input-moduleof "files.fx" m-base m-buffer m-resolve m-syntax m-sexp m-flow m-index m-view m-frame m-calls m-process))
+         (m-help (load-input-moduleof "help.fx" m-base m-buffer m-resolve m-syntax m-sexp m-flow m-index m-view m-frame m-calls m-process m-files)))
+(module
+(hide (include m-base) (include m-buffer) (include m-resolve) (include m-syntax) (include m-sexp) (include m-flow) (include m-index) (include m-view) (include m-frame) (include m-calls) (include m-process) (include m-files) (include m-help))
 
 (define eldoc-on (ref bool @ed) (new #t))
 "A key was handled since eldoc last looked (main.fx's loop asks)."
@@ -185,5 +200,6 @@ the name at point, or else of the operator of the call around it."
         (let ((r (draw (with-echo f (if on "Eldoc mode enabled" "Eldoc mode disabled")))))
           (reply-with (extract r state) (cons (lambda () (set eldoc-on on)) (extract r cmds))))))))
 
-(define-command! "eldoc-mode" (sum on-frame (eldoc-mode)))
-(define-doc! "eldoc-mode" "Eldoc off, or on: the type of what is at point, said as point moves.")
+(hide (define eldoc-reg-1 (define-command! "eldoc-mode" (sum on-frame (eldoc-mode)))))
+(hide (define eldoc-reg-2 (define-doc! "eldoc-mode" "Eldoc off, or on: the type of what is at point, said as point moves.")))
+))

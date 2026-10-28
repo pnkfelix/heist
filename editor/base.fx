@@ -3,6 +3,8 @@
 ;;; several files, run in one session (`bin/heist-edit`), each file seeing
 ;;; the globals of those before it:
 ;;;   base.fx buffer.fx … frame.fx calls.fx process.fx main.fx (as `program` lists them)
+(lambda ()
+(module
 
 ;; What Fixpt's own reader does to its regions: it keeps its state there,
 ;; and leaves a form it cannot read by an escape.
@@ -63,3 +65,4 @@ the editor itself: syntax with each form's span, in characters."
 (define reader ((proj (load-module "fx26:eager-reader.fx") @s @e @m @c)))
 (import reader eager-start-fx26 eager-feed-string eager-feed eager-status eager-state-syntax eager-context
         eager-state-message eager-state-position atom lst dotted vec (type syn syns state))
+))

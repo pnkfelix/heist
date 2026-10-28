@@ -9,6 +9,17 @@
 ;;; one visits it. The analysis runs on demand, in a command after the
 ;;; frame's turn: on the editor's own twelve files it takes about 20 ms,
 ;;; after reading them.
+(lambda ((m-base (load-input-moduleof "base.fx"))
+         (m-buffer (load-input-moduleof "buffer.fx" m-base))
+         (m-resolve (load-input-moduleof "resolve.fx" m-base m-buffer))
+         (m-syntax (load-input-moduleof "syntax.fx" m-base m-buffer m-resolve))
+         (m-sexp (load-input-moduleof "sexp.fx" m-base m-buffer m-resolve m-syntax))
+         (m-flow (load-input-moduleof "flow.fx" m-base m-buffer m-resolve m-syntax m-sexp))
+         (m-index (load-input-moduleof "index.fx" m-base m-buffer m-resolve m-syntax m-sexp m-flow))
+         (m-view (load-input-moduleof "view.fx" m-base m-buffer m-resolve m-syntax m-sexp m-flow m-index))
+         (m-frame (load-input-moduleof "frame.fx" m-base m-buffer m-resolve m-syntax m-sexp m-flow m-index m-view)))
+(module
+(hide (include m-base) (include m-buffer) (include m-resolve) (include m-syntax) (include m-sexp) (include m-flow) (include m-index) (include m-view) (include m-frame))
 
 "The files of the program `file` is part of, as program-files: read with
 Fixpt's reader, from the buffers that visit them if any (`texts`: file
@@ -52,7 +63,7 @@ and text), else from the files."
                     (buffer-texts (cdr bs))))))))
 
 "A place as an *xref* line: `file:line: text of the line`."
-(define* place-line (subr spin (span (listof (productof (file string) (text string)) acyclic) string) string)
+(define* place-line (subr spin (fl-span (listof (productof (file string) (text string)) acyclic) string) string)
   (lambda (sp texts what)
     (let* ((t (string->rope (letrec ((go (->* ((listof (productof (file string) (text string)) acyclic)) string)
                                        (lambda (ts) (cond ((null? ts) "")
@@ -89,9 +100,9 @@ and text), else from the files."
                                     (begin (tell! fr (buffer-made fr bname file b))
                                       (tell! b (in-buffer fr (goto-position pos))))))))))))))
 
-(define* span-contains? (subr pure (span string int) bool)
+(define* span-contains? (subr pure (fl-span string int) bool)
   (lambda (sp file p) (and (string=? (extract sp file) file) (<= (extract sp start) p) (<= p (extract sp end)))))
-(define* span-size (subr pure (span) int) (lambda (sp) (- (extract sp end) (extract sp start))))
+(define* span-size (subr pure (fl-span) int) (lambda (sp) (- (extract sp end) (extract sp start))))
 
 "A frame command running the flow analysis of the selected buffer's
 program, then `answer` of it, the buffer's file and point, and the
@@ -216,12 +227,12 @@ texts: a message for the frame."
                                            (pos (rope-line-start (extract got text) (max 0 (- lineno 1)))))
                                       (tell! fr (visit-position fr file pos))))))))))))
 
-(define-command! "flow-callees" (sum on-frame (callees-at-point)))
-(define-command! "flow-callers" (sum on-frame (callers-at-point)))
-(define-command! "xref-visit" (sum on-frame (xref-visit)))
-(define-key! "C-c e" "flow-callees")
-(define-key! "C-c r" "flow-callers")
-(define-buffer-key! "*xref*" "RET" "xref-visit")
+(hide (define calls-reg-1 (define-command! "flow-callees" (sum on-frame (callees-at-point)))))
+(hide (define calls-reg-2 (define-command! "flow-callers" (sum on-frame (callers-at-point)))))
+(hide (define calls-reg-3 (define-command! "xref-visit" (sum on-frame (xref-visit)))))
+(hide (define calls-reg-4 (define-key! "C-c e" "flow-callees")))
+(hide (define calls-reg-5 (define-key! "C-c r" "flow-callers")))
+(hide (define calls-reg-6 (define-buffer-key! "*xref*" "RET" "xref-visit")))
 
 ;;; ------------------------------------------------------------ the type at point (C-c t)
 
@@ -304,5 +315,6 @@ said; or why the program does not check."
                                         (begin (tell! b (in-buffer fr (mark-span a e 'use)))
                                           (tell! fr (echo ty))))))))))))))
 
-(define-command! "type-at-point" (sum on-frame (type-at-point)))
-(define-key! "C-c t" "type-at-point")
+(hide (define calls-reg-7 (define-command! "type-at-point" (sum on-frame (type-at-point)))))
+(hide (define calls-reg-8 (define-key! "C-c t" "type-at-point")))
+))

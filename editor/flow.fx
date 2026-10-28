@@ -21,6 +21,13 @@
 ;;; State: global, at region @fl, so the analysis runs in a command (as the
 ;;; reader does). Not yet: contexts (1CFA, call sites for small procedures),
 ;;; a worklist instead of whole passes, a warm start after an edit.
+(lambda ((m-base (load-input-moduleof "base.fx"))
+         (m-buffer (load-input-moduleof "buffer.fx" m-base))
+         (m-resolve (load-input-moduleof "resolve.fx" m-base m-buffer))
+         (m-syntax (load-input-moduleof "syntax.fx" m-base m-buffer m-resolve))
+         (m-sexp (load-input-moduleof "sexp.fx" m-base m-buffer m-resolve m-syntax)))
+(module
+(hide (include m-base) (include m-buffer) (include m-resolve) (include m-syntax) (include m-sexp))
 
 ;;; ------------------------------------------------------------ the core
 
@@ -46,10 +53,10 @@ the payload, for `(tag x body)`; its fields by position, labels `1`, `2`,
 
 ;;; ------------------------------------------------------------ numbering
 
-(define-type span (productof (file string) (start int) (end int)))
-(define-type lambda-info (productof (span span) (name string) (params (listof int acyclic)) (rest int) (body core)))
-(define-type call-info (productof (span span) (operator span)))
-(define-type site-info (productof (span span) (kind string) (tag string)))
+(define-type fl-span (productof (file string) (start int) (end int)))
+(define-type lambda-info (productof (span fl-span) (name string) (params (listof int acyclic)) (rest int) (body core)))
+(define-type call-info (productof (span fl-span) (operator fl-span)))
+(define-type site-info (productof (span fl-span) (kind string) (tag string)))
 
 (define fl-vars (ref int @fl) (new 0))
 (define fl-lambdas (ref (listof lambda-info acyclic) @fl) (new nil))   ; newest first
@@ -105,7 +112,7 @@ the payload, for `(tag x body)`; its fields by position, labels `1`, `2`,
   (lambda (x) (tagcase x (atom (d a b) (typecase d (symbol s (symbol->string s)) (else y ""))) (else y ""))))
 (define list-items (->* (syn) (listof syn acyclic))
   (lambda (x) (tagcase x (lst (i d a b) i) (else y nil))))
-(define span-of (->* (string syn) span)
+(define span-of (->* (string syn) fl-span)
   (lambda (file x)
     (tagcase x
       (atom (d a b) (product (file file) (start a) (end b)))
@@ -1039,8 +1046,8 @@ contours, summed over the variables; and how many hold more than one."
 "A call's callees, as found: where the call is, where its operator is,
 the lambdas it may call (their spans and names), and whether it may call
 code not known."
-(define-type callee (productof (span span) (name string)))
-(define-type call-result (productof (span span) (operator span) (callees (listof callee acyclic)) (unknown bool)))
+(define-type callee (productof (span fl-span) (name string)))
+(define-type call-result (productof (span fl-span) (operator fl-span) (callees (listof callee acyclic)) (unknown bool)))
 
 (define flow-calls (->* () (listof call-result acyclic))
   (lambda ()
@@ -1063,3 +1070,4 @@ code not known."
                                             (unknown (vals-has? vs unknown)))
                                    acc)))))))
         (go calls (- (length calls) 1) nil)))))
+))

@@ -7,6 +7,15 @@
 ;;; to lay out again when its window changes size. What it shows -- rows,
 ;;; a mode line, and where the cursor is -- it reports through a closure
 ;;; the frame gave it, so it need not know the frame.
+(lambda ((m-base (load-input-moduleof "base.fx"))
+         (m-buffer (load-input-moduleof "buffer.fx" m-base))
+         (m-resolve (load-input-moduleof "resolve.fx" m-base m-buffer))
+         (m-syntax (load-input-moduleof "syntax.fx" m-base m-buffer m-resolve))
+         (m-sexp (load-input-moduleof "sexp.fx" m-base m-buffer m-resolve m-syntax))
+         (m-flow (load-input-moduleof "flow.fx" m-base m-buffer m-resolve m-syntax m-sexp))
+         (m-index (load-input-moduleof "index.fx" m-base m-buffer m-resolve m-syntax m-sexp m-flow)))
+(module
+(hide (include m-base) (include m-buffer) (include m-resolve) (include m-syntax) (include m-sexp) (include m-flow) (include m-index))
 
 "A view's report: its window, its rows, its mode line's text, and the
 cursor's row and column in it."
@@ -214,3 +223,4 @@ and the command that reports it."
     (spawn-actor (string-append "view " (int->string id))
                  (product (window id) (report report) (top 0) (height h) (width w) (hscroll 0)
                           (last (the (sumof (none unit) (some snapshot)) (sum none #u)))))))
+))
