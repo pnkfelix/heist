@@ -8,12 +8,15 @@ do it, and what it cost. Kayak will need the same changes later
 
 ## Base
 
-- Fixpt `main` at 5731f52e (2026-10-27), pulled from GitHub by Heist's
+- Fixpt `main` at 2d706414 (2026-10-28), pulled from GitHub by Heist's
+  c8eacb3c (squash 2b137803): a module's maker in native code, however
+  many its items (`docs/requests/fixpt-native-module-makers.md`, Heist's
+  request; Fixpt `DONE.md` §145). Heist has no edits of its own on it.
+- Before: Fixpt 5731f52e (2026-10-27), pulled by Heist's
   a9d57d8b (squash 358e4450): region and heap `new`/`make-array` in line
   in x86_64 native code (Heist's request), `load-moduleof` and
   `restrict`, compiled code named to `gdb` and `lldb` with source lines,
-  and a syscall's effect with no `(io sys)` required. Heist has no edits
-  of its own on it.
+  and a syscall's effect with no `(io sys)` required.
 - Before: Fixpt 8793b0cb (2026-10-27), pulled by Heist's 550e2fcb
   (squash c2cfe8cf): queries by type and effect and `consumes T`.
 - Before that: Fixpt 991ec476 (2026-10-26), pulled by Heist's cea14dba
