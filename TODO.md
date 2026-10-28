@@ -110,7 +110,8 @@ commit that did it says so.
 ## Fixpt
 
 - **The checkers disagree on how to print a list type.** Since Fixpt
-  fc9e56fe, `fixpt check editor.fx` ends "the checkers disagree": the
-  FX-26 checker prints `(listof T acyclic)` as `(union nil (pairof T
-  (listof T acyclic) acyclic))`. Both accept the program. This is to be
-  written up as a request (`docs/requests/`).
+  fc9e56fe, `fixpt check editor.fx` ends "the checkers disagree"; both
+  accept the program. Written up, with a six-line repro (a module
+  importing a list type and an abbreviation using it):
+  `docs/requests/fixpt-checkers-print-lists.md`, for the user to take to
+  Fixpt.
