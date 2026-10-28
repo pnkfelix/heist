@@ -5,9 +5,11 @@ Heist's 30d080c6 and used by the editor (87dae480): `module-parameters`
 of modules, (1) expressions as items, and (2) every module parameter
 included, hidden. Not done: (3). The cost of `include` (6.4 s against
 4.5 s) is much reduced by 62261413 (`fixpt-include-cost.md`), which also
-gives `(m T qualified)`, a parameter not included. Found using it: `(module-parameters ())`, for
-a file with state and no modules, gives a `(poly () …)` that
-`load-moduleof` does not apply, so `base.fx` stays a `lambda`. Drafted
+gives `(m T qualified)`, a parameter not included. Found using it:
+`(module-parameters ())`, for a file with state and no modules, gave a
+`(poly () …)` that `load-moduleof` did not apply, so `base.fx` stayed a
+`lambda`; Fixpt 35bf4c4f made it a maker of none, and `base.fx` is a
+`module-parameters` file now. Drafted
 2026-10-28 by Heist, against Fixpt 2d706414.
 
 ## The prompt

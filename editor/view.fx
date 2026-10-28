@@ -7,7 +7,7 @@
 ;;; to lay out again when its window changes size. What it shows -- rows,
 ;;; a mode line, and where the cursor is -- it reports through a closure
 ;;; the frame gave it, so it need not know the frame.
-(module-parameters ((m-base (load-input-moduleof "base.fx"))
+(module-parameters ((m-base (load-moduleof "base.fx"))
                     (m-buffer (load-moduleof "buffer.fx" m-base))
                     (m-resolve (load-moduleof "resolve.fx" m-base m-buffer))
                     (m-syntax (load-moduleof "syntax.fx" m-base m-buffer m-resolve))

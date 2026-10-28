@@ -9,7 +9,7 @@
 ;;; annotation, which may be of a revision before. From it: moving by
 ;;; sexps (C-M-f, C-M-b, C-M-u, C-M-d), killing one (C-M-k), the match of
 ;;; the paren at point, and paredit's keys and structural edits.
-(module-parameters ((m-base (load-input-moduleof "base.fx"))
+(module-parameters ((m-base (load-moduleof "base.fx"))
                     (m-buffer (load-moduleof "buffer.fx" m-base))
                     (m-resolve (load-moduleof "resolve.fx" m-base m-buffer))
                     (m-syntax (load-moduleof "syntax.fx" m-base m-buffer m-resolve))))

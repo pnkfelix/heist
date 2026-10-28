@@ -9,7 +9,7 @@
 ;;; one visits it. The analysis runs on demand, in a command after the
 ;;; frame's turn: on the editor's own twelve files it takes about 20 ms,
 ;;; after reading them.
-(module-parameters ((m-base (load-input-moduleof "base.fx"))
+(module-parameters ((m-base (load-moduleof "base.fx"))
                     (m-buffer (load-moduleof "buffer.fx" m-base))
                     (m-resolve (load-moduleof "resolve.fx" m-base m-buffer))
                     (m-syntax (load-moduleof "syntax.fx" m-base m-buffer m-resolve))

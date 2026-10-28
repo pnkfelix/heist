@@ -6,7 +6,7 @@
 ;;; which share most of themselves with the text it has. A command is code
 ;;; run in a turn of the buffer's: a procedure from the buffer to the
 ;;; buffer after it, what to do, and a message for the echo area.
-(module-parameters ((m-base (load-input-moduleof "base.fx"))))
+(module-parameters ((m-base (load-moduleof "base.fx"))))
 
 "What a party outside the text (the syntax actor) knows of a revision of
 it: faces for stretches of the text, the definitions it makes, and a

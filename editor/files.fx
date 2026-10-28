@@ -8,7 +8,7 @@
 ;;;   M-x revert-buffer    the buffer's file read again
 ;;;   C-x d, M-x dired     a directory read, and its listing visited
 ;;;   C-x C-d              a directory's names (`ls -F`), shown in *Directory*
-(module-parameters ((m-base (load-input-moduleof "base.fx"))
+(module-parameters ((m-base (load-moduleof "base.fx"))
                     (m-buffer (load-moduleof "buffer.fx" m-base))
                     (m-resolve (load-moduleof "resolve.fx" m-base m-buffer))
                     (m-syntax (load-moduleof "syntax.fx" m-base m-buffer m-resolve))

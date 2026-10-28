@@ -5,7 +5,7 @@
 ;;; in it, and reads them one a turn -- each read a command after its turn,
 ;;; by Fixpt's own reader, as the syntax actor reads a buffer -- so keys
 ;;; are read between files. M-. looks in the buffers first, then here.
-(module-parameters ((m-base (load-input-moduleof "base.fx"))
+(module-parameters ((m-base (load-moduleof "base.fx"))
                     (m-buffer (load-moduleof "buffer.fx" m-base))
                     (m-resolve (load-moduleof "resolve.fx" m-base m-buffer))
                     (m-syntax (load-moduleof "syntax.fx" m-base m-buffer m-resolve))

@@ -13,7 +13,7 @@
 ;;; The whole text is read again each time: about 150 ns a character, 9 ms
 ;;; for a 60 KB file. Reading only the list an edit is in is cahoots' next
 ;;; step, and this one's.
-(module-parameters ((m-base (load-input-moduleof "base.fx"))
+(module-parameters ((m-base (load-moduleof "base.fx"))
                     (m-buffer (load-moduleof "buffer.fx" m-base))
                     (m-resolve (load-moduleof "resolve.fx" m-base m-buffer))))
 

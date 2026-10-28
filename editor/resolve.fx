@@ -10,7 +10,7 @@
 ;;; else to nothing known here (a standard name, or another file's). Types
 ;;; and values are looked up alike: FX-26 keeps them apart, but a name's
 ;;; binder is what M-. wants either way.
-(module-parameters ((m-base (load-input-moduleof "base.fx"))
+(module-parameters ((m-base (load-moduleof "base.fx"))
                     (m-buffer (load-moduleof "buffer.fx" m-base))))
 
 

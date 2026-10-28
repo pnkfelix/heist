@@ -8,14 +8,18 @@ do it, and what it cost. Kayak will need the same changes later
 
 ## Base
 
-- Fixpt `main` at 62261413 (2026-10-28), pulled from GitHub by Heist's
+- Fixpt `main` at 35bf4c4f (2026-10-28), pulled from GitHub by Heist's
+  48ec00d0 (squash 8beaa5b8): `(module-parameters ())`, a maker of no
+  arguments that `load-module` and `load-moduleof` take (Heist's ask,
+  given the user in conversation). Heist has no edits of its own on it.
+- Before: Fixpt 62261413 (2026-10-28), pulled by Heist's
   2dde955f (squash 52e491a8): a module's `define*` used as a value
   (`docs/requests/fixpt-define-star-in-modules.md`, Heist's request; Fixpt
   `DONE.md` §148), `(m T qualified)` module parameters, not included, and
   include made cheaper in the FX-26 checker by interning types and keeping
   the cyclic walk by type (`docs/requests/fixpt-include-cost.md`, Heist's
   request; §149, §151); frozen regions covariant in lifetimes (Kayak's,
-  §150). Heist has no edits of its own on it.
+  §150).
 - Before: Fixpt 6447f9b0 (2026-10-28), pulled by Heist's
   30d080c6 (squash f6f8274a): `module-parameters` of modules and
   expressions as module items (`docs/requests/fixpt-module-file-parameters.md`,

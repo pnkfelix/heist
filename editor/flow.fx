@@ -21,7 +21,7 @@
 ;;; State: global, at region @fl, so the analysis runs in a command (as the
 ;;; reader does). Not yet: contexts (1CFA, call sites for small procedures),
 ;;; a worklist instead of whole passes, a warm start after an edit.
-(module-parameters ((m-base (load-input-moduleof "base.fx"))
+(module-parameters ((m-base (load-moduleof "base.fx"))
                     (m-buffer (load-moduleof "buffer.fx" m-base))
                     (m-resolve (load-moduleof "resolve.fx" m-base m-buffer))
                     (m-syntax (load-moduleof "syntax.fx" m-base m-buffer m-resolve))

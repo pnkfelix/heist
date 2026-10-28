@@ -13,7 +13,7 @@
 ;;;
 ;;; In a Scheme buffer, or *s7st*, what s7st knows of the name says it
 ;;; (`scheme-eldoc`, which scheme.fx sets): a procedure's parameters.
-(module-parameters ((m-base (load-input-moduleof "base.fx"))
+(module-parameters ((m-base (load-moduleof "base.fx"))
                     (m-buffer (load-moduleof "buffer.fx" m-base))
                     (m-resolve (load-moduleof "resolve.fx" m-base m-buffer))
                     (m-syntax (load-moduleof "syntax.fx" m-base m-buffer m-resolve))

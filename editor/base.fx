@@ -3,10 +3,8 @@
 ;;; each a module made once by editor.fx (`bin/heist-edit`) from the
 ;;; modules of those before it, in the order `program` lists them:
 ;;;   base.fx buffer.fx … frame.fx calls.fx process.fx main.fx
-;;; This one takes none, but has state, so it is a `lambda` that makes it;
-;;; the others are files of `module-parameters`.
-(lambda ()
-(module
+;;; This one takes none, but has state, so it too is made once.
+(module-parameters ())
 
 ;; What Fixpt's own reader does to its regions: it keeps its state there,
 ;; and leaves a form it cannot read by an escape.
@@ -74,4 +72,3 @@ the editor itself: syntax with each form's span, in characters."
 (define reader ((proj (load-module "fx26:eager-reader.fx") @s @e @m @c)))
 (import reader eager-start-fx26 eager-feed-string eager-feed eager-status eager-state-syntax eager-context
         eager-state-message eager-state-position atom lst dotted vec (type syn syns state))
-))

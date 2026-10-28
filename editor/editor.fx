@@ -1,6 +1,6 @@
 ;;; editor.fx: the editor, each file made once, in order, from those before it.
 
-(define m-base ((load-input "base.fx")))
+(define m-base ((load-module "base.fx")))
 (define m-buffer ((load-module "buffer.fx") m-base))
 (define m-resolve ((load-module "resolve.fx") m-base m-buffer))
 (define m-syntax ((load-module "syntax.fx") m-base m-buffer m-resolve))

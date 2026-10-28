@@ -14,7 +14,7 @@
 ;;; FX-26 keeps no docstrings at run time, so what a command does is said
 ;;; again here, a line for each (`define-doc!`); a file adding commands
 ;;; adds their lines too.
-(module-parameters ((m-base (load-input-moduleof "base.fx"))
+(module-parameters ((m-base (load-moduleof "base.fx"))
                     (m-buffer (load-moduleof "buffer.fx" m-base))
                     (m-resolve (load-moduleof "resolve.fx" m-base m-buffer))
                     (m-syntax (load-moduleof "syntax.fx" m-base m-buffer m-resolve))

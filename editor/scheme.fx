@@ -25,7 +25,7 @@
 ;;; the editor. s7st/main.fx says its requests and answers, a line each;
 ;;; the main loop looks for its answers every 50 ms while one is awaited
 ;;; (`s7-poll!`). What it writes goes to *s7st*, if there is one.
-(module-parameters ((m-base (load-input-moduleof "base.fx"))
+(module-parameters ((m-base (load-moduleof "base.fx"))
                     (m-buffer (load-moduleof "buffer.fx" m-base))
                     (m-resolve (load-moduleof "resolve.fx" m-base m-buffer))
                     (m-syntax (load-moduleof "syntax.fx" m-base m-buffer m-resolve))

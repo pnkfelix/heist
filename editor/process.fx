@@ -15,7 +15,7 @@
 ;;; each running one (`poll-processes!`), every 50 ms while any runs, and
 ;;; tells its buffer what came. Fixpt cannot yet wait for a process in a
 ;;; `pselect`; F4 says what that would take.
-(module-parameters ((m-base (load-input-moduleof "base.fx"))
+(module-parameters ((m-base (load-moduleof "base.fx"))
                     (m-buffer (load-moduleof "buffer.fx" m-base))
                     (m-resolve (load-moduleof "resolve.fx" m-base m-buffer))
                     (m-syntax (load-moduleof "syntax.fx" m-base m-buffer m-resolve))
