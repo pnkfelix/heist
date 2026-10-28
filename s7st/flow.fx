@@ -389,7 +389,7 @@ operator, what it can call (if not just one built-in)."
       (go 0 nil))))
 "Text `text` (of `file`) analysed for flow: notes at each variable's use
 (what can reach it) and each call's operator (what it can call)."
-(define* s7-flow (subr s7-eff (string string) (listof s7-fnote acyclic))
+(define* s7-flow-of (subr s7-eff (string string) (listof s7-fnote acyclic))
   (lambda (text file)
     (let* ((ns (s7-make-ns "flow" 256 (list s7-builtins)))
            (saved (get s7-current-ns))
@@ -463,4 +463,10 @@ operator, what it can call (if not just one built-in)."
                                (pass (- k 1)))))))
               (pass 40))
             (s7-fl-notes st nodes text)))))))
-
+"The flow notes of `text`, the renaming its expansion did forgotten after:
+the namespace it is expanded in is thrown away, so nothing can name what
+was renamed, and every analysis would otherwise keep its namespace for good."
+(define* s7-flow (subr s7-eff (string string) (listof s7-fnote acyclic))
+  (lambda (text file)
+    (let* ((mark (s7-rename-mark)) (notes (s7-flow-of text file)))
+      (begin (s7-rename-release! mark) notes))))

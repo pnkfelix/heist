@@ -37,6 +37,19 @@ brought in means what its name means."
             (letrec ((copy (subr s7-eff (int) unit)
                        (lambda (i) (if (>= i (array-length a)) #u (begin (array-set! b i (array-ref a i)) (copy (+ i 1)))))))
               (begin (copy 0) (array-set! b n (list h)) (set s7-rename-homes b))))))))
+"How far renaming has gone: what `s7-rename-release!` goes back to."
+(define* s7-rename-mark (subr (read @sc) () int) (lambda () (get s7-rename-count)))
+"The renaming done since `mark` forgotten: its homes, and its numbers,
+used again. Only for an expansion whose results nothing keeps (an
+analysis's, in a namespace thrown away): otherwise each home would keep
+its namespace, and each name its symbol, for good."
+(define* s7-rename-release! (subr s7-eff (int) unit)
+  (lambda (mark)
+    (let ((a (get s7-rename-homes)) (n (get s7-rename-count)))
+      (letrec ((clear (subr s7-eff (int) unit)
+                 (lambda (i) (if (or (>= i n) (>= i (array-length a))) #u
+                                 (begin (array-set! a i (the (listof s7-home acyclic) nil)) (clear (+ i 1)))))))
+        (begin (clear mark) (set s7-rename-count mark))))))
 "The home of renamed symbol `s`'s macro, if it is known."
 (define* s7-rename-home (subr s7-eff (symbol) (listof s7-home acyclic))
   (lambda (s)

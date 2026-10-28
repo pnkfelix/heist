@@ -207,6 +207,21 @@ numerator and denominator); a float by `f`."
             ((f64= (f64- fl (f64* 2.0 (f64-floor (f64/ fl 2.0)))) 0.0) fl)
             (else (f64+ fl 1.0))))))
 
+"List `v` reversed, by an accumulator, in one pass over its pairs; or
+(none) if it is no proper list (a cycle found, the tortoise and the hare)."
+(define* s7-reverse-list (subr (maxeff spin (read @sc) (alloc @sc)) (s7-value) (sumof (none unit) (some s7-value)))
+  (lambda (v)
+    (letrec ((go (subr (maxeff spin (read @sc) (alloc @sc)) (s7-value s7-value bool s7-value) (sumof (none unit) (some s7-value)))
+               (lambda (fast slow step acc)
+                 (tagcase fast
+                   (null u (sum some acc))
+                   (pair p (let ((next (get (extract p cdr)))
+                                 (slow2 (if step (tagcase slow (pair q (get (extract q cdr))) (else y slow)) slow)))
+                             (if (and step (s7-same-pair? next slow2))
+                                 (sum none #u)
+                                 (go next slow2 (not step) (s7-cons (get (extract p car)) acc)))))
+                   (else y (sum none #u))))))
+      (go v v #f s7-nil))))
 (define* s7-init-numbers! (subr s7-eff () unit)
   (lambda ()
     (begin
@@ -746,7 +761,7 @@ and when what runs ends."
                                              (some items (tagcase (go (cdr l)) (ok rest (sum ok (s7-list* items rest))) (raise e (sum raise e))))
                                              (none u (s7-wrong "append" "a proper list" (car l)))))))))
                     (go a))))
-      (s7-prim! "reverse" 1 1 (lambda ((a s7-values)) (tagcase (s7-list-items (car a)) (some l (sum ok (s7-list (reverse l)))) (none u (s7-wrong "reverse" "a proper list" (car a))))))
+      (s7-prim! "reverse" 1 1 (lambda ((a s7-values)) (tagcase (s7-reverse-list (car a)) (some r (sum ok r)) (none u (s7-wrong "reverse" "a proper list" (car a))))))
       (s7-prim! "list-tail" 2 2 (lambda ((a s7-values))
                                   (letrec ((go (subr s7-eff (s7-value int) s7-out)
                                              (lambda (l k) (cond ((<= k 0) (sum ok l))

@@ -305,14 +305,18 @@ fraction, so doubling it enough makes it whole."
                      (go (f64* x 2.0) (+ k 1))))))
       (go r 0))))
 
+"`l`'s items, last first, before `tail`: a loop, so that a long list takes
+no native stack (a frame an item, which every collection would walk)."
+(define* s7-reverse-onto (subr (maxeff spin (alloc @sc)) (s7-values s7-value) s7-value)
+  (lambda (l tail) (if (null? l) tail (s7-reverse-onto (cdr l) (s7-cons (car l) tail)))))
 "Whether `v` counts as true: all but #f."
 (define* s7-true? (subr pure (s7-value) bool)
   (lambda (v) (tagcase v (bool b b) (else x #t))))
 (define* s7-list (subr (maxeff spin (alloc @sc)) (s7-values) s7-value)
-  (lambda (l) (if (null? l) s7-nil (s7-cons (car l) (s7-list (cdr l))))))
+  (lambda (l) (s7-reverse-onto (reverse l) s7-nil)))
 "`l`'s items before `tail`."
 (define* s7-list* (subr (maxeff spin (alloc @sc)) (s7-values s7-value) s7-value)
-  (lambda (l tail) (if (null? l) tail (s7-cons (car l) (s7-list* (cdr l) tail)))))
+  (lambda (l tail) (s7-reverse-onto (reverse l) tail)))
 "Whether `a` and `b` are the same pair (their car cells are one cell)."
 (define* s7-same-pair? (subr pure (s7-value s7-value) bool)
   (lambda (a b)
