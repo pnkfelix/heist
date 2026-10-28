@@ -34,6 +34,7 @@ take a group of files as one module, s7st can become a module with
 | `library.fx`  | libraries: namespaces, import sets, finding a library's file                                                                                 |
 | `analyze.fx`  | what a text is, for an editor, read and walked but never run: faces, definitions, each local variable's binder, the read's error           |
 | `flow.fx`     | a flow analysis of a text, 0CFA: what can reach each variable, what each call can call                                                      |
+| `native.fx`   | loops over integers compiled to x86_64 machine code: kernels ("Speed")                                                                       |
 | `machine.fx`  | the compiler to closures, and the CEK machine that runs its code, one step at a time                                                         |
 | `prelude.scm` | what is written in Scheme: `map`, `guard`, `parameterize`, promises, the I/O procedures over ports, a few of SRFI 1's. `prelude.fx` is generated from it by `gen-prelude.py` |
 | `session.fx`  | the API clients call: `s7-init!`, `s7-start!`, `s7-continue!`, `s7-take-output!`, `s7-interrupt!`                                            |
@@ -244,6 +245,15 @@ each. Since Fixpt b7b60d98 (Heist's request,
 self-calling loop now takes ~70 ns an iteration, about 14 million a
 second. Larceny's `(scheme time)` test needs 10 million.
 
+**Fixpt's code is sensitive to where it lands.** Changes that do nothing
+at run time move benchmarks by 10–25%: `vec5e5` went 715 → 891 ms when
+a lambda that is never run was added to `s7-compile-in`, and 770 → 842
+ms when the code that queues kernels was made unreachable. Each result
+is steady from run to run, so it looks like the alignment or cache
+placement of compiled code. A difference under ~25% between two builds
+is therefore not evidence that one is better. The results below may be
+partly that.
+
 **Tried, and slower** (2026-10-27), on Fixpt b7b60d98:
 - *A loop's frame used again* by a call of its lambda in tail position:
   each frame stamped with how many continuations had been captured, and
@@ -260,6 +270,57 @@ What helped instead was taking work off the call's path: no product
 returned only to be taken apart (`s7-new-frame`'s), no state built for a
 step.
 
+**Loops over integers, as machine code** (`native.fx`, 2026-10-27).
+Fixpt's `seal-code` and `native-procedure` let a program make machine code
+and call it. They work on x86_64 here, though Fixpt's `docs/fx26.md`
+says arm64 only.
+
+- **Which lambdas get a kernel:** one clause, no rest argument, no
+  internal definitions, and a body made only of:
+  - `if`;
+  - integers: constants, the parameters, and free variables of the
+    lambdas around it;
+  - `+ - *` and `= < > <= >= zero?`, as the built-ins hold them when the
+    body is compiled;
+  - other constants, as results;
+  - calls of itself in tail position.
+
+  The lambda is compiled as before, and also to x86_64 code, a *kernel*.
+- **How it is made:** the instructions come from Fixpt's encoder written
+  in FX-26 (`fx26:x86_64.fx`). Each node shape is a fixed run of
+  instructions with its slots, constants and labels filled in: copy and
+  patch, as stencils are. A small two-pass assembler places the labels.
+- **What it touches:** the kernel is a leaf. It calls no routine of the
+  runtime and allocates nothing, so no collection can happen while it
+  runs, and it needs no frame or stack map. It works on raw 64-bit
+  integers in a scratch bloblet's suffix.
+- **When it is made:** compiling the lambda only queues it. The kernel is
+  made between slices, by `s7-continue!`, so that making machine code
+  (`(io native)`, the encoder's region `@k`) is in the effect of what
+  drives the machine (`s7-drive-eff`), not of the code the machine runs.
+  The lambda's code first looks for its kernel, and runs its body as
+  before until there is one.
+- **When it is used:** entering the body checks first that the
+  built-ins are where they were, that the variable it calls itself
+  through still holds it, and that every input is an integer below
+  2^60. Otherwise the call is made as before.
+- **How it hands back:** an overflow gives up, and so does using up its
+  million iterations, after which the slice ends. Either way the kernel
+  hands back the arguments of the call of itself it was about to make,
+  and the machine makes that call the slow way. That is safe because the
+  body changes nothing. Past 64 bits, the slow way goes on in bignums.
+  `tests/kernels.scm` covers these cases.
+
+| benchmark                       | before kernels | with kernels |
+| ------------------------------- | -------------- | ------------ |
+| a named-`let` loop, 1,000,000   | 107 ms         | 2 ms         |
+| countdown from 10,000,000       | 700 ms         | 19 ms        |
+
+Start-up grew 0.3 s, for checking the encoder and `native.fx`. `fib`
+and `tak` get no kernel: their calls of themselves are not in tail
+position. Neither do the `map` and vector benchmarks, which use lists
+and vectors.
+
 **Against Larceny** (2026-10-27, `s7st/bench/run.sh LARCENY`, on the same
 machine; Larceny v1.3.1a2 from `~/Dev/LangPlay/accomplice`). Times are
 per run: s7st's the mean of 3, Larceny's compiled the mean of 20.
@@ -268,16 +329,21 @@ R7RS REPL), itself compiled to machine code by Twobit. "Compiled" is
 Larceny running the benchmark as a program (`-r7rs -program`), which
 Twobit compiles to machine code.
 
-| benchmark                       | s7st     | Larceny, interpreted | Larceny, compiled | s7st ÷ interpreted |
-| ------------------------------- | -------- | -------------------- | ----------------- | ------------------ |
-| `(fib 25)`                      | 49.5 ms  | 11.5 ms              | 0.5 ms            | 4.3×               |
-| `(tak 18 12 6)`                 | 12.0 ms  | 4.0 ms               | 0.1 ms            | 3.0×               |
-| a named-`let` loop, 1,000,000   | 108.8 ms | 54.0 ms              | 1.2 ms            | 2.0×               |
-| `map` over 200,000              | 250.1 ms | 35.0 ms              | 12.7 ms           | 7.1×               |
-| `do` over a vector, 500,000     | 68.0 ms  | 32.3 ms              | 1.2 ms            | 2.1×               |
-| countdown from 10,000,000       | 661.9 ms | 246.4 ms             | 4.8 ms            | 2.7×               |
+| benchmark                       | s7st, before kernels | s7st, with kernels | Larceny, interpreted | Larceny, compiled |
+| ------------------------------- | -------------------- | ------------------ | -------------------- | ----------------- |
+| `(fib 25)`                      | 49.5 ms              | 48.7 ms            | 11.4 ms              | 0.5 ms            |
+| `(tak 18 12 6)`                 | 12.0 ms              | 11.9 ms            | 4.0 ms               | 0.1 ms            |
+| a named-`let` loop, 1,000,000   | 108.8 ms             | **2.5 ms**         | 52.9 ms              | 1.1 ms            |
+| `map` over 200,000              | 250.1 ms             | 250.0 ms           | 34.2 ms              | 13.0 ms           |
+| `do` over a vector, 500,000     | 68.0 ms              | 82.5 ms            | 31.4 ms              | 1.2 ms            |
+| countdown from 10,000,000       | 661.9 ms             | **19.8 ms**        | 245.1 ms             | 4.7 ms            |
 
-- **On calls and loops,** s7st is 2–4× slower than Larceny's interpreter.
+The two loops over integers now run as kernels ("Loops over integers, as
+machine code"), within 2–4× of compiled Larceny. The vector loop gets no
+kernel. Its 68 → 82 ms is the code-placement sensitivity described above:
+none of its code changed.
+
+- **On calls and loops without a kernel,** s7st is 2–4× slower than Larceny's interpreter.
 - **`map` is not a like comparison.** Larceny's interpreter calls `map`
   and `length` compiled to machine code. s7st's `map` is Scheme, in its
   prelude, run like the program's own code. As FX-26 built-ins, they
@@ -387,7 +453,8 @@ process. What it can do:
    dynamic typing becomes a union type, as `datum` is. `call/cc` needs a
    CPS translation or FX-26's one-shot continuations, which are enough for
    escapes, generators and `guard`.
-3. **Machine code** through `seal-code`, once a back end exists: x86_64 and
+3. **Machine code** through `seal-code`. Begun, for loops over integers
+   (`native.fx`, "Speed"). For the rest: x86_64 and
    arm64. It must keep the native convention (`define-convention`,
    `fixpt/docs/research/declared-conventions.md`): frames, the collector's
    maps, the write barrier. Fixpt's own back end written in FX-26

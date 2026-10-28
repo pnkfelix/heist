@@ -83,6 +83,90 @@ most used, with no loop."
                          (else y s7-undefined))))
             (else (lambda ((env s7-env)) (s7-local-ref env d i)))))))
 
+;;; ------------------------------------------------------------ kernels
+
+"The suffix a kernel works in (native.fx): its slots, raw integers."
+(define s7-kernel-scratch s7-scratch (make-bloblet (* 8 s7-most-slots)))
+(define* s7-ks! (subr (maxeff (write @sc) (read @sc) (read @globals)) (int int) unit)
+  (lambda (k v) (blobref-set! (the (blobref s7-scratch i64) (blobref-at s7-kernel-scratch (* 8 k))) (int->i64 v))))
+(define* s7-ks (subr (maxeff (read @sc) (read @globals)) (int) int)
+  (lambda (k) (i64->int (blobref-get (the (blobref s7-scratch i64) (blobref-at s7-kernel-scratch (* 8 k)))))))
+"Value `v` put in slot `k`, if it is an integer a kernel takes (below 2^60
+either way): whether it was."
+(define* s7-kernel-in! (subr s7-eff (s7-value int) bool)
+  (lambda (v k)
+    (tagcase v
+      (int i (and (> i -1152921504606846976) (< i 1152921504606846976) (begin (s7-ks! k i) #t)))
+      (else y #f))))
+"`slots` from `i` (of `r`) put in the parameters' slots."
+(define* s7-kernel-params! (subr s7-eff ((arrayof s7-value @sc) int int) bool)
+  (lambda (slots i r)
+    (or (>= i r) (and (s7-kernel-in! (array-ref slots i) (+ s7-first-param i)) (s7-kernel-params! slots (+ i 1) r)))))
+"The free variables `fs`, read from `env` (the closure's: one out from the
+body's), put in the slots from `k`."
+(define* s7-kernel-frees! (subr s7-eff ((listof (productof (depth int) (index int)) acyclic) s7-env int) bool)
+  (lambda (fs env k)
+    (or (null? fs)
+        (and (s7-kernel-in! (s7-local-ref env (- (extract (car fs) depth) 1) (extract (car fs) index)) k)
+             (s7-kernel-frees! (cdr fs) env (+ k 1))))))
+"Whether each built-in a kernel does in line is where it was."
+(define* s7-kernel-prims-hold? (subr s7-eff ((listof (productof (cell s7-global) (name string)) acyclic)) bool)
+  (lambda (ps)
+    (or (null? ps)
+        (and (tagcase (get (extract (extract (car ps) cell) value))
+               (prim p (string=? (extract p name) (extract (car ps) name)))
+               (else y #f))
+             (s7-kernel-prims-hold? (cdr ps))))))
+"Whether environments `a` and `b` are the same."
+(define* s7-same-env? (subr pure (s7-env s7-env) bool)
+  (lambda (a b)
+    (tagcase a
+      (top u (tagcase b (top v #t) (else y #f)))
+      (frame f (tagcase b (frame g (eq? (extract f slots) (extract g slots))) (else y #f))))))
+"Whether `v` is a closure of the lambda whose kernel cell is `into`, made
+in environment `env`."
+(define* s7-kernel-self? (subr (maxeff spin (read @sc)) (s7-value (ref (listof s7-kernel acyclic) @sc) s7-env) bool)
+  (lambda (v into env)
+    (tagcase v
+      (proc d (and (pair? (extract d clauses)) (eq? (extract (car (extract d clauses)) kernel) into)
+                   (s7-same-env? (extract d env) env)))
+      (else y #f))))
+"The `i`th of `l`; unspecified past its end."
+(define* s7-nth-value (subr spin (s7-values int) s7-value)
+  (lambda (l i) (cond ((null? l) s7-unspecified) ((= i 0) (car l)) (else (s7-nth-value (cdr l) (- i 1))))))
+"Slots `from` to `r` of `slots` set from the kernel's parameters."
+(define* s7-kernel-out! (subr s7-eff ((arrayof s7-value @sc) int int) unit)
+  (lambda (slots i r)
+    (if (>= i r) #u (begin (array-set! slots i (sum int (s7-ks (+ s7-first-param i)))) (s7-kernel-out! slots (+ i 1) r)))))
+"The body of a lambda with kernel `kn` (its cell `into`), of `r`
+parameters, entered in frame `env`: by the kernel if what it was made for
+holds; else by `body`, the body's code."
+(define* s7-run-kernel (subr s7-eff (s7-kernel (ref (listof s7-kernel acyclic) @sc) int s7-code s7-env s7-k s7-dyn) s7-state)
+  (lambda (kn into r body env k dyn)
+    (tagcase env
+      (frame f
+        (let ((slots (extract f slots)) (up (extract f up)))
+          (if (and (s7-kernel-prims-hold? (extract kn prims))
+                   (tagcase (extract kn self)
+                     (local m (s7-kernel-self? (s7-local-ref up (- (extract m depth) 1) (extract m index)) into up))
+                     (global g (s7-kernel-self? (get (extract g value)) into up))
+                     (none u #f))
+                   (s7-kernel-params! slots 0 r)
+                   (s7-kernel-frees! (extract kn frees) up (+ s7-first-param r)))
+              (begin
+                (s7-ks! 1 1000000)
+                (let ((st ((extract kn code) s7-kernel-scratch)))
+                  (cond ((= st 0) (s7-return (sum int (s7-ks 0)) k dyn))
+                        ((>= st 3) (s7-return (s7-nth-value (extract kn consts) (- st 3)) k dyn))
+                        ;; Given up, or its iterations spent: the call of
+                        ;; itself it was making, made the slow way. Spent,
+                        ;; the slice ends.
+                        (else (begin (s7-kernel-out! slots 0 r)
+                                     (if (= st 2) (set s7-fuel 0) #u)
+                                     (s7-enter body env k dyn))))))
+              (body env k dyn))))
+      (else y (body env k dyn)))))
+
 "How a procedure is applied: `s7-apply`, defined after the compiler, whose
 code calls it through this."
 (define-type s7-applier (subr s7-eff (s7-value s7-values s7-k s7-dyn) s7-state))
@@ -138,6 +222,22 @@ undefined."
           (and (not (s7-undef? v))
                (begin (array-set! slots i v) (s7-quick-into (cdr cs) env slots (+ i 1))))))))
 
+"The code of a lambda that may get a kernel (in `into`), of `r`
+parameters, whose body's code is `body`: the kernel tried first."
+(define* s7-kernel-entry (subr pure ((ref (listof s7-kernel acyclic) @sc) int s7-code) s7-code)
+  (lambda (into r body)
+    (lambda ((env s7-env) (k s7-k) (dyn s7-dyn))
+      (let ((ks (get into)))
+        (if (null? ks) (body env k dyn) (s7-run-kernel (car ks) into r body env k dyn))))))
+
+"Lambda `l`'s clause, its body's code `body`; if it is a lambda's only
+clause (`only`), a kernel wanted for it (native.fx)."
+(define* s7-make-clause (subr s7-eff (s7-lambda s7-code bool) s7-clause)
+  (lambda (l body only)
+    (let ((into (the (ref (listof s7-kernel acyclic) @sc) (new nil))))
+      (product (info l)
+               (code (if (and only (s7-want-kernel! l into)) (s7-kernel-entry into (extract l required) body) body))
+               (kernel into)))))
 "Node `n` compiled: its code, and its quick evaluation if it has one (a
 constant, a variable, a lambda, an `if` or a sequence of such, or a call of
 a pure procedure written in FX-26 on such: the calls a program makes most)."
@@ -170,7 +270,7 @@ a pure procedure written in FX-26 on such: the calls a program makes most)."
         (n-lambda ls
           (let* ((clauses (letrec ((go (subr s7-eff ((listof s7-lambda acyclic)) (listof s7-clause acyclic))
                                          (lambda (ls) (if (null? ls) nil
-                                                          (cons (product (info (car ls)) (code (extract (s7-compile (extract (car ls) body)) code)))
+                                                          (cons (s7-make-clause (car ls) (extract (s7-compile (extract (car ls) body)) code) (null? (cdr ls)))
                                                                 (go (cdr ls)))))))
                             (go ls)))
                  (name (if (null? ls) "" (extract (car ls) name)))

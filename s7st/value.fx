@@ -32,6 +32,10 @@ clock (`current-jiffy`) and the command line, and runs `rm` (`delete-file`:
 FX-26 has no primitive for it)."
 (define-effect s7-eff (maxeff spin (read @globals) (read @sc) (write @sc) (alloc @sc) (io fs-read) (io fs-write) (io clock)
                               (io args) (io process)))
+"What drives the machine may do besides: make kernels between slices
+(native.fx), by Fixpt's encoder (`@k`) and `seal-code`. Kept out of
+`s7-eff`, the effect of the code the machine runs, which never makes one."
+(define-effect s7-drive-eff (maxeff s7-eff (io native) (read @k) (alloc @k)))
 
 ;;; ------------------------------------------------------------ values
 
@@ -74,7 +78,20 @@ finding it is a field's read, and it goes when the pair goes. A pair
 "A closure: its lambda's clauses (one, but for `case-lambda`), each with its
 body compiled; where it was made; and its name, which is also its identity."
 (define-type s7-closure (productof (clauses (listof s7-clause acyclic)) (env s7-env) (name (ref string @sc))))
-(define-type s7-clause (productof (info s7-lambda) (code s7-code)))
+(define-type s7-clause (productof (info s7-lambda) (code s7-code) (kernel (ref (listof s7-kernel acyclic) @sc))))
+"A clause's body as machine code (native.fx), if it has one: a loop over
+integers. `frees`: the free variables it reads, after its parameters;
+`self`: the variable through which it calls itself; `prims`: the globals
+whose built-ins it does in line, by name, which must hold them still;
+`consts`: the values it may return besides an integer."
+(define-type s7-scratch (bloblet (fields) @sc))
+(define-type s7-kernel-code (subr (conv native) (maxeff spin (read @sc) (write @sc)) (s7-scratch) int))
+(define-type s7-kernel
+  (productof (code s7-kernel-code)
+             (frees (listof (productof (depth int) (index int)) acyclic))
+             (self (sumof (none unit) (local (productof (depth int) (index int))) (global s7-global)))
+             (prims (listof (productof (cell s7-global) (name string)) acyclic))
+             (consts s7-values)))
 "A procedure written in FX-26: a function of its arguments, or an operation
 of the machine's own (`call/cc`, `apply`, …), numbered."
 (define-type s7-prim (productof (name string) (min int) (max int) (op s7-op) (pure bool) (fast s7-fast)))   ; max -1: any

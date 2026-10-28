@@ -24,17 +24,17 @@
 
 "What a condition that nothing handled says: an error's message and its
 irritants, written; anything else, written."
-(define* s7-condition-message (subr s7-eff (s7-value) string)
+(define* s7-condition-message (subr s7-drive-eff (s7-value) string)
   (lambda (obj)
     (tagcase obj
-      (errobj e (letrec ((go (subr s7-eff (s7-values (listof string acyclic)) (listof string acyclic))
+      (errobj e (letrec ((go (subr s7-drive-eff (s7-values (listof string acyclic)) (listof string acyclic))
                                (lambda (l acc) (if (null? l) acc (go (cdr l) (cons (s7-show (car l) #t) (cons " " acc)))))))
                   (s7-concat (reverse (the (listof string acyclic)
                                            (go (s7-value->values (extract e irritants)) (list (extract e message))))))))
       (else y (string-append "uncaught exception: " (s7-show y #t))))))
 
 "Whether `text` holds whole data, as a REPL's RET asks."
-(define* s7-input-state (subr s7-eff (string) s7-input)
+(define* s7-input-state (subr s7-drive-eff (string) s7-input)
   (lambda (text)
     (tagcase (s7-read-all text "")
       (data d (sum complete #u))
@@ -44,7 +44,7 @@ irritants, written; anything else, written."
                 (else y (sum complete #u)))))))
 
 "The same, in namespace `ns`."
-(define* s7-start-in! (subr s7-eff (string string bool s7-ns) (sumof (none unit) (bad string)))
+(define* s7-start-in! (subr s7-drive-eff (string string bool s7-ns) (sumof (none unit) (bad string)))
   (lambda (text file echo ns)
     (tagcase (s7-read-all text file)
       (data forms (begin (set s7-console-fresh #t)
@@ -60,15 +60,15 @@ irritants, written; anything else, written."
 "The forms of `text` (from `file`, \"\" if typed) made what the machine
 runs next, at top level, each value shown if `echo`. (none), or what is
 wrong with it."
-(define* s7-start! (subr s7-eff (string string bool) (sumof (none unit) (bad string)))
+(define* s7-start! (subr s7-drive-eff (string string bool) (sumof (none unit) (bad string)))
   (lambda (text file echo) (s7-start-in! text file echo s7-toplevel)))
 (define* s7-busy? (subr (read @sc) () bool)
   (lambda () (not (s7-stopped? (get s7-machine)))))
 
 "At most `fuel` steps run."
-(define* s7-continue! (subr s7-eff (int) s7-status)
+(define* s7-continue! (subr s7-drive-eff (int) s7-status)
   (lambda (fuel)
-    (let ((st (s7-run (get s7-machine) fuel)))
+    (let ((st (begin (s7-make-kernels!) (s7-run (get s7-machine) fuel))))
       (begin
         (set s7-machine st)
         (tagcase st
@@ -78,22 +78,22 @@ wrong with it."
 
 "What `display` and its kin have written to the console since this was
 last asked."
-(define* s7-take-output! (subr s7-eff () string)
+(define* s7-take-output! (subr s7-drive-eff () string)
   (lambda ()
     (tagcase s7-console
       (port p (let ((s (s7-port-text p))) (begin (set (extract p out) nil) s)))
       (else y ""))))
 
-(define* s7-interrupt! (subr s7-eff () unit)
+(define* s7-interrupt! (subr s7-drive-eff () unit)
   (lambda () (set s7-machine (sum s-done s7-unspecified))))
 
 "`text` run to its end: what it wrote, then its last value (written) or
 `Error: …`."
-(define* s7-eval-string! (subr s7-eff (string) string)
+(define* s7-eval-string! (subr s7-drive-eff (string) string)
   (lambda (text)
     (tagcase (s7-start! text "" #f)
       (bad m (string-append "Error: " m))
-      (none u (letrec ((go (subr s7-eff () string)
+      (none u (letrec ((go (subr s7-drive-eff () string)
                          (lambda ()
                            (tagcase (s7-continue! 100000)
                              (running u (go))
@@ -108,7 +108,7 @@ last asked."
           ((< max 0) (string-append (int->string min) " or more arguments"))
           (else (string-append (int->string min) " to " (int->string max) " arguments")))))
 "A closure's parameters, as a call: `(name a b . rest)`, each clause's."
-(define* s7-signature (subr s7-eff (string s7-closure) string)
+(define* s7-signature (subr s7-drive-eff (string s7-closure) string)
   (lambda (name c)
     (letrec ((params (subr spin (s7-symbols int bool (listof string acyclic)) (listof string acyclic))
                ;; Names `ns`, `left` of them required, then the rest's if `rest`; last first.
@@ -117,7 +117,7 @@ last asked."
                        ((> left 0) (params (cdr ns) (- left 1) rest (cons (string-append " " (s7-symbol-name (car ns))) acc)))
                        (rest (cons (string-append " . " (s7-symbol-name (car ns))) acc))
                        (else acc))))
-             (clauses (subr s7-eff ((listof s7-clause acyclic) (listof string acyclic)) (listof string acyclic))
+             (clauses (subr s7-drive-eff ((listof s7-clause acyclic) (listof string acyclic)) (listof string acyclic))
                (lambda (cs acc)
                  (if (null? cs) acc
                      (let ((l (extract (car cs) info)))
@@ -127,7 +127,7 @@ last asked."
       (s7-concat (reverse (clauses (extract c clauses) nil))))))
 "What global `name` is, in a line: a procedure's parameters, a special
 form, a macro, or a variable's value; \"\" if it is none of them."
-(define* s7-describe (subr s7-eff (string) string)
+(define* s7-describe (subr s7-drive-eff (string) string)
   (lambda (name)
     (if (string=? name "") ""
         (tagcase (s7-ns-find s7-toplevel (string->symbol name))
@@ -145,7 +145,7 @@ form, a macro, or a variable's value; \"\" if it is none of them."
 
 "The interpreter made ready: the special forms and the procedures written
 in FX-26, then the prelude (prelude.fx) run. \"\", or what went wrong."
-(define* s7-init! (subr s7-eff () string)
+(define* s7-init! (subr s7-drive-eff () string)
   (lambda ()
     (begin
       (s7-define-specials! s7-special-names)
@@ -154,7 +154,7 @@ in FX-26, then the prelude (prelude.fx) run. \"\", or what went wrong."
       (s7-init-libraries!)
       (tagcase (s7-start-in! s7-prelude "prelude.scm" #f s7-builtins)
         (bad m m)
-        (none u (letrec ((go (subr s7-eff () string)
+        (none u (letrec ((go (subr s7-drive-eff () string)
                            (lambda ()
                              (tagcase (s7-continue! 1000000)
                                (running u (go))

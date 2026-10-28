@@ -46,14 +46,14 @@
 
 "What runs, run to its end, its output written as it comes. Whether it
 ended well."
-(define* s7-drive (subr (maxeff s7-eff (io stdout)) () bool)
+(define* s7-drive (subr (maxeff s7-drive-eff (io stdout)) () bool)
   (lambda ()
     (tagcase (s7-continue! 20000)
       (running u (begin (s7-say (s7-take-output!)) (s7-drive)))
       (done v (begin (s7-say (s7-take-output!)) #t))
       (failed m (begin (s7-say (s7-take-output!)) (s7-say (string-append (s7-fresh-line) "Error: " m "\n")) #f)))))
 
-(define* s7-run-files (subr (maxeff s7-eff (io stdout) (read @a)) ((listof string @a)) int)
+(define* s7-run-files (subr (maxeff s7-drive-eff (io stdout) (read @a)) ((listof string @a)) int)
   (lambda (files)
     (if (null? files) 0
         (tagcase (s7-file-text (car files))
@@ -62,7 +62,7 @@ ended well."
                     (bad m (begin (s7-say (string-append "Error: " m "\n")) 1))
                     (none u (if (s7-drive) (s7-run-files (cdr files)) 1))))))))
 
-(define* s7-repl (subr (maxeff s7-eff (io stdout) (io stdin)) (string) int)
+(define* s7-repl (subr (maxeff s7-drive-eff (io stdout) (io stdin)) (string) int)
   ;; `pending`: lines read and not yet whole data.
   (lambda (pending)
     (begin
@@ -133,7 +133,7 @@ ended well."
 
 "Output so far answered; then, if what ran has ended, how. A newline
 first, if output did not end its line, so that what comes after starts one."
-(define* s7-serve-slice! (subr (maxeff s7-eff (io stdout)) () unit)
+(define* s7-serve-slice! (subr (maxeff s7-drive-eff (io stdout)) () unit)
   (lambda ()
     (let* ((status (s7-continue! 20000))
            (out (s7-take-output!))
@@ -145,7 +145,7 @@ first, if output did not end its line, so that what comes after starts one."
           (done v (begin (fresh) (s7-answer "value" (if (s7-shown? v) (s7-show v #t) ""))))
           (failed m (begin (fresh) (s7-answer "error" m))))))))
 "Request `line` done."
-(define* s7-serve-request! (subr (maxeff s7-eff (io stdout)) (string) unit)
+(define* s7-serve-request! (subr (maxeff s7-drive-eff (io stdout)) (string) unit)
   (lambda (line)
     (let* ((r (s7-request line)) (w (extract r word)) (f (extract r fields)))
       (cond
@@ -193,7 +193,7 @@ first, if output did not end its line, so that what comes after starts one."
                                            (go (extract a refs))))
                                    (extract a problem)
                                    (int->string (extract a problem-at))
-                                   (s7-concat (letrec ((go (subr s7-eff ((listof s7-fnote acyclic)) (listof string acyclic))
+                                   (s7-concat (letrec ((go (subr s7-drive-eff ((listof s7-fnote acyclic)) (listof string acyclic))
                                                              (lambda (l) (if (null? l) nil
                                                                              (cons (string-append (int->string (extract (car l) start)) " " (int->string (extract (car l) end))
                                                                                                   " " (extract (car l) text) (if (null? (cdr l)) "" "\n"))
@@ -202,7 +202,7 @@ first, if output did not end its line, so that what comes after starts one."
         ((string=? w "complete")
          (let* ((prefix (s7-field f 0))
                 (k (string-length prefix))
-                (names (letrec ((go (subr s7-eff ((listof s7-ns-entry acyclic) s7-strings) s7-strings)
+                (names (letrec ((go (subr s7-drive-eff ((listof s7-ns-entry acyclic) s7-strings) s7-strings)
                                   (lambda (l acc)
                                     (if (null? l) acc
                                         (let ((n (symbol->string (extract (car l) name))))
@@ -224,7 +224,7 @@ first, if output did not end its line, so that what comes after starts one."
         (else #u)))))
 "The server: requests read, and what they run run, a slice at a time,
 requests read between slices. Its exit status, when its input ends."
-(define* s7-serve (subr (maxeff s7-eff (io stdout) (io stdin)) () int)
+(define* s7-serve (subr (maxeff s7-drive-eff (io stdout) (io stdin)) () int)
   (lambda ()
     (let ((next (lambda ()
                   (tagcase (read-line)
@@ -237,7 +237,7 @@ requests read between slices. Its exit status, when its input ends."
 
 "Options first -- `-L DIR`, a directory libraries are looked for in --
 then the files; or the REPL, if there are none."
-(define* s7-options (subr (maxeff s7-eff (io stdout) (io stdin) (read @a)) ((listof string @a)) int)
+(define* s7-options (subr (maxeff s7-drive-eff (io stdout) (io stdin) (read @a)) ((listof string @a)) int)
   (lambda (as)
     (cond ((null? as) (s7-repl ""))
           ((and (string=? (car as) "-L") (pair? (cdr as)))
@@ -246,7 +246,7 @@ then the files; or the REPL, if there are none."
              (s7-options (cdr (cdr as)))))
           (else (s7-run-files as)))))
 
-(define* main (subr (maxeff s7-eff (io stdout) (io stdin) (io args) (alloc @a) (read @a)) () int)
+(define* main (subr (maxeff s7-drive-eff (io stdout) (io stdin) (io args) (alloc @a) (read @a)) () int)
   (lambda ()
     (let ((as (the (listof string @a) (args)))
           (why (s7-init!)))
