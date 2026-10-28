@@ -124,11 +124,11 @@ fn start(backend: Backend) -> Result<Fx26Session, i32> {
         // makes its code: about 3% of loading kayak's compiler (`TODO.md`
         // §126); not where its own compiler makes each procedure's.
         s.front_end_native = !by_fx26;
+        // Images carry call-outs encoded, numbered here when read back.
+        fixpt_native::direct::install_callout_map();
         // Its native code kept in the cache after its first run, and read
         // back (`TODO.md` §126).
         s.native_keeping = Some(fixpt_fx26::session::NativeKeeping {
-            callouts: fixpt_native::direct::callouts_past_own,
-            restore_callouts: fixpt_native::direct::restore_callouts,
             adapter_code: fixpt_native::direct::native_adapter_code,
             note_code: fixpt_native::direct::note_cached_code,
         });
@@ -361,18 +361,27 @@ pub fn repl(backend: Backend) -> i32 {
         if let Some(arg) = text.trim().strip_prefix(",compile-file")
             && (arg.is_empty() || arg.starts_with(char::is_whitespace))
         {
-            let (program, path) = match arg.trim().strip_prefix("--program") {
-                Some(p) => (true, p.trim().trim_matches('"')),
-                None => (false, arg.trim().trim_matches('"')),
-            };
+            let (mut program, mut cellular, mut path) = (false, false, arg.trim());
+            loop {
+                if let Some(p) = path.strip_prefix("--program") {
+                    (program, path) = (true, p.trim());
+                } else if let Some(p) = path.strip_prefix("--cellular") {
+                    (cellular, path) = (true, p.trim());
+                } else {
+                    break;
+                }
+            }
+            let path = path.trim_matches('"');
             if path.is_empty() {
-                println!("; `,compile-file [--program] FILE`: make the file's `.fasl` beside it, which a load of it (or, a program's, `,load`) reads while it is fresh");
+                println!("; `,compile-file [--program] [--cellular] FILE`: make the file's `.fasl` beside it, which a load of it (or, a program's, `,load`) reads while it is fresh; its native code kept, or its cellular words alone");
                 continue;
             }
+            let was = std::mem::replace(&mut session.fasl_cellular, cellular);
             match session.compile_file(path, program) {
                 Ok(made) => println!("; compiled `{path}` to `{}`", made.display()),
                 Err(e) => println!("; {e}"),
             }
+            session.fasl_cellular = was;
             continue;
         }
         // `,query KIND ARG`: the definitions made here that answer it
@@ -720,8 +729,11 @@ pub fn compile_files(backend: Backend, files: &[String]) -> i32 {
         Ok(s) => s,
         Err(code) => return code,
     };
-    let program = files.first().is_some_and(|f| f == "--program");
-    for f in &files[program as usize..] {
+    // `--program` and `--cellular`, in either order, before the files.
+    let flags = files.iter().take_while(|f| *f == "--program" || *f == "--cellular").count();
+    let program = files[..flags].iter().any(|f| f == "--program");
+    session.fasl_cellular = files[..flags].iter().any(|f| f == "--cellular");
+    for f in &files[flags..] {
         match session.compile_file(f, program) {
             Ok(made) => println!("; compiled `{f}` to `{}`", made.display()),
             Err(e) => {

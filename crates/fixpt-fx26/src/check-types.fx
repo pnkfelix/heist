@@ -51,7 +51,7 @@
 (define-type table (select table-types table))
 (define-type k-places (select check-modorder-types k-places))
 ;; What it uses of the modules it is given.
-(import tables make-table symbol-hash table-ref table-set! table-count)
+(import tables make-table symbol-hash table-ref table-set! table-has? table-count)
 
 (define k-te (subr pure (int k-eff) k-te) (lambda (t e) (product (1 t) (2 e))))
 
@@ -201,6 +201,7 @@
         (ty-sum (ps) (parts 11 ps))
         (ty-array (x z r) (region (k-mix 12 x) r))
         (ty-named (g ds) (k-mix 17 g))
+        (ty-app (g ds) (k-mix 28 g))
         (ty-nlist (x z r) (region (k-mix 18 x) r))
         (ty-union (ms) (ids 26 ms))
         (ty-module (abs ds vs) (parts (parts (parts 27 abs) ds) vs))
@@ -315,6 +316,7 @@
         (ty-array (x m r)
           (tagcase b (ty-array (y n s) (and (= x y) (size m n) (region r s))) (else z #f)))
         (ty-named (g ds) (tagcase b (ty-named (h es) (and (= g h) (descs ds es))) (else z #f)))
+        (ty-app (g ds) (tagcase b (ty-app (h es) (and (= g h) (descs ds es))) (else z #f)))
         (ty-nlist (x m r)
           (tagcase b (ty-nlist (y n s) (and (= x y) (size m n) (region r s))) (else z #f)))
         (ty-union (ms) (tagcase b (ty-union (ns) (ids ms ns)) (else z #f)))
@@ -346,12 +348,24 @@
 ;; Each cycle interned, by its canonical form from each of its nodes.
 (define k-cyclic (ref (table k-cyc-key int @t) @t) (new (make-table k-cyc-hash k-cyc-same?)))
 (define k-interned (ref (table k-ty int @t) @t) (new (make-table k-ty-hash k-ty-same?)))
+;; Each description function applied, by `(ty-app f ds)`, its parts as they
+;; resolve: what it reduced to, made once (`k-apply-fun`; a `.fasl`'s
+;; families are applied where each was written out).
+(define k-applied (ref (table k-ty k-desc @t) @t) (new (make-table k-ty-hash k-ty-same?)))
 ;; Entries past which the table is let go and begun again.
 (define k-intern-budget int 400000)
 (define k-intern-reset (subr kstate () unit)
   (lambda ()
     (begin (set k-interned (make-table k-ty-hash k-ty-same?))
-           (set k-cyclic (make-table k-cyc-hash k-cyc-same?)))))
+           (set k-cyclic (make-table k-cyc-hash k-cyc-same?))
+           (set k-applied (make-table k-ty-hash k-ty-same?)))))
+(define k-applied-has? (subr (maxeff (read @globals) (read @t)) (k-ty) bool)
+  (lambda (key) (table-has? (get k-applied) key)))
+(define k-applied-get (subr (maxeff (read @globals) (read @t)) (k-ty) k-desc)
+  (lambda (key) (table-ref (get k-applied) key (de nil))))
+(define k-applied-put! (subr (maxeff (read @globals) (read @t) (write @t) (alloc @t)) (k-ty k-desc)
+                              unit)
+  (lambda (key d) (table-set! (get k-applied) key d)))
 ;; `stringof`'s number among the generative types (`check::STRINGOF`).
 (define k-stringof int 14)
 ;; Whether `ds` is `const` or `acyclic`, the heap's frozen data, alone.
@@ -722,10 +736,19 @@
                         (else #u))
                   #u)
               (k-cz-kids v (cdr ks))))))))
-;; The type `root` a substitution made, its nodes from `base` on: interned.
-(define k-intern-made (->* (int int) int)
-  (lambda (base root)
-    (let ((end (get k-ntys)) (r (k-resolve root)))
+;; Each of `rs` not yet met, walked.
+(define k-cz-visit-each (->* (k-ids) unit)
+  (lambda (rs)
+    (if (null? rs)
+        #u
+        (let ((r (k-resolve (car rs))))
+          (begin (if (and (k-cz-made? r) (< (k-cz-at k-cz-idx r) 0)) (k-cz-visit r) #u)
+                 (k-cz-visit-each (cdr rs)))))))
+;; The types `roots` a substitution made, its nodes from `base` on:
+;; interned, in one walk, so that what they share is interned once.
+(define k-intern-made-all (->* (int k-ids) unit)
+  (lambda (base roots)
+    (let ((end (get k-ntys)))
       (begin
         (set k-cz-base base)
         (set k-cz-end end)
@@ -734,8 +757,10 @@
         (set k-cz-scc (make-array (- end base) -1))
         (set k-cz-count 0)
         (set k-cz-stack nil)
-        (if (and (k-cz-made? r) (< (k-cz-at k-cz-idx r) 0)) (k-cz-visit r) #u)
-        (k-resolve root)))))
+        (k-cz-visit-each roots)))))
+;; The type `root` a substitution made, its nodes from `base` on: interned.
+(define k-intern-made (->* (int int) int)
+  (lambda (base root) (begin (k-intern-made-all base (list root)) (k-resolve root))))
 
 ;; Which types a walk has seen: a type is seen in walk `e` when its mark
 ;; is `e`, so each walk takes a new epoch and nothing is cleared.
