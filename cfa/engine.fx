@@ -127,10 +127,30 @@ the lambdas' bodies use but do not bind, and its language."
                 (table-set! (get cf-readers) k (cons t rs))))
         (table-ref (get cf-cells) k nil)))))
 "Cell `k` given `s` too: its readers to run again, if it grew."
+(define* widen-to (subr (maxeff spin (read @cf)) (int) int)
+  (lambda (k) (letrec ((go (subr spin ((listof (productof (kind int) (to int)) acyclic)) int)
+                         (lambda (l) (cond ((null? l) -1) ((= (extract (car l) kind) k) (extract (car l) to)) (else (go (cdr l)))))))
+                (go (get cf-widen)))))
+"`s`, its kinds widened where too many of one widening are in it."
+(define* widen (subr cf-eff (vals) vals)
+  (lambda (s)
+    (if (null? (get cf-widen)) s
+        (let ((wide (letrec ((go (subr cf-eff (vals int) int)
+                               (lambda (s n) (cond ((null? s) n)
+                                                   ((and (kind-val? (car s)) (>= (widen-to (quotient (car s) 4)) 0)) (go (cdr s) (+ n 1)))
+                                                   (else (go (cdr s) n))))))
+                      (go s 0))))
+          (if (<= wide 8) s
+              (letrec ((go (subr cf-eff (vals) vals)
+                         (lambda (s) (cond ((null? s) nil)
+                                           ((and (kind-val? (car s)) (>= (widen-to (quotient (car s) 4)) 0))
+                                            (vals-union (list (+ 2 (* 4 (widen-to (quotient (car s) 4))))) (go (cdr s))))
+                                           (else (vals-union (list (car s)) (go (cdr s))))))))
+                (go s)))))))
 (define* cf-join! (subr cf-eff (int vals) unit)
   (lambda (k s)
     (if (null? s) #u
-        (let* ((old (table-ref (get cf-cells) k nil)) (new (vals-union old s)))
+        (let* ((old (table-ref (get cf-cells) k nil)) (new (widen (vals-union old s))))
           (if (= (length new) (length old)) #u
               (begin
                 (table-set! (get cf-cells) k new)
@@ -152,7 +172,8 @@ the lambdas' bodies use but do not bind, and its language."
 (define* val-classes (subr cf-eff (int) strings)
   (lambda (x)
     (cond ((or (closure-val? x) (prim-val? x)) (list "procedure"))
-          ((kind-val? x) (list (cf-kind-name (quotient x 4))))
+          ((kind-val? x) (let ((n (cf-kind-name (quotient x 4))))
+                           (if (and (> (string-length n) 1) (char=? (string-ref n 0) #\')) (list n "symbol") (list n))))
           ((site-val? x) (let ((info (array-ref (get cf-site-array) (quotient x 4))))
                            (if (string=? (extract info kind) "record")
                                (list "record" (string-append "record:" (extract info tag)))
@@ -160,9 +181,12 @@ the lambdas' bodies use but do not bind, and its language."
           (else nil))))
 (define* any-member? (subr spin (strings strings) bool)
   (lambda (a b) (and (pair? a) (or (cf-member? (car a) b) (any-member? (cdr a) b)))))
-"Values `s` of variable `v`, as the branches being evaluated narrow it."
-(define* narrow (subr cf-eff (int vals) vals)
-  (lambda (v s)
+"Values `s` of variable `v`'s field `path` (nil: the variable's own), as
+the branches being evaluated narrow it."
+(define* same-path? (subr spin (strings strings) bool)
+  (lambda (a b) (cond ((null? a) (null? b)) ((null? b) #f) (else (and (string=? (car a) (car b)) (same-path? (cdr a) (cdr b)))))))
+(define* narrow (subr cf-eff (int strings vals) vals)
+  (lambda (v path s)
     (letrec ((apply-one (subr cf-eff (cf-narrowing vals) vals)
                (lambda (n s)
                  (cond ((null? s) nil)
@@ -172,9 +196,18 @@ the lambdas' bodies use but do not bind, and its language."
                        (else (apply-one n (cdr s))))))
              (go (subr cf-eff ((listof cf-narrowing acyclic) vals) vals)
                (lambda (ns s) (cond ((null? ns) s)
-                                    ((= (extract (car ns) var) v) (go (cdr ns) (apply-one (car ns) s)))
+                                    ((and (= (extract (car ns) var) v) (same-path? (extract (car ns) path) path))
+                                     (go (cdr ns) (apply-one (car ns) s)))
                                     (else (go (cdr ns) s))))))
-      (if (or (null? (get cf-refine)) (member-int? v (get cf-assigned))) s (go (get cf-refine) s)))))
+      (if (or (null? (get cf-refine)) (member-int? v (get cf-assigned)) (any-member? path (get cf-stored))) s (go (get cf-refine) s)))))
+"The variable and field path core `x` reads (`(car (cdr v))`: v, cdr car),
+if it reads one; var -1 if not."
+(define-type cf-path (productof (var int) (path strings)))
+(define* path-of (subr spin (core) cf-path)
+  (lambda (x) (tagcase x
+                (k-var (v r) (product (var v) (path nil)))
+                (k-field (e label) (let ((p (path-of e))) (product (var (extract p var)) (path (append (extract p path) (list label))))))
+                (else y (product (var -1) (path nil))))))
 (define* take-ints (subr spin (int ints) ints)
   (lambda (n l) (if (or (<= n 0) (null? l)) nil (cons (car l) (take-ints (- n 1) (cdr l))))))
 
@@ -374,7 +407,11 @@ lambda's own number; else one past them, numbered on first use."
       (tagcase x
         (k-none (xs) (begin (eval-all xs c) nil))
         (k-const (k) (list (+ 2 (* 4 k))))
-        (k-var (v r) (let ((s (narrow v (cf-read (var-key v c))))) (begin (if (>= r 0) (cf-note! (get cf-ref-vals) r s) #u) s)))
+        (k-var (v r) (let ((s (narrow v nil (cf-read (var-key v c))))) (begin (if (>= r 0) (cf-note! (get cf-ref-vals) r s) #u) s)))
+        (k-narrow (ns body)
+          (let ((outer (get cf-refine)))
+            (begin (set cf-refine (append ns outer))
+              (let ((v (eval-core body c))) (begin (set cf-refine outer) v)))))
         (k-if (test yes then no else)
           (let* ((t (eval-core test c)) (outer (get cf-refine))
                  (a (begin (set cf-refine (append yes outer)) (eval-core then c)))
@@ -396,7 +433,9 @@ lambda's own number; else one past them, numbered on first use."
                                           (go (cdr is)))))))
               (go inits))
             (list (+ 1 (* 4 site)))))
-        (k-field (e label) (fields-of (eval-core e c) label))
+        (k-field (e label)
+          (let ((s (fields-of (eval-core e c) label)) (p (path-of x)))
+            (if (< (extract p var) 0) s (narrow (extract p var) (extract p path) s))))
         (k-store (e label v) (let* ((targets (eval-core e c)) (s (eval-core v c))) (begin (store! targets label s) nil)))
         (k-escape (xs) (begin (escape! (union-all (eval-all xs c))) (list cf-unknown)))
         (k-inst (e args)
@@ -540,6 +579,7 @@ parameters included), onto `refs` and `binds`."
           (k-escape (xs) (refs-binds-all xs acc))
           (k-inst (e args) (refs-binds-all args (refs-binds-of e acc)))
           (k-if (test yes then no else) (refs-binds-all (list test then else) acc))
+          (k-narrow (ns body) (refs-binds-of body acc))
           (k-case (e arms)
             (letrec ((go (subr cf-eff ((listof arm acyclic) refs-binds) refs-binds)
                        (lambda (as acc)

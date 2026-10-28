@@ -16,12 +16,9 @@ builtins.scm:490-491: x: number
 builtins.scm:597-607: calls make-point
 builtins.scm:608-611: inc: inc
 builtins.scm:627-638: calls inc
-builtins.scm:628-635: calls point-x
 builtins.scm:636-637: p: point
-builtins.scm:644-656: calls set-point-y!
 builtins.scm:657-658: p: point
 builtins.scm:659-662: dbl: dbl
-builtins.scm:675-682: calls point-y
 builtins.scm:683-684: p: point
 builtins.scm:748-751: calls inc
 [exit 0]

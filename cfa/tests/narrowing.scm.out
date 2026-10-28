@@ -20,7 +20,6 @@ narrowing.scm:417-418: l: ()
 narrowing.scm:448-456: calls not-null
 narrowing.scm:539-543: calls box?
 narrowing.scm:544-545: x: number | box
-narrowing.scm:548-553: calls box-v
 narrowing.scm:554-555: x: box
 narrowing.scm:557-558: x: number
 narrowing.scm:572-577: calls unbox

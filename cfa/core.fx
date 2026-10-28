@@ -37,14 +37,16 @@
 
 ;;; ------------------------------------------------------------ the core
 
-"What a branch knows of a variable by the test before it (occurrence
-typing, as yank's `refine`): its values are only those of these classes
-(`keep`), or none of them. A class: a kind's name (`number`, `#f`), a
-site's kind (`pair`, `vector`), `record:T` for a record of type T, or
-`procedure`; unknown is kept either way. A variable assigned after it is
-bound (`cf-assigned`) is not narrowed: a call between test and use could
-change it."
-(define-type cf-narrowing (productof (var int) (classes (listof string acyclic)) (keep bool)))
+"What a branch knows of a variable, or of a field of one (`path`, its
+labels outermost first: `(car (cdr x))`'s is cdr, car), by the test before
+it (occurrence typing, as yank's `refine`): its values are only those of
+these classes (`keep`), or none of them. A class: a kind's name (`number`,
+`#f`, `'foo`: a quoted symbol's, also of class `symbol`), a site's kind
+(`pair`, `vector`), `record:T` for a record of type T, or `procedure`;
+unknown is kept either way. Not narrowed: a variable assigned after it is
+bound (`cf-assigned`), or a path through a label some store writes
+(`cf-stored`) -- a call between test and use could change it."
+(define-type cf-narrowing (productof (var int) (path (listof string acyclic)) (classes (listof string acyclic)) (keep bool)))
 (define-datatype core
   (k-none (listof core acyclic))                ; evaluate these; the value is of no interest
   (k-const int)                                  ; a datum of a kind, by number (`cf-kind`)
@@ -61,7 +63,8 @@ change it."
   (k-case core (listof arm acyclic))             ; tagcase: the subject, the arms
   (k-escape (listof core acyclic))               ; given to code not known: escapes; unknown
   (k-inst core (listof core acyclic))            ; instantiated: the value; its binders given these (`cf-poly`)
-  (k-if core (listof cf-narrowing acyclic) core (listof cf-narrowing acyclic) core))  ; a test, and each branch with what it narrows
+  (k-if core (listof cf-narrowing acyclic) core (listof cf-narrowing acyclic) core)  ; a test, and each branch with what it narrows
+  (k-narrow (listof cf-narrowing acyclic) core))  ; evaluated knowing these (after a test whose other branch cannot return)
 (define-type field-init (productof (label string) (value core)))
 "A case's arm: its tag (\"\" for any), the variables it binds -- the
 payload; or (`fields`) its product's fields by position, labels `1`, `2`,
@@ -146,8 +149,13 @@ an instantiation gives (`@ed`) -- each numbered as first met."
 (define cf-definition (ref string @cf) (new ""))
 
 (define-type cf-rest (productof (lambda int) (site int)))
-"The variables assigned after they are bound (Scheme's `set!`)."
+"The variables assigned after they are bound (Scheme's `set!`); the field
+labels some store writes (`set-car!`, a record's modifier)."
 (define cf-assigned (ref (listof int acyclic) @cf) (new nil))
+(define cf-stored (ref (listof string acyclic) @cf) (new nil))
+"Kinds widened past a number in one cell (quoted symbols, past 8, to
+`symbol`, as yank caps them): each kind's number, and its widening's."
+(define cf-widen (ref (listof (productof (kind int) (to int)) acyclic) @cf) (new nil))
 (define cf-rest-sites (ref (listof cf-rest acyclic) @cf) (new nil))
 (define cf-null-kind (ref string @cf) (new "null"))
 "Everything numbered forgotten: a world to be read."
@@ -159,7 +167,7 @@ an instantiation gives (`@ed`) -- each numbered as first met."
       (set cf-globals (the (table string int @cf) (make-table string-hash string=?)))
       (set cf-global-count 0) (set cf-files nil) (set cf-definition "")
       (set cf-kinds nil) (set cf-kind-count 0) (set cf-poly-lambdas nil) (set cf-poly-sites nil) (set cf-effects nil)
-      (set cf-rest-sites nil) (set cf-assigned nil))))
+      (set cf-rest-sites nil) (set cf-assigned nil) (set cf-stored nil) (set cf-widen nil))))
 
 "Kind `name`'s number, made on first use."
 (define* cf-kind (subr cf-eff (string) int)
@@ -168,6 +176,18 @@ an instantiation gives (`@ed`) -- each numbered as first met."
       (if (>= i 0) (- (- (get cf-kind-count) 1) i)
           (let ((n (get cf-kind-count)))
             (begin (set cf-kinds (cons name (get cf-kinds))) (set cf-kind-count (+ n 1)) n))))))
+"A quoted symbol's kind, `'name`: of class `symbol` too, widened to it
+past 8 in a cell."
+(define* cf-symbol-kind (subr cf-eff (string) int)
+  (lambda (name)
+    (let* ((k (cf-kind (string-append "'" name))) (to (cf-kind "symbol")))
+      (begin
+        (if (letrec ((has (subr spin ((listof (productof (kind int) (to int)) acyclic)) bool)
+                            (lambda (l) (and (pair? l) (or (= (extract (car l) kind) k) (has (cdr l)))))))
+              (has (get cf-widen)))
+            #u
+            (set cf-widen (cons (product (kind k) (to to)) (get cf-widen))))
+        k))))
 (define* cf-kind-name (subr cf-eff (int) string)
   (lambda (k) (letrec ((go (subr cf-eff (strings int) string)
                          (lambda (l i) (cond ((null? l) "?") ((= i 0) (car l)) (else (go (cdr l) (- i 1)))))))

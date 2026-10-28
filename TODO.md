@@ -37,14 +37,23 @@ commit that did it says so.
          truth test (`#t` and `#f` are kinds of their own), or `not` of
          one said of a local variable no `set!` assigns. Notes holding
          several values 129 to 114.
+       - the rest of yank's narrowing: after an `if` one of whose
+         branches cannot return (`error`, `raise`, `exit`), the forms
+         after it; comparisons with constants (`eq?`, `eqv?`, `equal?`,
+         `memq`, `memv`, `member`; `case`), quoted symbols kinds of their
+         own (`'add`, widened to `symbol` past 8 in a cell); fields
+         nothing stores to (`(car x)`, a record's field: accessors and
+         modifiers are fields read and written); the program's own
+         one-parameter predicates, read as formulas; `and` and `or`; a
+         `let`'s variable bound to another (`case`'s key) narrowing it too.
+         Notes holding several values 114 to 111.
        What is left is mostly the prelude's own library procedures, whose
-       callers are outside it. Next, of yank's narrowing: after a test
-       whose other branch cannot return (`(unless (pair? x) (error …))`);
-       comparisons with constants (`eq?`, `memv`, `case`; quoted symbols as
-       values of their own); fields nothing modifies; predicates the
-       program defines, read as formulas. Also: unknown dropping data;
+       callers are outside it. Next: unknown dropping data;
        `make-parameter` and promises (the prelude makes them as closures
-       over pairs). FX-26 narrows by `tagcase` and `typecase` already.
+       over pairs). Beyond yank's narrowing still: correlated values
+       (`(cdr x)` a list because `(pair? x)`), and `or` narrowing its
+       `then` (to the union of its tests). FX-26 narrows by `tagcase` and
+       `typecase` already.
    - Notes by contour (what a call or variable is in each context), not
      merged, before small procedures per call site can show anything.
 3. **Worlds across languages.** s7st's builtins are FX-26 code

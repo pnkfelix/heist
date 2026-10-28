@@ -1,0 +1,7 @@
+narrowing-stored.scm:123-124: n: number
+narrowing-stored.scm:173-174: x: pair
+narrowing-stored.scm:178-185: calls inc | number
+narrowing-stored.scm:183-184: x: pair
+narrowing-stored.scm:204-214: calls first-proc
+narrowing-stored.scm:221-224: inc: inc
+[exit 0]

@@ -1,0 +1,42 @@
+narrowing-more.scm:229-230: n: number
+narrowing-more.scm:272-273: x: pair | number
+narrowing-more.scm:302-303: x: pair
+narrowing-more.scm:317-326: calls must-pair
+narrowing-more.scm:333-336: inc: inc
+narrowing-more.scm:351-360: calls must-pair
+narrowing-more.scm:390-391: k: 'add | 'sub
+narrowing-more.scm:398-399: k: 'add
+narrowing-more.scm:420-423: calls use
+narrowing-more.scm:442-445: calls use
+narrowing-more.scm:470-505: calls pick/λ
+narrowing-more.scm:489-490: k: 'add
+narrowing-more.scm:518-522: calls pick
+narrowing-more.scm:541-545: calls pick
+narrowing-more.scm:597-598: x: pair
+narrowing-more.scm:602-609: calls inc
+narrowing-more.scm:607-608: x: pair
+narrowing-more.scm:628-638: calls first-proc
+narrowing-more.scm:645-648: inc: inc
+narrowing-more.scm:682-683: x: number | pair
+narrowing-more.scm:711-719: calls my-pair?
+narrowing-more.scm:720-721: x: number | pair
+narrowing-more.scm:728-729: x: pair
+narrowing-more.scm:731-732: x: number
+narrowing-more.scm:746-753: calls via-own
+narrowing-more.scm:760-763: inc: inc
+narrowing-more.scm:778-785: calls via-own
+narrowing-more.scm:823-824: x: pair
+narrowing-more.scm:843-844: x: pair
+narrowing-more.scm:849-856: calls inc
+narrowing-more.scm:854-855: x: pair
+narrowing-more.scm:875-879: calls both
+narrowing-more.scm:886-889: inc: inc
+narrowing-more.scm:918-946: calls either/λ
+narrowing-more.scm:931-932: x: inc | number
+narrowing-more.scm:943-944: x: inc | number
+narrowing-more.scm:947-948: x: inc | number
+narrowing-more.scm:950-951: calls inc
+narrowing-more.scm:968-974: calls either
+narrowing-more.scm:975-978: inc: inc
+narrowing-more.scm:992-998: calls either
+[exit 0]
