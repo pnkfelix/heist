@@ -25,8 +25,17 @@ in a file without giving them on, which is (hide (include m)) for every
 parameter now, or that as the default for a module parameter; (3) a
 parameter typed by a file alone, its own module arguments taken from the
 parameters before it of the same files, so that the n-th file need not
-repeat (load-input-moduleof "buffer.fx" m-base) for every file before it;
-those types grow as the square of the files, and checking them is most
-of the 1.7 s our start-up still loses to globals (6.1 s against 4.4 s).
-Is (1)-(3) sound and worth it, and is module-parameters the right place
-for the main one?
+repeat (load-input-moduleof "buffer.fx" m-base) for every file before it.
+Separately, start-up is 6.1 s against 4.4 s as globals, and we measured
+where (FIXPT_TIME_PHASES=1 fixpt check): the Rust checker is the same,
+2.3 s, but the FX-26 checker goes from 2.3 s to 4.6 s. Most of it is
+frame.fx, our biggest file (1431 lines, 8 module parameters): it adds
+0.97 s to the FX-26 checker as globals, 1.06 s as a plain (module ...),
+1.43 s as (lambda () (module ...)), and 1.97 s as a module that does
+(hide (include m)) of the 8 modules, with or without the lambda and the
+load-input-moduleof parameters. So the parameters' types cost nothing we
+can see; include does, about 0.9 s for that one file. GC is a part of
+it: at most 43.6 M words in use against 19.5 M, 4 major collections
+against 2 (FIXPT_GC_SUMMARY). Is (1)-(3) sound and worth it, is
+module-parameters the right place for the main one, and can include, or
+whatever (2) becomes, cost what the same names cost as globals?
