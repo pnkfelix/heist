@@ -8,7 +8,16 @@ do it, and what it cost. Kayak will need the same changes later
 
 ## Base
 
-- Fixpt `main` at fc9e56fe (2026-10-28), pulled from GitHub by Heist's
+- Fixpt `main` at fff9f9e4 (2026-10-28), pulled from GitHub by Heist's
+  3922431e (squash 2c45243c): the recursive types a substitution makes
+  interned, and a maker's `.fasl` naming its parameters' types again. The
+  editor through main.fx starts in 1.96 s from `.fasl`s (2.56 s before),
+  5.30 s from source (5.86 s). `.fasl`s an older Fixpt made need no
+  cleaning: each is said stale ("another fixpt made it") and its source
+  loaded. Still: `fixpt check editor.fx` says the checkers disagree, in
+  how they print a list type (TODO.md). Heist has no edits of its own on
+  it.
+- Before: Fixpt fc9e56fe (2026-10-28), pulled by Heist's
   598ccfe7 (squash 5b0960cc): a program's `.fasl` names types by the
   earlier files' abbreviations, and recursive types print as their minimal
   graph (`docs/requests/fixpt-program-fasl-types.md`, Heist's request).
