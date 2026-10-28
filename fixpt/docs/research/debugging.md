@@ -7,6 +7,100 @@ marked *verified* was tried on this machine, against that day's build
 (`lldb-2103.0.34.103`, Xcode's). What is marked *(from memory)* was not
 checked against a source while writing; this note was written offline.
 
+## Since: names and frames on Linux, x86_64 (2026-10-27)
+
+The user, asking how `gdb` and `lldb` see compiled code, chose to do
+§2.1, then §2.3 and §2.4. §2.1 is done for Linux on x86_64, with frames
+beside the names (`crates/fixpt-native/src/jitdebug.rs`, `cfi.rs`):
+
+- **Every piece of machine code `symbols::note` names is registered**
+  through the GDB JIT interface, as in-memory ELF objects (one `.text.k`
+  section per piece at its own address, no bytes; a function symbol),
+  batched: an object per compile or install, so that attaching reads few.
+  A piece placed where an older one was replaces it; a code space
+  unmapped forgets its pieces. Names: a native procedure by its own name
+  (`b go`), `regs:NAME` and `cells:NAME` for register and cellular words,
+  `fixpt:trampoline` and the like for the machines' own code.
+- **Frames**: a `.debug_frame` for code a call enters (native procedures,
+  the convention's stubs, the trampoline), its rules read from the code
+  itself, so the Rust and FX-26 compilers' code alike: where the frame's
+  base is from `rsp` (or `rbp`, or the `rsp` a call out to Rust keeps in
+  the machine's state, `[r15+136]`), where the return address and the
+  caller's `rbp` are, at each instruction. A structured decoder, checked
+  against the disassembler's text on every piece of stage 0's code
+  (`FIXPT_CFI_CHECK`), none differing.
+- **Frames only once a debugger is here**: they cost some 7% of loading
+  kayak's compiler; names cost 0.7% (28.68G instructions against
+  28.47G). A debugger keeps an `int3` at `__jit_debug_register_code`
+  while the program runs; each run, compile and time slice reads that
+  byte, and on the first sight every object is made again with frames.
+  Started under a debugger, frames are there from the start; attached to
+  a loop, once the program goes on to its next time slice (`continue`,
+  then interrupt). `FIXPT_JIT_DEBUG=frames` makes them from the start,
+  `names` never, `0` registers nothing.
+
+- **Lines** (§2.3, done): both register compilers mark where each
+  expression's code starts (`RItem::Pos`, `r-pos`; a variable's or a
+  constant's not, its code its parent's), and a register word keeps, in its
+  suffix, at each cell where the place changes, the place (the character
+  the FX-26 compiler's `exp-start` says) and the source it is in
+  (`Heap::register_places`). Both native compilers say where each
+  instruction's code starts (`Proc::starts`, `dx-starts`); both agree on
+  both, and the tests compare them. Each text a session compiles is a
+  source (`fixpt_fx26::sources`): the text, the form it was written from
+  with where each datum went, the file run and the module files loaded,
+  from which a place's file and line are found, once a debugger asks for
+  frames, as `.debug_line`. `FIXPT_LINES=FILE` writes the rows there too.
+  Cost: stage 0 28.68G instructions against 28.38G (28.39G against
+  28.17G with `FIXPT_JIT_DEBUG=0`: the compilers' marks).
+
+- **Values** (§2.4, done as commands, not DWARF): the program writes a
+  word as the REPL would, called by the debugger
+  (`fixpt_debug_show(word)`, in `fixpt-native`'s `direct.rs`, the run's
+  state found per thread), refusing a word that is no value the heap holds
+  (`Heap::plausible`). `scripts/debuggers/fixpt_gdb.py` and `fixpt_lldb.py`
+  add `fx-print EXPR`, `fx-frame` (the selected frame's values, by its
+  stack map: its slots, its code, its closure; a leaf has none) and
+  `fx-regs` (RESULT and REG1-REG3). Slots have no names yet: the compilers
+  do not carry variables' names to frames.
+
+What it gives (verified, gdb 12.1 and lldb on this machine): `bt` from a
+loop in compiled code names every frame, `go`, five `deep`, the
+trampoline, then Rust to `main`; `b go` resolves; `x/3i $pc` shows
+`<go+110>`; with lines, `bt` shows `go () at lines.fx:5` and `deep () at
+lines.fx:12`, `list` the program around it, `info line *$pc` the range
+of the line; `lldb` the same (`go at lines.fx:5`). In gdb, `fx-frame` in a
+frame of `keep` shows `slot 2: 2` and `its code: #<bloblet …>`, and
+`fx-print $rdi` a loop's counter. `fixpt_lldb.py` is untried: this lldb's
+Python does not load. Sampled at random in `deriv`, every backtrace reaches the
+thread's start, in both.
+
+What it does not:
+
+- **`gdb` stops at a call out to Rust**: Rust's stack is above the native
+  stack, so the native frame calling out has its base below its callee's,
+  which `gdb` takes for a corrupt stack ("previous frame inner to this
+  frame"), with no way to say otherwise. `lldb` goes on through.
+- **During a collection** the native stack's frames are being flushed and
+  moved, so either may lose the frames above it.
+- **Past the stack cache**: frames flushed to the heap are not on the
+  stack; a backtrace ends at the underflow stub, unnamed in `gdb`.
+- **Attaching to a running program** with frames not yet made: the
+  program must go on once (above), and the objects made again are some
+  thousands of changes, each a stop for the debugger, some seconds.
+- **A breakpoint by name before the code is compiled** stays pending in
+  both debuggers (gdb 12.1, this `lldb`): neither resolves one when an
+  object is registered. Break once the code is there (attached, or after
+  an interrupt).
+- **Lines of the front end itself**: its code is read back from the
+  cache with no instruction starts, and its places are in files it loads
+  as built-in modules: none yet.
+- **Lines are of the expression a native instruction came from**, not
+  statements: an inlined procedure's code is at the inlined body's lines,
+  and a call's return lands on the line of what uses its value.
+- **arm64**, Linux or macOS (Mach-O), is not done: names would be the
+  same objects (`EM_AARCH64`), unchecked; frames need arm64's rules.
+
 ## 0. The answer, up front
 
 - **`lldb` already walks through compiled code** (verified, §1). The

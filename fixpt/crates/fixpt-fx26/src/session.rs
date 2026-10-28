@@ -81,6 +81,13 @@ pub struct Fx26Session {
     /// key (`syn::set_shared_made`): forms compiled one by one make none of
     /// them again. Forgotten as a whole program begins.
     shared_made: std::collections::HashSet<String>,
+    /// The file the forms run now are from, as a debugger's lines name it
+    /// (`crate::sources`): set by a driver, as `fixpt run` does each file's.
+    pub source_file: Option<crate::sources::File>,
+    /// The form compiled next, as written, with where each datum went.
+    source_form: Option<(String, Vec<(usize, usize, Span)>)>,
+    /// Each module file loaded, as a source names it, made once.
+    source_loaded: std::collections::HashMap<FileId, crate::sources::File>,
     /// How a redefinition that would break definitions is decided: asked of
     /// the driver, or, with none, `Redefine::Break`.
     pub redefine: Option<fn(&Redefinition) -> Redefine>,
@@ -576,6 +583,9 @@ impl Fx26Session {
             own_made: false,
             own_begun: false,
             shared_made: Default::default(),
+            source_file: None,
+            source_form: None,
+            source_loaded: std::collections::HashMap::new(),
             redefine: None,
             next_redefine: None,
             show_words: false,
@@ -770,16 +780,40 @@ impl Fx26Session {
         for (f, done) in forms.iter().zip(done) {
             if !done {
                 self.own_made = self.strategy != Strategy::Lower && ahead.contains(&f.span);
-                let out = self.run(f);
+                let out = self.run_each(f);
                 self.own_made = false;
-                let failed = out.is_err();
-                outs.push(out);
-                if failed {
-                    break;
+                // Only a form refused ends the run; one that failed as it
+                // ran does not.
+                match out {
+                    Ok(each) => outs.extend(each.into_iter().map(Ok)),
+                    Err(e) => {
+                        outs.push(Err(e));
+                        break;
+                    }
                 }
             }
         }
         Ok(outs)
+    }
+
+    /// `run`, each outcome: of a top-level `include`, the forms it is made
+    /// (`include_forms`), each run as one, so that each front end is given
+    /// them, until one fails; of any other form, its own.
+    pub fn run_each(&mut self, form: &Syntax) -> R<Vec<Outcome>> {
+        let Some(forms) = self.checker.include_forms(form)? else { return Ok(vec![self.run(form)?]) };
+        if forms.is_empty() {
+            return Err(FxError::at(form.span, "this module gives nothing to include"));
+        }
+        let mut out = Vec::new();
+        for f in &forms {
+            let o = self.run(f)?;
+            let failed = o.value.is_err();
+            out.push(o);
+            if failed {
+                break;
+            }
+        }
+        Ok(out)
     }
 
     /// Check one top-level form, and run it as `strategy` says: lowered to
@@ -788,6 +822,14 @@ impl Fx26Session {
     /// Checking comes first either way, so a form that does not check does
     /// not run.
     pub fn run(&mut self, form: &Syntax) -> R<Outcome> {
+        // A top-level `include`: its forms' outcomes, the last shown.
+        if self.checker.include_forms(form)?.is_some() {
+            let mut each = self.run_each(form)?;
+            let printed: String = each.iter().map(|o| o.printed.as_str()).collect();
+            let mut last = each.pop().expect("an `include` makes forms");
+            last.printed = printed;
+            return Ok(last);
+        }
         let out = self.run_defining(form);
         // A run that failed leaves no process to resume: a failure in any
         // ends the run (`docs/fx26.md`, "Processes").
@@ -802,6 +844,19 @@ impl Fx26Session {
             heap.regions_exit_to(0)
         });
         out
+    }
+
+    /// `text`, about to be compiled, as a source of the form last run, if
+    /// sources are wanted (`crate::sources::wanted`): its number; else 0.
+    fn source_of(&mut self, text: &str) -> u32 {
+        if !crate::sources::wanted() {
+            return 0;
+        }
+        for (path, ftext, id) in self.checker.loaded.values() {
+            self.source_loaded.entry(*id).or_insert_with(|| std::rc::Rc::new((path.clone(), ftext.clone())));
+        }
+        let loaded = self.source_loaded.iter().map(|(id, f)| (*id, f.clone())).collect();
+        crate::sources::register(text, self.source_form.clone(), self.source_file.clone(), loaded)
     }
 
     /// A whole program begins with no process from one before.
@@ -979,7 +1034,13 @@ impl Fx26Session {
             if again && self.native_runner.is_none() {
                 return Ok(Outcome { top, code: String::new(), printed: String::new(), value: Ok(None) });
             }
-            let form_text = fixpt_read::write_syntax(form, &self.checker.interner);
+            let form_text = if crate::sources::wanted() {
+                let (text, map) = fixpt_read::write_syntax_mapped(form, &self.checker.interner);
+                self.source_form = Some((text.clone(), map));
+                text
+            } else {
+                fixpt_read::write_syntax(form, &self.checker.interner)
+            };
             // An expression, in the native convention: as a procedure of no
             // arguments, compiled and called; what the compiler declines
             // runs as cellular code, saying why.
@@ -1251,9 +1312,9 @@ impl Fx26Session {
 
     /// The front end's entry points the Rust side calls by name
     /// (`READER_PREFIX`), each rebound by [`Self::front_end_as_register_code`].
-    pub const FRONT_ENTRIES: [&'static str; 35] = [
+    pub const FRONT_ENTRIES: [&'static str; 36] = [
         "read-text-at", "check-program", "check-more", "checked-tops", "checked-extracts", "checked-effects", "check-conv-native!", "checked-withs!", "checked-reshapes!",
-        "check-globals-effects!", "check-defer-reruns!", "check-hold-breaks!", "check-lines!", "parse-program", "loaded-files!", "run-checked", "run-checked-more", "compile-program", "compile-checked", "compile-registers!", "compile-conv-native!",
+        "check-globals-effects!", "check-defer-reruns!", "check-hold-breaks!", "check-lines!", "parse-program", "loaded-files!", "includes-given!", "run-checked", "run-checked-more", "compile-program", "compile-checked", "compile-registers!", "compile-conv-native!",
         "compile-global-cell", "compile-new-global", "compile-name-word!", "compile-defining!", "compile-keep-global!", "compile-note-inline!", "compile-forget-globals!", "native-assemble",
         "check-built-in!", "check-syscalls!",
         "native-assemble-x64", "native-assemble-x64-regs", "native-adapter-x64", "native-compile-x64-proc",
@@ -1305,6 +1366,8 @@ impl Fx26Session {
     ) -> Result<(), String> {
         let fields: Vec<String> = entries.iter().enumerate().map(|(i, n)| format!("({} {n})", i + 1)).collect();
         let text = format!("{text}\n(product {})\n", fields.join(" "));
+        // The front end's own: from no source of the program's.
+        fixpt_heap::regcode::set_source(0);
         // The front end in the native convention where its closures are
         // made native code, kept apart from the cellular one.
         let as_native = keep && self.front_end_native;
@@ -1731,6 +1794,10 @@ fn names_its_word(c: &Checker, mut x: crate::ast::ExpId) -> bool {
         let on = s.scheme.make(|_| fixpt_heap::Value::TRUE);
         let fail = |e: fixpt_scheme::SessionError| FxError::at(Span::new(FileId(0), 0, 0), e.to_string());
         s.scheme.call_global(&format!("{READER_PREFIX}compile-registers!"), &[on]).map_err(fail)?;
+        // Its register code said to come from `text`, a source
+        // (`crate::sources`): what this compile queues, made after, too, so
+        // until the next.
+        fixpt_heap::regcode::set_source(s.source_of(text));
         let r = crate::syn::with_last_value(&mut s.scheme, standard, FileId(0), text, native, f);
         s.own_begun |= !matches!(&r, Ok(Err(m)) if m.starts_with("check:"));
         let off = s.scheme.make(|_| fixpt_heap::Value::boolean(s.register_code));

@@ -65,7 +65,7 @@ const ARROW_STAR_ONLY: &str = "`(->* (param …) result)` is only the type a def
 
 const TYPE_FORMS: &[&str] = &[
     "arrayof", "narrayof", "bloblet", "composable", "dletrec", "icell", "listof", "mark-key", "moduleof", "mu", "nat", "nlist", "oneshot", "pairof", "place",
-    "poly", "productof", "prompt-tag", "proves", "ref", "select", "subr", "sumof", "bool", "union", "->", "->*",
+    "poly", "productof", "prompt-tag", "proves", "ref", "select", "subr", "sumof", "bool", "union", "->", "->*", "restrict",
 ];
 
 impl Checker {
@@ -336,18 +336,47 @@ impl Checker {
         Ok(r)
     }
 
+    /// `(subr effect (param …) result)`, or with a convention first,
+    /// `(subr (conv C) effect (param …) result)`; left out, it is the
+    /// program's (`docs/research/native-conventions.md`). Or `(-> (param …)
+    /// result)`: `(subr pure (param …) result)`. `clauses`, its
+    /// specification's, if it has one.
+    fn parse_subr_form(&mut self, s: &Syntax, items: &[Syntax], clauses: &[Syntax]) -> R<TyId> {
+        if self.head(items) == Some("->") {
+            let [_, params, result] = items else {
+                return Err(FxError::at(s.span, "`(-> (param …) result)`"));
+            };
+            return self.parse_subr_type(self.conv_default, Effect::pure(), params, result, clauses);
+        }
+        let (conv, rest) = match items {
+            [_, c, rest @ ..] if rest.len() == 3 && self.head(&self.items(c, "a convention").unwrap_or_default()) == Some("conv") => {
+                (self.parse_conv_form(c)?, rest)
+            }
+            [_, rest @ ..] => (self.conv_default, rest),
+            [] => unreachable!("a head"),
+        };
+        let [effect, params, result] = rest else {
+            return Err(FxError::at(s.span, "`(subr effect (param …) result)`"));
+        };
+        let effect = self.parse_effect(effect)?;
+        self.parse_subr_type(conv, effect, params, result, clauses)
+    }
+
     /// A procedure type's parameters and result, after its convention and
     /// effect: `(subr …)`'s and `(-> …)`'s.
-    fn parse_subr_type(&mut self, conv: Conv, effect: Effect, params: &Syntax, result: &Syntax) -> R<TyId> {
+    fn parse_subr_type(&mut self, conv: Conv, effect: Effect, params: &Syntax, result: &Syntax, clauses: &[Syntax]) -> R<TyId> {
         let ps = match &params.datum {
             Datum::Nil => Vec::new(),
             _ => self.items(params, "parameter types")?.to_vec(),
         };
-        // A parameter may be named, `(name type)`, for the types after
-        // it to select from: a dependent procedure (M5).
+        // A parameter may be named, `(name : type)`, for the types after
+        // it to select from (a dependent procedure, M5), and for a
+        // specification's clauses.
         let mut names: Vec<Option<Sym>> = Vec::new();
         let mut params = Vec::new();
-        for p in &ps {
+        for (i, p) in ps.iter().enumerate() {
+            let later: Vec<&Syntax> = ps[i + 1..].iter().chain([result]).chain(clauses).collect();
+            self.misnamed_param(p, &later)?;
             let (name, t) = match self.named_param(p) {
                 Some((n, t)) => (Some(n), t),
                 None => (None, p.clone()),
@@ -520,7 +549,7 @@ impl Checker {
     fn parse_arrow_star(&mut self, s: &Syntax) -> R<TyId> {
         let items = self.items(s, "a type")?.to_vec();
         match (self.head(&items), &items[..]) {
-            (Some("->*"), [_, params, result]) => self.parse_subr_type(self.conv_default, Effect::pure(), params, result),
+            (Some("->*"), [_, params, result]) => self.parse_subr_type(self.conv_default, Effect::pure(), params, result, &[]),
             (Some("->*"), _) => Err(FxError::at(s.span, "`(->* (param …) result)`")),
             (Some("poly"), _) => {
                 self.arrow_star = true;
@@ -642,32 +671,12 @@ impl Checker {
                 let (plain, clauses) = items.split_at(items.len() - n);
                 // (The parameters are second to last, in either form.)
                 let params = plain[plain.len() - 2].clone();
-                let plain = Syntax { datum: Datum::List { items: plain.to_vec(), tail: None }, span: s.span };
-                let t = self.parse_type_list(&plain)?;
+                let whole = Syntax { datum: Datum::List { items: plain.to_vec(), tail: None }, span: s.span };
+                let t = self.parse_subr_form(&whole, plain, clauses)?;
                 self.specified(t, &params, clauses)
             }
-            "subr" => {
-                let (conv, rest) = match &items[..] {
-                    [_, c, rest @ ..] if rest.len() == 3 && self.head(&self.items(c, "a convention").unwrap_or_default()) == Some("conv") => {
-                        (self.parse_conv_form(c)?, rest)
-                    }
-                    [_, rest @ ..] => (self.conv_default, rest),
-                    [] => unreachable!("a head"),
-                };
-                let [effect, params, result] = rest else {
-                    return Err(FxError::at(s.span, "`(subr effect (param …) result)`"));
-                };
-                let effect = self.parse_effect(effect)?;
-                self.parse_subr_type(conv, effect, params, result)
-            }
+            "subr" | "->" => self.parse_subr_form(s, &items, &[]),
             "->*" => Err(FxError::at(s.span, ARROW_STAR_ONLY)),
-            // `(-> (param …) result)`: `(subr pure (param …) result)`.
-            "->" => {
-                let [_, params, result] = &items[..] else {
-                    return Err(FxError::at(s.span, "`(-> (param …) result)`"));
-                };
-                self.parse_subr_type(self.conv_default, Effect::pure(), params, result)
-            }
             "bool" => Err(FxError::at(s.span, "`(bool …)` is a procedure's result, and only that")),
             // `(proves (<= A B))`, or `(proves (poly (binder …) (<= A B)
             // (<= X Y) …))`: the type of a proof that `A ≤ B` (given each
@@ -887,6 +896,29 @@ impl Checker {
                 let r = self.parse_region(r)?;
                 Ok(self.arena.ty(Ty::Array(t, n, r)))
             }
+            // `(load-moduleof "file" arg …)`: the type of the module a
+            // `load-module` of the file makes, given `arg …`;
+            // `(load-input-moduleof "file" arg …)`, of the module a
+            // `load-input` file's value makes (`docs/research/
+            // derived-signatures.md`). The file is loaded as a load of it
+            // is (`type_loads`), and nothing is made of it here.
+            loader @ ("load-moduleof" | "load-input-moduleof") => {
+                let input = loader == "load-input-moduleof";
+                let usage = format!("`({loader} \"file\" argument …)`");
+                let Some(Datum::Str(path)) = items.get(1).map(|p| &p.datum) else {
+                    return Err(FxError::at(s.span, usage));
+                };
+                let path = path.clone();
+                let name = self.load_name(s.span, &path, input)?;
+                let Some(made) = self.lookup(name) else {
+                    return Err(FxError::at(s.span, format!("`{path}` is not loaded here")));
+                };
+                let made = if input { self.module_val(made, "input").expect("a `load-input` file's module gives `input`") } else { made };
+                self.type_made(made, &items[2..], s.span, &path)
+            }
+            // `(restrict T name …)`: module type `T` with only the names
+            // given (`docs/research/derived-signatures.md`, narrowing).
+            "restrict" => self.restricted(s, &items),
             "mark-key" => {
                 let [_, t, r] = &items[..] else {
                     return Err(FxError::at(s.span, "`(mark-key type region)`"));
@@ -2410,11 +2442,44 @@ const CASE_TREE_SYMBOLS_INDEXED: usize = 64;
     /// A procedure type's parameter written `(name type)`: its name and
     /// type, where `name` names no type or type form.
     pub(crate) fn named_param(&self, p: &Syntax) -> Option<(Sym, Syntax)> {
-        let [n, t] = p.as_proper_list()? else { return None };
-        let n = n.as_symbol()?;
-        let name = self.name(n);
-        (!TYPE_FORMS.contains(&name) && !crate::top::KEYWORDS.contains(&name) && self.lookup_desc(n).is_none() && !self.base.contains_key(&n))
-            .then(|| (n, t.clone()))
+        let [n, colon, t] = p.as_proper_list()? else { return None };
+        (colon.as_symbol().map(|c| self.name(c)) == Some(":")).then_some(())?;
+        Some((n.as_symbol()?, t.clone()))
+    }
+
+    /// `(h t)`, parameter `p`, is `h` applied; refused, saying how to name
+    /// a parameter, where `h` is no description function: where `later`
+    /// (the parameters after it, the result, the specification's clauses)
+    /// names `h`, as `(select h x)` or a proposition does; or where `h` is
+    /// unknown and no module included or opened by `with` may give it.
+    fn misnamed_param(&self, p: &Syntax, later: &[&Syntax]) -> R<()> {
+        let Some([h, _]) = p.as_proper_list() else { return Ok(()) };
+        let Some(h) = h.as_symbol() else { return Ok(()) };
+        let name = self.name(h);
+        if TYPE_FORMS.contains(&name) || crate::top::KEYWORDS.contains(&name) || self.lookup_desc(h).is_some() || self.base.contains_key(&h) {
+            return Ok(());
+        }
+        let fix = format!("to name a parameter, write `({name} : type)`");
+        if let Some(used) = later.iter().find_map(|s| self.named_in(s, h)) {
+            let what = if used.is_empty() { "what follows".to_string() } else { format!("`{used}` after it") };
+            return Err(FxError::at(p.span, format!("`({name} …)` applies `{name}`, but {what} names `{name}`: {fix}")));
+        }
+        if self.include_scope == 0 && self.withs_over(h).is_empty() {
+            return Err(FxError::at(p.span, format!("`{name}` is not a description function: {fix}")));
+        }
+        Ok(())
+    }
+
+    /// Where `s` has `n` other than as a list's head: the list it is in,
+    /// shown if all of it is names, else "".
+    fn named_in(&self, s: &Syntax, n: Sym) -> Option<String> {
+        let items = s.as_proper_list()?;
+        let skip = usize::from(items.first().is_some_and(|x| x.as_symbol().is_some()));
+        if items[skip..].iter().any(|x| x.as_symbol() == Some(n)) {
+            let names: Option<Vec<&str>> = items.iter().map(|x| x.as_symbol().map(|y| self.name(y))).collect();
+            return Some(names.map_or(String::new(), |ns| format!("({})", ns.join(" "))));
+        }
+        items.iter().find_map(|x| self.named_in(x, n))
     }
 
     /// `t` with each `(select m x)` of a parameter named before it, the
@@ -2596,7 +2661,7 @@ const CASE_TREE_SYMBOLS_INDEXED: usize = 64;
                         return Err(FxError::at(
                             span,
                             format!(
-                                "a loaded file is one value for all its loads, made once, so making it must be pure, and this one has {}: make its state in a `lambda` it gives, which each caller applies",
+                                "a loaded file is one value for all its loads, made once, so making it must be pure, and this one has {}\n  a file whose definitions make state as it is made is a program's: run it with `,load FILE` or `fixpt run`; or, a module, give its state in a `lambda` it gives, which each caller applies",
                                 self.show_effect(effect)
                             ),
                         ));
@@ -2617,6 +2682,134 @@ const CASE_TREE_SYMBOLS_INDEXED: usize = 64;
         let item = self.interner.intern("input");
         let body = self.arena.exp(span, Exp::Var(item));
         Ok(self.arena.exp(span, Exp::With { module: name, body }))
+    }
+
+    /// `(restrict T name …)`, `items`: module type `T` with only the values,
+    /// types and effects named. It drops names, not types: a description
+    /// not named is spelt out where a type kept uses it; an abstract type
+    /// not named that a type kept mentions stays, unnamed, `%hidden:t`,
+    /// so a module of `T` fits it (`bare_name`), and a client may pass its
+    /// values but not name its type. `T` must be known as a module's type
+    /// where it is read: a `define-type` of one is read in order.
+    fn restricted(&mut self, s: &Syntax, items: &[Syntax]) -> R<TyId> {
+        let [_, t, names @ ..] = items else {
+            return Err(FxError::at(s.span, "`(restrict module-type name …)`"));
+        };
+        let t = self.parse_type(t)?;
+        let Ty::Module { abs, descs, vals } = self.arena.get(self.arena.resolve(t)).clone() else {
+            return Err(FxError::at(s.span, format!("`restrict` restricts a module's type, and this is a {}", self.show_ty(t))));
+        };
+        let mut kept = Vec::new();
+        for n in names {
+            let Some(name) = n.as_symbol() else { return Err(FxError::at(n.span, "`restrict` keeps names")) };
+            let has = |ps: &[(Sym, TyId)]| ps.iter().any(|(m, _)| *m == name);
+            if !(abs.iter().any(|(m, _)| *m == name) || has(&descs) || has(&vals)) {
+                return Err(FxError::at(n.span, format!("the module gives no `{}`", self.name(name))));
+            }
+            kept.push(name);
+        }
+        let descs: Vec<(Sym, TyId)> = descs.into_iter().filter(|(n, _)| kept.contains(n)).collect();
+        let vals: Vec<(Sym, TyId)> = vals.into_iter().filter(|(n, _)| kept.contains(n)).collect();
+        let mut out = Vec::new();
+        for (n, v) in abs {
+            if kept.contains(&n) {
+                out.push((n, v));
+            } else if descs.iter().chain(&vals).any(|(_, t)| self.mentions_var(*t, v)) {
+                let hidden = format!("%hidden:{}", self.name(n));
+                out.push((self.interner.intern(&hidden), v));
+            }
+        }
+        Ok(self.arena.ty(Ty::Module { abs: out, descs, vals }))
+    }
+
+    /// The hidden global a load of `path` is (`parse_load`).
+    fn load_name(&mut self, span: fixpt_read::Span, path: &str, input: bool) -> R<Sym> {
+        let e = self.parse_load(span, path, input)?;
+        match *self.arena.exp_at(e) {
+            Exp::Var(n) | Exp::With { module: n, .. } => Ok(n),
+            _ => unreachable!("a load is its hidden global"),
+        }
+    }
+
+    /// The type of value `name` of module type `t`, if it gives one.
+    fn module_val(&self, t: TyId, name: &str) -> Option<TyId> {
+        match self.arena.get(self.arena.resolve(t)) {
+            Ty::Module { vals, .. } => vals.iter().find(|(n, _)| self.name(*n) == name).map(|(_, t)| *t),
+            _ => None,
+        }
+    }
+
+    /// What a value of type `t`, the file `path` loaded, makes given
+    /// `args` (`load-moduleof`): a `poly` takes as many descriptions as it
+    /// binds, as `proj` does; a procedure of no parameters is applied; a
+    /// procedure's parameters take one argument each, a module's name
+    /// where the types after it select from it, as a call does (M5), its
+    /// types those of that module. Done when the arguments are, and no
+    /// procedure of no parameters is left: a module's type, or refused.
+    fn type_made(&mut self, mut t: TyId, mut args: &[Syntax], span: fixpt_read::Span, path: &str) -> R<TyId> {
+        loop {
+            match self.arena.get(self.arena.resolve(t)).clone() {
+                Ty::Poly { binders, body } if !args.is_empty() => {
+                    let Some((now, rest)) = args.split_at_checked(binders.len()) else {
+                        return Err(FxError::at(span, format!("`{path}` makes a `poly` of {} description(s), and {} are given", binders.len(), args.len())));
+                    };
+                    let mut map = std::collections::HashMap::new();
+                    for ((v, k), a) in binders.iter().zip(now) {
+                        let d = self.parse_d(a)?;
+                        if !self.d_fits(&d, *k) {
+                            let word = self.kind_word(*k);
+                            return Err(FxError::at(a.span, format!("`{}` is bound as a {word}, and the description given is not one", self.name(self.arena.dvar_name(*v)))));
+                        }
+                        map.insert(*v, d);
+                    }
+                    t = self.subst(body, &map);
+                    args = rest;
+                }
+                Ty::Subr { params, result, .. } if params.is_empty() => t = result,
+                Ty::Subr { params, result, .. } if !args.is_empty() => {
+                    let Some((now, rest)) = args.split_at_checked(params.len()) else {
+                        return Err(FxError::at(span, format!("`{path}` makes a procedure of {} parameter(s), and {} are given", params.len(), args.len())));
+                    };
+                    let mut found = Vec::new();
+                    self.param_sels(result, &mut std::collections::HashSet::new(), &mut found);
+                    let mut map = std::collections::HashMap::new();
+                    for (k, x) in found {
+                        let Some(m) = now[k].as_symbol() else {
+                            return Err(FxError::at(now[k].span, format!("argument {} is a module the types `{path}` makes depend on: give it by name", k + 1)));
+                        };
+                        map.insert((k, x), self.arena.ty(Ty::Select(m, x)));
+                    }
+                    t = self.instantiate_params(result, &map);
+                    args = rest;
+                }
+                Ty::Module { .. } if args.is_empty() => return Ok(t),
+                _ if args.is_empty() => {
+                    return Err(FxError::at(span, format!("what `{path}` makes, given these, is a {}, not a module", self.show_ty(t))));
+                }
+                _ => return Err(FxError::at(span, format!("what `{path}` makes is a {}, given no more", self.show_ty(t)))),
+            }
+        }
+    }
+
+    /// Each `(load-moduleof "file" …)` and `(load-input-moduleof "file" …)`
+    /// in form `s`, outside quotations, loaded as a load of the file is, in
+    /// order: before the loads of its expressions, as the FX-26 parser
+    /// takes them (`type-loaded`) and the driver reads them for it
+    /// (`syn::load_modules_in`).
+    pub(crate) fn type_loads(&mut self, s: &Syntax) -> R<()> {
+        let Some(items) = s.as_proper_list() else { return Ok(()) };
+        match items.first().and_then(|h| h.as_symbol()).map(|h| self.name(h)) {
+            Some("quote" | "quasiquote") => Ok(()),
+            Some(loader @ ("load-moduleof" | "load-input-moduleof")) => {
+                let input = loader == "load-input-moduleof";
+                if let Some(Datum::Str(path)) = items.get(1).map(|p| &p.datum) {
+                    let path = path.clone();
+                    self.parse_load(s.span, &path, input)?;
+                }
+                Ok(())
+            }
+            _ => items.iter().try_for_each(|x| self.type_loads(x)),
+        }
     }
 
     /// `(%loaded "key" "path")`: the module of the file `key` names (the
@@ -2884,6 +3077,8 @@ const CASE_TREE_SYMBOLS_INDEXED: usize = 64;
                 work.extend(inner.into_iter().rev().map(|item| (std::borrow::Cow::Owned(item), true)));
                 continue;
             }
+            // Its files named in types, loaded first (`type_loads`).
+            self.type_loads(f)?;
             let before = out.len();
             let name_of = |p: &Self, s: &Syntax| s.as_symbol().ok_or_else(|| FxError::at(s.span, "a name")).map(|n| (n, p.name(n).to_string()));
             match (self.head(&parts), &parts[..]) {

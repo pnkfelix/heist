@@ -54,6 +54,7 @@
             (val da-e (subr da-assembles (da-bytes) unit))
             (val da-label (subr da-assembles () int))
             (val da-bind (subr da-assembles (int) unit))
+            (val da-label-offset (subr da-reads (int) int))
             (val da-used? (subr da-reads (int) bool))
             (val da-targets (subr da-assembles () da-bools))
             (val da-to (subr da-assembles (int da-bytes) unit))
@@ -233,7 +234,9 @@
             (val df-suffix-set (subr da-assembles (int int) unit))
             (val df-bytes-set (subr da-assembles (int int) unit))
             (val df-flat-set (subr da-assembles (int int bool) unit))
-            (val df-shape-fast (subr da-assembles (string int) bool))))
+            (val df-shape-fast (subr da-assembles (string int) bool))
+            (val df-bump (subr da-assembles (int int) unit))
+            (val df-alloc (subr da-assembles (string int int int) unit))))
 
 ;;; ------------------------------------------------------------ the procedure
 
@@ -379,7 +382,8 @@
 ;; A procedure's code (`native-compile-x64-proc`): its bytes, how many are
 ;; its own, its code bloblet's fields, the call-outs it numbered, and why
 ;; it cannot be compiled ("" if it can).
-(define-type dx-made (productof (1 da-bytes) (2 int) (3 da-bytes) (4 da-bytes) (5 string)))
+(define-type dx-made
+  (productof (1 da-bytes) (2 int) (3 da-bytes) (4 da-bytes) (5 string) (6 da-bytes)))
 
 ;; What the conductor names of the compiler, for Rust.
 (define-type native-direct-x64-sig

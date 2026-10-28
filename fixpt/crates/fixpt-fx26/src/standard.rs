@@ -413,8 +413,8 @@ pub const ENTRIES: &[(&str, &str)] = &[
     // where its argument is false, so that the code after runs only where
     // it is true. Proved where it is said: an `assert`'s argument a VC, by
     // its `requires`; an `assume`'s assumed after, by its `ensures`.
-    ("assert", "(subr pure ((p bool)) unit (requires p))"),
-    ("assume", "(subr pure ((p bool)) unit (ensures r p))"),
+    ("assert", "(subr pure ((p : bool)) unit (requires p))"),
+    ("assume", "(subr pure ((p : bool)) unit (ensures r p))"),
     ("append", "(poly ((r region)) (poly ((t type)) (vsubr (maxeff (read r) (alloc r)) (listof t r) (listof t r))))"),
     // A list's length at any region; a cycle is an error.
     ("list-length", "(poly ((r region)) (poly ((t type)) (subr (read r) ((listof t r)) nat)))"),
@@ -500,6 +500,9 @@ pub const ENTRIES: &[(&str, &str)] = &[
     // A word's register code (PLAN.md 13h′) made from its cells, checked,
     // and set as the word's twin; it is given back.
     ("set-register-twin", "(poly ((r region)) (subr (read r) (tword (listof wcell r)) tword))"),
+    // With where each expression's code starts: each cell and place in
+    // turn (`Heap::register_places`).
+    ("set-register-twin-at", "(poly ((r region)) (subr (read r) (tword (listof wcell r) (listof int r)) tword))"),
     // A word's cells, looked at, for the compiler to machine code: how many
     // fields it has, and field k if it is an int.
     ("tword-fields", "(subr pure (tword) int)"),
@@ -657,13 +660,13 @@ pub const ENTRIES: &[(&str, &str)] = &[
     // call's. And whether one is there, which `syscall-available?` asks.
     ("%syscall-require", "(subr (io sys) (string string string) unit)"),
     ("%syscall-available?", "(subr pure (string string) bool)"),
-    ("%syscall0", "(poly ((t type)) (subr (io sys) (string string string) t))"),
-    ("%syscall1", "(poly ((a1 type) (t type)) (subr (io sys) (string string string a1) t))"),
-    ("%syscall2", "(poly ((a1 type) (a2 type) (t type)) (subr (io sys) (string string string a1 a2) t))"),
-    ("%syscall3", "(poly ((a1 type) (a2 type) (a3 type) (t type)) (subr (io sys) (string string string a1 a2 a3) t))"),
-    ("%syscall4", "(poly ((a1 type) (a2 type) (a3 type) (a4 type) (t type)) (subr (io sys) (string string string a1 a2 a3 a4) t))"),
-    ("%syscall5", "(poly ((a1 type) (a2 type) (a3 type) (a4 type) (a5 type) (t type)) (subr (io sys) (string string string a1 a2 a3 a4 a5) t))"),
-    ("%syscall6", "(poly ((a1 type) (a2 type) (a3 type) (a4 type) (a5 type) (a6 type) (t type)) (subr (io sys) (string string string a1 a2 a3 a4 a5 a6) t))"),
+    ("%syscall0", "(poly ((e effect) (t type)) (subr e (string string string) t))"),
+    ("%syscall1", "(poly ((e effect) (a1 type) (t type)) (subr e (string string string a1) t))"),
+    ("%syscall2", "(poly ((e effect) (a1 type) (a2 type) (t type)) (subr e (string string string a1 a2) t))"),
+    ("%syscall3", "(poly ((e effect) (a1 type) (a2 type) (a3 type) (t type)) (subr e (string string string a1 a2 a3) t))"),
+    ("%syscall4", "(poly ((e effect) (a1 type) (a2 type) (a3 type) (a4 type) (t type)) (subr e (string string string a1 a2 a3 a4) t))"),
+    ("%syscall5", "(poly ((e effect) (a1 type) (a2 type) (a3 type) (a4 type) (a5 type) (t type)) (subr e (string string string a1 a2 a3 a4 a5) t))"),
+    ("%syscall6", "(poly ((e effect) (a1 type) (a2 type) (a3 type) (a4 type) (a5 type) (a6 type) (t type)) (subr e (string string string a1 a2 a3 a4 a5 a6) t))"),
 ];
 
 /// The initial environment as text, for the checker written in FX-26:
