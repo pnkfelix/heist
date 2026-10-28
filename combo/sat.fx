@@ -963,7 +963,7 @@ about 4096."
   (lambda (s b l) (cond ((null? l) b) ((> (level-of s (car l)) (level-of s b)) (best-level s (car l) (cdr l))) (else (best-level s b (cdr l))))))
 
 ;; What a theory's check comes to, for the search.
-(define check-ok int 0)
+(define check-ok int -1)
 (define check-unsat int -2)
 (define check-continue int -3)
 
