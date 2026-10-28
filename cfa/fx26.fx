@@ -318,11 +318,8 @@ to a lambda making `(sum tag (product (1 p1) … (n pn)))`."
                (k-none nil)))
           ((string=? head "car") (if (pair? rest) (k-field (one) "car") (k-none nil)))
           ((string=? head "cdr") (if (pair? rest) (k-field (one) "cdr") (k-none nil)))
-          ;; A list of its elements: one pair site, its cdr itself.
-          ((string=? head "list")
-           (let ((s (site "pair" "")))
-             (k-alloc s (list (product (label "car") (value (k-alt (fx-all file rest env))))
-                              (product (label "cdr") (value (k-alt (list (k-const (cf-kind "null")) (k-alloc s nil)))))))))
+          ;; A list of its elements: a pair site each (yank's spine).
+          ((string=? head "list") (cf-list-core (fx-span file x) (fx-all file rest env) "null"))
           ((string=? head "tagcase") (if (pair? rest) (fx-tagcase file (car rest) (cdr rest) env) (k-none nil)))
           ((string=? head "typecase")
            (if (pair? rest)

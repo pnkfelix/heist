@@ -394,6 +394,39 @@ given a closure or site, for finding where unknown comes from."
                                  (string-append (extract (car l) name) " " (int->string (extract (car l) count)) (if (or (null? (cdr l)) (= k 1)) "" ", ")
                                                 (say (cdr l) (- k 1)))))))
       (string-append "escaped by: " (say (sort (get cf-escape-sources) nil) n)))))
+"The elements of the lists `s`, a list of sets a position (car of each
+pair site; a vector's elements at every position); past `cf-max-spine`
+positions, or where the list may be any (unknown) or turns back on itself,
+the rest are one, the last, and `open` says so."
+(define-type cf-positions (productof (elems (listof vals acyclic)) (open bool)))
+(define* positions (subr cf-eff (vals) cf-positions)
+  (lambda (s)
+    (letrec ((sites (subr spin (vals) vals) (lambda (l) (cond ((null? l) nil) ((site-val? (car l)) (cons (car l) (sites (cdr l)))) (else (sites (cdr l))))))
+             ;; Everything reachable from `s` by `cdr`: all its elements.
+             (all (subr cf-eff (vals vals vals) vals)
+               (lambda (s seen acc)
+                 (let ((new (letrec ((go (subr spin (vals) vals) (lambda (l) (cond ((null? l) nil) ((member-int? (car l) seen) (go (cdr l))) (else (cons (car l) (go (cdr l))))))))
+                              (go (sites s)))))
+                   (if (null? new) (vals-union acc (if (vals-has? s cf-unknown) (list cf-unknown) nil))
+                       (all (fields-of new "cdr") (append new seen)
+                            (vals-union acc (vals-union (fields-of new "car") (vals-union (fields-of new "elt") (if (vals-has? s cf-unknown) (list cf-unknown) nil)))))))))
+             (go (subr cf-eff (vals int vals) cf-positions)
+               (lambda (s i seen)
+                 (let ((ss (sites s)))
+                   (cond ((and (null? ss) (not (vals-has? s cf-unknown))) (the cf-positions (product (elems nil) (open #f))))
+                         ((or (vals-has? s cf-unknown) (>= i (- cf-max-spine 1))
+                              (letrec ((any (subr spin (vals) bool) (lambda (l) (and (pair? l) (or (member-int? (car l) seen) (any (cdr l)))))))
+                                (any ss))
+                              (pair? (fields-of ss "elt")))
+                          (product (elems (list (all s seen nil))) (open #t)))
+                         (else (let ((rest (go (fields-of ss "cdr") (+ i 1) (append ss seen))))
+                                 (product (elems (cons (fields-of ss "car") (extract rest elems))) (open (extract rest open))))))))))
+      (go s 0 nil))))
+
+"Every element of the lists `s`, whatever its position."
+(define* all-elements (subr cf-eff (vals) vals)
+  (lambda (s) (union-all (extract (positions s) elems))))
+
 "`as` without its first `n`."
 (define* drop-vals (subr spin (int (listof vals acyclic)) (listof vals acyclic))
   (lambda (n l) (if (or (<= n 0) (null? l)) l (drop-vals (- n 1) (cdr l)))))
@@ -446,17 +479,29 @@ given a closure or site, for finding where unknown comes from."
                (instantiate! (cdr vs) as)))
             (else (instantiate! (cdr vs) as)))))
   ;; Rest parameter `rest` of lambda `l`, in contour `c`, given the
-  ;; arguments past its others, `extra`: the list its site is, or (none) the
-  ;; end of one.
+  ;; arguments past its others, `extra`: the list its sites are, a site an
+  ;; argument, the last the rest; or (none) the end of one.
   (pass-rest! (subr cf-eff (int int (listof vals acyclic) int) unit)
     (lambda (l rest extra c)
       (let ((site (cf-rest-site (get cf-rest-sites) l)) (null (kind-vals (list (get cf-null-kind)))))
         (cond ((< site 0) (cf-join! (var-key rest c) (union-all extra)))
               ((null? extra) (cf-join! (var-key rest c) null))
-              (else (let ((s (the vals (list (+ 1 (* 4 site))))))
-                      (begin (store! s "car" (union-all extra))
-                        (store! s "cdr" (vals-union s null))
-                        (cf-join! (var-key rest c) s))))))))
+              (else (begin (spine! site extra) (cf-join! (var-key rest c) (list (+ 1 (* 4 site))))))))))
+  ;; Elements `es` put in the list of sites from `site` (`cf-spine-sites!`):
+  ;; one a site, those past the last into it, its `cdr` itself too.
+  (spine! (subr cf-eff (int (listof vals acyclic)) unit)
+    (lambda (site es)
+      (letrec ((go (subr cf-eff (int (listof vals acyclic)) unit)
+                 (lambda (i es)
+                   (if (null? es) #u
+                       (let ((s (the vals (list (+ 1 (* 4 (+ site i))))))
+                             (null (kind-vals (list (get cf-null-kind)))))
+                         (if (= i (- cf-max-spine 1))
+                             (begin (store! s "car" (union-all es)) (store! s "cdr" (vals-union s null)))
+                             (begin (store! s "car" (car es))
+                               (store! s "cdr" (if (null? (cdr es)) null (list (+ 1 (* 4 (+ site (+ i 1)))))))
+                               (go (+ i 1) (cdr es)))))))))
+        (go 0 es))))
   ;; Field `label` of the sites in `targets` given `s`.
   (store! (subr cf-eff (vals string vals) unit)
     (lambda (targets label s)
@@ -584,13 +629,17 @@ given a closure or site, for finding where unknown comes from."
                                     r)))
         (m-pass () (union-all as))
         (m-apply ()
-          ;; The last argument's elements, as many times as any lambda may take.
+          ;; The last argument's elements by position; where it may go on, its
+          ;; last as many times as any lambda may take.
           (if (null? as) nil
-              (let* ((r (reverse as)) (elements (vals-union (fields-of (car r) "car") (fields-of (car r) "elt"))))
+              (let* ((r (reverse as)) (ps (if (null? (cdr as)) (the cf-positions (product (elems nil) (open #f))) (positions (car r)))))
                 (call-all call c (car as)
                           (append (reverse (cdr (reverse (cdr as))))
-                                  (letrec ((rep (subr spin (int) (listof vals acyclic)) (lambda (k) (if (<= k 0) nil (cons elements (rep (- k 1)))))))
-                                    (rep (if (null? (cdr as)) 0 16))))))))
+                                  (append (extract ps elems)
+                                          (if (and (extract ps open) (pair? (extract ps elems)))
+                                              (letrec ((rep (subr spin (int) (listof vals acyclic)) (lambda (k) (if (<= k 0) nil (cons (last-vals (extract ps elems)) (rep (- k 1)))))))
+                                                (rep 16))
+                                              nil)))))))
         (m-calls (specs result escapes)
           (letrec ((nth (subr spin ((listof vals acyclic) int) vals)
                           (lambda (l k) (cond ((null? l) nil) ((= k 0) (car l)) (else (nth (cdr l) (- k 1))))))
@@ -599,7 +648,7 @@ given a closure or site, for finding where unknown comes from."
                      (lambda (a rs)
                        (tagcase a
                          (a-arg (i) (nth as i))
-                         (a-elems (i) (vals-union (fields-of (nth as i) "car") (fields-of (nth as i) "elt")))
+                         (a-elems (i) (all-elements (nth as i)))
                          (a-kinds (ks) (kind-vals ks))
                          (a-result (j) (nth rs j))
                          (a-union (l) (union-all (args l rs)))
@@ -624,10 +673,33 @@ given a closure or site, for finding where unknown comes from."
               (begin (escape! (union-all (args escapes rs))) (arg result rs)))))
         (m-map (kinds)
           (if (null? as) (kind-vals kinds)
-              (let ((elements (letrec ((go (subr cf-eff ((listof vals acyclic)) (listof vals acyclic))
-                                             (lambda (l) (if (null? l) nil (cons (vals-union (fields-of (car l) "car") (fields-of (car l) "elt")) (go (cdr l)))))))
-                                (go (cdr as)))))
-                (begin (escape! (call-all call c (car as) elements)) (kind-vals kinds))))))))
+              (let ((base (cf-call-result (get cf-call-results) call)))
+                (if (< base 0)
+                    ;; No list of its own: the elements, all at once; what it returns escapes.
+                    (let ((elements (letrec ((go (subr cf-eff ((listof vals acyclic)) (listof vals acyclic))
+                                                   (lambda (l) (if (null? l) nil (cons (all-elements (car l)) (go (cdr l)))))))
+                                      (go (cdr as)))))
+                      (begin (escape! (call-all call c (car as) elements)) (kind-vals kinds)))
+                    ;; By position: the function called on each position's elements,
+                    ;; what it returns there the list's, in this call's sites.
+                    (let* ((ps (letrec ((go (subr cf-eff ((listof vals acyclic)) (listof cf-positions acyclic))
+                                              (lambda (l) (if (null? l) nil (cons (positions (car l)) (go (cdr l)))))))
+                                 (go (cdr as))))
+                           (n (letrec ((go (subr spin ((listof cf-positions acyclic) int) int)
+                                             (lambda (l m) (if (null? l) m (go (cdr l) (max m (length (extract (car l) elems))))))))
+                                (go ps 0)))
+                           (results (letrec ((nth (subr spin ((listof vals acyclic) int) vals)
+                                                    (lambda (l k) (cond ((null? l) nil) ((= k 0) (car l)) (else (nth (cdr l) (- k 1))))))
+                                             (go (subr cf-eff (int) (listof vals acyclic))
+                                               (lambda (i) (if (>= i n) nil
+                                                               (let ((r (call-all call c (car as)
+                                                                                  (letrec ((args (subr spin ((listof cf-positions acyclic)) (listof vals acyclic))
+                                                                                                   (lambda (l) (if (null? l) nil (cons (nth (extract (car l) elems) i) (args (cdr l)))))))
+                                                                                    (args ps)))))
+                                                                 (cons r (go (+ i 1))))))))
+                                      (go 0))))
+                      (begin (spine! base results)
+                        (vals-union (kind-vals (list (get cf-null-kind))) (if (null? results) nil (list (+ 1 (* 4 base))))))))))))))
   ;; Task `t` run: its lambda's body evaluated in its contour, its result kept.
   (run-task! (subr cf-eff (int) unit)
     (lambda (t)

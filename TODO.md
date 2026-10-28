@@ -83,6 +83,16 @@ commit that did it says so.
      world's key is its file);
    - libraries share one namespace, so names the libraries keep to
      themselves can collide.
+   - Lists a site a position (yank's spine, 32; 2026-10-28): `list`, rest
+     arguments, and `map`'s results (a list of each call's own, built
+     position by position); `apply` gives a list's elements by position.
+     The prelude's notes holding unknown 75 to 41; yank's cfa.sld 1093 to
+     1081, but 2.6 s to 8.2 s (a spine of 8: the same notes, 7.0 s --
+     the cost is `map`'s results flowing, not the sites). Not yet: a
+     function's results apart by position (they are per task: at depth
+     0, `map`'s positions hold the same), and yank's per-call-site
+     contexts and sites split by contour, with which yank runs `map` as
+     Scheme.
 4. **Worlds across languages.** s7st's builtins are FX-26 code
    (`s7st/prims.fx`): a Scheme world could link to them, rather than take
    them as primitives.

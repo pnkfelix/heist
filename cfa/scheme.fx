@@ -716,12 +716,13 @@ cdr then car, through built-in `car` and `cdr` and records' accessors (var
            (begin (set cf-stored (cons "car" (get cf-stored))) (k-seq (list (k-store (car as) "car" (car (cdr as))) (k-const (cf-kind "unspecified"))))))
           ((and (string=? prim "set-cdr!") (= nargs 2))
            (begin (set cf-stored (cons "cdr" (get cf-stored))) (k-seq (list (k-store (car as) "cdr" (car (cdr as))) (k-const (cf-kind "unspecified"))))))
-          ;; A list of its elements: one pair site, its cdr itself or ().
-          ((string=? prim "list")
-           (let ((s (site "pair")))
-             (if (null? as) (k-const (cf-kind "()"))
-                 (k-alloc s (list (product (label "car") (value (k-alt as)))
-                                  (product (label "cdr") (value (k-alt (list (k-const (cf-kind "()")) (k-alloc s nil))))))))))
+          ;; A list of its elements: a pair site each (yank's spine).
+          ((string=? prim "list") (cf-list-core sp as "()"))
+          ;; `map`: a list of its own, position by position (engine.fx).
+          ((string=? prim "map")
+           (let ((call (cf-add-call (product (span sp) (operator (sc-span (extract op span)))))))
+             (begin (set cf-call-results (cons (product (call call) (site (cf-spine-sites! sp))) (get cf-call-results)))
+               (k-app call (sc-core op fs) as))))
           ;; A vector's elements: field `elt`.
           ;; A hash table: a site, its keys field `key`, its values field `value`
           ;; (R6RS's hashtables, SRFI 69's and s7st's hash tables).

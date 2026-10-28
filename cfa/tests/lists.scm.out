@@ -1,0 +1,24 @@
+lists.scm:98-99: n: number
+lists.scm:123-124: n: number
+lists.scm:145-148: inc: inc
+lists.scm:174-175: l: pair
+lists.scm:194-195: l: pair
+lists.scm:215-216: l: pair
+lists.scm:245-247: xs: pair
+lists.scm:261-265: calls pick
+lists.scm:268-271: dbl: dbl
+lists.scm:307-308: y: inc
+lists.scm:320-323: inc: inc
+lists.scm:355-356: f: inc | dbl
+lists.scm:364-367: inc: inc
+lists.scm:368-371: dbl: dbl
+lists.scm:406-407: n: number
+lists.scm:436-444: calls inc | dbl
+lists.scm:441-443: fs: () | pair
+lists.scm:464-466: gs: () | pair
+lists.scm:559-566: calls inc
+lists.scm:564-565: l: pair
+lists.scm:582-596: calls dbl
+lists.scm:583-587: calls pick
+lists.scm:590-593: dbl: dbl
+[exit 0]

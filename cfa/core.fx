@@ -158,6 +158,11 @@ labels some store writes (`set-car!`, a record's modifier)."
 (define cf-widen (ref (listof (productof (kind int) (to int)) acyclic) @cf) (new nil))
 (define cf-rest-sites (ref (listof cf-rest acyclic) @cf) (new nil))
 (define cf-null-kind (ref string @cf) (new "null"))
+"Calls of a primitive making a list position by position (`map`): each
+call's sites (`cf-spine-sites!`), the list it gives."
+(define cf-call-results (ref (listof (productof (call int) (site int)) acyclic) @cf) (new nil))
+(define* cf-call-result (subr spin ((listof (productof (call int) (site int)) acyclic) int) int)
+  (lambda (l n) (cond ((null? l) -1) ((= (extract (car l) call) n) (extract (car l) site)) (else (cf-call-result (cdr l) n)))))
 "Everything numbered forgotten: a world to be read."
 (define* cf-reset! (subr cf-eff () unit)
   (lambda ()
@@ -167,7 +172,7 @@ labels some store writes (`set-car!`, a record's modifier)."
       (set cf-globals (the (table string int @cf) (make-table string-hash string=?)))
       (set cf-global-count 0) (set cf-files nil) (set cf-definition "")
       (set cf-kinds nil) (set cf-kind-count 0) (set cf-poly-lambdas nil) (set cf-poly-sites nil) (set cf-effects nil)
-      (set cf-rest-sites nil) (set cf-assigned nil) (set cf-stored nil) (set cf-widen nil))))
+      (set cf-rest-sites nil) (set cf-call-results nil) (set cf-assigned nil) (set cf-stored nil) (set cf-widen nil))))
 
 "Kind `name`'s number, made on first use."
 (define* cf-kind (subr cf-eff (string) int)
@@ -213,20 +218,44 @@ past 8 in a cell."
   (lambda (info) (begin (set cf-calls (cons info (get cf-calls))) (cf-next-number 1))))
 (define* cf-add-site (subr cf-eff (site-info) int)
   (lambda (info) (begin (set cf-sites (cons info (get cf-sites))) (cf-next-number 2))))
-"A lambda with a rest parameter has a site, the list the rest are given
-in (`cf-rest-sites`): its `car` what they are, its `cdr` itself, or the end
-of a list (the kind the language names `cf-null-kind`)."
+"A lambda with a rest parameter has sites, the list the rest are given in
+(`cf-rest-sites`, the first of `cf-max-spine`): a site an argument, the
+last the rest; each `cdr` the next, or the end of a list (the kind the
+language names `cf-null-kind`)."
 (define* cf-rest-site (subr spin ((listof cf-rest acyclic) int) int)
   (lambda (l n) (cond ((null? l) -1) ((= (extract (car l) lambda) n) (extract (car l) site)) (else (cf-rest-site (cdr l) n)))))
+"`cf-max-spine` sites in a row, each a list's pair, at `span`: the first's
+number. A list is a site a place, up to this many (yank's `max-spine`); the
+last holds the rest."
+(define cf-max-spine int 32)
+(define* cf-spine-sites! (subr cf-eff (cf-span) int)
+  (lambda (span)
+    (let ((first (cf-add-site (product (span span) (kind "pair") (tag "")))))
+      (letrec ((go (subr cf-eff (int) unit) (lambda (i) (if (>= i cf-max-spine) #u (begin (cf-add-site (product (span span) (kind "pair") (tag ""))) (go (+ i 1)))))))
+        (begin (go 1) first)))))
 (define* cf-add-lambda (subr cf-eff (lambda-info) int)
   (lambda (info)
     (let ((n (begin (set cf-lambdas (cons info (get cf-lambdas))) (cf-next-number 0))))
       (begin
         (if (>= (extract info rest) 0)
-            (set cf-rest-sites (cons (product (lambda n) (site (cf-add-site (product (span (extract info span)) (kind "pair") (tag "")))))
-                                     (get cf-rest-sites)))
+            (set cf-rest-sites (cons (product (lambda n) (site (cf-spine-sites! (extract info span)))) (get cf-rest-sites)))
             #u)
         n))))
+"A list of elements `es`, at `span`: a pair site an element, up to
+`cf-max-spine`, the last the rest (its `cdr` itself too); the end of a
+list the kind `null`."
+(define* cf-list-core (subr cf-eff (cf-span (listof core acyclic) string) core)
+  (lambda (span es null)
+    (letrec ((go (subr cf-eff (int (listof core acyclic)) core)
+               (lambda (i es)
+                 (cond ((null? es) (k-const (cf-kind null)))
+                       ((= i (- cf-max-spine 1))
+                        (let ((s (cf-add-site (product (span span) (kind "pair") (tag "")))))
+                          (k-alloc s (list (product (label "car") (value (k-alt es)))
+                                           (product (label "cdr") (value (k-alt (list (k-const (cf-kind null)) (k-alloc s nil)))))))))
+                       (else (let* ((s (cf-add-site (product (span span) (kind "pair") (tag "")))) (rest (go (+ i 1) (cdr es))))
+                               (k-alloc s (list (product (label "car") (value (car es))) (product (label "cdr") (value rest))))))))))
+      (go 0 es))))
 (define* cf-add-ref (subr cf-eff (ref-info) int)
   (lambda (info) (begin (set cf-refs (cons info (get cf-refs))) (cf-next-number 3))))
 "A use of variable `v`, named `name`, at `span`."
