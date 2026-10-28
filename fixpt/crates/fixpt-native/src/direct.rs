@@ -864,6 +864,12 @@ fn st_off(f: usize) -> u32 {
 /// The most a stack cache may be.
 const MOST_CACHE_WORDS: u64 = 1 << 22;
 const STACK_SLACK: u64 = 64 * 1024;
+/// The most bytes a frame may take: the stack's limit leaves room below it
+/// for any one frame. A slot is reached by `ldr`'s scaled offset (32 KiB)
+/// on arm64, by a displacement on x86_64; a frame past one `sub`'s 4095
+/// bytes is pushed by two (`push_frame`). A module's maker keeps all its
+/// items in one (Heist's, 2026-10-28; `DONE.md` §145, §153).
+const MOST_FRAME: usize = STACK_SLACK as usize / 4;
 
 /// The stack cache's size by default, in words: small, since every
 /// collection flushes all of it (Larceny's, `docs/research/
@@ -1638,10 +1644,17 @@ fn bloblet_sizes(bytes: Value, fields: Value) -> Option<(usize, usize)> {
 /// back to): a frame, the arguments into the state, call-out `n` (a
 /// `Callout::Foreign`), and back with its value; or, if it failed, the
 /// trap. One for the machine.
-/// A frame of `size` bytes pushed (a multiple of 16, at most 4095): its
-/// link and `second` stored, `x29` at its link, its header word below.
+/// A frame of `size` bytes pushed (a multiple of 16, at most
+/// `MOST_FRAME`): its link and `second` stored, `x29` at its link, its
+/// header word below. Past one `sub`'s reach, its 4 KB pages first.
 fn push_frame(a: &mut Asm, second: Reg, size: u64) {
-    a.e(sub_imm(SP, SP, size as u32));
+    let (pages, rest) = ((size >> 12) as u32, (size & 0xfff) as u32);
+    if pages > 0 {
+        a.e(sub_imm_pages(SP, SP, pages));
+    }
+    if rest > 0 || pages == 0 {
+        a.e(sub_imm(SP, SP, rest));
+    }
     a.e(stp(FRAME, second, SP, 8));
     a.e(add_imm(FRAME, SP, 8));
 }
@@ -1650,7 +1663,13 @@ fn push_frame(a: &mut Asm, second: Reg, size: u64) {
 /// back.
 fn pop_frame(a: &mut Asm, size: u64) {
     a.e(ldp(FRAME, LINK, SP, 8));
-    a.e(add_imm(SP, SP, size as u32));
+    let (pages, rest) = ((size >> 12) as u32, (size & 0xfff) as u32);
+    if pages > 0 {
+        a.e(add_imm_pages(SP, SP, pages));
+    }
+    if rest > 0 || pages == 0 {
+        a.e(add_imm(SP, SP, rest));
+    }
 }
 
 fn common_foreign(n: usize) -> Vec<u32> {
@@ -2017,7 +2036,7 @@ impl Compiling<'_> {
         // The frame: the link and return address, its stack map (a header,
         // the mask of the slots traced), register code's slots, then this
         // code bloblet and the closure running.
-        if frame.is_some_and(|m| 32 + 8 * (m + 2) > 4080) {
+        if frame.is_some_and(|m| 32 + 8 * (m + 2) > MOST_FRAME) {
             return decline("a frame too large".into());
         }
         // The slots only `f64` operations read hold the `f64` raw
@@ -2674,14 +2693,15 @@ impl Compiling<'_> {
                     a.bind(back);
                 }
                 // A field past `ldur`'s reach (a module of more than 31
-                // members, say) through its address, in X16, as far as one
-                // `sub` reaches.
+                // members, say) through its address, in X16: by one `sub`,
+                // or past its reach by the offset (any distance, as on
+                // x86_64).
                 "field" => {
                     let off = field_off(k(o(0)));
                     if off < -4095 {
-                        return decline("a field too far".into());
-                    }
-                    if off < -256 {
+                        a.es(&mov_imm64(X16, off as u64));
+                        a.e(ldr_reg(RESULT, RESULT, X16));
+                    } else if off < -256 {
                         a.e(sub_imm(X16, RESULT, off.unsigned_abs() as u32));
                         a.e(ldur(RESULT, X16, 0));
                     } else {
@@ -2690,16 +2710,21 @@ impl Compiling<'_> {
                 }
                 "setfield" => {
                     let off = field_off(k(o(0)));
+                    let cards = st_off(offset_of!(DState, cards));
                     if off < -4095 {
-                        return decline("a field too far".into());
-                    }
-                    if off < -256 {
-                        a.e(sub_imm(X16, RESULT, off.unsigned_abs() as u32));
+                        a.es(&mov_imm64(X16, off as u64));
+                        a.e(add(X16, RESULT, X16));
                         a.e(stur(reg(o(1)), X16, 0));
+                        a.es(&card_mark(X16, 0, ST, cards, X16, X17));
                     } else {
-                        a.e(stur(reg(o(1)), RESULT, off));
+                        if off < -256 {
+                            a.e(sub_imm(X16, RESULT, off.unsigned_abs() as u32));
+                            a.e(stur(reg(o(1)), X16, 0));
+                        } else {
+                            a.e(stur(reg(o(1)), RESULT, off));
+                        }
+                        a.es(&card_mark(RESULT, off, ST, cards, X16, X17));
                     }
-                    a.es(&card_mark(RESULT, off, ST, st_off(offset_of!(DState, cards)), X16, X17));
                 }
                 // Control, on the native stack (`docs/research/
                 // native-conventions.md`, step 5). A prompt, and a mark, is a
@@ -3147,6 +3172,121 @@ impl Compiling<'_> {
                         a.e(str(X16, X13, 0));
                         a.e(add_imm(RESULT, X11, fixpt_heap::value::TAG_PAIR as u32));
                         a.to(done, Fix::B);
+                    }
+                    // Boxes and arrays of at most `ARRAY_INLINE` fields, in
+                    // the heap or in a region's chunk, as x86_64's (`DONE.md`
+                    // §154): `new`, `make-array`, `rnew`, `rmake-array`.
+                    let prim_is = |want: &str, m: usize| matches!(c, Callout::Prim { p, n } if n == m && fixpt_runtime::PRIMITIVES[p].name == want);
+                    // The region in `x1`'s slot in the heap's table (at
+                    // X13, its fill in X14, its end in X15), when it has
+                    // one: else `slow`, as for `#f`, the heap's.
+                    let region_slot = |a: &mut Asm| {
+                        a.e(tst_low(1, 3));
+                        a.to(slow, Fix::If(Cond::Ne));
+                        a.e(cmp_imm(1, 8 * fixpt_heap::heap::REGION_SLOTS as u32));
+                        a.to(slow, Fix::If(Cond::Hs));
+                        a.e(ldr(X13, ST, st_off(offset_of!(DState, region_table))));
+                        a.e(add_lsl(X13, X13, 1, 1));
+                        a.e(ldp(X14, X15, X13, 0));
+                    };
+                    // The heap's free space: its top's place at X13, its
+                    // fill in X14, the collection's threshold in X15.
+                    let heap_slot = |a: &mut Asm| {
+                        a.e(ldr(X13, ST, st_off(offset_of!(DState, top))));
+                        a.e(ldr(X14, X13, 0));
+                        a.e(ldr(X15, ST, st_off(offset_of!(DState, alloc_limit))));
+                    };
+                    // Room to the fill in X16, short of X15: at X11, the
+                    // fill bumped; else `slow` (a region with no chunk has
+                    // fill and end 0). Uses X9.
+                    let room = |a: &mut Asm| {
+                        a.e(cmp(X16, X15));
+                        a.to(slow, Fix::If(Cond::Hi));
+                        a.e(ldr(X9, ST, st_off(offset_of!(DState, words))));
+                        a.e(add_lsl(X11, X9, X14, 3));
+                        a.e(str(X16, X13, 0));
+                    };
+                    // A box of `v` at X11, its room had: header, field,
+                    // trailer.
+                    let box_at = |a: &mut Asm, v: Reg| {
+                        a.es(&mov_imm64(X15, fixpt_heap::value::make_header(fixpt_heap::ObjType::Box as u8, 2, 0)));
+                        a.e(stp(X15, v, X11, 0));
+                        a.es(&mov_imm64(X15, fixpt_heap::layout::T_DISTANCE.put(fixpt_heap::value::TAG_TRAILER, 2)));
+                        a.e(str(X15, X11, 16));
+                        a.e(add_imm(RESULT, X11, 24 + fixpt_heap::value::TAG_BLOBLET as u32));
+                        a.to(done, Fix::B);
+                    };
+                    // `8n` in `x2` a length to make in line: else `slow`.
+                    let array_words = |a: &mut Asm| {
+                        a.e(tst_low(2, 3));
+                        a.to(slow, Fix::If(Cond::Ne));
+                        a.e(cmp_imm(2, 8 * x64::ARRAY_INLINE as u32));
+                        a.to(slow, Fix::If(Cond::Hi));
+                    };
+                    // Its room: `n + 2` words, the fill in X16.
+                    let array_fill = |a: &mut Asm| {
+                        a.e(lsr_imm(X16, 2, 3));
+                        a.e(add(X16, X16, X14));
+                        a.e(add_imm(X16, X16, 2));
+                    };
+                    // An array of `8n` (in `x2`) at X11, its room had, each
+                    // field `x3`: a bloblet of `n + 1` fields, the trailer
+                    // one of them, whose header and trailer `8n` gives. Uses
+                    // X9, X15, X17.
+                    let array_at = |a: &mut Asm| {
+                        a.e(lsl_imm(X15, 2, fixpt_heap::layout::H_FIELDS.lo - 3));
+                        a.es(&mov_imm64(X17, fixpt_heap::value::make_header(const { fixpt_heap::layout::kind("bloblet") }, 1, 0)));
+                        a.e(add(X15, X15, X17));
+                        a.e(str(X15, X11, 0));
+                        a.e(add(X17, X11, 2));
+                        a.e(add_imm(X15, 2, 8 + fixpt_heap::value::TAG_TRAILER as u32));
+                        a.e(str(X15, X17, 8));
+                        let (fill, filled) = (a.label(), a.label());
+                        a.e(mov(X9, 2));
+                        a.bind(fill);
+                        a.e(cmp_imm(X9, 0));
+                        a.to(filled, Fix::If(Cond::Eq));
+                        a.e(add(X17, X11, X9));
+                        a.e(str(3, X17, 0));
+                        a.e(sub_imm(X9, X9, 8));
+                        a.to(fill, Fix::B);
+                        a.bind(filled);
+                        a.e(add(X17, X11, 2));
+                        a.e(add_imm(RESULT, X17, 16 + fixpt_heap::value::TAG_BLOBLET as u32));
+                        a.to(done, Fix::B);
+                    };
+                    // `new` (`%make-box`), in the heap.
+                    if prim_is("%make-box", 1) {
+                        heap_slot(&mut a);
+                        a.e(add_imm(X16, X14, 3));
+                        room(&mut a);
+                        box_at(&mut a, 1);
+                    }
+                    // `make-array` (`%make-bloblet-filled`, no suffix), in the
+                    // heap: as `rmake-array`.
+                    if prim_is("%make-bloblet-filled", 3) {
+                        a.e(cmp_imm(1, 0));
+                        a.to(slow, Fix::If(Cond::Ne));
+                        array_words(&mut a);
+                        heap_slot(&mut a);
+                        array_fill(&mut a);
+                        room(&mut a);
+                        array_at(&mut a);
+                    }
+                    // `rnew`: a box in the region's chunk.
+                    if prim_is("%region-new", 2) {
+                        region_slot(&mut a);
+                        a.e(add_imm(X16, X14, 3));
+                        room(&mut a);
+                        box_at(&mut a, 2);
+                    }
+                    // `rmake-array` there.
+                    if prim_is("%region-make-array", 3) {
+                        array_words(&mut a);
+                        region_slot(&mut a);
+                        array_fill(&mut a);
+                        room(&mut a);
+                        array_at(&mut a);
                     }
                     // A raw `f64` to store is boxed only if the call-out
                     // must do it.

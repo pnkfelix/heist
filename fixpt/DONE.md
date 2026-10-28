@@ -3720,7 +3720,7 @@ cellular code: 39 µs a key typing in a burst, against 7 as globals.
 - **Frames on x86_64 up to `MOST_FRAME`**, 16 KiB, a quarter of the
   stack's slack, not arm64's 4080 bytes; and any field's displacement, in
   32 bits (`x64.rs`, `native-direct-x64.fx`, `-proc.fx`). arm64 is
-  TODO §137.
+  §153.
 - **Heist's numbers**, against its globals on the same build: typing 7 µs
   a key in a burst and 431 µs one at a time, as globals (7 and 433).
   Start-up is 6.0 s against 2.9 s: making the modules is checking them,
@@ -3870,3 +3870,62 @@ no binders around its `lambda`, which `load-moduleof` refused ("is a
 both parsers (`parse_load_file`, `loaded-made`): `((load-module "f"))`
 makes it, `(load-moduleof "f")` types it. Test:
 `modules/module-parameters-none.fx`.
+
+## 153. A module's maker on arm64: frames past 4080 bytes (Heist's, 2026-10-28)
+
+`TODO.md` §137, as x86_64's (§145). arm64's native convention declined a
+frame past 4080 bytes and a field past 4095, so a maker of many items
+(Heist's `frame.fx`, about 450 values) ran as cellular code on the Mac.
+
+- **Frames up to `MOST_FRAME`** (16 KiB, a quarter of the stack's slack),
+  now one constant for both back ends (`direct.rs`): a frame past one
+  `sub`'s 4095 bytes is pushed and popped by its 4 KB pages, then the rest
+  (`sub_imm_pages`). Its slots were already in reach: `ldr`'s scaled
+  offset goes to 32 KiB.
+- **Fields at any distance**: past one `sub`'s reach, by the offset in a
+  register (`ldr xR, [x0, x16]`), and a store's card marked at the
+  address so made.
+- **Tests**: `module_makers.rs`, the Rust compiler's two cases, now on
+  arm64 too (the FX-26 compiler makes only x86_64's); without the change
+  the 600-item maker runs as cellular code ("a frame too large", "a
+  field too far"). A 900-item maker gives the same value collecting every
+  100 safepoints.
+
+## 154. `new`, `make-array`, `rnew` and `rmake-array` in line on arm64 (2026-10-28)
+
+`TODO.md` §136, as x86_64's (§141): boxes, and arrays of at most
+`ARRAY_INLINE` (16) fields, made in line in the heap's free space or a
+region's chunk (`direct.rs`, beside `rcons`: `region_slot`, `heap_slot`,
+`room`, `box_at`, `array_at`); anything else calls out as before.
+
+- **Measured** (10 million each, after the cache is warm): `make-array 3`
+  and `new` together 0.37 s to 0.14 s, start-up included. Kayak's stage 0
+  (kayak 4aece254): 90.6G instructions to 90.3G, wall time the same
+  (4.2 s); its output the same as `boot/src/kfx/`.
+- **Test**: `direct.rs`'s `references_and_arrays_made_in_line`:
+  `programs/run/alloc-in-line.fx` as the Rust machine gives it, collecting
+  often too; on arm64, a box's header and field stored as a pair, an
+  array's fields by its loop. It fails without the change.
+
+## 155. Compiled code's names, lines and values in `lldb` on the Mac (the user's, 2026-10-28)
+
+§140, §142 and §143 were done and verified on Linux, x86_64; on the Mac,
+arm64, the same ELF objects serve `lldb` (`docs/research/debugging.md`,
+"Since: names, lines and values on the Mac").
+
+- **A debugger seen on arm64**: by its `brk` at
+  `__jit_debug_register_code` (`lldb`'s is `brk #0xf000`), as `int3` is on
+  x86_64 (`jitdebug.rs`, `arm64_stop`), so lines are made once it is
+  here. Before, they were made only with `FIXPT_JIT_DEBUG=frames`.
+- **`fixpt_lldb.py`** on arm64: the frame's base `x29`, RESULT and
+  REG1-REG3 `x0` to `x3`; and importing it turns on lldb's reading of the
+  objects (`plugin.jit-loader.gdb.enable`, off by default on macOS).
+- **Verified**: `bt` from a call out to Rust gives `keep at keep.fx:11`
+  for each compiled frame, then the trampoline, then Rust; `fx-frame` and
+  `fx-regs` show the values.
+- **Tests**: `jit_lines.rs`, the Rust compiler's lines case now on arm64
+  too, and `lldb_shows_the_frames_values` on the Mac (attached; skipped
+  without lldb or leave to attach); `jitdebug`'s `arm64_breakpoints_seen`.
+- **Not done**: a `.debug_frame` for arm64 (`cfi.rs` decodes x86_64 only;
+  `lldb` reads the prologues itself, given the names); `gdb` on arm64
+  Linux, untried.
