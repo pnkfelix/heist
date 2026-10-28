@@ -37,6 +37,10 @@ pub struct Header {
     pub arch: String,
     /// Whether it was compiled in the native convention.
     pub native: bool,
+    /// Whether its procedures are kept as cellular words alone
+    /// (`compile-file --cellular`), which a loader in the native convention
+    /// compiles natively, not as native code.
+    pub cellular: bool,
     /// What the file is to what reads it.
     pub kind: Kind,
     /// The file's text's digest ([`digest`]).
@@ -139,6 +143,35 @@ pub fn path_for(source: &Path) -> PathBuf {
     source.with_extension("fasl")
 }
 
+/// The user's cache directory for Fixpt, where the front end's compiled
+/// code is kept (`session::front_end_cache`), if there is one.
+pub fn cache_dir() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME")?;
+    let dir = match std::env::var_os("XDG_CACHE_HOME") {
+        Some(d) => PathBuf::from(d),
+        None if cfg!(target_os = "macos") => Path::new(&home).join("Library/Caches"),
+        None => Path::new(&home).join(".cache"),
+    };
+    Some(dir.join("fixpt"))
+}
+
+/// The `.fasl` of the load of `path` (at `at`): beside the file; or, for a
+/// module file built in (`fx26:name`), which has no directory, in the
+/// cache directory, one directory for each executable and convention, as
+/// the front end's cache is. None for one built in if there is no cache
+/// (`FIXPT_NO_CACHE`).
+pub fn path_for_load(at: &Path, path: &str, native: bool) -> Option<PathBuf> {
+    let Some(name) = path.strip_prefix(crate::BUILT_IN_PREFIX).filter(|_| crate::built_in_module(path).is_some()) else {
+        return Some(path_for(at));
+    };
+    if std::env::var_os("FIXPT_NO_CACHE").is_some() {
+        return None;
+    }
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    (std::env::current_exe().ok()?, native).hash(&mut h);
+    Some(path_for(&cache_dir()?.join(format!("built-in-{:016x}", h.finish())).join(name)))
+}
+
 /// A digest of `text`.
 pub fn digest(text: &str) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -166,8 +199,8 @@ pub fn build() -> u64 {
 impl Header {
     /// The file: this header, then `image`.
     pub fn file(&self, image: &[u8]) -> Vec<u8> {
-        let mut out = format!("{MARK}\nbuild {:016x}\narch {}\nconv {}\nkind {}\nsource {:016x}\nstamp {:016x}\n",
-            self.build, self.arch, if self.native { "native" } else { "cellular" }, self.kind.word(), self.source, self.stamp);
+        let mut out = format!("{MARK}\nbuild {:016x}\narch {}\nconv {}\ncode {}\nkind {}\nsource {:016x}\nstamp {:016x}\n",
+            self.build, self.arch, if self.native { "native" } else { "cellular" }, if self.cellular { "cellular" } else { "native" }, self.kind.word(), self.source, self.stamp);
         for d in &self.deps {
             out.push_str(&format!("dep {} {:016x} {}\n", if d.input { "input" } else { "module" }, d.stamp, d.path));
         }
@@ -211,7 +244,7 @@ impl Header {
             return Err(format!("it does not begin `{MARK}`"));
         }
         let hex = |s: &str| u64::from_str_radix(s, 16).map_err(|_| format!("`{s}` is not a digest"));
-        let mut h = Header { build: 0, arch: String::new(), native: false, kind: Kind::Module, source: 0, stamp: 0, deps: Vec::new(), ty: String::new(), made: String::new(), defs: Vec::new(), aliases: Vec::new() };
+        let mut h = Header { build: 0, arch: String::new(), native: false, cellular: false, kind: Kind::Module, source: 0, stamp: 0, deps: Vec::new(), ty: String::new(), made: String::new(), defs: Vec::new(), aliases: Vec::new() };
         loop {
             let l = line()?;
             let (word, value) = l.split_once(' ').ok_or_else(|| format!("a header line `{l}`"))?;
@@ -219,6 +252,7 @@ impl Header {
                 "build" => h.build = hex(value)?,
                 "arch" => h.arch = value.to_string(),
                 "conv" => h.native = value == "native",
+                "code" => h.cellular = value == "cellular",
                 "kind" => {
                     h.kind = match value {
                         "input" => Kind::Input,
@@ -272,12 +306,14 @@ impl Header {
 
 /// What a `.fasl`'s value links to in the session that loads it, not kept
 /// in it: a global's cell by its name (the standard environment's), or the
-/// cell of the hidden global of the file's `i`th load; or that load's value.
+/// cell of the hidden global of the file's `i`th load; or that load's value;
+/// or the heap's native adapter's code (`Heap::adapter_code`).
 #[derive(Clone, Debug, PartialEq)]
 pub enum Link {
     Global(String),
     DepCell(usize),
     DepValue(usize),
+    Adapter,
 }
 
 /// A global's cell (`layout::cellular::GLOBAL_*`, `%fx26-make-global`): its
@@ -294,41 +330,101 @@ fn global_name(heap: &Heap, v: Value) -> Option<String> {
     (n.is_bloblet() && heap.obj_type(n) == Some(ObjType::Symbol)).then(|| heap.symbol_name(n))
 }
 
-/// What `v` reaches, each object once, by `visit`, which says whether to go
-/// into it (a pair's car and cdr; a bloblet's fields).
-fn walk(heap: &Heap, root: Value, mut visit: impl FnMut(&Heap, Value) -> Result<bool, String>) -> Result<(), String> {
+/// Value `value`, a load's, in `heap`, as a `.fasl`'s image: copied into a
+/// heap of its own but for what it links to (`Link`): each global cell
+/// (`deps`' hidden globals' by their place, `deps[i].0` its name), each of
+/// `deps`' values (`deps[i].1`), and the heap's native adapter's code
+/// (`adapter`), which every heap has one of. Native code is kept as it is,
+/// as the front end's cache keeps it: what it names of the session is in
+/// its code bloblets' fields (cells, constants, other code), linked or
+/// copied as any other object's; its call-outs are in fields too, which
+/// the image carries encoded and the loader's machine numbers
+/// (`fixpt_heap::CalloutMap`). Each word's compiled entry (a machine's
+/// slot number, this process's) is let go, so that the loader's machine
+/// compiles it again if it runs it. Or, `cellular`, cellular words alone
+/// ([`cellular_image`]).
+pub fn image(heap: &mut Heap, value: Value, deps: &[(String, Value)], adapter: Option<Value>, cellular: bool) -> Result<Vec<u8>, String> {
+    if cellular {
+        return cellular_image(heap, value, deps, adapter);
+    }
+    let mut links: Vec<(Value, Link)> = Vec::new();
     let mut seen = std::collections::HashSet::new();
-    let mut todo = vec![root];
+    let mut todo = vec![value];
     while let Some(v) = todo.pop() {
         if !v.is_ref() {
             continue;
         }
         let v = if v.is_suffix_ref() { heap.suffix_ref_owner(v) } else { v };
-        if !seen.insert(v.raw()) || !visit(heap, v)? {
+        if !seen.insert(v.raw()) {
+            continue;
+        }
+        if Some(v) == adapter {
+            links.push((v, Link::Adapter));
+            continue;
+        }
+        if let Some(name) = global_name(heap, v) {
+            let link = match deps.iter().position(|(n, _)| *n == name) {
+                Some(i) => Link::DepCell(i),
+                None => Link::Global(name),
+            };
+            links.push((v, link));
+            continue;
+        }
+        if let Some(i) = deps.iter().position(|(_, d)| d.raw() == v.raw()) {
+            links.push((v, Link::DepValue(i)));
             continue;
         }
         if v.is_pair() {
             todo.extend([heap.car(v), heap.cdr(v)]);
-        } else if heap.obj_type(v) != Some(ObjType::Symbol) {
-            let trailer = heap.bloblet_has_trailer(v) as usize;
-            todo.extend(((1 + trailer)..=heap.bloblet_head(v).fields).map(|k| heap.bloblet_slot(v, k)));
+            continue;
+        }
+        if heap.obj_type(v) == Some(ObjType::Symbol) {
+            continue;
+        }
+        let trailer = heap.bloblet_has_trailer(v) as usize;
+        todo.extend(((1 + trailer)..=heap.bloblet_head(v).fields).map(|k| heap.bloblet_slot(v, k)));
+    }
+    let mut alone = Heap::new();
+    let mut given = HashMap::new();
+    let mut placeholders = Value::NULL;
+    for (v, link) in links.iter().rev() {
+        let (kind, arg) = match link {
+            Link::Global(name) => (0, alone.make_string(name)),
+            Link::DepCell(i) => (1, Value::fixnum(*i as i64)),
+            Link::DepValue(i) => (2, Value::fixnum(*i as i64)),
+            Link::Adapter => (3, Value::NULL),
+        };
+        let p = alone.cons(Value::fixnum(kind), arg);
+        given.insert(v.raw(), p);
+        placeholders = alone.cons(p, placeholders);
+    }
+    let (copy, made) = alone.copy_graph_with(heap, value, |_| false, &given);
+    // Each word's compiled entry let go: a stack word runs its cells again;
+    // a register word is compiled again.
+    let words: Vec<Value> = made.values().copied().filter(|w| w.is_bloblet() && (alone.is_cellular_word(*w) || alone.is_register_word(*w))).collect();
+    for w in words {
+        let entry = alone.bloblet_slot(w, WORD_ENTRY).as_fixnum();
+        if alone.is_register_word(w) {
+            alone.set_bloblet_slot(w, WORD_ENTRY, Value::fixnum(0));
+        } else if entry >= PRIMITIVES as i64 {
+            alone.set_bloblet_slot(w, WORD_ENTRY, Value::fixnum(ROUTINE_DOCOL as i64));
         }
     }
-    Ok(())
+    let rest = alone.cons(placeholders, Value::NULL);
+    let root = alone.cons(copy, rest);
+    alone.push_root(root);
+    Ok(fixpt_heap::image::dump(&alone))
 }
 
-/// Value `value`, a load's, in `heap`, as a `.fasl`'s image: copied into a
-/// heap of its own but for what it links to (`Link`): each global cell
-/// (`deps`' hidden globals' by their place, `deps[i].0` its name), each of
-/// `deps`' values (`deps[i].1`). A native closure is kept as the cellular
-/// one it was made from, which the code area runs in either convention
+/// [`image`], of cellular words alone (`compile-file --cellular`): a
+/// native closure is kept as the cellular one it was made from, which the code area runs in either convention
 /// (`docs/research/code-stubs.md`): an adapter (`adapter`'s code) as the
 /// closure it adapts; one compiled, as a cellular closure of its code's
 /// word over the same values. Each word's compiled entry (a machine's slot
 /// number, this process's) is let go, so that the loader's machine
 /// compiles it again. Any other native code is refused: it calls by
 /// numbers and addresses that are this process's.
-pub fn image(heap: &mut Heap, value: Value, deps: &[(String, Value)], adapter: Option<Value>) -> Result<Vec<u8>, String> {
+fn cellular_image(heap: &mut Heap, value: Value, deps: &[(String, Value)], adapter: Option<Value>) -> Result<Vec<u8>, String> {
     let closure_kind = const { fixpt_heap::layout::kind("native-closure") };
     let mut links: Vec<(Value, Link)> = Vec::new();
     // Each native closure, and what it is kept as: the closure an adapter
@@ -408,6 +504,7 @@ pub fn image(heap: &mut Heap, value: Value, deps: &[(String, Value)], adapter: O
             Link::Global(name) => (0, alone.make_string(name)),
             Link::DepCell(i) => (1, Value::fixnum(*i as i64)),
             Link::DepValue(i) => (2, Value::fixnum(*i as i64)),
+            Link::Adapter => (3, Value::NULL),
         };
         let p = alone.cons(Value::fixnum(kind), arg);
         given.insert(v.raw(), p);
@@ -499,9 +596,32 @@ pub fn native_procedures(heap: &mut Heap, value: Value, compile: crate::session:
     made.get(&value.raw()).copied().unwrap_or(value)
 }
 
+/// What `v` reaches, each object once, by `visit`, which says whether to go
+/// into it (a pair's car and cdr; a bloblet's fields).
+fn walk(heap: &Heap, root: Value, mut visit: impl FnMut(&Heap, Value) -> Result<bool, String>) -> Result<(), String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut todo = vec![root];
+    while let Some(v) = todo.pop() {
+        if !v.is_ref() {
+            continue;
+        }
+        let v = if v.is_suffix_ref() { heap.suffix_ref_owner(v) } else { v };
+        if !seen.insert(v.raw()) || !visit(heap, v)? {
+            continue;
+        }
+        if v.is_pair() {
+            todo.extend([heap.car(v), heap.cdr(v)]);
+        } else if heap.obj_type(v) != Some(ObjType::Symbol) {
+            let trailer = heap.bloblet_has_trailer(v) as usize;
+            todo.extend(((1 + trailer)..=heap.bloblet_head(v).fields).map(|k| heap.bloblet_slot(v, k)));
+        }
+    }
+    Ok(())
+}
+
 /// A `.fasl`'s image read: its heap, its value, each object of it that
 /// stands for what it links to (`image`), with what, and the closures that
-/// were native.
+/// were native, of cellular words alone (`cellular_image`).
 pub type Read = (Heap, Value, Vec<(Value, Link)>, Vec<Value>);
 
 /// A `.fasl`'s image `bytes` read ([`Read`]).
@@ -528,7 +648,8 @@ pub fn read_image(bytes: &[u8]) -> Result<Read, String> {
         let link = match kind.as_fixnum() {
             0 => Link::Global(heap.string_to_rust(arg)),
             1 => Link::DepCell(arg.as_fixnum() as usize),
-            _ => Link::DepValue(arg.as_fixnum() as usize),
+            2 => Link::DepValue(arg.as_fixnum() as usize),
+            _ => Link::Adapter,
         };
         links.push((p, link));
         l = heap.cdr(l);
@@ -557,17 +678,22 @@ impl crate::check::Checker {
     /// Larceny's `require` warns ("loading source in favor of stale fasl
     /// file"). What the files it loads find wrong is said as their loads'.
     pub(crate) fn fasl_load(&mut self, span: fixpt_read::Span, key: &str, path: &str, at: &Path, input: bool, source: u64) -> crate::R<Option<crate::ast::ExpId>> {
-        let fasl = path_for(at);
+        let native = self.conv_default == crate::ast::Conv::Native;
+        let Some(fasl) = path_for_load(at, path, native) else { return Ok(None) };
         let Ok(bytes) = std::fs::read(&fasl) else { return Ok(None) };
+        // One built in is made again, quietly, by the run that reads its
+        // source (`Fx26Session::cache_built_ins`).
+        let built_in = crate::built_in_module(path).is_some();
         let stale = |c: &mut Self, why: &str| {
-            c.fasl_notes.push(format!("`{}` is stale ({why}): `{path}` is loaded from its source", fasl.display()));
+            if !built_in {
+                c.fasl_notes.push(format!("`{}` is stale ({why}): `{path}` is loaded from its source", fasl.display()));
+            }
             Ok(None)
         };
         let header = match Header::read(&bytes) {
             Ok((h, _)) => h,
             Err(e) => return stale(self, &e),
         };
-        let native = self.conv_default == crate::ast::Conv::Native;
         if header.build != build() {
             return stale(self, "another fixpt made it");
         }
@@ -576,6 +702,10 @@ impl crate::check::Checker {
         }
         if header.native != native {
             return stale(self, if header.native { "it is for the native convention" } else { "it is for the cellular convention" });
+        }
+        // Its native code's call-outs numbered here (`fixpt_heap::CalloutMap`).
+        if native && !header.cellular && !fixpt_heap::callout_map_set() {
+            return stale(self, "no native machine here numbers its code's call-outs");
         }
         let kind = if input { Kind::Input } else { Kind::Module };
         // A program's file's, for `,load`: nothing to say of it here.
@@ -746,10 +876,7 @@ impl crate::check::Checker {
         // hidden abbreviation of the module read, so that it is one node
         // where it is read, as it was where it was made (the user's).
         let mut text = match factored(&made, "%fasl:", 40) {
-            Some((defs, made)) => {
-                let defs: Vec<String> = defs.iter().map(|(n, t)| format!("(define-type {n} {t})")).collect();
-                format!("(module (hide {}) (define input {made}))", defs.join(" "))
-            }
+            Some((defs, made)) => format!("(module (hide {}) (define input {made}))", defs.join(" ")),
             None => format!("(module (define input {made}))"),
         };
         for (i, (_, _, d)) in f.deps.iter().enumerate() {
@@ -1067,6 +1194,19 @@ impl Tree {
         s
     }
 
+    /// Each atom in it, to `f`.
+    fn each_atom(&self, f: &mut impl FnMut(&str)) {
+        match self {
+            Tree::Atom(a) => f(a),
+            Tree::List(l) => l.iter().for_each(|t| t.each_atom(f)),
+        }
+    }
+
+    /// Its head, if it is a form whose first item is an atom.
+    fn head_atom(&self) -> Option<&str> {
+        self.head()
+    }
+
     fn head(&self) -> Option<&str> {
         match self {
             Tree::List(l) => match l.first() {
@@ -1103,56 +1243,293 @@ impl Tree {
         }
         l.iter().for_each(|t| t.bound(out));
     }
+}
 
-    /// Whether it names none of `bound`.
-    fn closed(&self, bound: &std::collections::HashSet<String>) -> bool {
+/// The heads of the types a `define-type` may abbreviate where a `.fasl`'s
+/// type is factored, and `maxeff`, an effect: not expressions.
+const TYPE_HEADS: &[&str] = &["subr", "poly", "productof", "sumof", "union", "listof", "pairof", "ref", "arrayof", "narrayof", "mu", "bloblet", "icell", "nlist", "mark-key", "prompt-tag", "maxeff"];
+
+/// What a place in a type's text holds, by its form: where a name bound
+/// outside a subterm stands, the kind of the parameter it is made
+/// (`Skeleton`); elsewhere, not known, and the subterm is not factored.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+enum Place {
+    Type,
+    Region,
+    Effect,
+    Unknown,
+}
+
+impl Place {
+    fn kind(self) -> Option<&'static str> {
         match self {
-            Tree::Atom(a) => !bound.contains(a) && !a.starts_with('$') && !a.starts_with("%p."),
-            Tree::List(l) => l.iter().all(|t| t.closed(bound)),
+            Place::Type => Some("type"),
+            Place::Region => Some("region"),
+            Place::Effect => Some("effect"),
+            Place::Unknown => None,
         }
     }
 }
 
-/// The heads of the types a `define-type` may abbreviate where a `.fasl`'s
-/// type is factored: types, not effects or expressions.
-const TYPE_HEADS: &[&str] = &["subr", "productof", "sumof", "union", "listof", "pairof", "ref", "arrayof", "narrayof", "mu", "bloblet", "icell", "nlist", "mark-key", "prompt-tag"];
-
-/// Text `text` (an expression or a type, as printed) with each closed type
-/// it has at least twice, of at least `least` characters, named once: the
-/// definitions, smallest first, each `(name type)`, its type naming those
-/// before it; and the text naming them. So a type written out many times
-/// is read once, one node where it is read, as it was where it was made.
-pub fn factored(text: &str, prefix: &str, least: usize) -> Option<(Vec<(String, String)>, String)> {
-    let tree = Tree::read(text)?;
-    let mut bound = std::collections::HashSet::new();
-    tree.bound(&mut bound);
-    let mut counts: HashMap<String, (usize, Tree)> = HashMap::new();
-    fn count(t: &Tree, bound: &std::collections::HashSet<String>, least: usize, counts: &mut HashMap<String, (usize, Tree)>) {
-        let Tree::List(l) = t else { return };
-        if t.head().is_some_and(|h| TYPE_HEADS.contains(&h)) {
-            let s = t.text();
-            if s.len() >= least && t.closed(bound) {
-                counts.entry(s).or_insert((0, t.clone())).0 += 1;
-            }
-        }
-        l.iter().for_each(|c| count(c, bound, least, counts));
+/// What child `i` of a form headed `head` is.
+fn place_of(head: Option<&str>, i: usize) -> Place {
+    match (head, i) {
+        (_, 0) => Place::Unknown,
+        (Some("subr"), 1) => Place::Effect,
+        (Some("subr"), 3) => Place::Type,
+        (Some("union"), _) => Place::Type,
+        (Some("listof" | "ref" | "arrayof" | "icell"), 1) | (Some("pairof"), 1 | 2) | (Some("mu" | "poly"), 2) => Place::Type,
+        (Some("listof" | "ref" | "arrayof" | "icell"), 2) | (Some("pairof"), 3) => Place::Region,
+        (Some("read" | "write" | "alloc" | "goto" | "comefrom" | "await"), 1) => Place::Region,
+        (Some("maxeff"), _) => Place::Effect,
+        _ => Place::Unknown,
     }
-    count(&tree, &bound, least, &mut counts);
-    let mut chosen: Vec<(String, Tree)> = counts.into_iter().filter(|(_, (n, _))| *n >= 2).map(|(s, (_, t))| (s, t)).collect();
+}
+
+/// A subterm with each name it uses that is bound outside it (`open`, and
+/// not bound in it), and each `select` of such a module, made a parameter,
+/// `%fasl-pN`, numbered as first met: the body of the family it is an
+/// application of (`factored`), each parameter's kind by its place. None if
+/// such a name stands where its kind is not known.
+struct Skeleton<'a> {
+    open: &'a std::collections::HashSet<String>,
+    /// Each parameter's argument and kind.
+    leaves: Vec<(Tree, Place)>,
+}
+
+impl Skeleton<'_> {
+    fn leaf(&mut self, t: &Tree, at: Place) -> Option<Tree> {
+        at.kind()?;
+        let text = t.text();
+        let i = match self.leaves.iter().position(|(l, _)| l.text() == text) {
+            Some(i) if self.leaves[i].1 == at => i,
+            Some(_) => return None,
+            None => {
+                self.leaves.push((t.clone(), at));
+                self.leaves.len() - 1
+            }
+        };
+        Some(Tree::Atom(format!("%fasl-p{}", i + 1)))
+    }
+
+    fn is_open(&self, a: &str, inner: &[String]) -> bool {
+        self.open.contains(a) && !inner.iter().any(|b| b == a)
+    }
+
+    fn walk(&mut self, t: &Tree, at: Place, inner: &mut Vec<String>) -> Option<Tree> {
+        let l = match t {
+            Tree::Atom(a) if a.starts_with('$') || a.starts_with("%p.") => return None,
+            Tree::Atom(a) if self.is_open(a, inner) => return self.leaf(t, at),
+            Tree::Atom(_) => return Some(t.clone()),
+            Tree::List(l) => l,
+        };
+        let head = t.head();
+        if let (Some("select"), [_, Tree::Atom(m), _]) = (head, &l[..])
+            && self.is_open(m, inner)
+        {
+            return self.leaf(t, at);
+        }
+        let mark = inner.len();
+        let out = self.children(head, l, inner);
+        inner.truncate(mark);
+        out.map(Tree::List)
+    }
+
+    /// A form's children, its binders bound for those after them.
+    fn children(&mut self, head: Option<&str>, l: &[Tree], inner: &mut Vec<String>) -> Option<Vec<Tree>> {
+        let name = |t: &Tree| match t {
+            Tree::Atom(a) => Some(a.clone()),
+            Tree::List(b) => match b.first() {
+                Some(Tree::Atom(a)) => Some(a.clone()),
+                _ => None,
+            },
+        };
+        let mut out = Vec::with_capacity(l.len());
+        for (i, c) in l.iter().enumerate() {
+            let kept = match (head, i, c) {
+                (_, 0, Tree::Atom(a)) if self.is_open(a, inner) => return None,
+                (_, 0, _) => c.clone(),
+                // A field's name, and its type.
+                (Some("productof" | "sumof"), _, Tree::List(f)) if f.len() == 2 => Tree::List(vec![f[0].clone(), self.walk(&f[1], Place::Type, inner)?]),
+                // A procedure's parameters: each a type, or `(x : T)`.
+                (Some("subr"), 2, Tree::List(ps)) => {
+                    let mut kept = Vec::with_capacity(ps.len());
+                    for p in ps {
+                        kept.push(match p {
+                            Tree::List(v) if v.len() == 3 && matches!(&v[1], Tree::Atom(c) if c == ":") => {
+                                inner.extend(name(&v[0]));
+                                Tree::List(vec![v[0].clone(), v[1].clone(), self.walk(&v[2], Place::Type, inner)?])
+                            }
+                            p => self.walk(p, Place::Type, inner)?,
+                        });
+                    }
+                    Tree::List(kept)
+                }
+                // Binders, bound in what follows.
+                (Some("poly" | "dlambda"), 1, Tree::List(bs)) => {
+                    inner.extend(bs.iter().filter_map(name));
+                    c.clone()
+                }
+                (Some("mu"), 1, Tree::Atom(n)) => {
+                    inner.push(n.clone());
+                    c.clone()
+                }
+                // A module's components: each name bound after it.
+                (Some("moduleof"), _, Tree::List(comp)) if comp.len() == 3 => {
+                    let at = if comp[0].head_atom() == Some("val") { Place::Type } else { Place::Unknown };
+                    let kept = match comp[0].head_atom() {
+                        Some("abs") => c.clone(),
+                        _ => Tree::List(vec![comp[0].clone(), comp[1].clone(), self.walk(&comp[2], at, inner)?]),
+                    };
+                    inner.extend(name(&comp[1]));
+                    kept
+                }
+                _ => self.walk(c, place_of(head, i), inner)?,
+            };
+            out.push(kept);
+        }
+        Some(out)
+    }
+}
+
+/// Text `text` (an expression or a type, as printed) with each type or
+/// effect it has at least twice, of at least `least` characters, named
+/// once: the definitions, smallest first, each naming those before it;
+/// and the text naming them. A name bound outside the subterm (a maker's
+/// parameter's `select`, a module's description, a `poly`'s variable) is
+/// a parameter of it, a family, `(dlambda ((%fasl-p1 type) …) T)`, applied
+/// to it where it stands (the user's), so that the subterms that differ in
+/// those alone are one. So a type written out many times is read once, one
+/// node where it is read, as it was where it was made.
+pub fn factored(text: &str, prefix: &str, least: usize) -> Option<(Vec<String>, String)> {
+    let tree = Tree::read(text)?;
+    let mut open = std::collections::HashSet::new();
+    tree.bound(&mut open);
+    // Each subterm's skeleton, by its text and its parameters' kinds.
+    type Key = (String, Vec<Place>);
+    fn skeleton(t: &Tree, open: &std::collections::HashSet<String>) -> Option<(Key, Tree, Vec<Tree>)> {
+        if !t.head().is_some_and(|h| TYPE_HEADS.contains(&h)) {
+            return None;
+        }
+        let mut s = Skeleton { open, leaves: Vec::new() };
+        let body = s.walk(t, Place::Unknown, &mut Vec::new())?;
+        let kinds = s.leaves.iter().map(|(_, k)| *k).collect();
+        Some(((body.text(), kinds), body, s.leaves.into_iter().map(|(l, _)| l).collect()))
+    }
+    let mut counts: HashMap<Key, (usize, Tree)> = HashMap::new();
+    fn count(t: &Tree, open: &std::collections::HashSet<String>, least: usize, counts: &mut HashMap<Key, (usize, Tree)>) {
+        let Tree::List(l) = t else { return };
+        if let Some((key, body, _)) = skeleton(t, open)
+            && key.0.len() >= least
+        {
+            counts.entry(key).or_insert((0, body)).0 += 1;
+        }
+        l.iter().for_each(|c| count(c, open, least, counts));
+    }
+    count(&tree, &open, least, &mut counts);
+    let mut chosen: Vec<(Key, Tree)> = counts.into_iter().filter(|(_, (n, _))| *n >= 2).map(|(k, (_, b))| (k, b)).collect();
     if chosen.is_empty() {
         return None;
     }
-    chosen.sort_by_key(|(s, _)| s.len());
-    let names: HashMap<String, String> = chosen.iter().enumerate().map(|(i, (s, _))| (s.clone(), format!("{prefix}{}", i + 1))).collect();
-    fn named(t: &Tree, names: &HashMap<String, String>, top: bool) -> Tree {
-        if let Tree::List(l) = t {
-            if !top && let Some(n) = names.get(&t.text()) {
-                return Tree::Atom(n.clone());
-            }
-            return Tree::List(l.iter().map(|c| named(c, names, false)).collect());
+    chosen.sort_by(|a, b| a.0.0.len().cmp(&b.0.0.len()).then_with(|| a.0.cmp(&b.0)));
+    let names: HashMap<Key, String> = chosen.iter().enumerate().map(|(i, (k, _))| (k.clone(), format!("{prefix}{}", i + 1))).collect();
+    // Each subterm chosen, its family applied to its arguments.
+    fn named(t: &Tree, open: &std::collections::HashSet<String>, names: &HashMap<Key, String>, top: bool) -> Tree {
+        let Tree::List(l) = t else { return t.clone() };
+        if !top
+            && let Some((key, _, args)) = skeleton(t, open)
+            && let Some(n) = names.get(&key)
+        {
+            return match args.is_empty() {
+                true => Tree::Atom(n.clone()),
+                false => Tree::List(std::iter::once(Tree::Atom(n.clone())).chain(args).collect()),
+            };
         }
-        t.clone()
+        Tree::List(l.iter().map(|c| named(c, open, names, false)).collect())
     }
-    let defs = chosen.iter().map(|(s, t)| (names[s].clone(), named(t, &names, true).text())).collect();
-    Some((defs, named(&tree, &names, false).text()))
+    let defs: Vec<(String, String)> = chosen
+        .iter()
+        .map(|(key, body)| {
+            let n = &names[key];
+            let mut inner = open.clone();
+            inner.extend((1..=key.1.len()).map(|i| format!("%fasl-p{i}")));
+            let body = named(body, &inner, &names, true).text();
+            let effect = body.starts_with("(maxeff");
+            let def = match (key.1.is_empty(), effect) {
+                (true, true) => format!("(define-effect {n} {body})"),
+                (true, false) => format!("(define-type {n} {body})"),
+                (false, _) => {
+                    let ps: Vec<String> = key.1.iter().enumerate().map(|(i, k)| format!("(%fasl-p{} {})", i + 1, k.kind().expect("a kind"))).collect();
+                    format!("(define-type {n} (dlambda ({}) {body}))", ps.join(" "))
+                }
+            };
+            (n.clone(), def)
+        })
+        .collect();
+    // Each after those it names: a family is known once it is defined, so a
+    // body that applies one comes after it, whatever their sizes (a `poly`'s
+    // own variable is shorter than the parameter it is in a part of it).
+    let at: HashMap<&str, usize> = defs.iter().enumerate().map(|(i, (n, _))| (n.as_str(), i)).collect();
+    let uses: Vec<Vec<usize>> = defs
+        .iter()
+        .map(|(n, d)| {
+            let mut found = Vec::new();
+            if let Some(t) = Tree::read(d) {
+                t.each_atom(&mut |a| {
+                    if a != n
+                        && let Some(&j) = at.get(a)
+                    {
+                        found.push(j);
+                    }
+                });
+            }
+            found
+        })
+        .collect();
+    let mut order = Vec::with_capacity(defs.len());
+    let mut placed = vec![false; defs.len()];
+    fn place(i: usize, uses: &[Vec<usize>], placed: &mut [bool], order: &mut Vec<usize>) {
+        if std::mem::replace(&mut placed[i], true) {
+            return;
+        }
+        for &j in &uses[i] {
+            place(j, uses, placed, order);
+        }
+        order.push(i);
+    }
+    for i in 0..defs.len() {
+        place(i, &uses, &mut placed, &mut order);
+    }
+    let defs = order.into_iter().map(|i| defs[i].1.clone()).collect();
+    Some((defs, named(&tree, &open, &names, false).text()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::factored;
+
+    /// A type that differs between its uses only in a name bound outside
+    /// it, a maker's parameter's `select` here, is one family applied to
+    /// each; a closed one, a plain abbreviation; an effect, by `define-effect`.
+    #[test]
+    fn open_subterms_are_families_applied() {
+        let text = include_str!("fasl-open-subterms.txt").trim();
+        let (defs, made) = factored(text, "%fasl:", 20).expect("factored");
+        let all = defs.join("\n");
+        assert!(all.contains("(dlambda ((%fasl-p1 type)) (listof %fasl-p1 acyclic))"), "{all}");
+        assert!(all.contains("(ref (%fasl:1 %fasl-p1) @ed)"), "{all}");
+        assert!(all.contains("(define-effect"), "{all}");
+        assert!(made.contains("(select m-a t)") && made.contains("(select m-b t)"), "{made}");
+        assert!(!made.contains("(ref (listof"), "{made}");
+    }
+
+    /// A name bound inside the subterm itself does not keep it from being
+    /// named: it is closed.
+    #[test]
+    fn a_subterm_binding_its_own_names_is_closed() {
+        let text = "(productof (a (poly ((v type)) (subr pure (v (listof v acyclic)) v))) \
+                               (b (poly ((v type)) (subr pure (v (listof v acyclic)) v))))";
+        let (defs, _) = factored(text, "%fasl:", 20).expect("factored");
+        assert!(defs.iter().any(|d| d.starts_with("(define-type %fasl:") && d.contains("(poly ((v type))") && !d.contains("dlambda")), "{defs:?}");
+    }
 }

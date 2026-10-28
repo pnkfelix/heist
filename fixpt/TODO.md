@@ -3403,13 +3403,24 @@ the makers (`docs/research/fasl.md`). In order:
    in a table of cyclic types, so that equal recursive types are one node.
    Now each `mu` read is a node of its own (a link, not internable), and
    comparing two equal ones is coinductive (`k-strail-in?`).
-3. **Interning in the Rust checker**, which has none, only if its costs
-   show again: its exceptions those of the FX-26 checker's (`->*` marks,
-   standard bindings, recursive bindings).
-4. **The factoring's test of closedness scoped**: a subterm naming any name
-   bound anywhere in the interface (a `moduleof`'s description names) is
-   not factored, which leaves 38 KB in `base.fx`'s interface with only 7
-   abbreviations.
+3. **Interning in the Rust checker**, which has none: next (the user's,
+   2026-10-28: it had been put off too long). Its costs have shown twice,
+   in the substitution a `.fasl`'s families made the Rust checker do, which
+   a memo of applications only works around. As the FX-26 checker's: by
+   parts (`k-ty-new`), a substitution's cycles by their minimal form, the
+   same exceptions (`->*` marks, standard bindings, recursive bindings),
+   so that both print alike.
+4. ~~**The factoring's test of closedness scoped**~~ (done, 2026-10-28,
+   the user's design): a subterm that names what is bound outside it (a
+   maker's parameter's `select`, a module's description, a `poly`'s
+   variable) is a family, `(dlambda ((%fasl-p1 type) …) T)`, applied to
+   them, each parameter's kind by its place; effects too, by
+   `define-effect` or a family. Applications memoized by the function and
+   what it is given, in both checkers (`fun_apps`, `k-applied`), and the
+   Rust parser no longer prints a family's body at each application. The
+   interface text of `frame.fx` 38 KB to 13 KB, `base.fx` 39 KB to 25 KB,
+   `process.fx` 15 KB to 5.5 KB; Heist's start-up 0.52 s to 0.50 s.
+   Without the memos the families cost more than the text saved.
 5. **Factoring for plain module files' and programs' `.fasl`s**, not only
    makers'; a program's abbreviations top-level `%fasl:` types, which both
    printers must then skip. A program's `.fasl` now names types by the
@@ -3419,10 +3430,43 @@ the makers (`docs/research/fasl.md`). In order:
    source), so what is left to factor is what no abbreviation names.
 6. **Substituting a call's arguments into a dependent maker's type**
    (`k-subst-memo`, about 10%): what is left after 2 and 4; whether the
-   memo can last across calls of the same maker.
+   memo can last across calls of the same maker. Partly done (2026-10-28):
+   a module type's parts are substituted in one substitution, one memo
+   and one interning walk (`k-subst-all`), not one each, so a recursive
+   type they share is copied once (Heist's start-up through `eldoc.fx`
+   1.25 s to 0.77 s from `.fasl`s, 3.95 s to 3.65 s from source; s7st
+   unchanged).
 7. **The interning tables** (`k-ty-new`, `bucket-find`, `rehash-*`, some
    15-20%): their hashing and growth, and whether the budget and reset
    churn them.
 8. **Collections** (about 10%): what these checks allocate.
 9. **Reading the images** (about 3%): a mapping of the file, not a read
    and a copy, as for the front end's cache.
+11. ~~**Native code kept in a `.fasl`**~~ (done, 2026-10-28), as
+   `docs/research/fasl.md` decided (item 2), where the first version kept
+   cellular words only and compiled them natively at every load. Native
+   code's call-outs are fields now, a tagged immediate (`Value::callout`),
+   which every image carries encoded and a loader's machine numbers
+   (`fixpt_heap::CalloutMap`); its globals were fields already. Heist's
+   editor through `eldoc.fx` 0.59 s to 0.52 s. A `.fasl` of words alone
+   kept as an option (`compile-file --cellular`, the user's): 3.2 MB to
+   native's 6.0 MB, 0.58 s.
+12. ~~**Guards test a definition's stamp, not a count of writes**~~ (done,
+   2026-10-28, the user's choice): a global's cell holds its definition's
+   stamp (`Fx26Session::definition_stamps`), the same in every session for
+   the same definition, so that code a `.fasl` keeps finds its guards hold
+   where they did, and fail where a definition changed at the same type
+   (which a count, 1 in both sessions, did not tell; the `.fasl`s of
+   programs had counted every earlier global on by 2^40 so that none
+   held). s7st's `vec5e5` from native `.fasl`s 93 ms to 77 ms. Not done:
+   a REPL's `,compile-file` after a `set!` keeps a guard of the count
+   after it, which another session could meet. (`map2e5` from either kind
+   of `.fasl`, 250 ms against 229 ms from source over 3 runs, is when the
+   major collections fall, not the code: a load from `.fasl`s makes far
+   less garbage, 140 M words against 305 M, so its budget runs out inside
+   the timed runs; over 20 runs 220 ms against 215-227 ms.)
+10. ~~**The module files built in given `.fasl`s**~~ (done, 2026-10-28):
+   in the cache directory, written by the first run that loads one
+   (`fasl::path_for_load`, `Fx26Session::cache_built_ins`). Heist's
+   editor loads `fx26:eager-reader.fx` and `fx26:table.fx`, checked from
+   source each start before: 0.77 s to 0.59 s.

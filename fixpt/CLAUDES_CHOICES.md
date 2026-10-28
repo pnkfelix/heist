@@ -2512,3 +2512,184 @@ of `TODO.md` §141, working on my own.
   and 3.95 s from source (was 4.53 s); s7st unchanged (1.08 s).
 - Not yet: a recursive type read from source (`define-type`, `mu`,
   `listof`) interned the same way; it would join copies written twice.
+
+### A module's parts substituted together (the same day)
+
+- **Profile at 1.25 s**: the new interning walk about 10% inclusive
+  (`k-cz-visit`; `k-cz-targets` 5%, a form and a lookup for each class of
+  a cycle), substitution about 9% (`k-subst-memo`), most of both under
+  `k-subst-each`; subtyping down to 1.4%; collection 175 ms of 1.21 s.
+- **A bigger nursery, measured and dropped**: 1, 2, 4 and 8 M words gave
+  1.21, 1.24, 1.25 and 1.33 s. What survives a minor collection is type
+  nodes that live on, so a bigger nursery only copies them later.
+- **What `k-subst-each` did**: a module type's parts, each its own
+  `k-subst`, so its own memo and its own interning walk. A recursive type
+  that several parts name (all of a module's values that take its buffer
+  type) was copied, and minimized, once for each part. Now one
+  substitution for all the parts (`k-subst-all`, in `check-subst.fx`):
+  one memo, and one walk over all the roots (`k-intern-made-all`).
+- Result: Heist's start-up through `eldoc.fx` 0.77 s from `.fasl`s (was
+  1.25 s), 3.65 s from source (was 3.95 s); s7st unchanged (1.08 s, 3.95 s
+  from source); the suite passes (854).
+- Kept for later, not done: a cycle found in `k-cyclic` from its first
+  class could give the other classes' nodes by walking both at once, not a
+  form and a lookup for each.
+
+### The built-in modules' `.fasl`s (the same day)
+
+- **Profile at 0.77 s**: the checker small now (substitution under 1%).
+  Timing prefixes: 0.17 s for any run, then `base.fx` alone 0.25 s, then
+  about 0.035 s a file. `base.fx` is 3.6 KB; what it costs is
+  `fx26:eager-reader.fx` (0.11 s alone), checked from source on every
+  start, as `fx26:table.fx` is (0.03 s) for `flow.fx`: a module file built
+  in has no directory for `fixpt compile-file` to write a `.fasl` in.
+  (`core.fx`, `rope.fx`, `keys.fx` and `screen.fx` had none in my copy
+  either; compiled, as the user's own would be.)
+- **Chosen**: a built-in's `.fasl` in the cache directory, one directory
+  for each executable and convention, named as the front end's cache is;
+  written by the run that loaded it from source, after the form that
+  loaded it, once a session; staleness not said (a rebuilt executable
+  would say it at every first run), the file made again. Rather than
+  asking the user to compile built-ins: they cannot name where the file
+  goes, and the front end's cache already writes there unasked.
+  `FIXPT_NO_CACHE` keeps none; directories not written for a month are
+  removed with the front end's old images.
+- **A bug it showed, older than it**: a type with a module's description
+  function, printed for a `.fasl` while the module's file was itself
+  read from one, named the function by another description's name,
+  `(desc bucket bucket)`, which does not read back (a description
+  function's name does not stand bare). Both printers now write a
+  description function in a `moduleof` as its `dlambda`. A test
+  (`a_description_function_reads_back_from_a_fasl_read_from_one`) fails
+  without it.
+- Result: Heist's start-up through `eldoc.fx` 0.59 s (was 0.77 s); the
+  suite passes (856), run twice, the cache cold then warm.
+
+### Native code kept in a `.fasl` (the same day)
+
+- **What a load cost, at 0.59 s**, timed in place: of `fasl_define`'s
+  0.25 s, 148 ms the FX-26 checker checking each `.fasl`'s type again,
+  78 ms compiling its procedures natively again (`native_procedures`),
+  18 ms reading and linking. The first version had kept cellular words
+  only, though `docs/research/fasl.md` (item 2, the user's) decided native
+  code by default. Not said in a summary then; it should have been.
+- **What tied native code to its machine**: only its call-out numbers,
+  immediates in the instructions (`mov rsi, n`); globals, constants and
+  other code were already fields of its code bloblet, Larceny's constant
+  vector (the user's point). The user's: put the numbers in fields.
+- **Designs dropped on the way, at the user's word**: two fixed fields of
+  a procedure's base and count (fragile: contiguity, positions); a table
+  object of call-outs (an object more each, too expensive).
+- **Chosen**: a field per call-out, a tagged immediate (`IMM_CALLOUT`,
+  `Value::callout`), its number in the machine's table; code loads it and
+  shifts (`callout_number`). The machine's own ten stay constants, every
+  machine numbering them alike. Both compilers, Rust (x86_64, arm64) and
+  FX-26, emit a placeholder load and give the field when the procedure is
+  done, so their bytes stay the same (the oracle test passes).
+- **Images map them** (the user's): `image_parts` and
+  `from_image_with_code` make each call-out its encoding and back, in the
+  pass that rebases references (`fixpt_heap::CalloutMap`, installed by
+  the machine). So the front end's cache no longer needs a fresh machine
+  (`restore_callouts` gone), and a `.fasl` keeps native code: its native
+  closures and code as they are, the native adapter a link
+  (`Link::Adapter`), nothing compiled at load. A `.fasl` for the native
+  convention is stale where no machine installs the map; a call-out a
+  machine does not have fails the load.
+- **A crash found on the way**: a test process with no map wrote raw
+  numbers, which another read. The machine installs the map when made.
+- Result: 0.52 s (was 0.59 s); `.fasl`s 6.0 MB; the suite passes (856).
+- **Not yet measured**: a run of the loaded code. A procedure compiled
+  code captured from a global is guarded by the cell's count of writes,
+  which differs in the session that loads it: such calls take the guard's
+  slower way.
+
+### Cellular `.fasl`s kept too (the same day)
+
+- The user's: keep native code in `.fasl`s, and keep cellular code as an
+  option. `compile-file --cellular` (and the REPL's) writes the earlier
+  image, words alone (`cellular_image`); the header says `code cellular`;
+  a loader in the native convention compiles its closures at load
+  (`native_procedures`), as before.
+- Measured, Heist through `eldoc.fx`: cellular 3.2 MB, 0.58 s; native
+  6.0 MB, 0.52 s. s7st's benchmarks, its interpreter from `.fasl`s: the
+  same but `vec5e5`, 93 ms native, 77 ms cellular, 71 ms from source, and
+  `map2e5`, 255 ms from either, 226 ms from source (not yet looked at).
+
+### Guards by stamps (the same day)
+
+- **The problem**: both kinds of guard (`global` in the native compiler,
+  `global-guard` in register code) test `cell.writes` against a number
+  compiled in. Across sessions the numbers mean nothing: a guard misses
+  for ever (slow: `vec5e5` 93 ms from native `.fasl`s), or matches by
+  coincidence (counts are small, 1 often) and runs an old procedure. The
+  `.fasl`s of programs had dodged that by counting every earlier global
+  on by 2^40, so that no guard ever held.
+- **Asked of the user**: identity of the value or a stamp. Identity
+  cannot cross sessions (a snapshot is a copy; linked by name, it would
+  pass for an edited definition). The user chose stamps.
+- **Chosen**: what the field holds, not how it is tested: no compiler
+  changed. A definition's stamp is a digest of its form, name, type and
+  the stamps of the globals it reads, if reading globals is all its
+  making does; else one of the process's own; a load's, its file's stamp.
+  The cell is left one short before the form is compiled (an existing
+  cell set, a new one planned: `Heap::plan_global_writes`), so that the
+  write that defines it leaves the stamp and the compilers' prediction
+  of their own write (`writes_expected`) still holds. `.fasl` loaders set
+  the stamp directly. A `set!` counts on from it.
+- **A regression measured and explained**: from source `vec5e5` 71 to
+  79 ms with stamps. Bisecting by definitions was not monotonic; the
+  instruction counts are the same (5.183e10 against 5.185e10), cycles
+  2-5% more: layout, a stamp's `mov` 10 bytes where a count's was 5.
+  Not a guard missing.
+- **Bugs found on the way**: definitions before the front end loaded went
+  unstamped (counts again, and the test of an edited definition saw the
+  old one): the pieces are loaded first. Handles taken for stamps were
+  never released (a test of redefinitions saw roots grow).
+- Result: `vec5e5` from native `.fasl`s 77 ms; the suite passes (858).
+
+### `map2e5` from `.fasl`s, looked at (the same day)
+
+- 250 ms from either kind of `.fasl` against 229 ms from source, timed
+  over 3 runs. Major collections from `.fasl`s copied 25 M words against
+  17 M, but the peak in use was the same (34.6 M), and so was what lived
+  after the last (13 M against 12 M): not data kept. Duplicates copied by
+  a program's `.fasl` were few (7923 objects copied, 6732 distinct).
+- What differs is when the majors fall: a load from `.fasl`s allocates
+  140 M words against 305 M, so the budget runs out later, inside the
+  timed runs, with a list of 200000 live. Over 20 runs: 220 ms from
+  `.fasl`s, 215-227 ms from source. Nothing changed.
+
+### Interfaces factored into families (the same day)
+
+- **Where the load went, at 0.52 s**: the FX-26 checker 128 ms and the
+  Rust checker 58 ms reading `.fasl`s' interfaces; of the FX-26 one's,
+  about half reading the text. `frame.fx`'s was 38 KB, a 484-character
+  type in it 21 times: the factoring refused what names a name bound in
+  the interface (§141, item 4).
+- **The user's design**: factor such a subterm into a `dlambda` over what
+  it names from outside, applied where it stands. Done by skeletons: the
+  names bound outside it, and `select`s of such modules, made parameters,
+  numbered as met, each kind by its place (a `ref`'s second a region, a
+  `subr`'s first an effect, …); a place whose kind is not known, not
+  factored. Effects (`maxeff`) too. Definitions in the order they name
+  each other (by size they were not: inside a `poly`, its variable is a
+  parameter longer than itself).
+- **The user's warning, measured**: families alone made start-up slower,
+  0.52 to 0.55 s: reading 18 ms less, the FX-26 check 13 ms more, the Rust
+  checker 18 ms more. Most of the Rust checker's was printing the family
+  at each application for a message it might make; then a memo of
+  applications in both checkers, by the function and its arguments (in
+  the Rust one a `select` by its names, which is what it is resolved by).
+  Result: reading 37 ms (was 58), the FX-26 check 135 (was 141), the Rust
+  checker 46 (was 59); start-up 0.50 s.
+- **The user's point taken**: a smaller `.fasl` is worth having for
+  itself (`frame.fx`'s interface 13 KB, `base.fx`'s 25 KB); and Rust
+  interning, put off too long, is next (§141, item 3), which the memo
+  only works around.
+- **Asked, and answered in words**: a library of multi-hole contexts, so
+  that a checker reasons about a family applied without substituting.
+  Not yet: a targeted form would keep an application unreduced and let
+  subtyping compare the same family's arguments (congruence), unfolding
+  otherwise; every consumer must then know the form. Worth it if the
+  checking half stays the larger.
+
