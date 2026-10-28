@@ -1,0 +1,17 @@
+sat
+((v1 0)
+ (v2 0)
+ (v3 0)
+ (v4 0))
+sat
+((v1 32)
+ (v2 25)
+ (v3 7)
+ (v4 63))
+unsat
+(error "line 14 column 24: model is not available")
+unsat
+(error "line 16 column 24: model is not available")
+unsat
+(error "line 22 column 24: model is not available")
+[exit 1]

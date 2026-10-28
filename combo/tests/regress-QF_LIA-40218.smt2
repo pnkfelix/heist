@@ -1,0 +1,16 @@
+; lockpick timeout
+; found by fuzz_smt.py, seed 40218
+(declare-const v1 Int)
+(declare-const v2 Int)
+(declare-const v3 Int)
+(declare-const v4 Int)
+(declare-const v5 Int)
+(declare-const v6 Bool)
+(declare-const v7 Int)
+(declare-const v8 Int)
+(assert (> (ite (= 2 v3) v7 10) 3))
+(push 1)
+(assert (> v8 (+ v2 v1 v2)))
+(assert (and (= (+ (+ v4 v2) (+ v2 v8 (abs v1))) v3) (<= (+ (+ v3 v3) (- (ite v6 v4 v2) v2) (abs (- v8))) (ite (>= (+ v4 v2) 2) v5 v3)) (= (abs v8) 3)))
+(pop 1)
+(check-sat)

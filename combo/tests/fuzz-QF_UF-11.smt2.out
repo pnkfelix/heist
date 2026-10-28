@@ -1,0 +1,13 @@
+sat
+((v1 false)
+ (v2 false)
+ (v3 false)
+ (v4 false)
+ (v5 true))
+sat
+((v1 false)
+ (v2 false)
+ (v3 false)
+ (v4 true)
+ (v5 true))
+[exit 0]

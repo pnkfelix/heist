@@ -107,3 +107,18 @@ commit that did it says so.
    (`s7st/prims.fx`): a Scheme world could link to them, rather than take
    them as primitives.
 
+## combo (`combo/`, `docs/combo.md`)
+
+lockpick, ported to FX-26 (2026-10-28): the same searches, and on 800 fuzz
+scripts byte for byte lockpick's answers. Left:
+- **Speed:** 1.0x lockpick on QF_LRA, 1.2x on QF_LIA, 1.5x on QF_BV; it
+  starts in 0.48 s against lockpick's 0.05 s. The blaster's string keys,
+  the term store's operator strings, Fixpt's calls of small procedures.
+- lockpick's unit tests (`test/*-test.scm`) as tests of the library.
+- An editor client of `--serve`, if one is wanted.
+
+## Fixpt
+
+- `docs/requests/fixpt-checkers-print-list-arguments.md`: the checkers
+  print an argument's list type differently in a refused program's message,
+  for the user to take to Fixpt.

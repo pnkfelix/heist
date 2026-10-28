@@ -1,0 +1,61 @@
+success
+success
+success
+success
+success
+success
+success
+success
+success
+success
+success
+sat
+((x 6)
+ (y 3)
+ (p true)
+ ((twice y) 6)
+ (lt true))
+(
+  (define-fun x () Int
+    6)
+  (define-fun y () Int
+    3)
+  (define-fun p () Bool
+    true)
+  (define-fun big () Bool
+    (> (twice x) 10))
+)
+success
+sat
+((x 6)
+ (p false))
+unsat
+(:reason-unknown "unknown")
+true
+a "quoted" string
+(error "line 24 column 20: invalid declaration, constant 'x' already declared")
+(error "line 25 column 15: invalid assert command, term is not Boolean")
+(error "line 26 column 19: Sort mismatch at argument for function bvadd, supplied sort is Int")
+(error "line 27 column 17: unknown constant undefined")
+(error "line 28 column 19: invalid function application, wrong number of arguments for twice")
+(error "line 29 column 6: invalid pop command, argument is greater than the current stack depth")
+(:name "combo")
+(error "line 31 column 29: unknown parameter 'unknown-option'")
+unsupported
+(error "line 34 column 21: combo: nonlinear arithmetic is not supported")
+(error "line 35 column 23: combo: div is supported by nonzero constants only")
+sat
+((r (- 1.0))
+ ((to_int r) (- 1))
+ ((is_int r) true))
+sat
+((b #x95)
+ (((_ zero_extend 4) ((_ extract 7 4) b)) #x09)
+ ((concat b #b1) #b100101011)
+ ((bvashr b #x02) #xe5))
+sat
+(
+  (define-fun x () Bool
+    false)
+)
+[exit 1]

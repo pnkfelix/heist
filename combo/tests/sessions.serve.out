@@ -1,0 +1,10 @@
+ready 
+smt a	sat\n((x 4))\n	more
+smt b	sat\n	more
+smt a		more
+smt a	sat\n((x 4))\n	more
+smt b	((x false))\n	exit
+smt c	sat\n(error "line 1 column 10: unexpected ')'")\n	stop
+closed a
+smt a	(error "line 1 column 14: model is not available")\n	more
+[exit 0]

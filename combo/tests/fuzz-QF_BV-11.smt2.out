@@ -1,0 +1,25 @@
+sat
+((v1 #x00000000)
+ (v2 #xfedfdd65)
+ (v3 #xb6)
+ (v4 #x000000d0)
+ (v5 #x40))
+sat
+((v1 #x7f800380)
+ (v2 #xfedfdd65)
+ (v3 #xb6)
+ (v4 #x840009d0)
+ (v5 #x40))
+sat
+((v1 #x7f800380)
+ (v2 #xfedfdd65)
+ (v3 #xb6)
+ (v4 #x840009d0)
+ (v5 #x40))
+sat
+((v1 #x7f800380)
+ (v2 #xfedfdd65)
+ (v3 #xb6)
+ (v4 #x840009d0)
+ (v5 #x40))
+[exit 0]

@@ -1,0 +1,5 @@
+sat x=8 y=2
+sat x=7 y=3
+unsat
+sat b=255
+[exit 0]

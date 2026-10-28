@@ -1,0 +1,9 @@
+unsat
+(error "line 9 column 27: model is not available")
+unsat
+(error "line 14 column 27: model is not available")
+unsat
+(error "line 17 column 27: model is not available")
+unsat
+(error "line 21 column 27: model is not available")
+[exit 1]

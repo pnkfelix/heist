@@ -355,13 +355,17 @@ literal. Reasons are clause numbers, -1 for none."
 
 ;;; ------------------------------------------------------------ watches
 
-(define* watch-push! (subr cb-eff (sat-solver int int int) unit)
-  (lambda (s l blocker c)
-    (let* ((watches (s-watches s)) (wcount (s-wcount s)) (n (array-ref wcount l))
+"Watch clause c from literal l, with this blocker. (The arrays are given:
+Fixpt calls the accessors, rather than inlining them.)"
+(define* watch-push-in! (subr cb-eff ((arrayof ivec @cb) ivec int int int) unit)
+  (lambda (watches wcount l blocker c)
+    (let* ((n (array-ref wcount l))
            (ws (let ((ws (array-ref watches l)))
                  (if (< (+ n 1) (array-length ws)) ws
                      (let ((w (ivec-grow ws (* 2 (array-length ws)) 0))) (begin (array-set! watches l w) w))))))
       (begin (array-set! ws n blocker) (array-set! ws (+ n 1) c) (array-set! wcount l (+ n 2))))))
+(define* watch-push! (subr cb-eff (sat-solver int int int) unit)
+  (lambda (s l blocker c) (watch-push-in! (s-watches s) (s-wcount s) l blocker c)))
 
 (define* attach-clause! (subr cb-eff (sat-solver int) unit)
   (lambda (s c)
@@ -518,13 +522,21 @@ keep the rest of them."
 
 (define* propagate! (subr cb-eff (sat-solver) int)
   (lambda (s)
-    (let ((q0 (get (extract s qhead))) (trail (s-trail s)) (vals (s-vals s))
-          (watches (s-watches s)) (wcount (s-wcount s)) (cdb (get (extract s cdb))))
+    (let* ((q0 (get (extract s qhead))) (trail (s-trail s)) (vals (s-vals s))
+           (watches (s-watches s)) (wcount (s-wcount s)) (cdb (get (extract s cdb)))
+           (levels (s-levels s)) (reasons (s-reasons s)) (tpos (get (extract s tpos))) (level (s-nlevels s))
+           ;; imply!, here (Fixpt does not inline it): l is implied by clause c,
+           ;; at trail position tsize.
+           (imply (lambda ((l int) (c int) (tsize int))
+                    (let ((v (arithmetic-shift l -1)))
+                      (begin (array-set! vals l T) (array-set! vals (bitwise-xor l 1) F)
+                             (array-set! levels v level) (array-set! reasons v c) (array-set! tpos v tsize)
+                             (array-set! trail tsize l))))))
       (letrec ((go (subr cb-eff (int int int int) int)
                  (lambda (qhead tsize i j)
                    (if (>= qhead tsize)
                        (propagate-done! s qhead tsize (- qhead q0) -1)
-                       (let* ((fl (lit-neg (array-ref trail qhead)))
+                       (let* ((fl (bitwise-xor (array-ref trail qhead) 1))
                               (ws (array-ref watches fl))
                               (n (array-ref wcount fl)))
                          (if (= i n)
@@ -544,7 +556,7 @@ keep the rest of them."
                                              (if (= val F)
                                                  (begin (propagate-conflict! s fl (+ i 2) (+ j 2))
                                                         (propagate-done! s tsize tsize (+ 1 (- qhead q0)) c))
-                                                 (begin (imply! s other c tsize) (go qhead (+ tsize 1) (+ i 2) (+ j 2))))))))))
+                                                 (begin (imply other c tsize) (go qhead (+ tsize 1) (+ i 2) (+ j 2))))))))))
                                 ((= (array-ref vals blocker) T)
                                  (begin (array-set! ws j blocker) (array-set! ws (+ j 1) c) (go qhead tsize (+ i 2) (+ j 2))))
                                 (else
@@ -560,7 +572,7 @@ keep the rest of them."
                                              (if (> p 0)
                                                  (let ((l (array-ref k p)))
                                                    (begin (array-set! k 2 l) (array-set! k p fl)
-                                                          (watch-push! s l first c)
+                                                          (watch-push-in! watches wcount l first c)
                                                           (go qhead tsize (+ i 2) j)))
                                                  ;; The clause is unit or conflicting.
                                                  (begin
@@ -568,7 +580,7 @@ keep the rest of them."
                                                    (if (= (array-ref vals first) F)
                                                        (begin (propagate-conflict! s fl (+ i 2) (+ j 2))
                                                               (propagate-done! s tsize tsize (+ 1 (- qhead q0)) c))
-                                                       (begin (imply! s first c tsize) (go qhead (+ tsize 1) (+ i 2) (+ j 2))))))))))))))))))))
+                                                       (begin (imply first c tsize) (go qhead (+ tsize 1) (+ i 2) (+ j 2))))))))))))))))))))
         (go q0 (s-trail-size s) 0 0)))))
 
 ;;; ------------------------------------------------------------ conflict analysis
@@ -611,19 +623,22 @@ level are counted in `pathc`, the others go to the learnt clause. `index`:
 where to go on looking down the trail."
 (define analyze-scan (subr cb-eff (sat-solver int int int int) ints)
   (lambda (s c k pathc index)
-    (let ((cls (cl s c)))
-      (if (< k (array-length cls))
-          (let* ((q (array-ref cls k)) (v (lit-var q)) (seen (s-seen s)) (levels (s-levels s)))
-            (if (and (= 0 (array-ref seen v)) (> (array-ref levels v) 0))
-                (begin
-                  (array-set! seen v 1)
-                  (bump-var! s v)
-                  (if (>= (array-ref levels v) (s-nlevels s))
-                      (analyze-scan s c (+ k 1) (+ pathc 1) index)
-                      (begin (set (extract s aout) (cons q (get (extract s aout))))
-                             (analyze-scan s c (+ k 1) pathc index))))
-                (analyze-scan s c (+ k 1) pathc index)))
-          (analyze-next s pathc index)))))
+    (let ((cls (cl s c)) (seen (s-seen s)) (levels (s-levels s)) (level (s-nlevels s)))
+      (letrec ((go (subr cb-eff (int int) ints)
+                 (lambda (k pathc)
+                   (if (< k (array-length cls))
+                       (let* ((q (array-ref cls k)) (v (arithmetic-shift q -1)))
+                         (if (and (= 0 (array-ref seen v)) (> (array-ref levels v) 0))
+                             (begin
+                               (array-set! seen v 1)
+                               (bump-var! s v)
+                               (if (>= (array-ref levels v) level)
+                                   (go (+ k 1) (+ pathc 1))
+                                   (begin (set (extract s aout) (cons q (get (extract s aout))))
+                                          (go (+ k 1) pathc))))
+                             (go (+ k 1) pathc)))
+                       (analyze-next s pathc index)))))
+        (go k pathc)))))
 
 "The next marked literal down the trail: the first UIP if it is the last
 of its level, else resolve with its reason."

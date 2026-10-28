@@ -1,0 +1,20 @@
+c vars 3
+c clauses 0
+c learnts 0
+c conflicts 0
+c decisions 1
+c propagations 1
+c restarts 1
+s SATISFIABLE
+v -1 -2 -3 0
+[exit 10]
+c vars 3
+c clauses 3
+c learnts 0
+c conflicts 0
+c decisions 1
+c propagations 3
+c restarts 1
+s SATISFIABLE
+v -1 -2 -3 0
+[exit 10]

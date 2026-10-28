@@ -466,11 +466,12 @@ copies times the bound."
               (fail! s (string-append "invalid number of arguments to " (sexp->string head)))
               (if (and (> (letrec ((go (subr cb-eff (ints int) int) (lambda (l t) (if (null? l) t (go (cdr l) (+ t (if (< (car l) 0) (- 0 (car l)) (car l)))))))) (go cs 0)) 64)
                        (not (letrec ((go (subr cb-eff (ints) bool) (lambda (l) (or (null? l) (and (or (= (car l) 1) (= (car l) -1)) (go (cdr l))))))) (go cs))))
-                  (let ((total (mk-add (letrec ((go (subr cb-eff (ints ints) ints)
-                                                    (lambda (cs as) (if (null? cs) nil
-                                                                        (let ((t (mk-ite (car as) (num-int (car cs) int-sort) (num-int 0 int-sort)))) (cons t (go (cdr cs) (cdr as))))))))
-                                         (go cs args))))
-                        (kt (num-int k int-sort)))
+                  ;; kt first: lockpick's `let` under Twobit (inits right to left).
+                  (let* ((kt (num-int k int-sort))
+                         (total (mk-add (letrec ((go (subr cb-eff (ints ints) ints)
+                                                     (lambda (cs as) (if (null? cs) nil
+                                                                         (let ((t (mk-ite (car as) (num-int (car cs) int-sort) (num-int 0 int-sort)))) (cons t (go (cdr cs) (cdr as))))))))
+                                          (go cs args)))))
                     (cond ((string=? name "pbeq") (mk-arith-eq total kt)) ((string=? name "pble") (mk-le total kt)) (else (mk-ge total kt))))
                   (letrec ((copies (subr cb-eff (int int ints) ints) (lambda (n x l) (if (= n 0) l (copies (- n 1) x (cons x l)))))
                            (go (subr cb-eff (ints ints int ints) int)
@@ -598,7 +599,7 @@ copies times the bound."
                 (begin
                   (cond ((string=? key ":name") (out! s "(:name \"combo\")\n"))
                         ((string=? key ":version") (out! s "(:version \"0.1\")\n"))
-                        ((string=? key ":reason-unknown") (out! s (str* (list "(:reason-unknown " (sexp->string (sx-sym (smt-reason-unknown smt))) ")\n"))))
+                        ((string=? key ":reason-unknown") (out! s (str* (list "(:reason-unknown " (sexp->string (sx-str (smt-reason-unknown smt))) ")\n"))))
                         ((string=? key ":all-statistics")
                          (out! s (str* (list "("
                                              (letrec ((go (subr cb-eff ((listof stat acyclic) bool) string)

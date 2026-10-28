@@ -6,6 +6,7 @@
 //!   s7st::NAME         s7st/tests/run.sh NAME
 //!   s7st::prelude      s7st/gen-prelude.py --check
 //!   cfa::FILE          cfa/tests/run.sh FILE (NAME.fx or NAME.scm)
+//!   combo::FILE        combo/tests/run.sh FILE (NAME.smt2, .cnf, .icnf, .serve or .fx)
 //!   conformance::LIB   s7st/conformance/run.sh LIB (its summary all passed);
 //!                      the libraries s7st does not have yet, ignored
 //! Each needs Fixpt built (`cd fixpt && cargo build --release -p fixpt-cli`).
@@ -87,6 +88,15 @@ fn main() {
     for n in cfa_tests {
         let sh = cfa.join("run.sh");
         trials.push(Trial::test(format!("cfa::{n}"), move || run(script(&sh, &[&n])).map(drop)));
+    }
+
+    let combo = h.join("combo/tests");
+    let mut combo_tests: Vec<String> = [".smt2", ".cnf", ".icnf", ".serve", ".fx"].iter()
+        .flat_map(|x| names(&combo, x).into_iter().map(move |n| n + x)).collect();
+    combo_tests.sort();
+    for n in combo_tests {
+        let sh = combo.join("run.sh");
+        trials.push(Trial::test(format!("combo::{n}"), move || run(script(&sh, &[&n])).map(drop)));
     }
 
     for &lib in LIBRARIES {

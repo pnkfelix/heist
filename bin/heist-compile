@@ -9,7 +9,8 @@
 # TARGET: `editor` (the default): the modules base.fx loads, then each file
 #   of editor/program, in order; `s7st`: s7st's program, one `.fasl` a file
 #   (slow: minutes); `cfa`: the CFA's program, s7st's files (but main.fx)
-#   then cfa/'s, a `.fasl` beside each; `all`: the three.
+#   then cfa/'s, a `.fasl` beside each; `combo`: combo's module files, in
+#   the order combo/program lists them; `all`: the four.
 # MODE:
 #   --force        compile every file (the default, until Fixpt can say
 #                  which are stale by its own digests)
@@ -40,8 +41,8 @@ for a in "$@"; do
     --timestamps) mode=timestamps;;
     --clean) mode=clean;;
     --dry-run|-n) dry=1;;
-    editor|s7st|cfa) targets="$targets $a";;
-    all) targets="editor s7st cfa";;
+    editor|s7st|cfa|combo) targets="$targets $a";;
+    all) targets="editor s7st cfa combo";;
     -h|--help) sed -n '2,/^heist=/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 0;;
     *) echo "heist-compile: unknown argument \`$a' (--help)" >&2; exit 2;;
   esac
@@ -55,6 +56,7 @@ files_of() {
       sed -n 's/.*(load-module "\([^":]*\.fx\)").*/\1/p' "$heist/editor/base.fx"
       cat "$heist/editor/program" | tr ' ' '\n' | sed '/^$/d';;
     s7st) cat "$heist/s7st/program" | tr ' ' '\n' | sed '/^$/d'; echo main.fx;;
+    combo) cat "$heist/combo/program" | tr ' ' '\n' | sed '/^$/d';;
     # Paths from Heist's directory: the program is of two directories.
     cfa) for d in s7st cfa; do
            cat "$heist/$d/program" | tr ' ' '\n' | sed "/^\$/d; s|^|$d/|"

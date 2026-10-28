@@ -1,0 +1,12 @@
+sat
+((v1 false)
+ (v2 false)
+ (v3 false)
+ (v4 false))
+unsat
+(error "line 13 column 24: model is not available")
+unsat
+(error "line 20 column 24: model is not available")
+unsat
+(error "line 23 column 24: model is not available")
+[exit 1]

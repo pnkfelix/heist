@@ -1,0 +1,8 @@
+smt a	(declare-const x Int)\n(assert (> x 3))\n(check-sat)\n(get-value (x))\n
+smt b	(declare-const x Bool)(assert (not x))(check-sat)
+smt a	(assert (< x 10)) (check-
+smt a	sat)(get-value (x))
+smt b	(get-value (x)) (exit)
+smt c	(check-sat))
+close a
+smt a	(get-value (x))

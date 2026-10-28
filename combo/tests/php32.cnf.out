@@ -1,0 +1,18 @@
+c vars 6
+c clauses 0
+c learnts 0
+c conflicts 0
+c decisions 0
+c propagations 0
+c restarts 0
+s UNSATISFIABLE
+[exit 20]
+c vars 6
+c clauses 9
+c learnts 0
+c conflicts 2
+c decisions 1
+c propagations 10
+c restarts 1
+s UNSATISFIABLE
+[exit 20]
