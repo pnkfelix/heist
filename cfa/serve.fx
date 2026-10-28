@@ -125,10 +125,6 @@ call, and whether it may call code not known."
 
 ;;; ------------------------------------------------------------ worlds
 
-(define* cf-directory-of (subr spin (string) string)
-  (lambda (p) (letrec ((go (subr spin (int) string)
-                         (lambda (i) (cond ((< i 0) "") ((char=? (string-ref p i) #\/) (substring p 0 (+ i 1))) (else (go (- i 1)))))))
-                (go (- (string-length p) 1)))))
 "The world of `path`: its key."
 (define* cf-world-key (subr spin (string) string)
   (lambda (p) (if (cf-scheme-file? p) (string-append "scheme:" p) (string-append "fx26:" (cf-directory-of p)))))
@@ -268,12 +264,21 @@ analysis, if it runs, stopped."
       (else y
         (if (null? (get cf-pending)) #u
             (let* ((key (cf-world-key (extract (car (get cf-pending)) path)))
-                   (paths (cf-world-files key))
-                   (texts (letrec ((go (subr (maxeff (io fs-read) spin (read @cf)) (strings) strings)
-                                         (lambda (l) (if (null? l) nil (cons (cf-dataset-text (car l)) (go (cdr l)))))))
-                            (go paths))))
+                   (scheme (and (>= (string-length key) 7) (string=? (substring key 0 7) "scheme:")))
+                   (texts-of (lambda ((ps strings))
+                               (letrec ((go (subr (maxeff (io fs-read) spin (read @cf)) (strings) strings)
+                                              (lambda (l) (if (null? l) nil (cons (cf-dataset-text (car l)) (go (cdr l)))))))
+                                 (go ps))))
+                   (own (cf-world-files key))
+                   ;; A Scheme file's world: the libraries it imports too (scheme.fx).
+                   (paths (if scheme
+                              (letrec ((go (subr spin ((listof sc-world-file acyclic)) strings)
+                                             (lambda (l) (if (null? l) nil (cons (extract (car l) path) (go (cdr l)))))))
+                                (go (sc-world-files own (texts-of own))))
+                              own))
+                   (texts (texts-of paths)))
               (begin
-                (if (and (>= (string-length key) 7) (string=? (substring key 0 7) "scheme:"))
+                (if scheme
                     (cf-start! cf-scheme (sc-world paths texts) (get cf-serve-depth))
                     (cf-start! cf-fx26 (fx-world paths texts) (get cf-serve-depth)))
                 (set cf-job-now (sum job (product (key key) (paths paths)))))))))))

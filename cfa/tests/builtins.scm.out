@@ -1,11 +1,12 @@
 builtins.scm:84-85: n: number
-builtins.scm:109-110: n: ? | number
+builtins.scm:109-110: n: number
 builtins.scm:132-135: inc: inc
 builtins.scm:136-139: dbl: dbl
 builtins.scm:212-213: x: number
 builtins.scm:214-215: y: number
 builtins.scm:269-272: inc: inc
-builtins.scm:322-323: calls ?
+builtins.scm:301-308: calls c/λ
+builtins.scm:322-323: calls continuation
 builtins.scm:324-327: dbl: dbl
 builtins.scm:374-375: f: inc | dbl
 builtins.scm:378-380: fs: pair

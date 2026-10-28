@@ -172,11 +172,60 @@ result is data of the kinds `s7-builtin-result` says."
 (define* sc-all-in? (subr spin (strings strings) bool)
   (lambda (l in) (or (null? l) (and (cf-member? (car l) in) (sc-all-in? (cdr l) in)))))
 
+"The names the world uses but neither defines nor has built in: each is
+unknown, a source of unknown (said by `bin/cfa --progress`)."
+(define sc-undefined (ref strings @cf) (new nil))
+"The globals defined by `make-parameter`, by name (found before
+translating, so that each one's cell is a global)."
+(define sc-params (ref strings @cf) (new nil))
+(define* sc-param-global? (subr (maxeff spin (read @cf)) (string) bool) (lambda (n) (cf-member? n (get sc-params))))
+"The items of `(list a …)`, a call of the built-in (nil: another node)."
+(define* sc-list-items (subr cf-eff (s7-node) s7-nodes)
+  (lambda (n) (tagcase (extract n form)
+                (n-call x (tagcase (extract (extract x op) form)
+                            (n-global g (if (and (string=? (s7-symbol-name (extract g name)) "list") (not (cf-global-defined? "list"))) (extract x args) nil))
+                            (else y nil)))
+                (else y nil))))
+"Whether a call is `(%parameterize (list …) (list …) thunk)`, of the
+prelude's `%parameterize`."
+(define* sc-parameterize? (subr cf-eff ((productof (op s7-node) (args s7-nodes))) bool)
+  (lambda (x)
+    (and (tagcase (extract (extract x op) form)
+           (n-global g (let ((n (s7-symbol-name (extract g name)))) (and (string=? n "%parameterize") (not (cf-global-defined? n)))))
+           (else y #f))
+         (= (length (extract x args)) 3)
+         (pair? (sc-list-items (car (extract x args)))))))
+"A built-in's name, without the space s7st puts first in those only its
+expander calls (`case`'s ` memv`)."
+(define* sc-unhidden (subr spin (string) string)
+  (lambda (n) (if (and (> (string-length n) 1) (char=? (string-ref n 0) #\space)) (substring n 1 (string-length n)) n)))
+"R6RS's fixnum and flonum arithmetic (`fx+`, `fl<?`, …) and Larceny's
+objects' sizes (`vector-like?`, `procedure-length`): first order, giving
+numbers and booleans."
+(define* sc-arith-proc? (subr spin (string) bool)
+  (lambda (n) (let ((k (string-length n)))
+                (or (and (> k 2) (or (string=? (substring n 0 2) "fx") (string=? (substring n 0 2) "fl")))
+                    (cf-member? n (list "vector-like?" "vector-like-length" "bytevector-like?" "bytevector-like-length" "procedure-length"
+                                        "fixnum?" "flonum?" "greatest-fixnum" "least-fixnum" "bitwise-and" "bitwise-ior" "bitwise-xor"
+                                        "bitwise-not" "arithmetic-shift" "bitwise-arithmetic-shift" "bit-count" "exact-nonnegative-integer?"))))))
 (define cf-scheme cf-lang
   (product (name "scheme")
-           (model (lambda ((n string))
-                    (let ((kinds (sc-kind-names (s7-builtin-result n))))
-                      (cond ((tagcase (sc-calls-model n) (model x #t) (else y #f))
+           (model (lambda ((n0 string))
+                    (let* ((n (sc-unhidden n0)) (kinds (sc-kind-names (s7-builtin-result n))))
+                      (cond ((or (sc-arith-proc? n) (cf-member? n (list "equal-hash" "string-hash" "symbol-hash" "hashtable-size" "hashtable-contains?")))
+                             (m-data #f (list "number" "boolean")))
+                            ;; Built-ins `s7-builtin-result` does not know, by what they give.
+                            ((string=? n "make-record-type") (m-data #f (list "record-type")))
+                            ((cf-member? n (list "open-output-string" "open-input-string" "open-input-bytevector" "open-output-bytevector"
+                                                 "open-input-file" "open-output-file" "open-binary-input-file" "open-binary-output-file"
+                                                 "current-input-port" "current-output-port" "current-error-port"))
+                             (m-data #f (list "port")))
+                            ((cf-member? n (list "features" "command-line" "get-environment-variables")) (m-data #f (list "pair" "()")))
+                            ((cf-member? n (list "jiffies-per-second" "current-jiffy" "current-second")) (m-data #f (list "number")))
+                            ;; What `read` reads is data: never a procedure.
+                            ((cf-member? n (list "read" "%read"))
+                             (m-data #f (list "number" "string" "char" "symbol" "pair" "()" "vector" "#t" "#f" "eof" "bytevector")))
+                            ((tagcase (sc-calls-model n) (model x #t) (else y #f))
                              (tagcase (sc-calls-model n) (model x x) (else y (m-apply))))
                             ((string=? n "apply") (m-apply))
                             ((cf-member? n sc-mapping) (m-map kinds))
@@ -336,8 +385,25 @@ the subjects a lambda about to be read is applied to (`let`'s)."
                          (nth s7-fv-kinds (s7-fv-kind v))))))))))
 
 "The name of a global the world does not define, if it is a built-in."
+"Procedures of libraries s7st does not have but programs use, modelled as
+if built in (where the world does not define them): R6RS's hashtables, and
+SRFI 69's under their names."
+(define sc-library-procs strings
+  (list "make-hashtable" "make-eq-hashtable" "make-eqv-hashtable" "make-equal-hashtable" "make-string-hashtable"
+        "hashtable-ref" "hashtable-set!" "hashtable-update!" "hashtable-keys" "hashtable-entries" "hashtable-values"
+        "hashtable-contains?" "hashtable-size" "hashtable-delete!" "hashtable-clear!" "hashtable-copy" "hashtable?"
+        "equal-hash" "string-hash" "symbol-hash"))
+"Whether `n` is one of `car`'s and `cdr`'s family, `cadr` to `cddddr`: the
+letters between c and r, each a field, the last first."
+(define* sc-cxr? (subr spin (string) bool)
+  (lambda (n) (let ((k (string-length n)))
+                (and (>= k 4) (<= k 6) (char=? (string-ref n 0) #\c) (char=? (string-ref n (- k 1)) #\r)
+                     (letrec ((go (subr spin (int) bool) (lambda (i) (or (>= i (- k 1)) (and (or (char=? (string-ref n i) #\a) (char=? (string-ref n i) #\d)) (go (+ i 1)))))))
+                       (go 1))))))
 (define* sc-builtin? (subr s7-eff (s7-global) bool)
-  (lambda (g) (tagcase (get (extract g value)) (prim p #t) (proc p #t) (else y #f))))
+  (lambda (g) (or (tagcase (get (extract g value)) (prim p #t) (proc p #t) (else y #f))
+                  (cf-member? (s7-symbol-name (extract g name)) sc-library-procs)
+                  (sc-arith-proc? (s7-symbol-name (extract g name))))))
 
 "A symbol a constant is (\"\": none); the symbols a constant list is."
 (define* sc-const-symbol (subr spin (s7-node) string)
@@ -431,9 +497,11 @@ cdr then car, through built-in `car` and `cdr` and records' accessors (var
           (n-define x (let ((name (s7-symbol-name (extract (extract x cell) name))))
                         (begin (if (null? fs) (set cf-definition name) #u)
                           (k-bind (cf-global-var name)
-                                  (tagcase (sc-record-proc (extract x value) name)
-                                    (made c c)
-                                    (else y (sc-core (extract x value) fs)))))))
+                                  (if (sc-param-global? name)
+                                      (sc-make-parameter name (extract x value) fs)
+                                      (tagcase (sc-record-proc (extract x value) name)
+                                        (made c c)
+                                        (else y (sc-core (extract x value) fs))))))))
           (n-if x (let* ((told (sc-told-by (extract x test) fs))
                          (t (sc-core (extract x test) fs))
                          (a (sc-core (extract x then) fs))
@@ -441,9 +509,54 @@ cdr then car, through built-in `car` and `cdr` and records' accessors (var
                     (k-if t (sc-with-aliases (extract told yes)) a (sc-with-aliases (extract told no)) b)))
           (n-lambda ls (let ((cs (sc-lambdas ls fs))) (if (and (pair? cs) (null? (cdr cs))) (car cs) (k-alt cs))))
           (n-seq ns (k-seq (sc-seq ns fs)))
-          (n-call x (sc-call n (extract x op) (extract x args) fs))
+          (n-call x (if (sc-parameterize? x) (sc-parameterize n (extract x args) fs) (sc-call n (extract x op) (extract x args) fs)))
           (n-scope x (sc-core (extract x body) (cons (sc-new-frame (extract x size)) fs)))
           (n-fail m (k-none nil))))))
+  ;; `(make-parameter v [convert])`, defining global `name`: a procedure
+  ;; reading a cell of its own (`%param:name`'s site), its field `value` v
+  ;; (converted), `convert` the converter.
+  (sc-make-parameter (subr sc-eff (string s7-node sc-frames) core)
+    (lambda (name call fs)
+      (tagcase (extract call form)
+        (n-call x
+          (let* ((as (sc-all (extract x args) fs))
+                 (sp (sc-span (extract call span)))
+                 (cell (cf-global-var (string-append "%param:" name)))
+                 (init (if (pair? as) (car as) (k-const (cf-kind "unspecified"))))
+                 (conv (if (and (pair? as) (pair? (cdr as))) (list (car (cdr as))) nil))
+                 (r (cf-new-var)))
+            (k-seq (list (k-bind cell (k-alloc (cf-add-site (product (span sp) (kind "parameter") (tag name)))
+                                               (cons (product (label "value")
+                                                              (value (if (null? conv) init
+                                                                         (k-alt (list init (k-app (cf-add-call (product (span sp) (operator sp))) (car conv) (list init)))))))
+                                                     (if (null? conv) nil (list (product (label "convert") (value (car conv))))))))
+                         (k-lam (cf-add-lambda (product (span sp) (name name) (params nil) (rest r)
+                                                        (body (k-field (k-var cell -1) "value")))))))))
+        (else y (sc-core call fs)))))
+  ;; `(%parameterize (list p …) (list v …) thunk)` (`parameterize`'s): each
+  ;; p's cell given its v, and what its converter makes of it; then thunk,
+  ;; called. A p not a parameter global: its v escapes.
+  (sc-parameterize (subr sc-eff (s7-node s7-nodes sc-frames) core)
+    (lambda (n args fs)
+      (let* ((sp (sc-span (extract n span)))
+             (ps (sc-list-items (car args)))
+             (vs (sc-list-items (car (cdr args))))
+             (thunk (sc-core (car (cdr (cdr args))) fs))
+             (sets (letrec ((go (subr sc-eff (s7-nodes s7-nodes) cores)
+                              (lambda (ps vs)
+                                (if (or (null? ps) (null? vs)) nil
+                                    (let* ((v (sc-core (car vs) fs))
+                                           (name (tagcase (extract (car ps) form) (n-global g (s7-symbol-name (extract g name))) (else y "")))
+                                           (c (if (and (not (string=? name "")) (sc-param-global? name))
+                                                  (let ((cell (k-var (cf-global-var (string-append "%param:" name)) -1)))
+                                                    (k-seq (list (sc-core (car ps) fs)
+                                                                 (k-store cell "value"
+                                                                          (k-alt (list v (k-app (cf-add-call (product (span sp) (operator sp)))
+                                                                                                (k-field cell "convert") (list v))))))))
+                                                  (k-escape (list (sc-core (car ps) fs) v)))))
+                                      (cons c (go (cdr ps) (cdr vs))))))))
+                     (go ps vs))))
+        (k-seq (append sets (list (k-app (cf-add-call (product (span sp) (operator sp))) thunk nil)))))))
   ;; What test `t` tells each branch (yank's occurrence typing): of a local
   ;; variable, or a field of one (`sc-subject`), its truth; a predicate of
   ;; one -- built-in, a record's, or the program's own, read as a formula --
@@ -540,7 +653,8 @@ cdr then car, through built-in `car` and `cdr` and records' accessors (var
         (cond ((cf-global-defined? name) (cf-ref (cf-global-var name) name sp))
               ((sc-builtin? g) (k-prim name))
               ;; Defined nowhere known: whatever it will be.
-              (else (k-escape nil))))))
+              (else (begin (if (cf-member? name (get sc-undefined)) #u (set sc-undefined (cons name (get sc-undefined))))
+                      (k-escape nil)))))))
   ;; Each clause a lambda, its frame its parameters then its definitions.
   (sc-lambdas (subr sc-eff ((listof s7-lambda acyclic) sc-frames) cores)
     (lambda (ls fs)
@@ -572,7 +686,7 @@ cdr then car, through built-in `car` and `cdr` and records' accessors (var
       (let* ((sp (sc-span (extract n span)))
              (prim (tagcase (extract op form)
                      (n-global g (let ((name (s7-symbol-name (extract g name))))
-                                   (if (and (not (cf-global-defined? name)) (sc-builtin? g)) name "")))
+                                   (if (and (not (cf-global-defined? name)) (sc-builtin? g)) (sc-unhidden name) "")))
                      (else y "")))
              (as (sc-all args fs))
              (nargs (length as))
@@ -581,6 +695,22 @@ cdr then car, through built-in `car` and `cdr` and records' accessors (var
           ((and (string=? prim "cons") (= nargs 2))
            (k-alloc (site "pair") (list (product (label "car") (value (car as))) (product (label "cdr") (value (car (cdr as)))))))
           ((and (string=? prim "car") (= nargs 1)) (k-field (car as) "car"))
+          ;; `(call/cc f)`: f called with a continuation, a lambda storing what
+          ;; it is given in a site of this call's; the result, what f returns or
+          ;; what the continuation was given. Escaped, as anything escaping,
+          ;; its parameters are unknown, and so the result.
+          ((and (cf-member? prim (list "call-with-current-continuation" "call/cc")) (= nargs 1))
+           (let* ((s (site "continuation"))
+                  (r (cf-new-var))
+                  (k (k-lam (cf-add-lambda (product (span sp) (name "continuation") (params nil) (rest r)
+                                                    (body (k-seq (list (k-store (k-alloc s nil) "value" (k-field (k-var r -1) "car"))
+                                                                       (k-const (cf-kind "unspecified"))))))))))
+             (k-alt (list (k-app (cf-add-call (product (span sp) (operator (sc-span (extract op span))))) (car as) (list k))
+                          (k-field (k-alloc s nil) "value")))))
+          ((and (sc-cxr? prim) (= nargs 1))
+           (letrec ((go (subr cf-eff (int core) core)
+                          (lambda (i x) (if (< i 1) x (go (- i 1) (k-field x (if (char=? (string-ref prim i) #\a) "car" "cdr")))))))
+             (go (- (string-length prim) 2) (car as))))
           ((and (string=? prim "cdr") (= nargs 1)) (k-field (car as) "cdr"))
           ((and (string=? prim "set-car!") (= nargs 2))
            (begin (set cf-stored (cons "car" (get cf-stored))) (k-seq (list (k-store (car as) "car" (car (cdr as))) (k-const (cf-kind "unspecified"))))))
@@ -593,7 +723,95 @@ cdr then car, through built-in `car` and `cdr` and records' accessors (var
                  (k-alloc s (list (product (label "car") (value (k-alt as)))
                                   (product (label "cdr") (value (k-alt (list (k-const (cf-kind "()")) (k-alloc s nil))))))))))
           ;; A vector's elements: field `elt`.
+          ;; A hash table: a site, its keys field `key`, its values field `value`
+          ;; (R6RS's hashtables, SRFI 69's and s7st's hash tables).
+          ((cf-member? prim (list "make-hashtable" "make-eq-hashtable" "make-eqv-hashtable" "make-equal-hashtable"
+                                  "make-string-hashtable" "make-hash-table" "make-eq-hash-table" "make-eqv-hash-table"
+                                  "make-equal-hash-table" "make-string-hash-table"))
+           ;; A hash function, equivalence or size given: evaluated; a procedure given escapes.
+           (k-seq (list (k-escape as) (k-alloc (site "hash-table") nil))))
+          ((and (cf-member? prim (list "hashtable-ref" "hash-table-ref/default")) (= nargs 3))
+           (k-seq (list (car (cdr as)) (k-alt (list (k-field (car as) "value") (car (cdr (cdr as))))))))
+          ((and (string=? prim "hash-table-ref") (>= nargs 2))
+           ;; A thunk for a key not there: called.
+           (k-seq (list (car (cdr as))
+                        (k-alt (cons (k-field (car as) "value")
+                                     (if (pair? (cdr (cdr as)))
+                                         (list (k-app (cf-add-call (product (span sp) (operator sp))) (car (cdr (cdr as))) nil))
+                                         nil))))))
+          ((and (cf-member? prim (list "hashtable-set!" "hash-table-set!")) (= nargs 3))
+           (begin (set cf-stored (append (list "key" "value") (get cf-stored)))
+             (k-seq (list (k-store (car as) "key" (car (cdr as))) (k-store (car as) "value" (car (cdr (cdr as))))
+                          (k-const (cf-kind "unspecified"))))))
+          ((and (cf-member? prim (list "hashtable-update!" "hash-table-update!/default")) (= nargs 4))
+           ;; Its procedure called on the value there, or the default; what it gives, kept.
+           (begin (set cf-stored (append (list "key" "value") (get cf-stored)))
+             (k-seq (list (k-store (car as) "key" (car (cdr as)))
+                          (k-store (car as) "value"
+                                   (k-app (cf-add-call (product (span sp) (operator sp))) (car (cdr (cdr as)))
+                                          (list (k-alt (list (k-field (car as) "value") (car (cdr (cdr (cdr as)))))))))
+                          (k-const (cf-kind "unspecified"))))))
+          ((and (string=? prim "hash-table-update!") (>= nargs 3))
+           (begin (set cf-stored (append (list "key" "value") (get cf-stored)))
+             (k-seq (list (k-store (car as) "key" (car (cdr as)))
+                          (k-store (car as) "value"
+                                   (k-app (cf-add-call (product (span sp) (operator sp))) (car (cdr (cdr as)))
+                                          (list (k-alt (cons (k-field (car as) "value")
+                                                             (if (pair? (cdr (cdr (cdr as))))
+                                                                 (list (k-app (cf-add-call (product (span sp) (operator sp))) (car (cdr (cdr (cdr as)))) nil))
+                                                                 nil))))))
+                          (k-const (cf-kind "unspecified"))))))
+          ((and (cf-member? prim (list "hashtable-keys" "hash-table-keys")) (= nargs 1))
+           (k-alloc (site (if (string=? prim "hashtable-keys") "vector" "pair"))
+                    (list (product (label (if (string=? prim "hashtable-keys") "elt" "car")) (value (k-field (car as) "key"))))))
+          ((and (cf-member? prim (list "hashtable-values" "hash-table-values")) (= nargs 1))
+           (k-alloc (site (if (string=? prim "hashtable-values") "vector" "pair"))
+                    (list (product (label (if (string=? prim "hashtable-values") "elt" "car")) (value (k-field (car as) "value"))))))
+          ;; Two vectors, keys and values (two values: each as either).
+          ((and (string=? prim "hashtable-entries") (= nargs 1))
+           (k-alt (list (k-alloc (site "vector") (list (product (label "elt") (value (k-field (car as) "key")))))
+                        (k-alloc (site "vector") (list (product (label "elt") (value (k-field (car as) "value"))))))))
+          ;; A list of pairs of a key and a value.
+          ((and (string=? prim "hash-table->alist") (= nargs 1))
+           (let ((s (site "pair")))
+             (k-alloc s (list (product (label "car") (value (k-alloc (site "pair") (list (product (label "car") (value (k-field (car as) "key")))
+                                                                                        (product (label "cdr") (value (k-field (car as) "value")))))))
+                              (product (label "cdr") (value (k-alt (list (k-const (cf-kind "()")) (k-alloc s nil)))))))))
+          ((and (cf-member? prim (list "hash-table-walk")) (= nargs 2))
+           (k-seq (list (k-app (cf-add-call (product (span sp) (operator sp))) (car (cdr as)) (list (k-field (car as) "key") (k-field (car as) "value")))
+                        (k-const (cf-kind "unspecified")))))
+          ((and (string=? prim "hashtable-copy") (>= nargs 1))
+           (let ((s (site "hash-table")))
+             (k-alloc s (list (product (label "key") (value (k-field (car as) "key"))) (product (label "value") (value (k-field (car as) "value")))))))
+          ((cf-member? prim (list "hashtable-contains?" "hash-table-contains?" "hash-table-exists?" "hashtable?"))
+           (k-seq (list (k-none as) (k-const (cf-kind "boolean")))))
+          ((cf-member? prim (list "hashtable-size" "hash-table-size" "hash-table-count" "equal-hash" "string-hash" "symbol-hash"))
+           (k-seq (list (k-none as) (k-const (cf-kind "number")))))
+          ((cf-member? prim (list "hashtable-delete!" "hashtable-clear!" "hash-table-delete!" "hash-table-clear!"))
+           (k-seq (list (k-none as) (k-const (cf-kind "unspecified")))))
           ((string=? prim "vector") (k-alloc (site "vector") (list (product (label "elt") (value (k-alt as))))))
+          ;; Elements between a vector's `elt` and a list's `car`s.
+          ((and (string=? prim "vector->list") (>= nargs 1))
+           (let ((s (site "pair")))
+             (k-seq (list (k-none (cdr as))
+                          (k-alloc s (list (product (label "car") (value (k-field (car as) "elt")))
+                                           (product (label "cdr") (value (k-alt (list (k-const (cf-kind "()")) (k-alloc s nil)))))))))))
+          ((and (string=? prim "list->vector") (= nargs 1)) (k-alloc (site "vector") (list (product (label "elt") (value (k-field (car as) "car"))))))
+          ((and (string=? prim "vector-copy") (>= nargs 1))
+           (k-seq (list (k-none (cdr as)) (k-alloc (site "vector") (list (product (label "elt") (value (k-field (car as) "elt"))))))))
+          ((and (string=? prim "vector-append"))
+           (k-alloc (site "vector") (list (product (label "elt") (value (k-alt (letrec ((go (subr spin (cores) cores) (lambda (l) (if (null? l) nil (cons (k-field (car l) "elt") (go (cdr l)))))))
+                                                                                 (go as))))))))
+          ((and (string=? prim "vector-copy!") (>= nargs 3))
+           (k-seq (list (k-none (cons (car (cdr as)) (cdr (cdr (cdr as))))) (k-store (car as) "elt" (k-field (car (cdr (cdr as))) "elt"))
+                        (k-const (cf-kind "unspecified")))))
+          ((and (string=? prim "vector-fill!") (>= nargs 2))
+           (k-seq (list (k-none (cdr (cdr as))) (k-store (car as) "elt" (car (cdr as))) (k-const (cf-kind "unspecified")))))
+          ((and (string=? prim "make-list") (>= nargs 1))
+           (let ((s (site "pair")))
+             (k-seq (list (car as)
+                          (k-alloc s (list (product (label "car") (value (if (pair? (cdr as)) (car (cdr as)) (k-const (cf-kind "unspecified")))))
+                                           (product (label "cdr") (value (k-alt (list (k-const (cf-kind "()")) (k-alloc s nil)))))))))))
           ((and (string=? prim "make-vector") (>= nargs 1))
            (k-seq (list (car as) (k-alloc (site "vector") (list (product (label "elt") (value (k-alt (cdr as)))))))))
           ((and (string=? prim "vector-ref") (= nargs 2)) (k-seq (list (car (cdr as)) (k-field (car as) "elt"))))
@@ -626,11 +844,14 @@ cdr then car, through built-in `car` and `cdr` and records' accessors (var
             (n-define x (let ((name (s7-symbol-name (extract (extract x cell) name))))
                           (begin
                             (cf-global-var name)
-                            ;; A record's predicate, accessor or modifier; a procedure of one parameter.
+                            ;; A record's predicate, accessor or modifier; a parameter; a procedure of one parameter.
                             (tagcase (extract (extract x value) form)
                               (n-call c (let ((op (tagcase (extract (extract c op) form) (n-global g (s7-symbol-name (extract g name))) (else y "")))
                                               (args (extract c args)))
                                           (cond
+                                            ((and (string=? op "make-parameter") (not (cf-global-defined? op)))
+                                             (begin (set sc-params (cons name (get sc-params)))
+                                               (cf-global-var (string-append "%param:" name)) #u))
                                             ((and (string=? op " record-predicate") (pair? args))
                                              (tagcase (extract (car args) form)
                                                (n-global g (set sc-record-preds (cons (product (name name) (type (s7-symbol-name (extract g name))))
@@ -665,6 +886,91 @@ far as they read: libraries' bodies spliced, imports passed over."
                              (else (begin (set s7-syntax-errors nil) (let ((n (s7-expand-top f))) (cons n (go (cdr fs))))))))))))
       (go (s7-read-lenient text file)))))
 
+"The directory of `p`, with its `/` (\"\" if none)."
+(define* cf-directory-of (subr spin (string) string)
+  (lambda (p) (letrec ((go (subr spin (int) string)
+                         (lambda (i) (cond ((< i 0) "") ((char=? (string-ref p i) #\/) (substring p 0 (+ i 1))) (else (go (- i 1)))))))
+                (go (- (string-length p) 1)))))
+"The library an import set names: `(only (a b) …)`'s, `(prefix …)`'s, …
+inside, the name itself."
+(define* sc-import-name (subr s7-eff (s7-value) s7-value)
+  (lambda (spec)
+    (if (and (s7-symbol? (s7-car spec))
+             (cf-member? (s7-symbol-name (s7-sym (s7-car spec))) (list "only" "except" "prefix" "rename")))
+        (sc-import-name (s7-cadr spec))
+        spec)))
+"The libraries a text's forms import: its `import`s', and those of each
+`define-library` in it; each also its name, if it defines one."
+(define-type sc-text-libs (productof (imports s7-values) (defines s7-values)))
+(define* sc-text-libraries (subr s7-eff (string string) sc-text-libs)
+  (lambda (text file)
+    (letrec ((go (subr s7-eff (s7-values) sc-text-libs)
+               (lambda (fs)
+                 (if (null? fs) (product (imports nil) (defines nil))
+                     (let ((f (car fs)) (rest (go (cdr fs))))
+                       (cond ((s7-sym-named? (s7-car f) "import")
+                              (product (imports (append (s7-value->values (s7-cdr f)) (extract rest imports))) (defines (extract rest defines))))
+                             ((s7-sym-named? (s7-car f) "define-library")
+                              (product (imports (append (s7-decl-items (s7-library-decls (s7-value->values (s7-cddr f))) "import") (extract rest imports)))
+                                       (defines (cons (s7-cadr f) (extract rest defines)))))
+                             (else rest)))))))
+      (go (s7-read-lenient text file)))))
+"Where a file defining library `name` puts the library directories it is
+under: `…/src/yank/analysis/cfa.sld` defining (yank analysis cfa), `…/src/`."
+(define* sc-library-root (subr s7-eff (string s7-value) string)
+  (lambda (path name)
+    (let ((rel (s7-library-relative-file name)) (n (string-length path)))
+      (if (and (>= n (string-length rel)) (string=? (substring path (- n (string-length rel)) n) rel))
+          (substring path 0 (- n (string-length rel)))
+          ""))))
+"Files `paths` (texts `texts`), with the libraries they import, all the
+way down, found where s7st finds them (`s7-library-path`, and the
+directories the files' own libraries are under): the libraries first,
+each after those it imports, then the files. s7st's standard libraries,
+and libraries found nowhere, are not files of the world: their names are
+s7st's built-ins, or not known."
+(define-type sc-world-file (productof (path string) (text string)))
+(define* sc-world-files (subr s7-eff (strings strings) (listof sc-world-file acyclic))
+  (lambda (paths texts)
+    (let ((acc (the (ref (listof sc-world-file acyclic) @sc) (new nil)))
+          (seen (the (ref s7-strings @sc) (new nil))))
+      (letrec ((roots! (subr s7-eff (string s7-values) unit)
+                 (lambda (path names)
+                   (if (null? names) #u
+                       (let ((root (sc-library-root path (car names))))
+                         (begin (if (string=? root "") #u (s7-add-library-directory! root))
+                           (roots! path (cdr names)))))))
+               (imports! (subr s7-eff (s7-values) unit)
+                 (lambda (specs)
+                   (if (null? specs) #u
+                       (let ((name (sc-import-name (car specs))))
+                         (begin
+                           (if (s7-standard-library? name) #u
+                               (tagcase (s7-library-file name)
+                                 (found f (if (s7-member-string? (extract f path) (get seen)) #u
+                                              (begin (set seen (cons (extract f path) (get seen)))
+                                                (let ((ls (sc-text-libraries (extract f text) (extract f path))))
+                                                  (begin (imports! (extract ls imports))
+                                                    (set acc (append (get acc) (list (product (path (extract f path)) (text (extract f text)))))))))))
+                                 (else y #u)))
+                           (imports! (cdr specs)))))))
+               (files! (subr s7-eff (strings strings) unit)
+                 (lambda (ps ts)
+                   (if (null? ps) #u
+                       (let ((ls (sc-text-libraries (car ts) (car ps))))
+                         (begin (set seen (cons (car ps) (get seen)))
+                           ;; A program's own directory: where its libraries may be.
+                           (s7-add-library-directory! (cf-directory-of (car ps)))
+                           (roots! (car ps) (extract ls defines))
+                           (imports! (extract ls imports))
+                           (files! (cdr ps) (cdr ts))))))))
+        (begin
+          (files! paths texts)
+          (append (get acc)
+                  (letrec ((go (subr spin (strings strings) (listof sc-world-file acyclic))
+                             (lambda (ps ts) (if (null? ps) nil (cons (product (path (car ps)) (text (car ts))) (go (cdr ps) (cdr ts)))))))
+                    (go paths texts))))))))
+
 "A world of Scheme files (`paths` and their `texts`), read as core: its
 top levels, a core each, in order. They are expanded in a namespace of
 their own, thrown away after, with what its renaming made."
@@ -682,6 +988,7 @@ their own, thrown away after, with what its renaming made."
         (cf-reset!)
         (set cf-null-kind "()")
         (set sc-record-preds nil) (set sc-record-fields nil) (set sc-user-preds nil) (set sc-aliases nil) (set sc-pending-args nil)
+        (set sc-params nil) (set sc-undefined nil)
         (letrec ((go (subr sc-eff (strings) unit) (lambda (ps) (if (null? ps) #u (begin (cf-file (car ps)) (go (cdr ps)))))))
           (go paths))
         (letrec ((go (subr sc-eff ((listof s7-nodes acyclic)) unit) (lambda (l) (if (null? l) #u (begin (sc-declare! (car l)) (go (cdr l)))))))

@@ -1,0 +1,12 @@
+parameters.scm:102-103: n: number
+parameters.scm:127-128: n: number
+parameters.scm:160-163: inc: inc
+parameters.scm:177-181: calls inc | dbl
+parameters.scm:178-180: calls op
+parameters.scm:196-230: calls b/λ
+parameters.scm:222-226: calls inc | dbl
+parameters.scm:223-225: calls op
+parameters.scm:246-286: calls limit/λ
+parameters.scm:280-281: x: number
+parameters.scm:302-307: calls limit
+[exit 0]

@@ -1,0 +1,6 @@
+linked.scm:174-175: n: number
+linked.scm:191-202: calls apply-twice
+linked.scm:203-206: inc: inc
+linked.scm:225-237: calls make-counter
+linked.scm:251-255: calls make-counter/λ
+[exit 0]

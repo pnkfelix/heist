@@ -1,0 +1,12 @@
+;;; Hash tables as sites: what is put in one is what comes out.
+(define (inc n) (+ n 1))
+(define t (make-eq-hashtable))
+(hashtable-set! t 'add inc)
+(define f (hashtable-ref t 'add #f))
+(define a (if f (f 1) 0))
+(hashtable-update! t 'add (lambda (g) g) inc)
+(define h (make-hash-table))
+(hash-table-set! h "k" (list inc))
+(define l (hash-table-ref/default h "k" '()))
+(define-syntax noop (syntax-rules () ((_ x) x)))
+(define b (noop (car (hashtable-keys t))))

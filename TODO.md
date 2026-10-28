@@ -60,7 +60,30 @@ commit that did it says so.
        `typecase` already.
    - Notes by contour (what a call or variable is in each context), not
      merged, before small procedures per call site can show anything.
-3. **Worlds across languages.** s7st's builtins are FX-26 code
+3. **Scheme worlds of libraries** (2026-10-28, done in part). A Scheme
+   file's world is it and the libraries it imports, all the way down,
+   found where s7st finds them, in `-L` directories, under the
+   directories of the files' own libraries, and in their own directory.
+   On yank's `cfa.sld` (1906 lambdas with its libraries), it settles in
+   1.5-2.6 s. Notes holding unknown went from 2828 of 5065 (alone) to
+   1093 of 4357, after modelling:
+   - R6RS and SRFI 69 hash tables as sites;
+   - the `c[ad]+r` family as fields;
+   - vectors and lists converted, element to element;
+   - `make-parameter` and `parameterize` as a cell;
+   - `call/cc`'s continuation as a lambda storing into the call's result;
+   - R6RS fixnums and Larceny's sizes as first order;
+   - built-ins `s7-builtin-result` did not know, by what they give.
+   `bin/cfa --progress` says where unknown came from: escapes by
+   primitive, names defined nowhere, and the first cells to hold
+   unknown. Left:
+   - the next seeds (`census` walks Larceny's heap: rightly unknown;
+     `lambda->core`'s records);
+   - a library edited does not re-analyse the worlds that import it (a
+     world's key is its file);
+   - libraries share one namespace, so names the libraries keep to
+     themselves can collide.
+4. **Worlds across languages.** s7st's builtins are FX-26 code
    (`s7st/prims.fx`): a Scheme world could link to them, rather than take
    them as primitives.
 

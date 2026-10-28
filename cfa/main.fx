@@ -1,8 +1,11 @@
 ;;; main.fx: the CFA from the command line (bin/cfa).
 ;;;
-;;;   bin/cfa [--progress] [--collapse] [-m N] FILE …
+;;;   bin/cfa [-L DIR]… [--progress] [--collapse] [-m N] FILE …
 ;;;                           the files analysed as one world, of the
-;;;                           language their names say (.fx: FX-26), at
+;;;                           language their names say (.fx: FX-26), with
+;;;                           the libraries Scheme files import (found in
+;;;                           each DIR, and where the files' own libraries
+;;;                           are), at
 ;;;                           depth N (0, 0CFA, if not said); each note
 ;;;                           written, `FILE:START-END: TEXT`; with
 ;;;                           --collapse, a set holding unknown drops its
@@ -40,6 +43,12 @@ the notes of its files `paths` written."
                                       #u)
                                   (if done #u (run)))))))
           (run))
+        (if (get cf-progress)
+            (begin (write-err (string-append "cfa: " (cf-escape-report 12) "\n"))
+              (write-err (string-append "cfa: defined nowhere: " (cf-concat (reverse (get sc-undefined)) " ") "\n"))
+              (write-err (string-append "cfa: unknown first in: " (cf-concat (get cf-unknown-firsts) "; ") "\n"))
+              #u)
+            #u)
       (letrec ((files (subr (maxeff cf-eff (io stdout)) (strings) unit)
                  (lambda (ps)
                    (if (null? ps) #u
@@ -57,6 +66,14 @@ the notes of its files `paths` written."
   (lambda ()
     (let* ((as (letrec ((go (subr (maxeff (read @a) spin) ((listof string @a)) strings) (lambda (l) (if (null? l) nil (cons (car l) (go (cdr l)))))))
                  (go (the (listof string @a) (args)))))
+           (dirs (letrec ((go (subr (maxeff s7-eff spin) (strings) strings)
+                                (lambda (l) (if (and (pair? l) (string=? (car l) "-L") (pair? (cdr l)))
+                                                (begin (s7-add-library-directory! (let ((d (car (cdr l))))
+                                                                                    (if (char=? (string-ref d (- (string-length d) 1)) #\/) d (string-append d "/"))))
+                                                  (go (cdr (cdr l))))
+                                                l))))
+                   (go as)))
+           (as dirs)
            (progress (and (pair? as) (string=? (car as) "--progress")))
            (as (if progress (cdr as) as))
            (collapse (and (pair? as) (string=? (car as) "--collapse")))
@@ -72,6 +89,16 @@ the notes of its files `paths` written."
         (if (null? fx) #u (cf-run-world cf-fx26 (fx-world fx (cf-texts fx)) fx m))
         (if (null? sc) #u
             (let ((why (s7-init!)))
-              (if (string=? why "") (cf-run-world cf-scheme (sc-world sc (cf-texts sc)) sc m)
+              (if (string=? why "")
+                  ;; The libraries the files import are of their world, but only
+                  ;; the files' notes are said.
+                  (let* ((ws (sc-world-files sc (cf-texts sc)))
+                         (ps (letrec ((go (subr spin ((listof sc-world-file acyclic)) strings)
+                                            (lambda (l) (if (null? l) nil (cons (extract (car l) path) (go (cdr l)))))))
+                               (go ws)))
+                         (ts (letrec ((go (subr spin ((listof sc-world-file acyclic)) strings)
+                                            (lambda (l) (if (null? l) nil (cons (extract (car l) text) (go (cdr l)))))))
+                               (go ws))))
+                    (cf-run-world cf-scheme (sc-world ps ts) sc m))
                   (cf-say-line (string-append "cfa: s7st: " why)))))
         0)))))

@@ -175,12 +175,30 @@ yank needed it on worlds that did not finish without it."
                                      ((site-val? (car l)) (begin (set cf-to-escape (cons (car l) (get cf-to-escape))) (go (cdr l))))
                                      (else (cons (car l) (go (cdr l))))))))
           (go s)))))
+"The first cells to come to hold unknown, said: where unknown came from."
+(define cf-unknown-firsts (ref strings @cf) (new nil))
+(define* cf-unknown-event (subr cf-eff (int) string)
+  (lambda (k)
+    (let* ((space (remainder k 4)) (body (quotient k 4))
+           (task (get cf-current))
+           (where (if (< task 0) "top level"
+                      (let ((l (if (< task (array-length (get cf-lambda-array))) task (table-ref (get cf-closure-lambda) task 0))))
+                        (extract (array-ref (get cf-lambda-array) l) name)))))
+      (string-append (cond ((= space 0) (let ((v (quotient body 16777216)))
+                                          (string-append "variable " (int->string v) (if (< v (get cf-global-count)) " (global)" ""))))
+                           ((= space 1) (let ((site (quotient body 16777216)))
+                                          (string-append "field of " (extract (array-ref (get cf-site-array) site) kind) " site "
+                                                         (int->string (extract (extract (array-ref (get cf-site-array) site) span) start)))))
+                           (else "a result"))
+                     " in " where))))
 (define* cf-join! (subr cf-eff (int vals) unit)
   (lambda (k s)
     (if (null? s) #u
         (let* ((old (table-ref (get cf-cells) k nil)) (new (collapse (widen (vals-union old s)))))
           (if (= (length new) (length old)) #u
               (begin
+                (if (and (vals-has? new cf-unknown) (not (vals-has? old cf-unknown)) (< (length (get cf-unknown-firsts)) 12))
+                    (set cf-unknown-firsts (append (get cf-unknown-firsts) (list (cf-unknown-event k)))) #u)
                 (set cf-facts (+ (get cf-facts) (- (length new) (length old))))
                 (if (null? old) (set cf-cell-count (+ (get cf-cell-count) 1)) #u)
                 (table-set! (get cf-cells) k new)
@@ -349,6 +367,33 @@ lambda's own number; else one past them, numbered on first use."
     (cond ((null? ps) (if (>= rest 0) (cf-join! (var-key rest c) (union-all as)) #u))
           ((null? as) #u)
           (else (begin (cf-join! (var-key (car ps) c) (car as)) (pass-args (cdr ps) rest (cdr as) c))))))
+"Where what escaped escaped: each primitive (or `unknown`, a call of code
+not known; `store`, a store through unknown), and how many times it was
+given a closure or site, for finding where unknown comes from."
+(define cf-escape-sources (ref (listof (productof (name string) (count int)) acyclic) @cf) (new nil))
+(define* cf-count-escape! (subr cf-eff (string vals) unit)
+  (lambda (name s)
+    (if (not (letrec ((any (subr spin (vals) bool) (lambda (l) (and (pair? l) (or (closure-val? (car l)) (site-val? (car l)) (= (car l) cf-unknown) (any (cdr l)))))))
+               (any s)))
+        #u
+        (set cf-escape-sources
+             (letrec ((go (subr spin ((listof (productof (name string) (count int)) acyclic)) (listof (productof (name string) (count int)) acyclic))
+                            (lambda (l) (cond ((null? l) (list (product (name name) (count 1))))
+                                              ((string=? (extract (car l) name) name) (cons (product (name name) (count (+ 1 (extract (car l) count)))) (cdr l)))
+                                              (else (cons (car l) (go (cdr l))))))))
+               (go (get cf-escape-sources)))))))
+"The escapes' sources, most first, at most `n`, said."
+(define* cf-escape-report (subr cf-eff (int) string)
+  (lambda (n)
+    (letrec ((insert (subr spin ((productof (name string) (count int)) (listof (productof (name string) (count int)) acyclic)) (listof (productof (name string) (count int)) acyclic))
+               (lambda (x l) (if (or (null? l) (> (extract x count) (extract (car l) count))) (cons x l) (cons (car l) (insert x (cdr l))))))
+             (sort (subr spin ((listof (productof (name string) (count int)) acyclic) (listof (productof (name string) (count int)) acyclic)) (listof (productof (name string) (count int)) acyclic))
+               (lambda (l acc) (if (null? l) acc (sort (cdr l) (insert (car l) acc)))))
+             (say (subr spin ((listof (productof (name string) (count int)) acyclic) int) string)
+               (lambda (l k) (if (or (null? l) (= k 0)) ""
+                                 (string-append (extract (car l) name) " " (int->string (extract (car l) count)) (if (or (null? (cdr l)) (= k 1)) "" ", ")
+                                                (say (cdr l) (- k 1)))))))
+      (string-append "escaped by: " (say (sort (get cf-escape-sources) nil) n)))))
 "`as` without its first `n`."
 (define* drop-vals (subr spin (int (listof vals acyclic)) (listof vals acyclic))
   (lambda (n l) (if (or (<= n 0) (null? l)) l (drop-vals (- n 1) (cdr l)))))
@@ -423,7 +468,7 @@ lambda's own number; else one past them, numbered on first use."
                  (cf-join! (field-key site (label-id label)) s)
                  (if (= (table-ref (get cf-site-escaped) site 0) 1) (escape! s) #u)
                  (store! (cdr targets) label s))))
-            ((= (car targets) cf-unknown) (begin (escape! s) (store! (cdr targets) label s)))
+            ((= (car targets) cf-unknown) (begin (cf-count-escape! "store" s) (escape! s) (store! (cdr targets) label s)))
             (else (store! (cdr targets) label s))))))
 
 ;;; ------------------------------------------------------------ evaluation
@@ -478,7 +523,7 @@ lambda's own number; else one past them, numbered on first use."
           (let ((s (fields-of (eval-core e c) label)) (p (path-of x)))
             (if (< (extract p var) 0) s (narrow (extract p var) (extract p path) s))))
         (k-store (e label v) (let* ((targets (eval-core e c)) (s (eval-core v c))) (begin (store! targets label s) nil)))
-        (k-escape (xs) (begin (escape! (union-all (eval-all xs c))) (list cf-unknown)))
+        (k-escape (xs) (let ((s (union-all (eval-all xs c)))) (begin (cf-count-escape! "given" s) (escape! s) (list cf-unknown))))
         (k-inst (e args)
           (let* ((vs (eval-core e c)) (as (eval-all args c)))
             (begin (instantiate! vs as) vs)))
@@ -527,18 +572,21 @@ lambda's own number; else one past them, numbered on first use."
             ((prim-val? (car ops))
              (vals-union (call-prim call c (prim-name (car ops)) as) (call-all call c (cdr ops) as)))
             ((= (car ops) cf-unknown)
-             (begin (escape! (union-all as)) (vals-union (list cf-unknown) (call-all call c (cdr ops) as))))
+             (begin (cf-count-escape! "unknown" (union-all as)) (escape! (union-all as)) (vals-union (list cf-unknown) (call-all call c (cdr ops) as))))
             (else (call-all call c (cdr ops) as)))))
   ;; Primitive `name` called, as its language says.
   (call-prim (subr cf-eff (int int string (listof vals acyclic)) vals)
     (lambda (call c name as)
       (tagcase ((extract (get cf-language) model) name)
-        (m-data (escapes kinds) (begin (if escapes (escape! (union-all as)) #u) (kind-vals kinds)))
+        (m-data (escapes kinds) (let ((r (kind-vals kinds)))
+                                  (begin (if escapes (begin (cf-count-escape! name (union-all as)) (escape! (union-all as))) #u)
+                                    (if (vals-has? r cf-unknown) (cf-count-escape! (string-append "gives ? " name) r) #u)
+                                    r)))
         (m-pass () (union-all as))
         (m-apply ()
           ;; The last argument's elements, as many times as any lambda may take.
           (if (null? as) nil
-              (let* ((r (reverse as)) (elements (fields-of (car r) "car")))
+              (let* ((r (reverse as)) (elements (vals-union (fields-of (car r) "car") (fields-of (car r) "elt"))))
                 (call-all call c (car as)
                           (append (reverse (cdr (reverse (cdr as))))
                                   (letrec ((rep (subr spin (int) (listof vals acyclic)) (lambda (k) (if (<= k 0) nil (cons elements (rep (- k 1)))))))
@@ -551,7 +599,7 @@ lambda's own number; else one past them, numbered on first use."
                      (lambda (a rs)
                        (tagcase a
                          (a-arg (i) (nth as i))
-                         (a-elems (i) (fields-of (nth as i) "car"))
+                         (a-elems (i) (vals-union (fields-of (nth as i) "car") (fields-of (nth as i) "elt")))
                          (a-kinds (ks) (kind-vals ks))
                          (a-result (j) (nth rs j))
                          (a-union (l) (union-all (args l rs)))
@@ -577,7 +625,7 @@ lambda's own number; else one past them, numbered on first use."
         (m-map (kinds)
           (if (null? as) (kind-vals kinds)
               (let ((elements (letrec ((go (subr cf-eff ((listof vals acyclic)) (listof vals acyclic))
-                                             (lambda (l) (if (null? l) nil (cons (fields-of (car l) "car") (go (cdr l)))))))
+                                             (lambda (l) (if (null? l) nil (cons (vals-union (fields-of (car l) "car") (fields-of (car l) "elt")) (go (cdr l)))))))
                                 (go (cdr as)))))
                 (begin (escape! (call-all call c (car as) elements)) (kind-vals kinds))))))))
   ;; Task `t` run: its lambda's body evaluated in its contour, its result kept.
@@ -688,7 +736,7 @@ language `lang`, to be analysed at depth `m` from the start: nothing run yet."
       (set cf-escaped (new-int-table)) (set cf-site-escaped (new-int-table)) (set cf-site-labels (new-ints-table))
       (set cf-front nil) (set cf-back nil) (set cf-queued (new-int-table)) (set cf-made (new-int-table))
       (set cf-steps 0) (set cf-to-escape nil)
-      (set cf-queue-length 0) (set cf-facts 0) (set cf-cell-count 0)
+      (set cf-queue-length 0) (set cf-facts 0) (set cf-cell-count 0) (set cf-escape-sources nil) (set cf-unknown-firsts nil)
       (cf-ensure-task! cf-main))))
 
 "The analysis's progress, said: tasks run, on the worklist, and made;

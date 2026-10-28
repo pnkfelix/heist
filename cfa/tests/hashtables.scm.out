@@ -1,0 +1,15 @@
+hashtables.scm:83-84: n: number
+hashtables.scm:136-137: t: hash-table
+hashtables.scm:143-146: inc: inc
+hashtables.scm:173-174: t: hash-table
+hashtables.scm:199-200: f: inc | #f
+hashtables.scm:202-203: calls inc | #f
+hashtables.scm:211-256: calls a/λ
+hashtables.scm:230-231: t: hash-table
+hashtables.scm:249-250: g: inc
+hashtables.scm:252-255: inc: inc
+hashtables.scm:303-304: h: hash-table
+hashtables.scm:315-318: inc: inc
+hashtables.scm:355-356: h: hash-table
+hashtables.scm:453-454: t: hash-table
+[exit 0]
