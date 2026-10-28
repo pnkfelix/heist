@@ -1,7 +1,9 @@
 # Request to Fixpt: native code for files that make modules
 
-Status: drafted 2026-10-28 by Heist, for the user to take to the Fixpt
-team. Against Fixpt 5731f52e.
+Status: done by Fixpt in 2d706414 (2026-10-28; Fixpt `DONE.md` §145),
+pulled by Heist's c8eacb3c. No file runs as cellular code now; typing in
+a burst is 7 µs a key, as with globals; start-up is 6.1 s, against 4.4 s.
+Drafted 2026-10-28 by Heist, against Fixpt 5731f52e.
 
 ## What Heist tried
 
