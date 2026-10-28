@@ -5,6 +5,7 @@
 //!   ui::NAME           editor/tests/ui.sh NAME
 //!   s7st::NAME         s7st/tests/run.sh NAME
 //!   s7st::prelude      s7st/gen-prelude.py --check
+//!   cfa::FILE          cfa/tests/run.sh FILE (NAME.fx or NAME.scm)
 //!   conformance::LIB   s7st/conformance/run.sh LIB (its summary all passed);
 //!                      the libraries s7st does not have yet, ignored
 //! Each needs Fixpt built (`cd fixpt && cargo build --release -p fixpt-cli`).
@@ -78,6 +79,15 @@ fn main() {
         c.arg(&gen).arg("--check");
         run(c).map(drop)
     }));
+
+    let cfa = h.join("cfa/tests");
+    let mut cfa_tests: Vec<String> = names(&cfa, ".fx").into_iter().map(|n| n + ".fx")
+        .chain(names(&cfa, ".scm").into_iter().map(|n| n + ".scm")).collect();
+    cfa_tests.sort();
+    for n in cfa_tests {
+        let sh = cfa.join("run.sh");
+        trials.push(Trial::test(format!("cfa::{n}"), move || run(script(&sh, &[&n])).map(drop)));
+    }
 
     for &lib in LIBRARIES {
         let sh = h.join("s7st/conformance/run.sh");

@@ -1,0 +1,510 @@
+;;; engine.fx: the analysis -- m-CFA (Might, Smaragdakis and Van Horn, PLDI
+;;; 2010) over the core (core.fx), as yank's `cfa.sld` does it, run a slice
+;;; at a time.
+;;;
+;;; A contour is the last `m` call sites, newest first; a closure is a
+;;; lambda and the contour it was made in; a call gives the callee the
+;;; contour of the call site pushed onto the caller's, cut to `m`, and
+;;; copies the lambda's free variables into it from the closure's. Locals
+;;; are addressed by variable and contour; globals and allocation sites
+;;; have one address each. At depth 0 every contour is the empty one: 0CFA.
+;;;
+;;; A task is a closure whose body is to be evaluated in its contour, or the
+;;; top level (`cf-main`). Each cell keeps the tasks that read it; a cell
+;;; that grows puts them on the worklist again, so a task runs again only
+;;; when something it read changed. `cf-step!` runs tasks until its fuel is
+;;; spent or none is left: the server answers requests between slices.
+;;;
+;;; An abstract value is a number: closure `c` as 4c, allocation site `s`
+;;; as 4s+1, data of kind `k` as 4k+2, primitive `p` as 4p+3, and unknown
+;;; (whatever code not known may give) as -1. A set of them: a sorted list.
+
+(define-type vals (listof int acyclic))
+(define cf-unknown int -1)
+
+(define* vals-union (subr spin (vals vals) vals)
+  (lambda (a b)
+    (cond ((null? a) b)
+          ((null? b) a)
+          ((< (car a) (car b)) (cons (car a) (vals-union (cdr a) b)))
+          ((< (car b) (car a)) (cons (car b) (vals-union a (cdr b))))
+          (else (cons (car a) (vals-union (cdr a) (cdr b)))))))
+(define* vals-has? (subr spin (vals int) bool)
+  (lambda (s x) (and (pair? s) (or (= (car s) x) (and (< (car s) x) (vals-has? (cdr s) x))))))
+(define* union-all (subr spin ((listof vals acyclic)) vals)
+  (lambda (l) (if (null? l) nil (vals-union (car l) (union-all (cdr l))))))
+(define* last-vals (subr spin ((listof vals acyclic)) vals)
+  (lambda (l) (cond ((null? l) nil) ((null? (cdr l)) (car l)) (else (last-vals (cdr l))))))
+(define* closure-val? (subr pure (int) bool) (lambda (x) (and (>= x 0) (= (remainder x 4) 0))))
+(define* site-val? (subr pure (int) bool) (lambda (x) (and (>= x 0) (= (remainder x 4) 1))))
+(define* kind-val? (subr pure (int) bool) (lambda (x) (and (>= x 0) (= (remainder x 4) 2))))
+(define* prim-val? (subr pure (int) bool) (lambda (x) (and (>= x 0) (= (remainder x 4) 3))))
+
+(define* int-hash (subr pure (int) int) (lambda (k) (remainder (* (if (< k 0) (- 0 k) k) 2654435761) 2147483647)))
+(define* int-same (subr pure (int int) bool) (lambda (a b) (= a b)))
+(define-type int-table (table int int @cf))
+(define-type vals-table (table int vals @cf))
+(define-type ints-table (table int ints @cf))
+(define* new-int-table (subr (alloc @cf) () int-table) (lambda () (make-table int-hash int-same)))
+(define* new-vals-table (subr (alloc @cf) () vals-table) (lambda () (make-table int-hash int-same)))
+(define* new-ints-table (subr (alloc @cf) () ints-table) (lambda () (make-table int-hash int-same)))
+
+"The world being analysed: its lambdas and sites by number, the variables
+the lambdas' bodies use but do not bind, and its language."
+(define cf-lambda-array (ref (arrayof lambda-info @cf) @cf)
+  (new (make-array 0 (product (span cf-no-span) (name "") (params nil) (rest -1) (body (k-none nil))))))
+(define cf-site-array (ref (arrayof site-info @cf) @cf) (new (make-array 0 (product (span cf-no-span) (kind "") (tag "")))))
+(define cf-free (ref (arrayof ints @cf) @cf) (new (make-array 0 nil)))
+(define cf-tops (ref cores @cf) (new nil))
+(define cf-language (ref cf-lang @cf) (new (product (name "") (model (lambda ((n string)) (m-data #f nil))))))
+"The analysis's depth: how many call sites a contour keeps (0: 0CFA)."
+(define cf-depth (ref int @cf) (new 0))
+
+;; Contours and closures, interned.
+(define cf-contour-ids (ref int-table @cf) (new (new-int-table)))
+(define cf-contour-calls (ref ints-table @cf) (new (new-ints-table)))
+(define cf-contour-count (ref int @cf) (new 1))
+(define cf-closure-ids (ref int-table @cf) (new (new-int-table)))
+(define cf-closure-lambda (ref int-table @cf) (new (new-int-table)))
+(define cf-closure-contour (ref int-table @cf) (new (new-int-table)))
+(define cf-closure-count (ref int @cf) (new 0))
+;; Primitives and field labels, interned.
+(define cf-prims (ref strings @cf) (new nil))     ; newest first
+(define cf-prim-count (ref int @cf) (new 0))
+(define cf-labels (ref (table string int @cf) @cf) (new (the (table string int @cf) (make-table string-hash string=?))))
+(define cf-label-count (ref int @cf) (new 0))
+
+;; The store: each cell's values, and the tasks that read it.
+(define cf-cells (ref vals-table @cf) (new (new-vals-table)))
+(define cf-readers (ref ints-table @cf) (new (new-ints-table)))
+;; What the notes need: each reference's values and each call's callees,
+;; over all contours; which lambdas and sites escaped; each site's labels.
+(define cf-ref-vals (ref vals-table @cf) (new (new-vals-table)))
+(define cf-callees (ref vals-table @cf) (new (new-vals-table)))
+(define cf-escaped (ref int-table @cf) (new (new-int-table)))
+(define cf-site-escaped (ref int-table @cf) (new (new-int-table)))
+(define cf-site-labels (ref ints-table @cf) (new (new-ints-table)))
+
+;; The worklist: tasks to run, oldest first (`front`, then `back` reversed),
+;; those on it, and those ever made. The task running, whose reads are kept.
+(define cf-main int -1)
+(define cf-front (ref ints @cf) (new nil))
+(define cf-back (ref ints @cf) (new nil))
+(define cf-queued (ref int-table @cf) (new (new-int-table)))
+(define cf-made (ref int-table @cf) (new (new-int-table)))
+(define cf-current (ref int @cf) (new -1))
+"How many tasks have run, in all."
+(define cf-steps (ref int @cf) (new 0))
+
+(define* cf-enqueue! (subr cf-eff (int) unit)
+  (lambda (t)
+    (if (= (table-ref (get cf-queued) t 0) 1) #u
+        (begin (table-set! (get cf-queued) t 1) (set cf-back (cons t (get cf-back)))))))
+"Task `t` made: on the worklist, the first time."
+(define* cf-ensure-task! (subr cf-eff (int) unit)
+  (lambda (t)
+    (if (= (table-ref (get cf-made) t 0) 1) #u
+        (begin (table-set! (get cf-made) t 1) (cf-enqueue! t)))))
+
+;;; ------------------------------------------------------------ cells
+
+"Cell keys: variable `v` in contour `c`, a site's field, a task's result."
+(define* var-key (subr cf-eff (int int) int)
+  (lambda (v c) (* 4 (+ (* v 16777216) (if (< v (get cf-global-count)) 0 c)))))
+(define* field-key (subr pure (int int) int) (lambda (site label) (+ 1 (* 4 (+ (* site 16777216) label)))))
+(define* result-key (subr pure (int) int) (lambda (task) (+ 2 (* 4 (+ task 1)))))
+
+(define* cf-read (subr cf-eff (int) vals)
+  (lambda (k)
+    (let ((rs (table-ref (get cf-readers) k nil)) (t (get cf-current)))
+      (begin
+        (if (and (pair? rs) (= (car rs) t)) #u
+            (if (letrec ((has (subr spin (ints) bool) (lambda (l) (and (pair? l) (or (= (car l) t) (has (cdr l)))))))
+                  (has rs))
+                #u
+                (table-set! (get cf-readers) k (cons t rs))))
+        (table-ref (get cf-cells) k nil)))))
+"Cell `k` given `s` too: its readers to run again, if it grew."
+(define* cf-join! (subr cf-eff (int vals) unit)
+  (lambda (k s)
+    (if (null? s) #u
+        (let* ((old (table-ref (get cf-cells) k nil)) (new (vals-union old s)))
+          (if (= (length new) (length old)) #u
+              (begin
+                (table-set! (get cf-cells) k new)
+                (letrec ((go (subr cf-eff (ints) unit) (lambda (l) (if (null? l) #u (begin (cf-enqueue! (car l)) (go (cdr l)))))))
+                  (go (table-ref (get cf-readers) k nil)))))))))
+"A table of sets, `k`'s given `s` too (no readers: for the notes)."
+(define* cf-note! (subr cf-eff (vals-table int vals) unit)
+  (lambda (tbl k s) (if (null? s) #u (table-set! tbl k (vals-union (table-ref tbl k nil) s)))))
+
+;;; ------------------------------------------------------------ interning
+
+(define* pair-key (subr pure (int int) int) (lambda (a b) (+ (* a 16777216) b)))
+(define* take-ints (subr spin (int ints) ints)
+  (lambda (n l) (if (or (<= n 0) (null? l)) nil (cons (car l) (take-ints (- n 1) (cdr l))))))
+
+"The contour of calls `l`, numbered on first use."
+(define* contour-of (subr cf-eff (ints) int)
+  (lambda (l)
+    (if (null? l) 0
+        (let* ((rest (contour-of (cdr l))) (k (pair-key (car l) rest)) (id (table-ref (get cf-contour-ids) k -1)))
+          (if (>= id 0) id
+              (let ((n (get cf-contour-count)))
+                (begin (set cf-contour-count (+ n 1))
+                  (table-set! (get cf-contour-ids) k n)
+                  (table-set! (get cf-contour-calls) n l)
+                  n)))))))
+"The closure of lambda `l` made in contour `c`: in the empty contour, the
+lambda's own number; else one past them, numbered on first use."
+(define* closure-of (subr cf-eff (int int) int)
+  (lambda (l c)
+    (if (= c 0) l
+        (let* ((k (pair-key l c)) (id (table-ref (get cf-closure-ids) k -1)))
+          (if (>= id 0) id
+              (let ((n (+ (get cf-closure-count) (array-length (get cf-lambda-array)))))
+                (begin (set cf-closure-count (+ (get cf-closure-count) 1))
+                  (table-set! (get cf-closure-ids) k n)
+                  (table-set! (get cf-closure-lambda) n l)
+                  (table-set! (get cf-closure-contour) n c)
+                  n)))))))
+(define* closure-lambda (subr cf-eff (int) int)
+  (lambda (cl) (if (< cl (array-length (get cf-lambda-array))) cl (table-ref (get cf-closure-lambda) cl -1))))
+(define* closure-contour (subr cf-eff (int) int)
+  (lambda (cl) (if (< cl (array-length (get cf-lambda-array))) 0 (table-ref (get cf-closure-contour) cl 0))))
+"The contour call `call`, in contour `c`, gives its callee."
+(define* push-contour (subr cf-eff (int int) int)
+  (lambda (call c)
+    (if (= (get cf-depth) 0) 0
+        (contour-of (take-ints (get cf-depth) (cons call (table-ref (get cf-contour-calls) c nil)))))))
+
+"Primitive `name`'s value."
+(define* prim-val (subr cf-eff (string) int)
+  (lambda (name)
+    (let ((i (cf-index name (get cf-prims))))
+      (+ 3 (* 4 (if (>= i 0) (- (- (get cf-prim-count) 1) i)
+                    (let ((n (get cf-prim-count)))
+                      (begin (set cf-prims (cons name (get cf-prims))) (set cf-prim-count (+ n 1)) n))))))))
+(define* prim-name (subr cf-eff (int) string)
+  (lambda (v) (letrec ((go (subr cf-eff (strings int) string)
+                         (lambda (l i) (cond ((null? l) "?") ((= i 0) (car l)) (else (go (cdr l) (- i 1)))))))
+                (go (get cf-prims) (- (- (get cf-prim-count) 1) (quotient v 4))))))
+(define* label-id (subr cf-eff (string) int)
+  (lambda (label)
+    (let ((i (table-ref (get cf-labels) label -1)))
+      (if (>= i 0) i
+          (let ((n (get cf-label-count))) (begin (table-set! (get cf-labels) label n) (set cf-label-count (+ n 1)) n))))))
+(define* kind-vals (subr cf-eff (strings) vals)
+  (lambda (names)
+    (cond ((null? names) nil)
+          ((string=? (car names) "unknown") (vals-union (list cf-unknown) (kind-vals (cdr names))))
+          (else (vals-union (list (+ 2 (* 4 (cf-kind (car names))))) (kind-vals (cdr names)))))))
+
+;;; ------------------------------------------------------------ fields
+
+"Field `label` of site `site`, read (made, so that the site knows it)."
+(define* site-field (subr cf-eff (int string) vals)
+  (lambda (site label)
+    (let* ((l (label-id label)) (ls (table-ref (get cf-site-labels) site nil)))
+      (begin
+        (if (letrec ((has (subr spin (ints) bool) (lambda (x) (and (pair? x) (or (= (car x) l) (has (cdr x)))))))
+              (has ls))
+            #u
+            (table-set! (get cf-site-labels) site (cons l ls)))
+        (vals-union (cf-read (field-key site l))
+                    (if (= (table-ref (get cf-site-escaped) site 0) 1) (list cf-unknown) nil))))))
+
+"The field `label` of what `s` holds (unknown if it may be anything)."
+(define* fields-of (subr cf-eff (vals string) vals)
+  (lambda (s label)
+    (cond ((null? s) nil)
+          ((site-val? (car s)) (vals-union (site-field (quotient (car s) 4) label) (fields-of (cdr s) label)))
+          ((= (car s) cf-unknown) (vals-union (list cf-unknown) (fields-of (cdr s) label)))
+          (else (fields-of (cdr s) label)))))
+"The payload of the sum sites in `s` of tag `tag` (any, for \"\")."
+(define* payload-of (subr cf-eff (vals string) vals)
+  (lambda (s tag)
+    (cond ((null? s) nil)
+          ((site-val? (car s))
+           (let ((info (array-ref (get cf-site-array) (quotient (car s) 4))))
+             (vals-union (if (and (string=? (extract info kind) "sum") (or (string=? tag "") (string=? (extract info tag) tag)))
+                             (site-field (quotient (car s) 4) "payload")
+                             nil)
+                         (payload-of (cdr s) tag))))
+          ((= (car s) cf-unknown) (vals-union (list cf-unknown) (payload-of (cdr s) tag)))
+          (else (payload-of (cdr s) tag)))))
+
+(define-rec
+  ;; What `s` holds escapes to code not known: its closures may be called
+  ;; with anything (their bodies evaluated where they were made, their
+  ;; parameters unknown there), and what its sites hold escapes too, as
+  ;; anything put in them later does, and reading them gives anything.
+  (escape! (subr cf-eff (vals) unit)
+    (lambda (s)
+      (cond ((null? s) #u)
+            ((closure-val? (car s))
+             (let* ((cl (quotient (car s) 4)) (l (closure-lambda cl)) (c (closure-contour cl))
+                    (info (array-ref (get cf-lambda-array) l)))
+               (begin
+                 (table-set! (get cf-escaped) l 1)
+                 (letrec ((params (subr cf-eff (ints) unit)
+                            (lambda (ps) (if (null? ps) #u (begin (cf-join! (var-key (car ps) c) (list cf-unknown)) (params (cdr ps)))))))
+                   (params (extract info params)))
+                 (if (>= (extract info rest) 0) (cf-join! (var-key (extract info rest) c) (list cf-unknown)) #u)
+                 (cf-ensure-task! cl)
+                 (escape! (cdr s)))))
+            ((site-val? (car s))
+             (let ((site (quotient (car s) 4)))
+               (begin
+                 (if (= (table-ref (get cf-site-escaped) site 0) 1) #u
+                     (begin
+                       (table-set! (get cf-site-escaped) site 1)
+                       (letrec ((each (subr cf-eff (ints) unit)
+                                  (lambda (ls) (if (null? ls) #u
+                                                   (let ((k (field-key site (car ls))))
+                                                     (begin (escape! (table-ref (get cf-cells) k nil))
+                                                       (cf-join! k (list cf-unknown))
+                                                       (each (cdr ls))))))))
+                         (each (table-ref (get cf-site-labels) site nil)))))
+                 (escape! (cdr s)))))
+            (else (escape! (cdr s))))))
+  ;; Field `label` of the sites in `targets` given `s`.
+  (store! (subr cf-eff (vals string vals) unit)
+    (lambda (targets label s)
+      (cond ((null? targets) #u)
+            ((site-val? (car targets))
+             (let ((site (quotient (car targets) 4)))
+               (begin
+                 (site-field site label)
+                 (cf-join! (field-key site (label-id label)) s)
+                 (if (= (table-ref (get cf-site-escaped) site 0) 1) (escape! s) #u)
+                 (store! (cdr targets) label s))))
+            ((= (car targets) cf-unknown) (begin (escape! s) (store! (cdr targets) label s)))
+            (else (store! (cdr targets) label s))))))
+
+;;; ------------------------------------------------------------ evaluation
+
+"Arguments `as` given, in contour `c`, to parameters `ps` (and the rest,
+`rest`, if not -1)."
+(define* pass-args (subr cf-eff (ints int (listof vals acyclic) int) unit)
+  (lambda (ps rest as c)
+    (cond ((null? ps) (if (>= rest 0) (cf-join! (var-key rest c) (union-all as)) #u))
+          ((null? as) #u)
+          (else (begin (cf-join! (var-key (car ps) c) (car as)) (pass-args (cdr ps) rest (cdr as) c))))))
+"An arm's variables, in contour `c`, given the payload: all of it, or
+(`fields`) its product's fields by position."
+(define* bind-arm (subr cf-eff (ints bool vals int) unit)
+  (lambda (vars fields payload c)
+    (cond ((null? vars) #u)
+          ((not fields) (cf-join! (var-key (car vars) c) payload))
+          (else (letrec ((go (subr cf-eff (ints int) unit)
+                           (lambda (vs i) (if (null? vs) #u
+                                              (begin (cf-join! (var-key (car vs) c) (fields-of payload (int->string i)))
+                                                (go (cdr vs) (+ i 1)))))))
+                  (go vars 1))))))
+
+(define-rec
+  ;; The value of `x` in contour `c`, in the store as it is, joining what it
+  ;; does into it.
+  (eval-core (subr cf-eff (core int) vals)
+    (lambda (x c)
+      (tagcase x
+        (k-none (xs) (begin (eval-all xs c) nil))
+        (k-const (k) (list (+ 2 (* 4 k))))
+        (k-var (v r) (let ((s (cf-read (var-key v c)))) (begin (if (>= r 0) (cf-note! (get cf-ref-vals) r s) #u) s)))
+        (k-prim (name) (list (prim-val name)))
+        (k-lam (l) (let ((cl (closure-of l c)))
+                     ;; Made: its body evaluated where it was made, whether or not
+                     ;; it is called (the runtime calls some: handlers, branches).
+                     (begin (cf-ensure-task! cl) (list (* 4 cl)))))
+        (k-seq (xs) (last-vals (eval-all xs c)))
+        (k-alt (xs) (union-all (eval-all xs c)))
+        (k-bind (v e) (begin (cf-join! (var-key v c) (eval-core e c)) nil))
+        (k-alloc (site inits)
+          (begin
+            (letrec ((go (subr cf-eff ((listof field-init acyclic)) unit)
+                       (lambda (is) (if (null? is) #u
+                                        (begin (store! (list (+ 1 (* 4 site))) (extract (car is) label) (eval-core (extract (car is) value) c))
+                                          (go (cdr is)))))))
+              (go inits))
+            (list (+ 1 (* 4 site)))))
+        (k-field (e label) (fields-of (eval-core e c) label))
+        (k-store (e label v) (let* ((targets (eval-core e c)) (s (eval-core v c))) (begin (store! targets label s) nil)))
+        (k-escape (xs) (begin (escape! (union-all (eval-all xs c))) (list cf-unknown)))
+        (k-case (e arms)
+          (let ((subject (eval-core e c)))
+            (union-all
+             (letrec ((go (subr cf-eff ((listof arm acyclic)) (listof vals acyclic))
+                        (lambda (as)
+                          (if (null? as) nil
+                              (let ((a (car as)))
+                                (begin
+                                  (bind-arm (extract a vars) (extract a fields) (payload-of subject (extract a tag)) c)
+                                  (cons (eval-core (extract a body) c) (go (cdr as)))))))))
+               (go arms)))))
+        (k-app (call f args)
+          (let* ((ops (eval-core f c)) (as (eval-all args c)))
+            (begin
+              (cf-note! (get cf-callees) call ops)
+              (call-all call c ops as)))))))
+  (eval-all (subr cf-eff (cores int) (listof vals acyclic))
+    (lambda (xs c) (if (null? xs) nil (let ((v (eval-core (car xs) c))) (cons v (eval-all (cdr xs) c))))))
+  ;; Each operator in `ops` called at `call`, in contour `c`, with `as`: the
+  ;; union of their results.
+  (call-all (subr cf-eff (int int vals (listof vals acyclic)) vals)
+    (lambda (call c ops as)
+      (cond ((null? ops) nil)
+            ((closure-val? (car ops))
+             (let* ((cl (quotient (car ops) 4))
+                    (l (closure-lambda cl))
+                    (made (closure-contour cl))
+                    (c1 (push-contour call c))
+                    (info (array-ref (get cf-lambda-array) l))
+                    (task (closure-of l c1)))
+               (begin
+                 ;; Its free variables, copied from where it was made.
+                 (if (= c1 made) #u
+                     (letrec ((copy (subr cf-eff (ints) unit)
+                                (lambda (vs) (if (null? vs) #u
+                                                 (begin (cf-join! (var-key (car vs) c1) (cf-read (var-key (car vs) made)))
+                                                   (copy (cdr vs)))))))
+                       (copy (array-ref (get cf-free) l))))
+                 (pass-args (extract info params) (extract info rest) as c1)
+                 (cf-ensure-task! task)
+                 (vals-union (cf-read (result-key task)) (call-all call c (cdr ops) as)))))
+            ((prim-val? (car ops))
+             (vals-union (call-prim call c (prim-name (car ops)) as) (call-all call c (cdr ops) as)))
+            ((= (car ops) cf-unknown)
+             (begin (escape! (union-all as)) (vals-union (list cf-unknown) (call-all call c (cdr ops) as))))
+            (else (call-all call c (cdr ops) as)))))
+  ;; Primitive `name` called, as its language says.
+  (call-prim (subr cf-eff (int int string (listof vals acyclic)) vals)
+    (lambda (call c name as)
+      (tagcase ((extract (get cf-language) model) name)
+        (m-data (escapes kinds) (begin (if escapes (escape! (union-all as)) #u) (kind-vals kinds)))
+        (m-pass () (union-all as))
+        (m-map (kinds)
+          (if (null? as) (kind-vals kinds)
+              (let ((elements (letrec ((go (subr cf-eff ((listof vals acyclic)) (listof vals acyclic))
+                                             (lambda (l) (if (null? l) nil (cons (fields-of (car l) "car") (go (cdr l)))))))
+                                (go (cdr as)))))
+                (begin (escape! (call-all call c (car as) elements)) (kind-vals kinds))))))))
+  ;; Task `t` run: its lambda's body evaluated in its contour, its result kept.
+  (run-task! (subr cf-eff (int) unit)
+    (lambda (t)
+      (begin
+        (set cf-current t)
+        (if (= t cf-main)
+            (begin (eval-all (get cf-tops) 0) #u)
+            (cf-join! (result-key t) (eval-core (extract (array-ref (get cf-lambda-array) (closure-lambda t)) body)
+                                                (closure-contour t))))
+        (set cf-steps (+ (get cf-steps) 1))))))
+
+;;; ------------------------------------------------------------ free variables
+
+"The variables `x` refers to and binds (its lambdas' bodies and
+parameters included), onto `refs` and `binds`."
+(define-type refs-binds (productof (refs ints) (binds ints)))
+(define* append-ints (subr spin (ints ints) ints) (lambda (a b) (if (null? a) b (cons (car a) (append-ints (cdr a) b)))))
+(define* member-int? (subr spin (int ints) bool) (lambda (x l) (and (pair? l) (or (= (car l) x) (member-int? x (cdr l))))))
+(define-rec
+  (refs-binds-of (subr cf-eff (core refs-binds) refs-binds)
+    (lambda (x acc)
+      (let ((bind (lambda ((vs ints) (acc refs-binds)) (product (refs (extract acc refs)) (binds (append-ints vs (extract acc binds)))))))
+        (tagcase x
+          (k-none (xs) (refs-binds-all xs acc))
+          (k-var (v r) (product (refs (cons v (extract acc refs))) (binds (extract acc binds))))
+          (k-lam (l) (let ((info (array-ref (get cf-lambda-array) l)))
+                       (refs-binds-of (extract info body)
+                                      (bind (if (>= (extract info rest) 0) (cons (extract info rest) (extract info params)) (extract info params))
+                                            acc))))
+          (k-app (call f args) (refs-binds-all args (refs-binds-of f acc)))
+          (k-seq (xs) (refs-binds-all xs acc))
+          (k-alt (xs) (refs-binds-all xs acc))
+          (k-bind (v e) (refs-binds-of e (bind (list v) acc)))
+          (k-alloc (site inits)
+            (letrec ((go (subr cf-eff ((listof field-init acyclic) refs-binds) refs-binds)
+                       (lambda (is acc) (if (null? is) acc (go (cdr is) (refs-binds-of (extract (car is) value) acc))))))
+              (go inits acc)))
+          (k-field (e label) (refs-binds-of e acc))
+          (k-store (e label v) (refs-binds-of v (refs-binds-of e acc)))
+          (k-escape (xs) (refs-binds-all xs acc))
+          (k-case (e arms)
+            (letrec ((go (subr cf-eff ((listof arm acyclic) refs-binds) refs-binds)
+                       (lambda (as acc)
+                         (if (null? as) acc
+                             (go (cdr as) (refs-binds-of (extract (car as) body) (bind (extract (car as) vars) acc)))))))
+              (go arms (refs-binds-of e acc))))
+          (else y acc)))))
+  (refs-binds-all (subr cf-eff (cores refs-binds) refs-binds)
+    (lambda (xs acc) (if (null? xs) acc (refs-binds-all (cdr xs) (refs-binds-of (car xs) acc))))))
+
+"Lambda `l`'s free variables: those its body refers to, not bound in it,
+not global."
+(define* free-of (subr cf-eff (int) ints)
+  (lambda (l)
+    (let* ((info (array-ref (get cf-lambda-array) l))
+           (rb (refs-binds-of (extract info body)
+                              (product (refs nil) (binds (if (>= (extract info rest) 0) (cons (extract info rest) (extract info params))
+                                                             (extract info params))))))
+           (bound (extract rb binds)))
+      (letrec ((go (subr cf-eff (ints ints) ints)
+                 (lambda (rs acc)
+                   (cond ((null? rs) acc)
+                         ((or (< (car rs) (get cf-global-count)) (member-int? (car rs) bound) (member-int? (car rs) acc))
+                          (go (cdr rs) acc))
+                         (else (go (cdr rs) (cons (car rs) acc)))))))
+        (go (extract rb refs) nil)))))
+
+;;; ------------------------------------------------------------ running
+
+"The list `l`, newest first, as an array oldest first."
+(define* lambdas->array (subr cf-eff ((listof lambda-info acyclic)) (arrayof lambda-info @cf))
+  (lambda (l)
+    (let ((a (the (arrayof lambda-info @cf) (make-array (length l) (product (span cf-no-span) (name "") (params nil) (rest -1) (body (k-none nil)))))))
+      (letrec ((go (subr cf-eff ((listof lambda-info acyclic) int) unit)
+                 (lambda (l i) (if (null? l) #u (begin (array-set! a i (car l)) (go (cdr l) (- i 1)))))))
+        (begin (go l (- (length l) 1)) a)))))
+(define* sites->array (subr cf-eff ((listof site-info acyclic)) (arrayof site-info @cf))
+  (lambda (l)
+    (let ((a (the (arrayof site-info @cf) (make-array (length l) (product (span cf-no-span) (kind "") (tag ""))))))
+      (letrec ((go (subr cf-eff ((listof site-info acyclic) int) unit)
+                 (lambda (l i) (if (null? l) #u (begin (array-set! a i (car l)) (go (cdr l) (- i 1)))))))
+        (begin (go l (- (length l) 1)) a)))))
+
+"The world read (core.fx's numbering, and its top levels `tops`), of
+language `lang`, to be analysed at depth `m` from the start: nothing run yet."
+(define* cf-start! (subr cf-eff (cf-lang cores int) unit)
+  (lambda (lang tops m)
+    (begin
+      (set cf-language lang) (set cf-tops tops) (set cf-depth m)
+      (set cf-lambda-array (lambdas->array (get cf-lambdas)))
+      (set cf-site-array (sites->array (get cf-sites)))
+      (set cf-free (make-array (array-length (get cf-lambda-array)) nil))
+      (letrec ((frees (subr cf-eff (int) unit)
+                 (lambda (l) (if (>= l (array-length (get cf-lambda-array))) #u
+                                 (begin (array-set! (get cf-free) l (free-of l)) (frees (+ l 1)))))))
+        (frees 0))
+      (set cf-contour-ids (new-int-table)) (set cf-contour-calls (new-ints-table)) (set cf-contour-count 1)
+      (set cf-closure-ids (new-int-table)) (set cf-closure-lambda (new-int-table)) (set cf-closure-contour (new-int-table))
+      (set cf-closure-count 0)
+      (set cf-prims nil) (set cf-prim-count 0)
+      (set cf-labels (the (table string int @cf) (make-table string-hash string=?))) (set cf-label-count 0)
+      (set cf-cells (new-vals-table)) (set cf-readers (new-ints-table))
+      (set cf-ref-vals (new-vals-table)) (set cf-callees (new-vals-table))
+      (set cf-escaped (new-int-table)) (set cf-site-escaped (new-int-table)) (set cf-site-labels (new-ints-table))
+      (set cf-front nil) (set cf-back nil) (set cf-queued (new-int-table)) (set cf-made (new-int-table))
+      (set cf-steps 0)
+      (cf-ensure-task! cf-main))))
+
+"At most `fuel` tasks run. Whether the analysis is done: none left."
+(define* cf-step! (subr cf-eff (int) bool)
+  (lambda (fuel)
+    (cond ((and (null? (get cf-front)) (null? (get cf-back))) #t)
+          ((<= fuel 0) #f)
+          ((null? (get cf-front)) (begin (set cf-front (reverse (get cf-back))) (set cf-back nil) (cf-step! fuel)))
+          (else (let ((t (car (get cf-front))))
+                  (begin (set cf-front (cdr (get cf-front)))
+                    (table-set! (get cf-queued) t 0)
+                    (run-task! t)
+                    (cf-step! (- fuel 1))))))))

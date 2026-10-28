@@ -1,0 +1,18 @@
+basic.scm:21-22: calls inc | dec
+basic.scm:24-25: calls inc | dec
+basic.scm:26-27: x: number
+basic.scm:50-51: n: number
+basic.scm:75-76: n: number
+basic.scm:92-97: calls twice
+basic.scm:98-101: inc: inc
+basic.scm:117-122: calls twice
+basic.scm:123-126: dec: dec
+basic.scm:154-157: inc: inc
+basic.scm:158-161: dec: dec
+basic.scm:202-203: calls inc | dec
+basic.scm:208-216: handlers: pair
+basic.scm:248-256: handlers: pair
+basic.scm:311-318: counter: number
+basic.scm:323-330: counter: number
+basic.scm:375-377: calls sq
+[exit 0]

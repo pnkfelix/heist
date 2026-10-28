@@ -1,0 +1,18 @@
+basic.fx:29-30: calls inc | dec
+basic.fx:32-33: calls inc | dec
+basic.fx:34-35: x: int
+basic.fx:67-68: n: int
+basic.fx:101-102: n: int
+basic.fx:119-124: calls twice
+basic.fx:125-128: inc: inc
+basic.fx:144-149: calls twice
+basic.fx:150-153: dec: dec
+basic.fx:242-243: s: (circle)
+basic.fx:259-260: r: int
+basic.fx:261-262: r: int
+basic.fx:300-304: calls area
+basic.fx:306-312: calls circle
+basic.fx:335-338: inc: inc
+basic.fx:352-361: calls inc
+basic.fx:357-360: box: ref
+[exit 0]

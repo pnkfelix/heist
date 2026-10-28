@@ -1,0 +1,10 @@
+#!/bin/sh
+# The CFA: a flow analysis of FX-26 and Scheme (cfa/), run on Heist's own
+# build of Fixpt. It loads s7st (s7st/, all but its main.fx) for Scheme's
+# reader and expander.
+#   bin/cfa [-m N] FILE …   see cfa/main.fx
+heist=$(cd "$(dirname "$0")/.." && pwd)
+fixpt="$heist/fixpt/target/release/fixpt"
+[ -x "$fixpt" ] || { echo "build fixpt first: (cd $heist/fixpt && cargo build --release -p fixpt-cli)" >&2; exit 2; }
+exec "$fixpt" run $(for f in $(cat "$heist/s7st/program"); do echo "$heist/s7st/$f"; done) \
+                  $(for f in $(cat "$heist/cfa/program"); do echo "$heist/cfa/$f"; done) -- "$@"
