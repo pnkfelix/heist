@@ -12,4 +12,5 @@ process.fx
 files.fx
 help.fx
 eldoc.fx
+scheme.fx
 main.fx

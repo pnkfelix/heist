@@ -388,7 +388,12 @@ argument: definitions, binders, and the forms with clauses."
   (list "define" "define*" "define-rec" "define-type" "define-datatype" "define-effect" "define-generative"
         "lambda" "plambda" "vlambda" "rlambda" "let" "let*" "letrec" "letregion" "letrena" "letreap" "letfreeze"
         "module" "hide" "with" "begin" "case" "tagcase" "typecase" "when" "unless" "attempt" "race" "par"
-        "pselect" "spawn" "spawn-monitored" "prompt" "module-parameters" "dletrec"))
+        "pselect" "spawn" "spawn-monitored" "prompt" "module-parameters" "dletrec"
+        ;; Scheme's (scheme.fx).
+        "define-syntax" "define-values" "define-record-type" "define-library" "letrec*" "let-values"
+        "let*-values" "let-syntax" "letrec-syntax" "syntax-rules" "do" "case-lambda" "guard" "parameterize"
+        "receive" "delay" "delay-force" "dynamic-wind" "call-with-current-continuation" "call/cc"
+        "with-exception-handler" "call-with-values"))
 
 (define* member-string? (subr spin (string strings) bool)
   (lambda (s l) (and (pair? l) (or (string=? s (car l)) (member-string? s (cdr l))))))
@@ -467,19 +472,23 @@ text, or at the indentation if it was in the old."
 (define* fx26-buffer? (subr spin (buffer) bool)
   (lambda (b) (let ((n (string-length (extract b name))))
                 (and (> n 3) (string=? (substring (extract b name) (- n 3) n) ".fx")))))
+"Whether `b` holds Lisp, indented as Lisp is: FX-26, or Scheme (a file's,
+or *s7st*)."
+(define* lisp-buffer? (subr spin (buffer) bool)
+  (lambda (b) (or (fx26-buffer? b) (scheme-name? (extract b name)) (string=? (extract b name) "*s7st*"))))
 
-"TAB: in an FX-26 buffer, the line indented; elsewhere, a tab."
+"TAB: in a Lisp buffer, the line indented; elsewhere, a tab."
 (define* indent-for-tab (subr pure () command)
   (lambda ()
     (lambda ((b buffer))
-      (if (fx26-buffer? b)
+      (if (lisp-buffer? b)
           (done (indent-line-of b (rope-line-of (extract b text) (extract b point))))
           (done (with-text b (rope-insert (extract b text) (extract b point) "\t") (+ 1 (extract b point))))))))
 
-"RET: a newline; in an FX-26 buffer, the new line indented."
+"RET: a newline; in a Lisp buffer, the new line indented."
 (define* newline-and-indent (subr pure () command)
   (lambda ()
     (lambda ((b buffer))
       (let* ((p (extract b point))
              (b2 (with-text b (rope-insert (extract b text) p "\n") (+ p 1))))
-        (done (if (fx26-buffer? b2) (indent-line-of b2 (rope-line-of (extract b2 text) (+ p 1))) b2))))))
+        (done (if (lisp-buffer? b2) (indent-line-of b2 (rope-line-of (extract b2 text) (+ p 1))) b2))))))

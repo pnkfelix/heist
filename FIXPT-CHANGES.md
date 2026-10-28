@@ -19,7 +19,9 @@ do it, and what it cost. Kayak will need the same changes later
   Fixpt `DONE.md` §145).
 - Before: Fixpt 5731f52e (2026-10-27), pulled by Heist's
   a9d57d8b (squash 358e4450): region and heap `new`/`make-array` in line
-  in x86_64 native code (Heist's request), `load-moduleof` and
+  in x86_64 native code (`docs/requests/fixpt-region-alloc-inline.md`,
+  Heist's request; branch s7st had pulled it, b7b60d98, by 82b06f73,
+  merged since), `load-moduleof` and
   `restrict`, compiled code named to `gdb` and `lldb` with source lines,
   and a syscall's effect with no `(io sys)` required.
 - Before: Fixpt 8793b0cb (2026-10-27), pulled by Heist's 550e2fcb

@@ -1,0 +1,13 @@
+ready 
+incomplete 
+started 
+out a\nb\n3\n
+value 3
+describe car: 1 argument
+started 
+error car: not a pair 1
+started 
+interrupted 
+started 
+value 42
+[exit 0]

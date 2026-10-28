@@ -1,0 +1,104 @@
+== screen 1
+(define (sq x)                          |
+  (* x x))                              |
+(display "side")                        |
+(sq 7)                                  |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+---- a.scm   L1                         |
+side => 49                              |
+cursor 0,0
+Pkkkkkk  ff                             |
+         P                              |
+         ssssss                         |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm|
+                                        |
+== screen 2
+(define (sq x)                          |
+  (* x x))                              |
+(display "side")                        |
+(sq 7)                                  |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+---- a.scm   L6                         |
+=> 49                                   |
+cursor 5,0
+ kkkkkk  ff                             |
+                                        |
+         ssssss                         |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm|
+                                        |
+== screen 3
+(define (sq x)                          |
+  (* x x))                              |
+(display "side")                        |
+(sq 7)                                  |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+---- a.scm   L1                         |
+=> sq                                   |
+cursor 0,0
+Pkkkkkk  ff                             |
+         P                              |
+         ssssss                         |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm|
+                                        |
+== at the end
+;; s7st: R7RS Scheme, interpreted in FX-|
+;; C-c C-c interrupts; M-p and M-n go th|
+side                                    |
+s7st>                                   |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+---- *s7st*   L4                        |
+                                        |
+cursor 3,6
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm|
+                                        |

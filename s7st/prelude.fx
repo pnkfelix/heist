@@ -1,0 +1,373 @@
+;;; prelude.fx: prelude.scm, as a string. Made by gen-prelude.py: edit
+;;; prelude.scm, then run it.
+
+(define s7-prelude string ";;; prelude.scm: what s7st writes in Scheme -- what calls procedures back,
+;;; and the derived forms R7RS defines by `syntax-rules`. Run at start
+;;; (session.fx's `s7-init!`). gen-prelude.py makes prelude.fx of it.
+
+;;; ------------------------------------------------------------ pairs and lists
+
+(define (caaar x) (car (car (car x))))
+(define (caadr x) (car (car (cdr x))))
+(define (cadar x) (car (cdr (car x))))
+(define (caddr x) (car (cdr (cdr x))))
+(define (cdaar x) (cdr (car (car x))))
+(define (cdadr x) (cdr (car (cdr x))))
+(define (cddar x) (cdr (cdr (car x))))
+(define (cdddr x) (cdr (cdr (cdr x))))
+(define (cadddr x) (car (cdddr x)))
+(define (cddddr x) (cdr (cdddr x)))
+(define (caaaar x) (car (car (car (car x)))))
+(define (caaadr x) (car (car (car (cdr x)))))
+(define (caadar x) (car (car (cdr (car x)))))
+(define (caaddr x) (car (car (cdr (cdr x)))))
+(define (cadaar x) (car (cdr (car (car x)))))
+(define (cadadr x) (car (cdr (car (cdr x)))))
+(define (caddar x) (car (cdr (cdr (car x)))))
+(define (cdaaar x) (cdr (car (car (car x)))))
+(define (cdaadr x) (cdr (car (car (cdr x)))))
+(define (cdadar x) (cdr (car (cdr (car x)))))
+(define (cdaddr x) (cdr (car (cdr (cdr x)))))
+(define (cddaar x) (cdr (cdr (car (car x)))))
+(define (cddadr x) (cdr (cdr (car (cdr x)))))
+(define (cdddar x) (cdr (cdr (cdr (car x)))))
+
+(define (%all-pairs? ls) (or (null? ls) (and (pair? (car ls)) (%all-pairs? (cdr ls)))))
+(define (%cars ls) (if (null? ls) '() (cons (car (car ls)) (%cars (cdr ls)))))
+(define (%cdrs ls) (if (null? ls) '() (cons (cdr (car ls)) (%cdrs (cdr ls)))))
+
+(define (map f l . ls)
+  (if (null? ls)
+      (let loop ((l l) (acc '()))
+        (if (pair? l) (loop (cdr l) (cons (f (car l)) acc)) (reverse acc)))
+      (let loop ((ls (cons l ls)) (acc '()))
+        (if (%all-pairs? ls)
+            (loop (%cdrs ls) (cons (apply f (%cars ls)) acc))
+            (reverse acc)))))
+(define (for-each f l . ls)
+  (if (null? ls)
+      (let loop ((l l)) (if (pair? l) (begin (f (car l)) (loop (cdr l)))))
+      (let loop ((ls (cons l ls)))
+        (if (%all-pairs? ls) (begin (apply f (%cars ls)) (loop (%cdrs ls)))))))
+(define (vector-map f v . vs) (list->vector (apply map f (vector->list v) (map vector->list vs))))
+(define (vector-for-each f v . vs) (apply for-each f (vector->list v) (map vector->list vs)))
+(define (string-map f s . ss) (list->string (apply map f (string->list s) (map string->list ss))))
+(define (string-for-each f s . ss) (apply for-each f (string->list s) (map string->list ss)))
+
+(define (member x l . compare)
+  (let ((same? (if (pair? compare) (car compare) equal?)))
+    (let loop ((l l))
+      (cond ((not (pair? l)) #f) ((same? x (car l)) l) (else (loop (cdr l)))))))
+(define (assoc x l . compare)
+  (let ((same? (if (pair? compare) (car compare) equal?)))
+    (let loop ((l l))
+      (cond ((not (pair? l)) #f) ((same? x (car (car l))) (car l)) (else (loop (cdr l)))))))
+(define (list-set! l k v) (set-car! (list-tail l k) v))
+
+;; A few of SRFI 1's, and sorting.
+(define (filter keep? l)
+  (let loop ((l l) (acc '()))
+    (cond ((null? l) (reverse acc)) ((keep? (car l)) (loop (cdr l) (cons (car l) acc))) (else (loop (cdr l) acc)))))
+(define (remove drop? l) (filter (lambda (x) (not (drop? x))) l))
+(define (delete x l . compare)
+  (let ((same? (if (pair? compare) (car compare) equal?)))
+    (filter (lambda (y) (not (same? x y))) l)))
+(define (delete-duplicates l . compare)
+  (let ((same? (if (pair? compare) (car compare) equal?)))
+    (let loop ((l l) (acc '()))
+      (cond ((null? l) (reverse acc))
+            ((member (car l) acc same?) (loop (cdr l) acc))
+            (else (loop (cdr l) (cons (car l) acc)))))))
+(define (fold f acc l . ls)
+  (if (null? ls)
+      (let loop ((l l) (acc acc)) (if (pair? l) (loop (cdr l) (f (car l) acc)) acc))
+      (let loop ((ls (cons l ls)) (acc acc))
+        (if (%all-pairs? ls) (loop (%cdrs ls) (apply f (append (%cars ls) (list acc)))) acc))))
+(define (fold-right f acc l)
+  (let loop ((l (reverse l)) (acc acc)) (if (pair? l) (loop (cdr l) (f (car l) acc)) acc)))
+(define (reduce f default l) (if (null? l) default (fold f (car l) (cdr l))))
+(define (iota n . rest)
+  (let ((start (if (pair? rest) (car rest) 0))
+        (step (if (and (pair? rest) (pair? (cdr rest))) (cadr rest) 1)))
+    (let loop ((i (- n 1)) (acc '()))
+      (if (< i 0) acc (loop (- i 1) (cons (+ start (* i step)) acc))))))
+(define (any pred l) (and (pair? l) (or (pred (car l)) (any pred (cdr l)))))
+(define (every pred l) (or (null? l) (if (null? (cdr l)) (pred (car l)) (and (pred (car l)) (every pred (cdr l))))))
+(define (count pred l) (fold (lambda (x n) (if (pred x) (+ n 1) n)) 0 l))
+(define (last l) (if (pair? (cdr l)) (last (cdr l)) (car l)))
+(define (last-pair l) (if (pair? (cdr l)) (last-pair (cdr l)) l))
+(define (list-index pred l)
+  (let loop ((l l) (i 0)) (cond ((null? l) #f) ((pred (car l)) i) (else (loop (cdr l) (+ i 1))))))
+(define (append-map f l) (apply append (map f l)))
+(define (filter-map f l) (filter (lambda (x) x) (map f l)))
+(define (list-sort less? l)
+  (define (merge a b)
+    (cond ((null? a) b) ((null? b) a)
+          ((less? (car b) (car a)) (cons (car b) (merge a (cdr b))))
+          (else (cons (car a) (merge (cdr a) b)))))
+  (define (sort l n)
+    (if (<= n 1)
+        (if (= n 1) (list (car l)) '())
+        (let ((h (quotient n 2)))
+          (merge (sort l h) (sort (list-tail l h) (- n h))))))
+  (sort l (length l)))
+(define (sort l less?) (if (vector? l) (list->vector (list-sort less? (vector->list l))) (list-sort less? l)))
+(define (vector-sort less? v) (list->vector (list-sort less? (vector->list v))))
+
+;;; ------------------------------------------------------------ numbers
+
+(define (floor/ n d) (values (floor-quotient n d) (floor-remainder n d)))
+(define (truncate/ n d) (values (truncate-quotient n d) (truncate-remainder n d)))
+(define (exact-rational? x) (and (exact? x) (rational? x)))
+
+(define (rationalize x e)
+  ;; The simplest rational within `e` of `x`.
+  (define (simplest lo hi)
+    ;; 0 < lo < hi.
+    (let ((fl (floor lo)) (fh (floor hi)))
+      (cond ((not (< fl lo)) fl)
+            ((= fl fh) (+ fl (/ (simplest (/ (- hi fh)) (/ (- lo fl))))))
+            (else (+ 1 fl)))))
+  (define (between lo hi)
+    (cond ((< hi lo) (between hi lo))
+          ((not (< lo hi)) lo)
+          ((positive? lo) (simplest lo hi))
+          ((negative? hi) (- (simplest (- hi) (- lo))))
+          (else 0)))
+  (let ((r (cond ((and (infinite? x) (infinite? e)) +nan.0)
+                 ((infinite? e) 0.0)
+                 ((infinite? x) x)
+                 (else (between (- x e) (+ x e))))))
+    (if (and (exact? x) (exact? e)) r (inexact r))))
+
+;;; ------------------------------------------------------------ parameters
+
+;; A parameter is a procedure: of nothing, its value; given %param-set and
+;; a value, it takes it; given %param-convert, its converter.
+(define %param-set (list 'param-set))
+(define %param-convert (list 'param-convert))
+(define (make-parameter value . converter)
+  (let* ((convert (if (pair? converter) (car converter) (lambda (x) x)))
+         (value (convert value)))
+    (lambda args
+      (cond ((null? args) value)
+            ((eq? (car args) %param-set) (set! value (cadr args)))
+            ((eq? (car args) %param-convert) convert)
+            ;; Given a value, as some Schemes allow: it is set, converted.
+            (else (set! value (convert (car args))))))))
+(define (%parameterize ps vs body)
+  (let* ((new (map (lambda (p v) ((p %param-convert) v)) ps vs))
+         (swap! (lambda ()
+                  (let ((now (map (lambda (p) (p)) ps)))
+                    (for-each (lambda (p v) (p %param-set v)) ps new)
+                    (set! new now)))))
+    (dynamic-wind swap! body swap!)))
+(define-syntax parameterize
+  (syntax-rules ()
+    ((_ () body ...) (let () body ...))
+    ((_ ((param value) ...) body ...)
+     (%parameterize (list param ...) (list value ...) (lambda () body ...)))))
+
+;;; ------------------------------------------------------------ ports
+
+(define current-output-port (make-parameter %console-output))
+(define current-error-port (make-parameter %console-error))
+(define current-input-port (make-parameter %console-input))
+(define (%out port) (if (pair? port) (car port) (current-output-port)))
+(define (%in port) (if (pair? port) (car port) (current-input-port)))
+(define (display x . port) (%write x (%out port) 0))
+(define (write x . port) (%write x (%out port) 1))
+(define (write-shared x . port) (%write x (%out port) 2))
+(define (write-simple x . port) (%write x (%out port) 3))
+(define (newline . port) (%write-char #\\newline (%out port)))
+(define (write-char c . port) (%write-char c (%out port)))
+(define (write-string s . rest)
+  (if (pair? rest) (apply %write-string s rest) (%write-string s (current-output-port))))
+(define (read-char . port) (%read-char (%in port) #t))
+(define (peek-char . port) (%read-char (%in port) #f))
+(define (read-line . port) (%read-line (%in port)))
+(define (read-string k . port) (%read-string k (%in port)))
+(define (read . port) (%read (%in port)))
+(define (char-ready? . port) (%char-ready? (%in port)))
+(define (call-with-port port proc)
+  (call-with-values (lambda () (proc port))
+    (lambda results (close-port port) (apply values results))))
+(define (call-with-input-file file proc) (call-with-port (open-input-file file) proc))
+(define (with-input-from-file file thunk)
+  (let ((port (open-input-file file)))
+    (call-with-values
+      (lambda () (parameterize ((current-input-port port)) (thunk)))
+      (lambda results (close-port port) (apply values results)))))
+(define (read-u8 . port) (%read-u8 (%in port) #t))
+(define (peek-u8 . port) (%read-u8 (%in port) #f))
+(define (u8-ready? . port) #t)
+(define (read-bytevector k . port) (%read-bytevector k (%in port)))
+(define (read-bytevector! bv . rest)
+  (let* ((port (if (pair? rest) (car rest) (current-input-port)))
+         (start (if (and (pair? rest) (pair? (cdr rest))) (cadr rest) 0))
+         (end (if (and (pair? rest) (pair? (cdr rest)) (pair? (cddr rest))) (caddr rest) (bytevector-length bv)))
+         (got (read-bytevector (- end start) port)))
+    (if (eof-object? got) got
+        (begin (bytevector-copy! bv start got) (bytevector-length got)))))
+(define (write-u8 b . port) (%write-u8 b (%out port)))
+(define (bytevector-copy! to at from . rest)
+  (let* ((start (if (pair? rest) (car rest) 0))
+         (end (if (and (pair? rest) (pair? (cdr rest))) (cadr rest) (bytevector-length from))))
+    (if (<= at start)
+        (do ((i start (+ i 1)) (j at (+ j 1))) ((= i end)) (bytevector-u8-set! to j (bytevector-u8-ref from i)))
+        (do ((i (- end 1) (- i 1)) (j (+ at (- end start 1)) (- j 1))) ((< i start)) (bytevector-u8-set! to j (bytevector-u8-ref from i))))))
+(define (write-bytevector bv . rest)
+  (let* ((port (if (pair? rest) (car rest) (current-output-port)))
+         (start (if (and (pair? rest) (pair? (cdr rest))) (cadr rest) 0))
+         (end (if (and (pair? rest) (pair? (cdr rest)) (pair? (cddr rest))) (caddr rest) (bytevector-length bv))))
+    (do ((i start (+ i 1))) ((= i end)) (%write-u8 (bytevector-u8-ref bv i) port))))
+(define (call-with-input-file file proc) (call-with-port (open-input-file file) proc))
+(define (flush-output-port . port) (%flush-output-port (%out port)))
+(define (call-with-output-file file proc) (call-with-port (open-output-file file) proc))
+(define (with-output-to-file file thunk)
+  (let ((port (open-output-file file)))
+    (call-with-values
+      (lambda () (parameterize ((current-output-port port)) (thunk)))
+      (lambda results (close-port port) (apply values results)))))
+(define (call-with-output-string proc)
+  (let ((port (open-output-string))) (proc port) (get-output-string port)))
+(define (with-output-to-string thunk)
+  (let ((port (open-output-string)))
+    (parameterize ((current-output-port port)) (thunk))
+    (get-output-string port)))
+
+;;; ------------------------------------------------------------ exceptions
+
+;; R7RS 7.3's.
+(define-syntax guard
+  (syntax-rules ()
+    ((guard (var clause ...) e1 e2 ...)
+     ((call/cc
+       (lambda (guard-k)
+         (with-exception-handler
+          (lambda (condition)
+            ((call/cc
+              (lambda (handler-k)
+                (guard-k
+                 (lambda ()
+                   (let ((var condition))
+                     (guard-aux
+                      (handler-k (lambda () (raise-continuable condition)))
+                      clause ...))))))))
+          (lambda ()
+            (call-with-values
+             (lambda () e1 e2 ...)
+             (lambda args (guard-k (lambda () (apply values args)))))))))))))
+(define-syntax guard-aux
+  (syntax-rules (else =>)
+    ((guard-aux reraise (else result1 result2 ...))
+     (begin result1 result2 ...))
+    ((guard-aux reraise (test => result))
+     (let ((temp test)) (if temp (result temp) reraise)))
+    ((guard-aux reraise (test => result) clause1 clause2 ...)
+     (let ((temp test)) (if temp (result temp) (guard-aux reraise clause1 clause2 ...))))
+    ((guard-aux reraise (test))
+     (or test reraise))
+    ((guard-aux reraise (test) clause1 clause2 ...)
+     (let ((temp test)) (if temp temp (guard-aux reraise clause1 clause2 ...))))
+    ((guard-aux reraise (test result1 result2 ...))
+     (if test (begin result1 result2 ...) reraise))
+    ((guard-aux reraise (test result1 result2 ...) clause1 clause2 ...)
+     (if test (begin result1 result2 ...) (guard-aux reraise clause1 clause2 ...)))))
+
+;;; ------------------------------------------------------------ multiple values
+
+(define-syntax let-values
+  ;; Every init evaluated, as `let`'s are, before any formals are bound.
+  (syntax-rules ()
+    ((_ () body ...) (let () body ...))
+    ((_ (binding ...) body ...) (%let-values (binding ...) () (body ...)))))
+(define-syntax %let-values
+  (syntax-rules ()
+    ((_ ((formals init) rest ...) (done ...) body)
+     (call-with-values (lambda () init)
+       (lambda results (%let-values (rest ...) (done ... (formals results)) body))))
+    ((_ () done body) (%let-values-bind done body))))
+(define-syntax %let-values-bind
+  (syntax-rules ()
+    ((_ () (body ...)) (let () body ...))
+    ((_ ((formals results) rest ...) body)
+     (apply (lambda formals (%let-values-bind (rest ...) body)) results))))
+(define-syntax let*-values
+  (syntax-rules ()
+    ((_ () body ...) (let () body ...))
+    ((_ ((formals init) rest ...) body ...)
+     (call-with-values (lambda () init) (lambda formals (let*-values (rest ...) body ...))))))
+(define-syntax receive
+  (syntax-rules ()
+    ((_ formals expr body ...) (call-with-values (lambda () expr) (lambda formals body ...)))))
+
+;;; ------------------------------------------------------------ promises
+
+;; R7RS 7.3's: a promise holds a box, (done? . value-or-thunk), shared by
+;; the promises a `delay-force` chain makes, so that forcing it runs in
+;; constant space.
+(define-record-type promise (%promise box) promise? (box %promise-box %promise-box-set!))
+(define (%make-promise done? value) (%promise (cons done? value)))
+(define (%promise-done? p) (car (%promise-box p)))
+(define (%promise-value p) (cdr (%promise-box p)))
+(define (%promise-update! new old)
+  (set-car! (%promise-box old) (%promise-done? new))
+  (set-cdr! (%promise-box old) (%promise-value new))
+  (%promise-box-set! new (%promise-box old)))
+(define-syntax delay-force
+  (syntax-rules () ((_ expression) (%make-promise #f (lambda () expression)))))
+(define-syntax delay
+  (syntax-rules () ((_ expression) (delay-force (%make-promise #t expression)))))
+(define (make-promise v) (if (promise? v) v (%make-promise #t v)))
+(define (force promise)
+  (cond ((not (promise? promise)) promise)
+        ((%promise-done? promise) (%promise-value promise))
+        (else (let ((promise* ((%promise-value promise))))
+                (unless (%promise-done? promise) (%promise-update! (make-promise promise*) promise))
+                (force promise)))))
+
+;;; ------------------------------------------------------------ hash tables
+
+;; SRFI 69's and R6RS's, those that call procedures back (table.fx has the rest).
+(define %absent (list 'absent))
+(define (hash-table-ref table key . rest)
+  (let ((v (%table-ref table key %absent)))
+    (cond ((not (eq? v %absent)) (if (and (pair? rest) (pair? (cdr rest))) ((cadr rest) v) v))
+          ((pair? rest) ((car rest)))
+          (else (error \"hash-table-ref: no such key\" key)))))
+(define (hash-table-update! table key proc . rest)
+  (hash-table-set! table key (proc (apply hash-table-ref table key rest))))
+(define (hash-table-update!/default table key proc default)
+  (hash-table-set! table key (proc (hash-table-ref/default table key default))))
+(define (hashtable-update! table key proc default)
+  (hash-table-set! table key (proc (hash-table-ref/default table key default))))
+(define (hash-table-intern! table key make)
+  (let ((v (%table-ref table key %absent)))
+    (if (eq? v %absent) (let ((new (make))) (hash-table-set! table key new) new) v)))
+(define (hash-table-walk table proc)
+  (for-each (lambda (entry) (proc (car entry) (cdr entry))) (hash-table->alist table)))
+(define (hash-table-fold table kons knil)
+  (fold (lambda (entry acc) (kons (car entry) (cdr entry) acc)) knil (hash-table->alist table)))
+(define (alist->hash-table alist . args)
+  (let ((table (apply make-hash-table args)))
+    (for-each (lambda (entry)
+                (unless (hash-table-contains? table (car entry)) (hash-table-set! table (car entry) (cdr entry))))
+              alist)
+    table))
+(define (hash-table-merge! a b)
+  (hash-table-walk b (lambda (k v) (unless (hash-table-contains? a k) (hash-table-set! a k v))))
+  a)
+
+;;; ------------------------------------------------------------ odds and ends
+
+(define gensym
+  (let ((n 0))
+    (lambda args
+      (set! n (+ n 1))
+      (string->symbol (string-append (if (pair? args) (symbol->string (car args)) \"g\") (number->string n))))))
+(define (string-join strings . sep)
+  (let ((sep (if (pair? sep) (car sep) \" \")))
+    (if (null? strings) \"\"
+        (fold (lambda (s acc) (string-append acc sep s)) (car strings) (cdr strings)))))
+")

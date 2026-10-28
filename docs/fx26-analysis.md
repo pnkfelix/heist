@@ -384,6 +384,33 @@ Two properties of FX-26 make this better than it is for Scheme:
 The same service would be the core of Fixpt TODO §25's `fixpt lsp`, for
 Emacs: the JSON would be a thin front on what the editor already asks.
 
+**TODO (2026-10-27): instead of F5, a checking service around Kayak, out
+of process.** s7st's split (`docs/s7st.md`) is the model: a server
+process, started when first asked for, behind a line protocol that is
+Heist's own, with `editor/scheme.fx`'s client as the pattern. The user's
+direction: wrap Kayak, the coming host, not Fixpt.
+- **Why:** no new primitives in Fixpt, and the editor's thread never
+  waits. The checked program stays warm between questions. F3's
+  `type-at` lives in the layer, so Kayak needs no such primitive.
+- **Protocol:** request ids. Unsaved buffer text is sent, not just file
+  names. Requests are text changed (answered with its errors), type at a
+  place, definition, names in scope (cf. Fixpt's `query … around`), and
+  cancel. They are shaped after LSP's ideas, so a JSON front can come
+  later.
+- **To find out first, reading Kayak at a pinned commit without writing
+  there:**
+  - whether a KFX program can load and call its checker, or only the
+    `kayak-fx26` binary can;
+  - whether it keeps each expression's type and span;
+  - how long it takes on s7st and on the editor;
+  - how Heist pins it: a subtree again, a pinned git dependency, or
+    running a binary built from a pinned commit.
+- **Waits on:** for the editor's own program, Kayak's `load-module`
+  checking files by FX-26's rules (`docs/requests/kayak-editor-on-kayak.md`,
+  item 1). Programs that load no such modules (s7st) need not wait.
+- **Requests:** what the layer needs of Kayak's internals that Kayak does
+  not expose goes in `docs/requests/`.
+
 **Step 1, as built:** `editor/eldoc.fx`. When the editor has been idle
 100 ms after a key, in an FX-26 buffer, the echo area shows `name: TYPE`
 for the name at point, or else for the operator of the call around

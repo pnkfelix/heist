@@ -1,0 +1,3 @@
+analyze 3	t.scm	(define (f x)\n  (let ((y 1)) (+ x y))) ; c\n(when "s"\n
+complete vector-f
+complete no-such-pre

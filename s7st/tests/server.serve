@@ -1,0 +1,7 @@
+run repl			(+ 1
+run repl			(display "a\\nb") (+ 1 2)\n
+describe car	
+run quiet		x.scm	(car 1)
+run quiet			(let lp () (lp))
+interrupt
+run quiet			(* 6 7)

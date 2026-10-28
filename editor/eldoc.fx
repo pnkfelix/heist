@@ -10,6 +10,9 @@
 ;;; its own (`eldoc-said`, frame.fx), and *Messages* keeps none of it.
 ;;;
 ;;;   M-x eldoc-mode   eldoc off, or on (as the editor starts)
+;;;
+;;; In a Scheme buffer, or *s7st*, what s7st knows of the name says it
+;;; (`scheme-eldoc`, which scheme.fx sets): a procedure's parameters.
 (module-parameters ((m-base (load-input-moduleof "base.fx"))
                     (m-buffer (load-moduleof "buffer.fx" m-base))
                     (m-resolve (load-moduleof "resolve.fx" m-base m-buffer))
@@ -29,6 +32,13 @@
 (define eldoc-due (ref bool @ed) (new #f))
 "Fixpt's standard.rs, once read (\"\": not yet)."
 (define standard-text (ref string @ed) (new ""))
+
+"What says what a Scheme name is (scheme.fx sets it): given the frame, the
+buffer, its revision and point, the name at point and the operator of the
+call around point, a command."
+(define scheme-eldoc (ref (listof (subr pure ((actor frame) (actor buffer) int int string string) cmd) acyclic) @ed) (new nil))
+(define* scheme-buffer? (subr spin (string) bool)
+  (lambda (name) (or (string=? (buffer-kind name) "<scheme>") (string=? name "*s7st*"))))
 
 "`s` on one line: each run of white space one space."
 (define* one-line (subr spin (string) string)
@@ -168,10 +178,19 @@ the name at point, or else of the operator of the call around it."
     (lambda ((f frame))
       (let* ((current (extract (selected-window f) buffer))
              (st (actor-state current)))
-        (if (or (not (get eldoc-on))
-                (not (fx26-file? (extract st name)))
-                (tagcase (extract f mini) (none u #f) (else y #t)))
-            (same f)
+        (cond
+          ((or (not (get eldoc-on)) (tagcase (extract f mini) (none u #f) (else y #t))) (same f))
+          ((and (scheme-buffer? (extract st name)) (pair? (get scheme-eldoc)))
+           (let* ((t (extract st text))
+                  (p (extract st point))
+                  (sc (scan-at t p)))
+             (if (or (>= (extract sc string-at) 0) (extract sc comment))
+                 ((eldoc-show "") f)
+                 (reply-with f (list ((car (get scheme-eldoc)) fr current (extract st revision) p (symbol-at t (name-start t p))
+                                                               (if (null? (extract sc opens)) ""
+                                                                   (symbol-at t (skip-space t (+ 1 (car (extract sc opens))))))))))))
+          ((not (fx26-file? (extract st name))) (same f))
+          (else
             (let* ((t (extract st text))
                    (p (extract st point))
                    (sc (scan-at t p))
@@ -188,7 +207,7 @@ the name at point, or else of the operator of the call around it."
                 (none u ((eldoc-show "") f))
                 (said s ((eldoc-show s) f))
                 (in-file h (reply-with f (list (say-file-type fr (extract h file) (extract h at) (extract h name)))))
-                (standard name (reply-with f (list (say-standard-type fr name)))))))))))
+                (standard name (reply-with f (list (say-standard-type fr name))))))))))))
 
 "M-x eldoc-mode: eldoc off, or on."
 (define* eldoc-mode (subr pure () frame-action)

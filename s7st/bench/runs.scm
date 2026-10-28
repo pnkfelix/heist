@@ -1,0 +1,6 @@
+(time-it "fib25" R (lambda () (fib 25)))
+(time-it "tak18-12-6" R (lambda () (tak 18 12 6)))
+(time-it "loop1e6" R (lambda () (count-loop 1000000)))
+(time-it "map2e5" R (lambda () (build 200000)))
+(time-it "vec5e5" R (lambda () (vec-sum 500000)))
+(time-it "countdown1e7" R (lambda () (countdown 10000000)))

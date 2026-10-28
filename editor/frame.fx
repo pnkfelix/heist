@@ -458,11 +458,16 @@ fx26-for-yank.md, R7.)"
       (else y (product (text empty-rope) (found #f))))))
 
 "What kind of buffer one named `name` is, for its keys: a directory's
-listing (its name ends in `/`), or none."
+listing (its name ends in `/`), Scheme (.scm, .sld, .ss, .sps: scheme.fx),
+or none."
 (define* buffer-kind (subr spin (string) string)
   (lambda (name)
-    (let ((n (string-length name)))
-      (if (and (> n 0) (char=? (string-ref name (- n 1)) #\/)) "<listing>" ""))))
+    (let* ((n (string-length name))
+           (ends (lambda ((x string))
+                   (let ((k (string-length x))) (and (> n k) (string=? (substring name (- n k) n) x))))))
+      (cond ((and (> n 0) (char=? (string-ref name (- n 1)) #\/)) "<listing>")
+            ((or (ends ".scm") (ends ".sld") (ends ".ss") (ends ".sps")) "<scheme>")
+            (else "")))))
 
 "Directory `dir` (ending in `/`) with `..` and `.` steps taken out."
 (define* simplify-directory (subr spin (string) string)
@@ -795,6 +800,10 @@ definition in that file."
           (go-to-place fr f pl)
           (visit-definition fr f (linked-file (extract st file) lk) (symbol-at (extract st text) (+ 1 (extract pl point))))))))
 
+"What M-. says of a name a Scheme buffer defines nowhere (scheme.fx sets
+it: what s7st knows of it)."
+(define scheme-no-definition (ref (listof (subr pure ((actor frame) string) cmd) acyclic) @ed) (new nil))
+
 "M-.: the definition of the name at point. Its binder in this text, if it
 is here; else a definition in a buffer, else in the index; a standard
 name, said to be one (`say-standard`); through an `import`, on to the file
@@ -826,7 +835,9 @@ the name comes from."
                                                (extract hit file)
                                                (linked-file (extract hit file) (extract hit link)))
                                            name)))
-                 (none u2 (reply-with f (list (say-standard fr name)))))))))))))
+                 (none u2 (reply-with f (list (if (and (scheme-name? (extract st name)) (pair? (get scheme-no-definition)))
+                                                  ((car (get scheme-no-definition)) fr name)
+                                                  (say-standard fr name))))))))))))))
 
 "M-,: back to where the last M-. was from."
 (define* pop-definition (subr pure () frame-action)
@@ -1046,8 +1057,8 @@ names of their commands."
                                               (else (local (cdr m)))))))
                    (local (get buffer-keys)))))
           (cond ((not (string=? n "")) n)
-                ;; Paredit's keys, while it is on, in FX-26 buffers.
-                ((and (get paredit-on) (fx26-file? buffer-name)
+                ;; Paredit's keys, while it is on, in FX-26 and Scheme buffers.
+                ((and (get paredit-on) (or (fx26-file? buffer-name) (scheme-name? buffer-name))
                       (not (string=? (bound paredit-keys) "")))
                  (bound paredit-keys))
                 ((not (string=? (bound keymap) "")) (bound keymap))
@@ -1296,9 +1307,9 @@ After C-h k, the keys are described (`key-describer`), not run."
   (lambda ()
     (lambda ((fr (actor frame)) (f frame))
       (let ((on (not (get paredit-on))))
-        (reply-with (extract (draw (with-echo f (if on "Paredit mode enabled (in FX-26 buffers)" "Paredit mode disabled"))) state)
+        (reply-with (extract (draw (with-echo f (if on "Paredit mode enabled (in FX-26 and Scheme buffers)" "Paredit mode disabled"))) state)
                     (cons (lambda () (set paredit-on on))
-                          (extract (draw (with-echo f (if on "Paredit mode enabled (in FX-26 buffers)" "Paredit mode disabled"))) cmds)))))))
+                          (extract (draw (with-echo f (if on "Paredit mode enabled (in FX-26 and Scheme buffers)" "Paredit mode disabled"))) cmds)))))))
 
 (define-command! "paredit-mode" (sum on-frame (paredit-mode)))
 (define-command! "forward-sexp" (sum on-buffer (sexp-motion forward-sexp "No sexp after point")))

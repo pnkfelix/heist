@@ -1,0 +1,10 @@
+8875/113 1 
+"unbound variable: distance-squared" 
+3 25 
+4 3 
+2 
+1 
+mine 
+3 
+Error: no library named (no such library), and no file no/such/library.sld where libraries are looked for
+[exit 1]

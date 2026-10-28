@@ -1,0 +1,25 @@
+; Libraries: namespaces of their own, imported with only, except, prefix
+; and rename, loaded from files by name (tests/geometry/), their macros hygienic.
+(define (show . xs) (for-each (lambda (x) (write x) (display " ")) xs) (newline))
+(import (scheme base) (scheme write) (geometry shapes) (rename (geometry point) (make-point pt)))
+(define p (pt 3 4))
+(show (circle-area origin p) count)
+; Not exported: not seen here.
+(show (guard (e (#t (error-object-message e))) distance-squared))
+(show (point-x p) (dist2 p origin))
+(swap-coords! p)
+(show (point-x p) (point-y p))
+(define-library (counter)
+  (export next! (rename value current))
+  (import (scheme base))
+  (begin (define value 0) (define (next!) (set! value (+ value 1)) value)))
+(import (prefix (counter) c:))
+(c:next!) (c:next!)
+(show c:current)
+(define-library (shadow) (export car) (import (scheme base)) (begin (define (car x) 'mine)))
+(show (car '(1 2)))
+(import (except (shadow) cdr))
+(show (car '(1 2)))
+(show (eval '(next!) (environment '(counter))))
+; A library neither defined nor in a file.
+(import (no such library))

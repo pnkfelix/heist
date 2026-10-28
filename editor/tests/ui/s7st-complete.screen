@@ -1,0 +1,28 @@
+== screen 1
+;; s7st: R7RS Scheme, interpreted in FX-|
+;; C-c C-c interrupts; M-p and M-n go th|
+s7st> (string-upcase                    |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+-**- *s7st*   L3                        |
+                                        |
+cursor 2,20
+== at the end
+;; s7st: R7RS Scheme, interpreted in FX-|
+;; C-c C-c interrupts; M-p and M-n go th|
+s7st> (string-upcase)                   |
+Error: wrong number of arguments to stri|
+s7st> (vector-                          |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+-**- *s7st*   L5                        |
+vector->list vector->string vector-appen|
+cursor 4,14

@@ -295,13 +295,20 @@ unless it is of the revision read last."
     (let ((n (string-length name)))
       (and (> n 3) (string=? (substring name (- n 3) n) ".fx")))))
 
+"What attaches its analysis to a Scheme buffer (scheme.fx sets it), as
+`attach-syntax` attaches the syntax actor to an FX-26 one."
+(define scheme-attach (ref (listof (subr (maxeff (alloc @ed) (read @globals)) ((actor buffer) string) cmds) acyclic) @ed) (new nil))
+
 "For an FX-26 buffer, a syntax actor, and the commands that make it idle
-and subscribe it; for another, none."
-(define* attach-syntax (subr (alloc @ed) ((actor buffer) string) cmds)
+and subscribe it; for a Scheme one, what `scheme-attach` gives; for
+another, none."
+(define* attach-syntax (subr (maxeff (alloc @ed) (read @ed) spin) ((actor buffer) string) cmds)
   (lambda (b name)
+    (if (and (scheme-name? name) (pair? (get scheme-attach)))
+        ((car (get scheme-attach)) b name)
     (if (fx26-file? name)
         (let ((sx (spawn-actor (string-append "syntax of " name)
                                (product (buffer b) (revision -1) (memory (the (ref memory @ed) (new no-memory)))))))
           (list (lambda () (set-class! sx idle))
                 (tell b (subscribe -1 (lambda ((s snapshot)) (tell-latest sx "snapshot" (syntax-snapshot s)))))))
-        nil)))
+        nil))))

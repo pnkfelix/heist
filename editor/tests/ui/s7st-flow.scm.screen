@@ -1,0 +1,52 @@
+== screen 1
+(define (square x) (* x x))             |
+(define (twice f y) (f (f y)))          |
+(define (greet name) (string-append "hi |
+(greet "bob")                           |
+(twice square 3)                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+---- a.scm   L2                         |
+calls #<procedure square>               |
+cursor 1,21
+ kkkkkk  ffffff                         |
+ kkkkkk  fffff                          |
+ kkkkkk  fffff                      ssss|
+       sssss                            |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm|
+                                        |
+== at the end
+(define (square x) (* x x))             |
+(define (twice f y) (f (f y)))          |
+(define (greet name) (string-append "hi |
+(greet "bob")                           |
+(twice square 3)                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+---- a.scm   L5                         |
+calls #<procedure twice>                |
+cursor 4,1
+ kkkkkk  ffffff                         |
+ kkkkkk  fffff                          |
+ kkkkkk  fffff                      ssss|
+       sssss                            |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm|
+                                        |

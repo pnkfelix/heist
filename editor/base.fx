@@ -42,6 +42,13 @@
                       (go (- i 1) (cons (let ((c (string-ref s i))) (if (char=? c from) to c)) acc))))))
        (go (- (string-length s) 1) nil)))))
 
+"Whether a file is Scheme: its name ends in .scm, .sld, .ss or .sps."
+(define* scheme-name? (subr spin (string) bool)
+  (lambda (name)
+    (let ((ends (lambda ((x string))
+                  (let ((n (string-length name)) (k (string-length x)))
+                    (and (> n k) (string=? (substring name (- n k) n) x))))))
+      (or (ends ".scm") (ends ".sld") (ends ".ss") (ends ".sps")))))
 "The last part of a file name, after its last `/`."
 (define* base-name (subr spin (string) string)
   (lambda (file)
