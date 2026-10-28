@@ -93,7 +93,10 @@ lockpick's libraries. All of combo's state is at region `@cb`, and `cb-eff`
 **Build and start-up**
 - `bin/heist-compile combo` takes 1.8 s from clean and makes 6.4 MB of
   `.fasl`s. With them combo starts in 0.48 s (1.8 s from source); lockpick
-  starts in 0.05 s from its heap image.
+  starts in 0.05 s from its heap image, 0.32 s from its compiled libraries
+  (Larceny alone: 0.04 s; an empty FX-26 program: 0.18 s). Where combo's
+  load goes, and three changes that bring it to 0.29 s:
+  `docs/requests/fixpt-load-time.md`.
 
 **SAT instances**, start-up included:
 

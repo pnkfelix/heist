@@ -122,3 +122,6 @@ scripts byte for byte lockpick's answers. Left:
 - `docs/requests/fixpt-checkers-print-list-arguments.md`: the checkers
   print an argument's list type differently in a refused program's message,
   for the user to take to Fixpt.
+- `docs/requests/fixpt-load-time.md`: three costs of loading (a source file
+  read whole for its first form, the executable read whole on every run,
+  CRCs of 21 MB), 0.49 s to 0.29 s for combo; for the user to take to Fixpt.
