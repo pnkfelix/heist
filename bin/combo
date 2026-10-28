@@ -1,0 +1,14 @@
+#!/bin/sh
+# combo: a SAT and SMT solver in FX-26 (a port of lockpick), run on Heist's
+# own Fixpt. combo/main.fx says its options. File names are relative to
+# where it is started.
+heist=$(cd "$(dirname "$0")/.." && pwd)
+fixpt="$heist/fixpt/target/release/fixpt"
+[ -x "$fixpt" ] || { echo "build fixpt first: (cd $heist/fixpt && cargo build --release -p fixpt-cli)" >&2; exit 2; }
+for a in "$@"; do
+  shift
+  case "$a" in -*|/*) ;; *) [ -e "$a" ] && a="$PWD/$a" ;; esac
+  set -- "$@" "$a"
+done
+cd "$heist/combo" || exit 2
+exec "$fixpt" run combo.fx -- "$@"
