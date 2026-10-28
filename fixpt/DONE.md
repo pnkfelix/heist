@@ -3929,3 +3929,35 @@ arm64, the same ELF objects serve `lldb` (`docs/research/debugging.md`,
 - **Not done**: a `.debug_frame` for arm64 (`cfi.rs` decodes x86_64 only;
   `lldb` reads the prologues itself, given the names); `gdb` on arm64
   Linux, untried.
+||||||| parent of 1963f8c3 (`.fasl` files for module files)
+
+## 156. `.fasl` files for module files (the user's, 2026-10-28)
+
+`fixpt compile-file FILE…`, `,compile-file FILE` and `(compile-file
+"FILE")` write `FILE.fasl` beside a module file: the type its load is
+checked at, the files it loads (each with its stamp) and its value, a heap
+image linked by name (`crate::fasl`; `docs/fx26.md`, "`.fasl` files";
+`docs/research/fasl.md`). A load reads a fresh `.fasl` in place of the file:
+both checkers check `(begin (load-module "dep") … (the T %fasl-value))`,
+and the driver gives the hidden global the value, its procedures compiled
+natively in the native convention. Stale (the text, a file it loads, the
+executable, the architecture or the convention changed): said on the
+standard error, and the source loaded. Every program of
+`tests/programs/modules` gives the same with its module files compiled
+(`crates/fixpt-cli/tests/fasl.rs`); an 800-definition module loads in
+0.24 s against 0.57 s; Heist's editor (a snapshot of its fourteen makers)
+starts in 2.39 s from `.fasl`s, 4.52 s from source.
+
+## 157. `.fasl` files for programs' files (the user's, 2026-10-28)
+
+`compile-file --program FILE` (and `compile-file` of a file that is no
+module file) keeps a program's procedures (and `define-rec` groups, and
+values made only of what it keeps): each definition's type, value, and the
+types of the globals its code uses. `fixpt run`, `fixpt eval` and
+`,load` of the file, while its `.fasl` is fresh, declare each at its type
+(both checkers) and give it its value, and run every other form from the
+source in its turn. Compiling runs nothing of what the program does. Every
+program of `tests/programs` that compiles (but `syscalls` and `bench`'s,
+not run) gives the same from its `.fasl` as from its source, 342 of them
+reading it (`crates/fixpt-cli/tests/fasl.rs` runs eight directories).
+Kayak's compiler: stage 0 in 1.15 s from its `.fasl`, 3.30 s from source.
