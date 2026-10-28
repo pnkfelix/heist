@@ -1,0 +1,18 @@
+flow.fx:163-164: calls inc
+flow.fx:166-167: calls inc
+flow.fx:168-169: x: int
+flow.fx:201-202: n: int
+flow.fx:235-236: n: int
+flow.fx:243-248: calls twice
+flow.fx:249-252: inc: inc
+flow.fx:283-286: dbl: dbl
+flow.fx:291-309: calls dbl
+flow.fx:300-305: table: product
+flow.fx:328-331: inc: inc
+flow.fx:335-342: calls inc
+flow.fx:340-341: r: ref
+flow.fx:365-368: dbl: dbl
+flow.fx:379-380: calls dbl
+flow.fx:422-423: calls ?
+flow.fx:436-439: esc: esc
+[exit 0]

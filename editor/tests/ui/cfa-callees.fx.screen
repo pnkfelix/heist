@@ -1,0 +1,25 @@
+In TMP/ |
+Lambdas the call can call:              |
+a.fx:2: inc  (define inc (lambda (n) (+ |
+a.fx:3: dec  (define dec (lambda (n) (- |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+---- *xref*   L1                        |
+The CFA is analysing...                 |
+cursor 0,0
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm|
+                                        |

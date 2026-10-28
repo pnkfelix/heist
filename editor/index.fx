@@ -9,8 +9,7 @@
                     (m-buffer (load-moduleof "buffer.fx" m-base))
                     (m-resolve (load-moduleof "resolve.fx" m-base m-buffer))
                     (m-syntax (load-moduleof "syntax.fx" m-base m-buffer m-resolve))
-                    (m-sexp (load-moduleof "sexp.fx" m-base m-buffer m-resolve m-syntax))
-                    (m-flow (load-moduleof "flow.fx" m-base m-buffer m-resolve m-syntax m-sexp))))
+                    (m-sexp (load-moduleof "sexp.fx" m-base m-buffer m-resolve m-syntax))))
 
 (define-type indexed (productof (file string) (definitions definitions) (links links)))
 (define-type index-state

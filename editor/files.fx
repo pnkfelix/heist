@@ -13,12 +13,11 @@
                     (m-resolve (load-moduleof "resolve.fx" m-base m-buffer))
                     (m-syntax (load-moduleof "syntax.fx" m-base m-buffer m-resolve))
                     (m-sexp (load-moduleof "sexp.fx" m-base m-buffer m-resolve m-syntax))
-                    (m-flow (load-moduleof "flow.fx" m-base m-buffer m-resolve m-syntax m-sexp))
-                    (m-index (load-moduleof "index.fx" m-base m-buffer m-resolve m-syntax m-sexp m-flow))
-                    (m-view (load-moduleof "view.fx" m-base m-buffer m-resolve m-syntax m-sexp m-flow m-index))
-                    (m-frame (load-moduleof "frame.fx" m-base m-buffer m-resolve m-syntax m-sexp m-flow m-index m-view))
-                    (m-calls (load-moduleof "calls.fx" m-base m-buffer m-resolve m-syntax m-sexp m-flow m-index m-view m-frame))
-                    (m-process (load-moduleof "process.fx" m-base m-buffer m-resolve m-syntax m-sexp m-flow m-index m-view m-frame m-calls))))
+                    (m-index (load-moduleof "index.fx" m-base m-buffer m-resolve m-syntax m-sexp))
+                    (m-view (load-moduleof "view.fx" m-base m-buffer m-resolve m-syntax m-sexp m-index))
+                    (m-frame (load-moduleof "frame.fx" m-base m-buffer m-resolve m-syntax m-sexp m-index m-view))
+                    (m-calls (load-moduleof "calls.fx" m-base m-buffer m-resolve m-syntax m-sexp m-index m-view m-frame))
+                    (m-process (load-moduleof "process.fx" m-base m-buffer m-resolve m-syntax m-sexp m-index m-view m-frame m-calls))))
 
 "The text of the line point is on in `st`, and its number."
 (define* point-line (subr spin (buffer) (productof (text string) (line int)))

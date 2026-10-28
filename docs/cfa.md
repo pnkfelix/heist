@@ -64,14 +64,18 @@ On the editor's own 20 files as one FX-26 world, there are 9,855 notes.
 
 ## Next
 
-1. **The editor as a client** (`editor/cfa.fx`).
-   - **Done:** C-c f says the note at point, in an FX-26 or a Scheme
-     buffer. The first C-c f starts `bin/cfa --serve`. From then on, every
-     FX-26 and Scheme buffer's revisions are sent to it as they are made
-     (`flow-attach`, called where `attach-syntax` is).
-   - **Left:** C-c e and C-c r, eldoc in FX-26 buffers, and Scheme
-     buffers' notes, all from the CFA. Then `editor/flow.fx` and
-     `s7st/flow.fx` go.
+1. **The editor as a client** (`editor/cfa.fx`): done.
+   - C-c f says the note at point. C-c e lists what the call at point can
+     call, and C-c r what can call the lambda point is in; both are the
+     server's `callees` and `callers` queries.
+   - Eldoc shows a note where an FX-26 text declares no type. In a Scheme
+     buffer, notes come in place of s7st's, unless a note only says a
+     name holds its own procedure.
+   - A Scheme buffer starts `bin/cfa --serve`, as it starts s7st; an
+     FX-26 one waits for the first C-c f, e or r. From then on every
+     FX-26 and Scheme buffer's revisions are sent as they are made
+     (`flow-attach`).
+   - `editor/flow.fx` and `s7st/flow.fx` are gone.
 2. **Types and regions as values** (FX-26). A `plambda` becomes a lambda
    of its type and region parameters, and a `proj` (or a module made with
    region arguments) becomes a call with region and type constants. Then

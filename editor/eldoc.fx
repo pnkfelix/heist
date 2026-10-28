@@ -11,21 +11,24 @@
 ;;;
 ;;;   M-x eldoc-mode   eldoc off, or on (as the editor starts)
 ;;;
-;;; In a Scheme buffer, or *s7st*, what s7st knows of the name says it
-;;; (`scheme-eldoc`, which scheme.fx sets): a procedure's parameters.
+;;; Where the text declares no type, what the CFA found there, if it has
+;;; analysed this revision (`flow-eldoc`, which cfa.fx sets): what can
+;;; reach the variable, what the call can call.
+;;;
+;;; In a Scheme buffer, or *s7st*, `scheme-eldoc` says it (scheme.fx and
+;;; cfa.fx set it): what the CFA found, else what s7st knows of the name.
 (module-parameters ((m-base (load-moduleof "base.fx"))
                     (m-buffer (load-moduleof "buffer.fx" m-base))
                     (m-resolve (load-moduleof "resolve.fx" m-base m-buffer))
                     (m-syntax (load-moduleof "syntax.fx" m-base m-buffer m-resolve))
                     (m-sexp (load-moduleof "sexp.fx" m-base m-buffer m-resolve m-syntax))
-                    (m-flow (load-moduleof "flow.fx" m-base m-buffer m-resolve m-syntax m-sexp))
-                    (m-index (load-moduleof "index.fx" m-base m-buffer m-resolve m-syntax m-sexp m-flow))
-                    (m-view (load-moduleof "view.fx" m-base m-buffer m-resolve m-syntax m-sexp m-flow m-index))
-                    (m-frame (load-moduleof "frame.fx" m-base m-buffer m-resolve m-syntax m-sexp m-flow m-index m-view))
-                    (m-calls (load-moduleof "calls.fx" m-base m-buffer m-resolve m-syntax m-sexp m-flow m-index m-view m-frame))
-                    (m-process (load-moduleof "process.fx" m-base m-buffer m-resolve m-syntax m-sexp m-flow m-index m-view m-frame m-calls))
-                    (m-files (load-moduleof "files.fx" m-base m-buffer m-resolve m-syntax m-sexp m-flow m-index m-view m-frame m-calls m-process))
-                    (m-help (load-moduleof "help.fx" m-base m-buffer m-resolve m-syntax m-sexp m-flow m-index m-view m-frame m-calls m-process m-files))))
+                    (m-index (load-moduleof "index.fx" m-base m-buffer m-resolve m-syntax m-sexp))
+                    (m-view (load-moduleof "view.fx" m-base m-buffer m-resolve m-syntax m-sexp m-index))
+                    (m-frame (load-moduleof "frame.fx" m-base m-buffer m-resolve m-syntax m-sexp m-index m-view))
+                    (m-calls (load-moduleof "calls.fx" m-base m-buffer m-resolve m-syntax m-sexp m-index m-view m-frame))
+                    (m-process (load-moduleof "process.fx" m-base m-buffer m-resolve m-syntax m-sexp m-index m-view m-frame m-calls))
+                    (m-files (load-moduleof "files.fx" m-base m-buffer m-resolve m-syntax m-sexp m-index m-view m-frame m-calls m-process))
+                    (m-help (load-moduleof "help.fx" m-base m-buffer m-resolve m-syntax m-sexp m-index m-view m-frame m-calls m-process m-files))))
 
 (define eldoc-on (ref bool @ed) (new #t))
 "A key was handled since eldoc last looked (main.fx's loop asks)."
@@ -37,6 +40,11 @@
 buffer, its revision and point, the name at point and the operator of the
 call around point, a command."
 (define scheme-eldoc (ref (listof (subr pure ((actor frame) (actor buffer) int int string string) cmd) acyclic) @ed) (new nil))
+"What the CFA found at a place (cfa.fx sets it): given the buffer, its
+revision and a position, a note, or \"\"."
+(define flow-eldoc (ref (listof (subr (maxeff spin (read @ed)) ((actor buffer) int int) string) acyclic) @ed) (new nil))
+(define* flow-note (subr (maxeff spin (read @ed)) ((actor buffer) int int) string)
+  (lambda (b rev p) (if (pair? (get flow-eldoc)) ((car (get flow-eldoc)) b rev p) "")))
 (define* scheme-buffer? (subr spin (string) bool)
   (lambda (name) (or (string=? (buffer-kind name) "<scheme>") (string=? name "*s7st*"))))
 
@@ -204,7 +212,9 @@ the name at point, or else of the operator of the call around it."
                                          (eldoc-answer-at f current st (skip-space t (+ 1 (car (extract sc opens)))))))
                              (else y here))))
               (tagcase answer
-                (none u ((eldoc-show "") f))
+                (none u ((eldoc-show (if (or (>= (extract sc string-at) 0) (extract sc comment)) ""
+                                         (flow-note current (extract st revision) p)))
+                         f))
                 (said s ((eldoc-show s) f))
                 (in-file h (reply-with f (list (say-file-type fr (extract h file) (extract h at) (extract h name)))))
                 (standard name (reply-with f (list (say-standard-type fr name))))))))))))

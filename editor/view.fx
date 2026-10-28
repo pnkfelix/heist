@@ -12,8 +12,7 @@
                     (m-resolve (load-moduleof "resolve.fx" m-base m-buffer))
                     (m-syntax (load-moduleof "syntax.fx" m-base m-buffer m-resolve))
                     (m-sexp (load-moduleof "sexp.fx" m-base m-buffer m-resolve m-syntax))
-                    (m-flow (load-moduleof "flow.fx" m-base m-buffer m-resolve m-syntax m-sexp))
-                    (m-index (load-moduleof "index.fx" m-base m-buffer m-resolve m-syntax m-sexp m-flow))))
+                    (m-index (load-moduleof "index.fx" m-base m-buffer m-resolve m-syntax m-sexp))))
 
 "A view's report: its window, its rows, its mode line's text, and the
 cursor's row and column in it."

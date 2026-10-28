@@ -33,7 +33,6 @@ take a group of files as one module, s7st can become a module with
 | `table.fx`    | hash tables                                                                                                                                  |
 | `library.fx`  | libraries: namespaces, import sets, finding a library's file                                                                                 |
 | `analyze.fx`  | what a text is, for an editor, read and walked but never run: faces, definitions, each local variable's binder, the read's error           |
-| `flow.fx`     | a flow analysis of a text, 0CFA: what can reach each variable, what each call can call                                                      |
 | `native.fx`   | loops over integers compiled to x86_64 machine code: kernels ("Speed")                                                                       |
 | `machine.fx`  | the compiler to closures, and the CEK machine that runs its code, one step at a time                                                         |
 | `prelude.scm` | what is written in Scheme: `map`, `guard`, `parameterize`, promises, the I/O procedures over ports, a few of SRFI 1's. `prelude.fx` is generated from it by `gen-prelude.py` |
@@ -396,7 +395,9 @@ produces it:
   primitives give the abstract domain its cases: each says what it
   returns and what it raises.
 
-**A first analysis is built: `flow.fx`, 0CFA.**
+**A first analysis was built: `flow.fx`, 0CFA.** It is gone since: the
+CFA (`../cfa/`, `docs/cfa.md`) analyses Scheme texts in its place, by
+the same expander, and FX-26 ones too. What follows is what it was.
 - **Front end.** The buffer's text is expanded by the expander that runs
   code, into a namespace of its own, so its `define`s and `define-syntax`es
   change nothing in the session. Every reference keeps its symbol's span,

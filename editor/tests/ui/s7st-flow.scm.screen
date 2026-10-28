@@ -10,7 +10,7 @@
                                         |
                                         |
 ---- a.scm   L2                         |
-calls #<procedure square>               |
+calls square                            |
 cursor 1,21
  kkkkkk  ffffff                         |
  kkkkkk  fffff                          |
@@ -36,7 +36,7 @@ mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm|
                                         |
                                         |
 ---- a.scm   L5                         |
-calls #<procedure twice>                |
+calls twice                             |
 cursor 4,1
  kkkkkk  ffffff                         |
  kkkkkk  fffff                          |

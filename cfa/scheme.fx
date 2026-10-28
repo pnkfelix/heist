@@ -12,6 +12,89 @@
 
 (define-effect sc-eff (maxeff cf-eff s7-eff))
 
+;;; ------------------------------------------------------------ Scheme data and built-ins
+;;; (from s7st/flow.fx, s7st's own analysis, which the CFA replaced)
+
+"Kinds of data, as abstract values."
+(define s7-fv-unknown int 0)
+(define s7-fv-number int 1)
+(define s7-fv-string int 2)
+(define s7-fv-char int 3)
+(define s7-fv-boolean int 4)
+(define s7-fv-symbol int 5)
+(define s7-fv-null int 6)
+(define s7-fv-unspec int 7)
+(define s7-fv-eof int 8)
+(define s7-fv-vector int 9)
+(define s7-fv-bytevector int 10)
+(define s7-fv-record int 11)
+(define s7-fv-port int 12)
+(define s7-fv-table int 13)
+(define s7-fv-pair int 14)
+(define s7-fv-values int 15)
+(define s7-fv-other int 16)
+(define s7-fv-kinds s7-strings
+  (list "unknown" "number" "string" "char" "boolean" "symbol" "()" "unspecified" "eof" "vector" "bytevector"
+        "record" "port" "hash-table" "pair" "values" "other"))
+"The kind of a value the session has."
+"A set of kinds, by number."
+(define-type s7-fset (listof int acyclic))
+(define* s7-fv-kind (subr pure (s7-value) int)
+  (lambda (v)
+    (tagcase v
+      (int i s7-fv-number) (ratio q s7-fv-number) (real r s7-fv-number)
+      (str s s7-fv-string) (char c s7-fv-char) (bool b s7-fv-boolean) (sym s s7-fv-symbol)
+      (null u s7-fv-null) (unspec u s7-fv-unspec) (eof u s7-fv-eof) (vec a s7-fv-vector) (bytes b s7-fv-bytevector)
+      (record r s7-fv-record) (port p s7-fv-port) (table t s7-fv-table) (pair p s7-fv-pair) (multi l s7-fv-values)
+      (else y s7-fv-other))))
+
+"What a built-in procedure returns, by its name: kinds; or unknown."
+(define* s7-builtin-result (subr spin (string) s7-fset)
+  (lambda (n)
+    (let* ((k (string-length n))
+           (ends (lambda ((x string)) (and (>= k (string-length x)) (string=? (substring n (- k (string-length x)) k) x))))
+           (starts (lambda ((x string)) (and (>= k (string-length x)) (string=? (substring n 0 (string-length x)) x))))
+           (is (lambda ((l s7-strings)) (letrec ((go (subr spin (s7-strings) bool) (lambda (l) (and (pair? l) (or (string=? (car l) n) (go (cdr l)))))))
+                                          (go l)))))
+      (cond ((ends "?") (list s7-fv-boolean))
+            ((ends "!") (list s7-fv-unspec))
+            ((is (list "+" "-" "*" "/" "abs" "max" "min" "quotient" "remainder" "modulo" "expt" "sqrt" "exact" "inexact"
+                       "floor" "ceiling" "round" "truncate" "length" "string-length" "vector-length" "char->integer"
+                       "string->number" "gcd" "lcm" "square" "exp" "log" "sin" "cos" "tan" "atan" "numerator" "denominator"
+                       "exact->inexact" "inexact->exact" "bytevector-length" "bytevector-u8-ref" "hash-table-count" "digit-value"
+                       "floor-quotient" "floor-remainder" "truncate-quotient" "truncate-remainder" "current-jiffy" "current-second"))
+             (list s7-fv-number))
+            ((or (starts "string") (is (list "substring" "number->string" "symbol->string" "list->string" "get-output-string")))
+             (if (is (list "string->list")) (list s7-fv-pair s7-fv-null)
+                 (if (is (list "string->symbol")) (list s7-fv-symbol)
+                     (if (is (list "string->vector")) (list s7-fv-vector)
+                         (if (is (list "string-ref")) (list s7-fv-char) (list s7-fv-string))))))
+            ((or (starts "char-") (is (list "integer->char"))) (list s7-fv-char))
+            ((is (list "cons" "list" "append" "reverse" "map" "list-copy" "list-tail" "vector->list" "make-list" "filter"
+                       "remove" "delete" "iota" "sort" "list-sort" "hash-table-keys" "hash-table-values" "hash-table->alist"))
+             (list s7-fv-pair s7-fv-null))
+            ((is (list "member" "memq" "memv" "assoc" "assq" "assv")) (list s7-fv-pair s7-fv-boolean))
+            ((or (starts "vector") (starts "make-vector") (is (list "list->vector"))) (list s7-fv-vector))
+            ((is (list "display" "write" "newline" "write-char" "write-string" "for-each" "vector-for-each" "string-for-each"))
+             (list s7-fv-unspec))
+            ((is (list "not" "eq?" "eqv?" "equal?" "=" "<" ">" "<=" ">=")) (list s7-fv-boolean))
+            ((is (list "read-char" "peek-char")) (list s7-fv-char s7-fv-eof))
+            ((is (list "read-line")) (list s7-fv-string s7-fv-eof))
+            ((or (starts "make-hash-table") (starts "make-eq") (starts "make-equal") (is (list "make-hashtable" "make-string-hashtable")))
+             (list s7-fv-table))
+            ((is (list "error" "raise" "exit")) nil)
+            (else (list s7-fv-unknown))))))
+
+"The data of `text`, as far as they read: those before an error."
+(define* s7-read-lenient (subr s7-eff (string string) s7-values)
+  (lambda (text file)
+    (letrec ((go (subr s7-eff (int s7-values) s7-values)
+               (lambda (i acc)
+                 (tagcase (s7-read-at text i file)
+                   (datum d (go (extract d end) (cons (extract d value) acc)))
+                   (else y (reverse acc))))))
+      (go 0 nil))))
+
 ;;; ------------------------------------------------------------ the language
 
 "Built-ins that call a procedure on the elements of lists they are given."

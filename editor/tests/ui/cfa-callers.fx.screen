@@ -1,0 +1,25 @@
+In TMP/ |
+Calls that can call inc:                |
+a.fx:1:   (define twice (lambda (f x) (f|
+a.fx:1:   (define twice (lambda (f x) (f|
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+---- *xref*   L1                        |
+The CFA is analysing...                 |
+cursor 0,0
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm|
+                                        |

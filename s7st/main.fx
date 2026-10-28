@@ -29,16 +29,15 @@
 ;;;   error MESSAGE           what ran ended with an error
 ;;;   interrupted             what ran was stopped
 ;;;   describe TEXT           a `describe`'s answer (empty: nothing known)
-;;;   analysis KEY FACES DEFINITIONS REFERENCES PROBLEM AT NOTES
+;;;   analysis KEY FACES DEFINITIONS REFERENCES PROBLEM AT
 ;;;                           an `analyze`'s answer, each list's items
 ;;;                           separated by spaces: FACES `start end f` (f:
 ;;;                           k keyword, f function-name, s string, c
 ;;;                           comment); DEFINITIONS `name start end`;
 ;;;                           REFERENCES `start end binder-start binder-end`;
-;;;                           PROBLEM the read's error (empty: none), at AT;
-;;;                           NOTES the flow analysis's (flow.fx), each a
-;;;                           line `start end text`: what reaches a variable,
-;;;                           what a call can call
+;;;                           PROBLEM the read's error (empty: none), at AT.
+;;;                           (What reaches a variable, what a call can call:
+;;;                           the CFA's, ../cfa/.)
 ;;;   completions NAME …       a `complete`'s answer, sorted
 
 (define* s7-say (subr (io stdout) (string) unit)
@@ -192,13 +191,7 @@ first, if output did not end its line, so that what comes after starts one."
                                                                               (cons (extract (car l) binder-start) (cons (extract (car l) binder-end) (go (cdr l))))))))))
                                            (go (extract a refs))))
                                    (extract a problem)
-                                   (int->string (extract a problem-at))
-                                   (s7-concat (letrec ((go (subr s7-drive-eff ((listof s7-fnote acyclic)) (listof string acyclic))
-                                                             (lambda (l) (if (null? l) nil
-                                                                             (cons (string-append (int->string (extract (car l) start)) " " (int->string (extract (car l) end))
-                                                                                                  " " (extract (car l) text) (if (null? (cdr l)) "" "\n"))
-                                                                                   (go (cdr l)))))))
-                                                (go (s7-flow (s7-field f 2) (s7-field f 1)))))))))
+                                   (int->string (extract a problem-at))))))
         ((string=? w "complete")
          (let* ((prefix (s7-field f 0))
                 (k (string-length prefix))

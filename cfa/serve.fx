@@ -14,10 +14,24 @@
 ;;;   forget PATH         PATH's text out of the dataset (the file's used)
 ;;;   notes KEY PATH      PATH's notes, answered once its world is analysed
 ;;;                       as the dataset has it now; KEY is given back
+;;;   callees KEY PATH POS  the lambdas the innermost call around POS (in
+;;;                       PATH, characters) can call, answered so too
+;;;   callers KEY PATH POS  the calls that can call the innermost lambda
+;;;                       around POS
 ;;;   depth N             the depth of analyses from now (m-CFA; 0: 0CFA)
 ;;; Answers:
 ;;;   ready WHY           started: WHY empty, or why it did not
 ;;;   notes KEY PATH NOTES  each a line `start end text` (notes.fx)
+;;;   callees KEY PATH FOUND UNKNOWN PLACE…
+;;;                       FOUND 1 if there is a call around POS, else 0;
+;;;                       UNKNOWN 1 if it may call code not known; each
+;;;                       PLACE, a lambda it can call: four fields, PATH
+;;;                       START END NAME
+;;;   callers KEY PATH FOUND NAME ESCAPED PLACE…
+;;;                       the lambda's NAME (FOUND 0: none around POS);
+;;;                       ESCAPED 1 if code not known may call it too; each
+;;;                       PLACE a call that can call it, PATH START END and
+;;;                       an empty NAME
 ;;;
 ;;; An analysis runs a slice at a time, requests read between slices: one
 ;;; that changes its world stops it, and it starts again.
@@ -43,8 +57,18 @@
 
 (define-type cf-text (productof (path string) (text string)))
 (define-type cf-file-notes-of (productof (path string) (notes cf-notes)))
-(define-type cf-world-notes (productof (key string) (files (listof cf-file-notes-of acyclic))))
-(define-type cf-request-of (productof (key string) (path string)))
+"A place in a file: a lambda's (named) or a call's."
+(define-type cf-place (productof (path string) (start int) (end int) (name string)))
+"What an analysed world keeps: each file's notes; each lambda, by number,
+its place and whether it escaped; each call, its place, the lambdas it can
+call, and whether it may call code not known."
+(define-type cf-lambda-found (productof (place cf-place) (escaped bool)))
+(define-type cf-call-found (productof (place cf-place) (callees ints) (unknown bool)))
+(define-type cf-world-notes
+  (productof (key string) (files (listof cf-file-notes-of acyclic))
+             (lambdas (arrayof cf-lambda-found @cf)) (calls (listof cf-call-found acyclic))))
+"A request waiting for its world: `notes`, `callees` or `callers`."
+(define-type cf-request-of (productof (kind string) (key string) (path string) (pos int)))
 (define-type cf-job (productof (key string) (paths strings)))
 
 (define cf-dataset (ref (listof cf-text acyclic) @cf) (new nil))
@@ -139,13 +163,6 @@ analysis, if it runs, stopped."
         (job j (if (string=? (extract j key) key) (set cf-job-now (sum none #u)) #u))
         (else y #u)))))
 
-(define* cf-world-notes-of (subr (maxeff spin (read @cf)) (string) (sumof (none unit) (some (listof cf-file-notes-of acyclic))))
-  (lambda (key) (letrec ((go (subr (maxeff (read @cf) spin) ((listof cf-world-notes acyclic)) (sumof (none unit) (some (listof cf-file-notes-of acyclic))))
-                           (lambda (l) (cond ((null? l) (sum none #u))
-                                             ((string=? (extract (car l) key) key) (sum some (extract (car l) files)))
-                                             (else (go (cdr l)))))))
-                  (go (get cf-analysed)))))
-
 "Notes `ns`, as an answer's field: a line each."
 (define* cf-notes-field (subr spin (cf-notes) string)
   (lambda (ns) (cf-concat (letrec ((go (subr spin (cf-notes) strings)
@@ -156,6 +173,75 @@ analysis, if it runs, stopped."
                             (go ns))
                           "\n")))
 
+(define* cf-world-notes-of (subr (maxeff spin (read @cf)) (string) (sumof (none unit) (some cf-world-notes)))
+  (lambda (key) (letrec ((go (subr (maxeff (read @cf) spin) ((listof cf-world-notes acyclic)) (sumof (none unit) (some cf-world-notes)))
+                           (lambda (l) (cond ((null? l) (sum none #u))
+                                             ((string=? (extract (car l) key) key) (sum some (car l)))
+                                             (else (go (cdr l)))))))
+                  (go (get cf-analysed)))))
+
+(define* cf-place-fields (subr spin (cf-place) strings)
+  (lambda (p) (list (extract p path) (int->string (extract p start)) (int->string (extract p end)) (extract p name))))
+(define* cf-place-holds? (subr spin (cf-place string int) bool)
+  (lambda (p path pos) (and (string=? (extract p path) path) (<= (extract p start) pos) (<= pos (extract p end)))))
+(define* cf-place-size (subr pure (cf-place) int) (lambda (p) (- (extract p end) (extract p start))))
+(define* cf-flag (subr pure (bool) string) (lambda (b) (if b "1" "0")))
+
+"The answer to request `r`, of world `w` analysed."
+(define* cf-answer-request! (subr (maxeff spin (io stdout) (read @cf)) (cf-request-of cf-world-notes) unit)
+  (lambda (r w)
+    (let ((path (extract r path)) (pos (extract r pos)) (kind (extract r kind)))
+      (cond
+        ((string=? kind "notes")
+         (cf-answer "notes" (list (extract r key) path
+                                  (letrec ((find (subr spin ((listof cf-file-notes-of acyclic)) cf-notes)
+                                                 (lambda (l) (cond ((null? l) nil)
+                                                                   ((string=? (extract (car l) path) path) (extract (car l) notes))
+                                                                   (else (find (cdr l)))))))
+                                    (cf-notes-field (find (extract w files)))))))
+        ((string=? kind "callees")
+         ;; The innermost call around `pos`.
+         (let ((best (letrec ((go (subr spin ((listof cf-call-found acyclic) (sumof (none unit) (call cf-call-found))) (sumof (none unit) (call cf-call-found)))
+                                (lambda (l best)
+                                  (cond ((null? l) best)
+                                        ((and (cf-place-holds? (extract (car l) place) path pos)
+                                              (tagcase best (call b (< (cf-place-size (extract (car l) place)) (cf-place-size (extract b place)))) (else y #t)))
+                                         (go (cdr l) (sum call (car l))))
+                                        (else (go (cdr l) best))))))
+                       (go (extract w calls) (sum none #u)))))
+           (tagcase best
+             (call c (cf-answer "callees"
+                                (append (list (extract r key) path "1" (cf-flag (extract c unknown)))
+                                        (letrec ((go (subr (maxeff spin (read @cf)) (ints) strings)
+                                                   (lambda (l) (if (null? l) nil
+                                                                   (append (cf-place-fields (extract (array-ref (extract w lambdas) (car l)) place)) (go (cdr l)))))))
+                                          (go (extract c callees))))))
+             (else y (cf-answer "callees" (list (extract r key) path "0" "0"))))))
+        ((string=? kind "callers")
+         ;; The innermost lambda around `pos`.
+         (let* ((ls (extract w lambdas))
+                (best (letrec ((go (subr (maxeff spin (read @cf)) (int int) int)
+                                 (lambda (i best)
+                                   (if (>= i (array-length ls)) best
+                                       (let ((p (extract (array-ref ls i) place)))
+                                         (go (+ i 1)
+                                             (if (and (cf-place-holds? p path pos)
+                                                      (or (< best 0) (< (cf-place-size p) (cf-place-size (extract (array-ref ls best) place)))))
+                                                 i best)))))))
+                        (go 0 -1))))
+           (if (< best 0)
+               (cf-answer "callers" (list (extract r key) path "0" "" "0"))
+               (cf-answer "callers"
+                          (append (list (extract r key) path "1" (extract (extract (array-ref ls best) place) name)
+                                        (cf-flag (extract (array-ref ls best) escaped)))
+                                  (letrec ((go (subr spin ((listof cf-call-found acyclic)) strings)
+                                             (lambda (l) (cond ((null? l) nil)
+                                                               ((member-int? best (extract (car l) callees))
+                                                                (append (cf-place-fields (extract (car l) place)) (go (cdr l))))
+                                                               (else (go (cdr l)))))))
+                                    (go (extract w calls))))))))
+        (else #u)))))
+
 "The requests whose worlds are analysed, answered; the others kept."
 (define* cf-answer-pending! (subr (maxeff cf-eff (io stdout)) () unit)
   (lambda ()
@@ -165,14 +251,7 @@ analysis, if it runs, stopped."
                       (if (null? l) nil
                           (let ((r (car l)))
                             (tagcase (cf-world-notes-of (cf-world-key (extract r path)))
-                              (some fs (begin
-                                         (cf-answer "notes" (list (extract r key) (extract r path)
-                                                                  (letrec ((find (subr spin ((listof cf-file-notes-of acyclic)) cf-notes)
-                                                                                 (lambda (l) (cond ((null? l) nil)
-                                                                                                   ((string=? (extract (car l) path) (extract r path)) (extract (car l) notes))
-                                                                                                   (else (find (cdr l)))))))
-                                                                    (cf-notes-field (find fs)))))
-                                         (go (cdr l))))
+                              (some w (begin (cf-answer-request! r w) (go (cdr l))))
                               (else y (cons r (go (cdr l))))))))))
            (go (get cf-pending))))))
 
@@ -194,6 +273,41 @@ analysis, if it runs, stopped."
                     (cf-start! cf-fx26 (fx-world paths texts) (get cf-serve-depth)))
                 (set cf-job-now (sum job (product (key key) (paths paths)))))))))))
 
+"Where span `sp` is, as a place named `name`."
+(define* cf-span-place (subr cf-eff (cf-span string) cf-place)
+  (lambda (sp name) (product (path (cf-file-name (extract sp file))) (start (extract sp start)) (end (extract sp end)) (name name))))
+"The world just analysed's lambdas, as places, and whether each escaped."
+(define* cf-lambdas-found (subr cf-eff () (arrayof cf-lambda-found @cf))
+  (lambda ()
+    (let* ((ls (get cf-lambda-array))
+           (a (the (arrayof cf-lambda-found @cf) (make-array (array-length ls) (product (place (product (path "") (start 0) (end 0) (name ""))) (escaped #f))))))
+      (letrec ((go (subr cf-eff (int) (arrayof cf-lambda-found @cf))
+                 (lambda (i) (if (>= i (array-length ls)) a
+                                 (let ((info (array-ref ls i)))
+                                   (begin (array-set! a i (product (place (cf-span-place (extract info span) (extract info name)))
+                                                                   (escaped (= (table-ref (get cf-escaped) i 0) 1))))
+                                     (go (+ i 1))))))))
+        (go 0)))))
+"The world just analysed's calls: each its place, the lambdas it can call
+(each once), and whether it may call code not known."
+(define* cf-calls-found (subr cf-eff () (listof cf-call-found acyclic))
+  (lambda ()
+    (letrec ((go (subr cf-eff ((listof call-info acyclic) int (listof cf-call-found acyclic)) (listof cf-call-found acyclic))
+               (lambda (cs i acc)
+                 (if (null? cs) acc
+                     (let* ((ops (table-ref (get cf-callees) i nil))
+                            (ls (letrec ((g (subr cf-eff (vals ints) ints)
+                                              (lambda (vs acc) (cond ((null? vs) (reverse acc))
+                                                                     ((closure-val? (car vs))
+                                                                      (let ((l (closure-lambda (quotient (car vs) 4))))
+                                                                        (g (cdr vs) (if (member-int? l acc) acc (cons l acc)))))
+                                                                     (else (g (cdr vs) acc))))))
+                                  (g ops nil))))
+                       (go (cdr cs) (- i 1)
+                           (cons (product (place (cf-span-place (extract (car cs) span) "")) (callees ls) (unknown (vals-has? ops cf-unknown)))
+                                 acc)))))))
+      (go (get cf-calls) (- (length (get cf-calls)) 1) nil))))
+
 "A slice of the analysis that runs; if it is done, its world's notes kept,
 and the requests waiting on them answered."
 (define* cf-slice! (subr (maxeff cf-eff (io stdout)) () unit)
@@ -206,7 +320,9 @@ and the requests waiting on them answered."
                                                                          (lambda (ps) (if (null? ps) nil
                                                                                           (let ((n (cf-file-notes (cf-file (car ps)))))
                                                                                             (cons (product (path (car ps)) (notes n)) (go (cdr ps))))))))
-                                                            (go (extract j paths)))))
+                                                            (go (extract j paths))))
+                                                   (lambdas (cf-lambdas-found))
+                                                   (calls (cf-calls-found)))
                                           (get cf-analysed)))
                    (set cf-job-now (sum none #u))
                    (cf-answer-pending!))
@@ -239,8 +355,8 @@ and the requests waiting on them answered."
                                         (lambda (l) (cond ((null? l) nil) ((string=? (extract (car l) path) p) (go (cdr l))) (else (cons (car l) (go (cdr l))))))))
                                (go (get cf-dataset))))
              (cf-invalidate! (cf-world-key p)))))
-        ((string=? word "notes")
-         (begin (set cf-pending (append (get cf-pending) (list (product (key (field 0)) (path (field 1))))))
+        ((or (string=? word "notes") (string=? word "callees") (string=? word "callers"))
+         (begin (set cf-pending (append (get cf-pending) (list (product (kind word) (key (field 0)) (path (field 1)) (pos (cf-decimal (field 2)))))))
            (cf-answer-pending!)))
         ((string=? word "depth")
          (begin (set cf-serve-depth (cf-decimal (field 0)))

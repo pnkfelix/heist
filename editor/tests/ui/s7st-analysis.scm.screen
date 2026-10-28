@@ -36,7 +36,7 @@ mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm|
                                         |
                                         |
 ---- a.scm   L2   ! a form is not closed|
-                                        |
+calls f/λ                               |
 cursor 1,9
  kkkkkk  f                              |
    kkk                                  |

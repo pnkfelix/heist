@@ -117,7 +117,9 @@ So the editor's resolver and its CFA have to be written. That was R10 of
   a syntactic find-uses, which yank never had.
 
 **Stage 2, closure flow (`editor/flow.fx`, `editor/calls.fx`): first
-version.**
+version.** Since replaced by the CFA, a program of its own (`cfa/`,
+`docs/cfa.md`), which the editor asks (`editor/cfa.fx`); what follows is
+what this one was.
 - **What it computes:** at 0CFA, the lambdas, sites (product, sum, ref,
   pair) and unknown that reach each variable, field and lambda's result,
   in whole passes until the store stops growing.
