@@ -147,10 +147,29 @@ the lambdas' bodies use but do not bind, and its language."
                                             (vals-union (list (+ 2 (* 4 (widen-to (quotient (car s) 4))))) (go (cdr s))))
                                            (else (vals-union (list (car s)) (go (cdr s))))))))
                 (go s)))))))
+"Sites dropped from a cell that holds unknown, to escape once the task
+that dropped them is done (`collapse`)."
+(define cf-to-escape (ref vals @cf) (new nil))
+"`s`, if it holds unknown, without its sites (yank's collapse, which keeps
+only procedures; kinds kept here too, as they cost nothing to carry and
+say what is known): a site with unknown is what code not known may give
+anyway, so it escapes (later): what it holds is anything too, and what is
+put in it escapes. Off unless asked for (`--collapse`): measured on the
+editor's world it made 27 more notes hold unknown, for no time saved;
+yank needed it on worlds that did not finish without it."
+(define cf-collapse (ref bool @cf) (new #f))
+(define* collapse (subr cf-eff (vals) vals)
+  (lambda (s)
+    (if (or (not (get cf-collapse)) (not (vals-has? s cf-unknown))) s
+        (letrec ((go (subr cf-eff (vals) vals)
+                   (lambda (l) (cond ((null? l) nil)
+                                     ((site-val? (car l)) (begin (set cf-to-escape (cons (car l) (get cf-to-escape))) (go (cdr l))))
+                                     (else (cons (car l) (go (cdr l))))))))
+          (go s)))))
 (define* cf-join! (subr cf-eff (int vals) unit)
   (lambda (k s)
     (if (null? s) #u
-        (let* ((old (table-ref (get cf-cells) k nil)) (new (widen (vals-union old s))))
+        (let* ((old (table-ref (get cf-cells) k nil)) (new (collapse (widen (vals-union old s)))))
           (if (= (length new) (length old)) #u
               (begin
                 (table-set! (get cf-cells) k new)
@@ -548,6 +567,7 @@ lambda's own number; else one past them, numbered on first use."
             (begin (eval-all (get cf-tops) 0) #u)
             (cf-join! (result-key t) (eval-core (extract (array-ref (get cf-lambda-array) (closure-lambda t)) body)
                                                 (closure-contour t))))
+        (let ((es (get cf-to-escape))) (begin (set cf-to-escape nil) (escape! es)))
         (set cf-steps (+ (get cf-steps) 1))))))
 
 ;;; ------------------------------------------------------------ free variables
@@ -645,7 +665,7 @@ language `lang`, to be analysed at depth `m` from the start: nothing run yet."
       (set cf-ref-vals (new-vals-table)) (set cf-callees (new-vals-table))
       (set cf-escaped (new-int-table)) (set cf-site-escaped (new-int-table)) (set cf-site-labels (new-ints-table))
       (set cf-front nil) (set cf-back nil) (set cf-queued (new-int-table)) (set cf-made (new-int-table))
-      (set cf-steps 0)
+      (set cf-steps 0) (set cf-to-escape nil)
       (cf-ensure-task! cf-main))))
 
 "At most `fuel` tasks run. Whether the analysis is done: none left."

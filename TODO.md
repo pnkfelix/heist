@@ -48,7 +48,11 @@ commit that did it says so.
          `let`'s variable bound to another (`case`'s key) narrowing it too.
          Notes holding several values 114 to 111.
        What is left is mostly the prelude's own library procedures, whose
-       callers are outside it. Next: unknown dropping data;
+       callers are outside it. A set holding unknown dropping its data
+       (yank's collapse) is there, but off (`bin/cfa --collapse`): it only
+       dropped sites here (kinds cost nothing and say what is known), and
+       even so made 27 more notes hold unknown on the editor, for no time
+       saved -- yank needed it where worlds did not finish. Next:
        `make-parameter` and promises (the prelude makes them as closures
        over pairs). Beyond yank's narrowing still: correlated values
        (`(cdr x)` a list because `(pair? x)`), and `or` narrowing its

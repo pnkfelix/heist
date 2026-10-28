@@ -1,9 +1,12 @@
 ;;; main.fx: the CFA from the command line (bin/cfa).
 ;;;
-;;;   bin/cfa [-m N] FILE …   the files analysed as one world, of the
+;;;   bin/cfa [--collapse] [-m N] FILE …
+;;;                           the files analysed as one world, of the
 ;;;                           language their names say (.fx: FX-26), at
 ;;;                           depth N (0, 0CFA, if not said); each note
-;;;                           written, `FILE:START-END: TEXT`
+;;;                           written, `FILE:START-END: TEXT`; with
+;;;                           --collapse, a set holding unknown drops its
+;;;                           sites (engine.fx's `collapse`)
 ;;;   bin/cfa --serve         a server, for a client such as the editor:
 ;;;                           serve.fx says its requests and answers
 
@@ -41,8 +44,11 @@ the notes of its files `paths` written."
   (lambda ()
     (let* ((as (letrec ((go (subr (maxeff (read @a) spin) ((listof string @a)) strings) (lambda (l) (if (null? l) nil (cons (car l) (go (cdr l)))))))
                  (go (the (listof string @a) (args)))))
+           (collapse (and (pair? as) (string=? (car as) "--collapse")))
+           (as (if collapse (cdr as) as))
            (m (if (and (pair? as) (string=? (car as) "-m") (pair? (cdr as))) (cf-decimal (car (cdr as))) 0))
-           (files (if (and (pair? as) (string=? (car as) "-m") (pair? (cdr as))) (cdr (cdr as)) as))
+           (files (begin (set cf-collapse collapse)
+                    (if (and (pair? as) (string=? (car as) "-m") (pair? (cdr as))) (cdr (cdr as)) as)))
            (fx (cf-filter files #f))
            (sc (cf-filter files #t)))
       (if (and (pair? as) (string=? (car as) "--serve"))
