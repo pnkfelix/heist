@@ -62,6 +62,16 @@ payload; or (`fields`) its product's fields by position, labels `1`, `2`,
 
 ;;; ------------------------------------------------------------ languages
 
+(define-datatype cf-arg
+  (a-arg int)                   ; its argument, by place
+  (a-elems int)                 ; the elements (`car`s) of its argument, a list
+  (a-kinds strings)             ; data of these kinds (\"unknown\": anything)
+  (a-result int)                ; what its call, by place, returned
+  (a-union (listof cf-arg acyclic))
+  (a-many cf-arg))              ; as many arguments, each this, as any lambda may take
+"What a primitive calls (`m-calls`): its argument `proc`, given `args`."
+(define-type cf-callspec (productof (proc int) (args (listof cf-arg acyclic))))
+
 "What calling a primitive does, as its language says:
   m-data: its result is data of these kinds (by name; \"unknown\": anything),
           and, if `escapes`, what it is given escapes (it may call it, or
@@ -71,13 +81,17 @@ payload; or (`fields`) its product's fields by position, labels `1`, `2`,
           the lists it is given after, and what that returns escapes; its
           result is data of these kinds;
   m-apply: it calls its first argument with those after it but the last,
-          then the elements of the last (a list); its result is that call's."
+          then the elements of the last (a list); its result is that call's;
+  m-calls: it makes the calls it says, in order; its result is what its
+          `cf-arg` says; what those after say escapes. Nothing else it is
+          given escapes."
+
 (define-datatype cf-model
   (m-data bool strings)
   (m-pass)
   (m-map strings)
-  (m-apply))
-
+  (m-apply)
+  (m-calls (listof cf-callspec acyclic) cf-arg (listof cf-arg acyclic)))
 "A language: its name, and what each of its primitives does."
 (define-type cf-lang (productof (name string) (model (subr (maxeff spin (read @globals)) (string) cf-model))))
 

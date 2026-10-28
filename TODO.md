@@ -21,13 +21,20 @@ commit that did it says so.
    - **Precision.**
      - FX-26 is precise already: 83 of 8,800 notes hold unknown, and depth
        1 changes no note (notes merge contours).
-     - Scheme is not. On s7st's `prelude.scm`, 115 of 463 notes hold
-       unknown, down from 160 since `apply` calls with its list's
-       elements and rest parameters are lists. What is left is built-ins
-       taken to keep what they are given (`call-with-values`, records,
-       `values`), and a library's procedures called only from outside.
-       Next: model those built-ins; narrowing by tests; unknown dropping
-       data.
+     - Scheme is less so. On s7st's `prelude.scm`, 90 of 453 notes hold
+       unknown, down from 160:
+       - `apply` calls with its list's elements;
+       - rest parameters are lists;
+       - built-ins that call what they are given say how (`m-calls`):
+         `call/cc`, `dynamic-wind`, `call-with-values`,
+         `with-exception-handler`, the prelude's `filter`, `fold`,
+         `member` and `assoc` with a procedure, hash tables' walkers, and
+         ports' `call-with-…`;
+       - records' procedures are lambdas over a record site.
+       What is left is mostly the prelude's own library procedures, whose
+       callers are outside it. Next: narrowing by tests; unknown dropping
+       data; `make-parameter` and promises (the prelude makes them as
+       closures over pairs).
    - Notes by contour (what a call or variable is in each context), not
      merged, before small procedures per call site can show anything.
 3. **Worlds across languages.** s7st's builtins are FX-26 code

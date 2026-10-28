@@ -24,6 +24,7 @@
           ((site-val? v)
            (let ((info (array-ref (get cf-site-array) (quotient v 4))))
              (cond ((string=? (extract info kind) "sum") (string-append "(" (extract info tag) ")"))
+                   ((and (string=? (extract info kind) "record") (not (string=? (extract info tag) ""))) (extract info tag))
                    (else (extract info kind)))))
           ((kind-val? v) (cf-kind-name (quotient v 4)))
           (else (prim-name v)))))

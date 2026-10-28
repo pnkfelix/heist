@@ -101,8 +101,63 @@
 (define sc-mapping strings (list "map" "for-each" "vector-map" "vector-for-each" "string-for-each" "string-map"))
 "Built-ins whose result is part of what they are given."
 (define sc-passing strings
-  (list "append" "reverse" "list-copy" "list-tail" "list-ref" "memq" "memv" "member" "assq" "assv" "assoc"
-        "last-pair" "values" "car" "cdr" "cadr" "cddr" "caar" "cdar" "vector-ref"))
+  (list "append" "reverse" "list-copy" "list-tail" "list-ref" "memq" "memv" "assq" "assv"
+        "last-pair" "values" "car" "cdr" "cadr" "cddr" "caar" "cdar" "vector-ref" "last" "list-sort" "sort" "vector-sort"))
+
+"A call a built-in makes, of its argument `proc`, given `args`."
+(define* sc-c (subr pure (int (listof cf-arg acyclic)) cf-callspec) (lambda (proc args) (product (proc proc) (args args))))
+(define sc-unknown cf-arg (a-kinds (list "unknown")))
+"Built-ins that call what they are given, as they do: s7st's control
+operations (prims.fx) and the prelude's procedures (prelude.scm) that take
+one. (none) for another."
+(define* sc-calls-model (subr spin (string) (sumof (none unit) (model cf-model)))
+  (lambda (n)
+    (let ((m (lambda ((specs (listof cf-callspec acyclic)) (result cf-arg) (escapes (listof cf-arg acyclic)))
+               (the (sumof (none unit) (model cf-model)) (sum model (m-calls specs result escapes))))))
+      (cond
+        ((or (string=? n "call-with-current-continuation") (string=? n "call/cc"))
+         ;; The continuation is code not known: what it is given escapes.
+         (m (list (sc-c 0 (list sc-unknown))) (a-union (list (a-result 0) sc-unknown)) nil))
+        ((string=? n "dynamic-wind") (m (list (sc-c 0 nil) (sc-c 1 nil) (sc-c 2 nil)) (a-result 1) nil))
+        ((string=? n "call-with-values") (m (list (sc-c 0 nil) (sc-c 1 (list (a-many (a-result 0))))) (a-result 1) nil))
+        ((string=? n "with-exception-handler")
+         (m (list (sc-c 1 nil) (sc-c 0 (list sc-unknown))) (a-union (list (a-result 0) (a-result 1))) nil))
+        ((or (string=? n "filter") (string=? n "remove")) (m (list (sc-c 0 (list (a-elems 1)))) (a-arg 1) nil))
+        ((or (string=? n "member") (string=? n "assoc") (string=? n "delete"))
+         (m (list (sc-c 2 (list (a-arg 0) (a-elems 1)))) (a-union (list (a-arg 1) (a-kinds (list "boolean")))) nil))
+        ((string=? n "delete-duplicates") (m (list (sc-c 1 (list (a-elems 0) (a-elems 0)))) (a-arg 0) nil))
+        ((or (string=? n "fold") (string=? n "fold-right"))
+         ;; Twice: the second given what the first returned too; again as that grows.
+         (m (list (sc-c 0 (list (a-elems 2) (a-arg 1)))
+                  (sc-c 0 (list (a-elems 2) (a-union (list (a-arg 1) (a-result 0))))))
+            (a-union (list (a-arg 1) (a-result 1))) nil))
+        ((string=? n "reduce")
+         (m (list (sc-c 0 (list (a-elems 2) (a-union (list (a-elems 2) (a-arg 1)))))
+                  (sc-c 0 (list (a-elems 2) (a-union (list (a-elems 2) (a-arg 1) (a-result 0))))))
+            (a-union (list (a-arg 1) (a-elems 2) (a-result 1))) nil))
+        ((or (string=? n "any") (string=? n "every"))
+         (m (list (sc-c 0 (list (a-elems 1)))) (a-union (list (a-result 0) (a-kinds (list "boolean")))) nil))
+        ((or (string=? n "count") (string=? n "list-index"))
+         (m (list (sc-c 0 (list (a-elems 1)))) (a-kinds (list "number" "boolean")) nil))
+        ((string=? n "append-map") (m (list (sc-c 0 (list (a-elems 1)))) (a-result 0) nil))
+        ((string=? n "filter-map") (m (list (sc-c 0 (list (a-elems 1)))) (a-kinds (list "pair" "()")) (list (a-result 0))))
+        ((string=? n "list-sort") (m (list (sc-c 0 (list (a-elems 1) (a-elems 1)))) (a-arg 1) nil))
+        ((string=? n "sort") (m (list (sc-c 1 (list (a-elems 0) (a-elems 0)))) (a-arg 0) nil))
+        ((string=? n "hash-table-ref")
+         (m (list (sc-c 2 nil) (sc-c 3 (list sc-unknown))) (a-union (list sc-unknown (a-result 0) (a-result 1))) nil))
+        ((string=? n "hash-table-update!") (m (list (sc-c 3 nil) (sc-c 2 (list sc-unknown))) (a-kinds (list "unspecified")) (list (a-result 1))))
+        ((string=? n "hash-table-update!/default")
+         (m (list (sc-c 2 (list sc-unknown))) (a-kinds (list "unspecified")) (list (a-result 0) (a-arg 3))))
+        ((string=? n "hash-table-intern!") (m (list (sc-c 2 nil)) (a-union (list sc-unknown (a-result 0))) (list (a-result 0))))
+        ((string=? n "hash-table-walk") (m (list (sc-c 1 (list sc-unknown sc-unknown))) (a-kinds (list "unspecified")) nil))
+        ((string=? n "hash-table-fold")
+         (m (list (sc-c 1 (list sc-unknown sc-unknown sc-unknown))) (a-union (list (a-arg 2) (a-result 0))) (list (a-arg 2))))
+        ((or (string=? n "call-with-port") (string=? n "call-with-input-file") (string=? n "call-with-output-file"))
+         (m (list (sc-c 1 (list (a-kinds (list "port"))))) (a-result 0) nil))
+        ((or (string=? n "with-input-from-file") (string=? n "with-output-to-file")) (m (list (sc-c 1 nil)) (a-result 0) nil))
+        ((string=? n "call-with-output-string") (m (list (sc-c 0 (list (a-kinds (list "port"))))) (a-kinds (list "string")) nil))
+        ((string=? n "with-output-to-string") (m (list (sc-c 0 nil)) (a-kinds (list "string")) nil))
+        (else (sum none #u))))))
 "Built-ins that keep nothing they are given, and call none of it: their
 result is data of the kinds `s7-builtin-result` says."
 (define sc-first-order-kinds strings (list "number" "boolean" "string" "char" "symbol"))
@@ -121,7 +176,9 @@ result is data of the kinds `s7-builtin-result` says."
   (product (name "scheme")
            (model (lambda ((n string))
                     (let ((kinds (sc-kind-names (s7-builtin-result n))))
-                      (cond ((string=? n "apply") (m-apply))
+                      (cond ((tagcase (sc-calls-model n) (model x #t) (else y #f))
+                             (tagcase (sc-calls-model n) (model x x) (else y (m-apply))))
+                            ((string=? n "apply") (m-apply))
                             ((cf-member? n sc-mapping) (m-map kinds))
                             ((cf-member? n sc-passing) (m-pass))
                             ((or (cf-member? n sc-first-order)
@@ -156,6 +213,56 @@ result is data of the kinds `s7-builtin-result` says."
 (define* sc-builtin? (subr s7-eff (s7-global) bool)
   (lambda (g) (tagcase (get (extract g value)) (prim p #t) (proc p #t) (else y #f))))
 
+"A symbol a constant is (\"\": none); the symbols a constant list is."
+(define* sc-const-symbol (subr spin (s7-node) string)
+  (lambda (n) (tagcase (extract n form) (n-const v (tagcase v (sym s (s7-symbol-name s)) (else y ""))) (else y ""))))
+(define* sc-const-symbols (subr s7-eff (s7-node) strings)
+  (lambda (n) (tagcase (extract n form)
+                (n-const v (letrec ((go (subr s7-eff (s7-values) strings)
+                                          (lambda (l) (if (null? l) nil
+                                                          (cons (tagcase (car l) (sym s (s7-symbol-name s)) (else y "")) (go (cdr l)))))))
+                             (go (s7-value->values v))))
+                (else y nil))))
+"What `define-record-type` defines (expand.fx's `s7-derive-record`), as
+lambdas: `(record-constructor T '(f …))` one making a record site of those
+fields, `(record-accessor T 'f)` one taking field f, `(record-modifier T 'f)`
+one setting it, `(record-predicate T)` one saying a boolean; (none) for
+another definition. `name`: the definition's."
+(define* sc-record-proc (subr sc-eff (s7-node string) (sumof (none unit) (made core)))
+  (lambda (n name)
+    (tagcase (extract n form)
+      (n-call x
+        (let* ((op0 (tagcase (extract (extract x op) form) (n-global g (s7-symbol-name (extract g name))) (else y "")))
+               ;; s7st's record procedures are named with a space first, so that no program names them.
+               (op (if (and (> (string-length op0) 0) (char=? (string-ref op0 0) #\space)) (substring op0 1 (string-length op0)) op0))
+               (args (extract x args))
+               (type (if (pair? args) (tagcase (extract (car args) form) (n-global g (s7-symbol-name (extract g name))) (else y "")) ""))
+               (sp (sc-span (extract n span)))
+               (lam (lambda ((params ints) (body core))
+                      (the (sumof (none unit) (made core))
+                           (sum made (k-lam (cf-add-lambda (product (span sp) (name name) (params params) (rest -1) (body body)))))))))
+          (cond
+            ((cf-global-defined? op0) (sum none #u))
+            ((and (string=? op "record-constructor") (pair? args) (pair? (cdr args)))
+             (let* ((fields (sc-const-symbols (car (cdr args))))
+                    (ps (letrec ((go (subr cf-eff (strings) ints) (lambda (l) (if (null? l) nil (cons (cf-new-var) (go (cdr l)))))))
+                          (go fields))))
+               (lam ps (k-alloc (cf-add-site (product (span sp) (kind "record") (tag type)))
+                                (letrec ((go (subr spin (strings ints) (listof field-init acyclic))
+                                               (lambda (fs ps) (if (or (null? fs) (null? ps)) nil
+                                                                   (cons (product (label (car fs)) (value (k-var (car ps) -1))) (go (cdr fs) (cdr ps)))))))
+                                  (go fields ps))))))
+            ((and (string=? op "record-accessor") (pair? args) (pair? (cdr args)))
+             (let ((r (cf-new-var))) (lam (list r) (k-field (k-var r -1) (sc-const-symbol (car (cdr args)))))))
+            ((and (string=? op "record-modifier") (pair? args) (pair? (cdr args)))
+             (let ((r (cf-new-var)) (v (cf-new-var)))
+               (lam (list r v) (k-seq (list (k-store (k-var r -1) (sc-const-symbol (car (cdr args))) (k-var v -1))
+                                            (k-const (cf-kind "unspecified")))))))
+            ((string=? op "record-predicate")
+             (let ((r (cf-new-var))) (lam (list r) (k-seq (list (k-var r -1) (k-const (cf-kind "boolean")))))))
+            (else (sum none #u)))))
+      (else y (sum none #u)))))
+
 (define-rec
   (sc-core (subr sc-eff (s7-node sc-frames) core)
     (lambda (n fs)
@@ -170,7 +277,10 @@ result is data of the kinds `s7-builtin-result` says."
           (n-set-global x (k-bind (cf-global-var (s7-symbol-name (extract (extract x cell) name))) (sc-core (extract x value) fs)))
           (n-define x (let ((name (s7-symbol-name (extract (extract x cell) name))))
                         (begin (if (null? fs) (set cf-definition name) #u)
-                          (k-bind (cf-global-var name) (sc-core (extract x value) fs)))))
+                          (k-bind (cf-global-var name)
+                                  (tagcase (sc-record-proc (extract x value) name)
+                                    (made c c)
+                                    (else y (sc-core (extract x value) fs)))))))
           (n-if x (k-seq (list (sc-core (extract x test) fs) (k-alt (list (sc-core (extract x then) fs) (sc-core (extract x else) fs))))))
           (n-lambda ls (let ((cs (sc-lambdas ls fs))) (if (and (pair? cs) (null? (cdr cs))) (car cs) (k-alt cs))))
           (n-seq ns (k-seq (sc-all ns fs)))
