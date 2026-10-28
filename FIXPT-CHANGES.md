@@ -8,7 +8,14 @@ do it, and what it cost. Kayak will need the same changes later
 
 ## Base
 
-- Fixpt `main` at 8ff01fe3 (2026-10-28), pulled from GitHub by Heist's
+- Fixpt `main` at b26b2efc (2026-10-28), pulled from GitHub by Heist's
+  90390000 (squash 33105471): a module file's `.fasl` names the standard
+  types and the closed types it repeats. The editor from `.fasl`s
+  (`bin/heist-compile`) starts in 2.56 s against 5.86 s from source, and
+  its tests pass with them. A program's `.fasl` still writes its types in
+  full, so s7st's are unusable (`docs/requests/fixpt-program-fasl-types.md`).
+  Heist has no edits of its own on it.
+- Before: Fixpt 8ff01fe3 (2026-10-28), pulled by Heist's
   556d8e43 (squash f1c8eabb): `.fasl` files of module files and programs
   (`fixpt compile-file`; Fixpt `docs/research/fasl.md`, `DONE.md`
   §156-§157), a maker's kept with its parameters as written. Heist's tests
@@ -16,7 +23,7 @@ do it, and what it cost. Kayak will need the same changes later
   from `.fasl`s against 5.9 s from source; through eldoc.fx 2.65 s against
   4.75 s, as Fixpt measured, but making main.fx from modules read from
   `.fasl`s costs 2 s against 0.5 s from source, with or without main's
-  own `.fasl`. Heist has no edits of its own on it.
+  own `.fasl`.
 - Before: Fixpt 0c2e4dd5 (2026-10-28), pulled by Heist's
   ea918aa7 (squash 36335552): native code on arm64 only -- a module's
   maker with frames past 4080 bytes, `new`/`make-array` and their region
