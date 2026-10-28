@@ -8,10 +8,15 @@ do it, and what it cost. Kayak will need the same changes later
 
 ## Base
 
-- Fixpt `main` at 35bf4c4f (2026-10-28), pulled from GitHub by Heist's
+- Fixpt `main` at 0c2e4dd5 (2026-10-28), pulled from GitHub by Heist's
+  ea918aa7 (squash 36335552): native code on arm64 only -- a module's
+  maker with frames past 4080 bytes, `new`/`make-array` and their region
+  forms in line, and compiled code's names, lines and values in `lldb`.
+  Heist has no edits of its own on it.
+- Before: Fixpt 35bf4c4f (2026-10-28), pulled by Heist's
   48ec00d0 (squash 8beaa5b8): `(module-parameters ())`, a maker of no
   arguments that `load-module` and `load-moduleof` take (Heist's ask,
-  given the user in conversation). Heist has no edits of its own on it.
+  given the user in conversation).
 - Before: Fixpt 62261413 (2026-10-28), pulled by Heist's
   2dde955f (squash 52e491a8): a module's `define*` used as a value
   (`docs/requests/fixpt-define-star-in-modules.md`, Heist's request; Fixpt
