@@ -19,8 +19,11 @@
 ;;;   callers KEY PATH POS  the calls that can call the innermost lambda
 ;;;                       around POS
 ;;;   depth N             the depth of analyses from now (m-CFA; 0: 0CFA)
+;;;   status              how the analysis that runs is doing
 ;;; Answers:
 ;;;   ready WHY           started: WHY empty, or why it did not
+;;;   status WORLD TEXT   a `status`'s answer: the world analysed (empty:
+;;;                       none), and engine.fx's `cf-status`
 ;;;   notes KEY PATH NOTES  each a line `start end text` (notes.fx)
 ;;;   callees KEY PATH FOUND UNKNOWN PLACE…
 ;;;                       FOUND 1 if there is a call around POS, else 0;
@@ -360,6 +363,8 @@ and the requests waiting on them answered."
         ((or (string=? word "notes") (string=? word "callees") (string=? word "callers"))
          (begin (set cf-pending (append (get cf-pending) (list (product (kind word) (key (field 0)) (path (field 1)) (pos (cf-decimal (field 2)))))))
            (cf-answer-pending!)))
+        ((string=? word "status")
+         (cf-answer "status" (list (tagcase (get cf-job-now) (job j (extract j key)) (else y "")) (cf-status))))
         ((string=? word "depth")
          (begin (set cf-serve-depth (cf-decimal (field 0)))
            (set cf-analysed nil) (set cf-job-now (sum none #u))))

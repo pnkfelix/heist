@@ -1,12 +1,14 @@
 ;;; main.fx: the CFA from the command line (bin/cfa).
 ;;;
-;;;   bin/cfa [--collapse] [-m N] FILE …
+;;;   bin/cfa [--progress] [--collapse] [-m N] FILE …
 ;;;                           the files analysed as one world, of the
 ;;;                           language their names say (.fx: FX-26), at
 ;;;                           depth N (0, 0CFA, if not said); each note
 ;;;                           written, `FILE:START-END: TEXT`; with
 ;;;                           --collapse, a set holding unknown drops its
-;;;                           sites (engine.fx's `collapse`)
+;;;                           sites (engine.fx's `collapse`); with
+;;;                           --progress, every 2000 tasks a line on the
+;;;                           standard error: ms, then `cf-status`
 ;;;   bin/cfa --serve         a server, for a client such as the editor:
 ;;;                           serve.fx says its requests and answers
 
@@ -21,12 +23,23 @@
 
 "The world read (core.fx) analysed, of `lang`, at depth `m`, to the end;
 the notes of its files `paths` written."
-(define* cf-run-world (subr (maxeff cf-eff (io stdout) spin) (cf-lang cores strings int) unit)
+"Whether to say the analysis's progress on the standard error (`--progress`)."
+(define cf-progress (ref bool @cf) (new #f))
+(define* cf-run-world (subr (maxeff cf-eff (io stdout) (io stderr) (io clock) spin) (cf-lang cores strings int) unit)
   (lambda (lang tops paths m)
-    (begin
-      (cf-start! lang tops m)
-      (letrec ((run (subr cf-eff () unit) (lambda () (if (cf-step! 100000) #u (run)))))
-        (run))
+    (let ((t0 (clock)))
+      (begin
+        (cf-start! lang tops m)
+        (letrec ((run (subr (maxeff cf-eff (io stderr) (io clock)) () unit)
+                   (lambda () (let ((done (cf-step! 2000)))
+                                (begin
+                                  (if (get cf-progress)
+                                      (begin (write-err (string-append "cfa: " (int->string (i64->int (i64-quotient (i64- (clock) t0) (int->i64 1000000))))
+                                                                       " ms " (cf-status) "\n"))
+                                        #u)
+                                      #u)
+                                  (if done #u (run)))))))
+          (run))
       (letrec ((files (subr (maxeff cf-eff (io stdout)) (strings) unit)
                  (lambda (ps)
                    (if (null? ps) #u
@@ -38,16 +51,18 @@ the notes of its files `paths` written."
                                                        (say (cdr ns)))))))
                            (say (cf-file-notes (cf-file (car ps)))))
                          (files (cdr ps)))))))
-        (files paths)))))
+          (files paths))))))
 
-(define* main (subr (maxeff fx-eff sc-eff s7-drive-eff (io fs-read) (io stdout) (io stdin) (io args) (alloc @a) (read @a) spin) () int)
+(define* main (subr (maxeff fx-eff sc-eff s7-drive-eff (io fs-read) (io stdout) (io stderr) (io clock) (io stdin) (io args) (alloc @a) (read @a) spin) () int)
   (lambda ()
     (let* ((as (letrec ((go (subr (maxeff (read @a) spin) ((listof string @a)) strings) (lambda (l) (if (null? l) nil (cons (car l) (go (cdr l)))))))
                  (go (the (listof string @a) (args)))))
+           (progress (and (pair? as) (string=? (car as) "--progress")))
+           (as (if progress (cdr as) as))
            (collapse (and (pair? as) (string=? (car as) "--collapse")))
            (as (if collapse (cdr as) as))
            (m (if (and (pair? as) (string=? (car as) "-m") (pair? (cdr as))) (cf-decimal (car (cdr as))) 0))
-           (files (begin (set cf-collapse collapse)
+           (files (begin (set cf-collapse collapse) (set cf-progress progress)
                     (if (and (pair? as) (string=? (car as) "-m") (pair? (cdr as))) (cdr (cdr as)) as)))
            (fx (cf-filter files #f))
            (sc (cf-filter files #t)))

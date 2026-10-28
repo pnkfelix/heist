@@ -98,10 +98,16 @@ the lambdas' bodies use but do not bind, and its language."
 "How many tasks have run, in all."
 (define cf-steps (ref int @cf) (new 0))
 
+"How much the analysis holds, for its progress (`cf-status`): tasks on
+the worklist; values in all cells together (facts); cells."
+(define cf-queue-length (ref int @cf) (new 0))
+(define cf-facts (ref int @cf) (new 0))
+(define cf-cell-count (ref int @cf) (new 0))
 (define* cf-enqueue! (subr cf-eff (int) unit)
   (lambda (t)
     (if (= (table-ref (get cf-queued) t 0) 1) #u
-        (begin (table-set! (get cf-queued) t 1) (set cf-back (cons t (get cf-back)))))))
+        (begin (table-set! (get cf-queued) t 1) (set cf-back (cons t (get cf-back)))
+          (set cf-queue-length (+ (get cf-queue-length) 1))))))
 "Task `t` made: on the worklist, the first time."
 (define* cf-ensure-task! (subr cf-eff (int) unit)
   (lambda (t)
@@ -131,14 +137,17 @@ the lambdas' bodies use but do not bind, and its language."
   (lambda (k) (letrec ((go (subr spin ((listof (productof (kind int) (to int)) acyclic)) int)
                          (lambda (l) (cond ((null? l) -1) ((= (extract (car l) kind) k) (extract (car l) to)) (else (go (cdr l)))))))
                 (go (get cf-widen)))))
-"`s`, its kinds widened where too many of one widening are in it."
+"`s`, its kinds widened where too many of one widening are in it; and,
+so that a cell only grows, a kind its widening is in already absorbed by
+it (once a cell holds `symbol`, `'x` joining it changes nothing)."
 (define* widen (subr cf-eff (vals) vals)
   (lambda (s)
     (if (null? (get cf-widen)) s
         (let ((wide (letrec ((go (subr cf-eff (vals int) int)
-                               (lambda (s n) (cond ((null? s) n)
-                                                   ((and (kind-val? (car s)) (>= (widen-to (quotient (car s) 4)) 0)) (go (cdr s) (+ n 1)))
-                                                   (else (go (cdr s) n))))))
+                               (lambda (l n) (cond ((null? l) n)
+                                                   ((and (kind-val? (car l)) (>= (widen-to (quotient (car l) 4)) 0))
+                                                    (go (cdr l) (if (vals-has? s (+ 2 (* 4 (widen-to (quotient (car l) 4))))) 9 (+ n 1))))
+                                                   (else (go (cdr l) n))))))
                       (go s 0))))
           (if (<= wide 8) s
               (letrec ((go (subr cf-eff (vals) vals)
@@ -172,6 +181,8 @@ yank needed it on worlds that did not finish without it."
         (let* ((old (table-ref (get cf-cells) k nil)) (new (collapse (widen (vals-union old s)))))
           (if (= (length new) (length old)) #u
               (begin
+                (set cf-facts (+ (get cf-facts) (- (length new) (length old))))
+                (if (null? old) (set cf-cell-count (+ (get cf-cell-count) 1)) #u)
                 (table-set! (get cf-cells) k new)
                 (letrec ((go (subr cf-eff (ints) unit) (lambda (l) (if (null? l) #u (begin (cf-enqueue! (car l)) (go (cdr l)))))))
                   (go (table-ref (get cf-readers) k nil)))))))))
@@ -198,6 +209,13 @@ yank needed it on worlds that did not finish without it."
                                (list "record" (string-append "record:" (extract info tag)))
                                (list (extract info kind)))))
           (else nil))))
+"Whether kind `k` is what a kind named in `classes` widens to."
+(define* widened-in? (subr cf-eff (int strings) bool)
+  (lambda (k classes)
+    (letrec ((go (subr cf-eff ((listof (productof (kind int) (to int)) acyclic)) bool)
+               (lambda (l) (and (pair? l) (or (and (= (extract (car l) to) k) (cf-member? (cf-kind-name (extract (car l) kind)) classes))
+                                              (go (cdr l)))))))
+      (go (get cf-widen)))))
 (define* any-member? (subr spin (strings strings) bool)
   (lambda (a b) (and (pair? a) (or (cf-member? (car a) b) (any-member? (cdr a) b)))))
 "Values `s` of variable `v`'s field `path` (nil: the variable's own), as
@@ -211,6 +229,10 @@ the branches being evaluated narrow it."
                  (cond ((null? s) nil)
                        ((= (car s) cf-unknown) (cons (car s) (apply-one n (cdr s))))
                        ((eq? (any-member? (val-classes (car s)) (extract n classes)) (extract n keep))
+                        (cons (car s) (apply-one n (cdr s))))
+                       ;; A widened kind (`symbol`) may be any it widened (`'add`):
+                       ;; kept where one of those is.
+                       ((and (extract n keep) (kind-val? (car s)) (widened-in? (quotient (car s) 4) (extract n classes)))
                         (cons (car s) (apply-one n (cdr s))))
                        (else (apply-one n (cdr s))))))
              (go (subr cf-eff ((listof cf-narrowing acyclic) vals) vals)
@@ -666,8 +688,19 @@ language `lang`, to be analysed at depth `m` from the start: nothing run yet."
       (set cf-escaped (new-int-table)) (set cf-site-escaped (new-int-table)) (set cf-site-labels (new-ints-table))
       (set cf-front nil) (set cf-back nil) (set cf-queued (new-int-table)) (set cf-made (new-int-table))
       (set cf-steps 0) (set cf-to-escape nil)
+      (set cf-queue-length 0) (set cf-facts 0) (set cf-cell-count 0)
       (cf-ensure-task! cf-main))))
 
+"The analysis's progress, said: tasks run, on the worklist, and made;
+facts (values in cells) and cells; contours and closures; the world's
+lambdas, calls and sites."
+(define* cf-status (subr cf-eff () string)
+  (lambda ()
+    (string-append "steps " (int->string (get cf-steps)) " queue " (int->string (get cf-queue-length))
+                   " facts " (int->string (get cf-facts)) " cells " (int->string (get cf-cell-count))
+                   " contours " (int->string (get cf-contour-count)) " closures " (int->string (get cf-closure-count))
+                   " lambdas " (int->string (array-length (get cf-lambda-array))) " calls " (int->string (length (get cf-calls)))
+                   " sites " (int->string (array-length (get cf-site-array))))))
 "At most `fuel` tasks run. Whether the analysis is done: none left."
 (define* cf-step! (subr cf-eff (int) bool)
   (lambda (fuel)
@@ -677,5 +710,6 @@ language `lang`, to be analysed at depth `m` from the start: nothing run yet."
           (else (let ((t (car (get cf-front))))
                   (begin (set cf-front (cdr (get cf-front)))
                     (table-set! (get cf-queued) t 0)
+                    (set cf-queue-length (- (get cf-queue-length) 1))
                     (run-task! t)
                     (cf-step! (- fuel 1))))))))
