@@ -301,8 +301,10 @@ impl Checker {
         if !has_cycle(&kids) {
             return None;
         }
+        // A node printed by a name of its own (`print_tys`) is labelled by
+        // it, so that it is not merged with one that is not.
         self.print_shallow.set(true);
-        let labels: Vec<String> = order.iter().map(|n| self.show_ty_body(*n, &mut Vec::new())).collect();
+        let labels: Vec<String> = order.iter().map(|n| self.print_tys.borrow().get(n).cloned().unwrap_or_else(|| self.show_ty_body(*n, &mut Vec::new()))).collect();
         self.print_shallow.set(false);
         let mut class: Vec<usize> = numbered(labels.iter());
         let mut count = class.iter().max().map_or(0, |m| m + 1);
@@ -371,7 +373,7 @@ impl Checker {
     /// Whether `a` and `b` are one type by structure, following links: the
     /// same kind of node, the same regions, effects and sizes, and parts
     /// the same in order; a node of a kind not compared so (a `select`, a
-    /// module, a procedure with a specification, …) only itself. A pair met
+    /// procedure with a specification, …) only itself. A pair met
     /// again is the same (`trail`). As `k-same-shape?`.
     pub(crate) fn same_ty(&self, a: TyId, b: TyId, trail: &mut Vec<(TyId, TyId)>) -> bool {
         let (a, b) = (self.arena.resolve(a), self.arena.resolve(b));
@@ -411,6 +413,9 @@ impl Checker {
                     })
             }
             (Ty::Union(ms), Ty::Union(ns)) => all(&ms, &ns, trail),
+            // The same abstract types (binders), descriptions and values, as
+            // the FX-26 checker interns a module's type (`k-ty-same?`).
+            (Ty::Module { abs: aa, descs: ad, vals: av }, Ty::Module { abs: ba, descs: bd, vals: bv }) => aa == ba && parts(&ad, &bd, trail) && parts(&av, &bv, trail),
             _ => false,
         }
     }
@@ -419,7 +424,11 @@ impl Checker {
         if self.print_shallow.get() {
             return "·".into();
         }
-        let t = self.canon(self.arena.resolve(t));
+        let t = self.arena.resolve(t);
+        if let Some(shown) = self.print_tys.borrow().get(&t) {
+            return shown.clone();
+        }
+        let t = self.canon(t);
         if let Some(shown) = self.print_tys.borrow().get(&t) {
             return shown.clone();
         }
