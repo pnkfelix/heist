@@ -179,6 +179,22 @@ analysis, if it runs, stopped."
                             (go ns))
                           "\n")))
 
+"Every world file `path` is of (its own, and those importing it, a
+library) out of those analysed, and the analysis that runs, if it is of
+one, stopped: `path`'s text changed."
+(define* cf-invalidate-path! (subr cf-eff (string) unit)
+  (lambda (path)
+    (begin
+      (set cf-analysed (letrec ((has (subr spin ((listof cf-file-notes-of acyclic)) bool)
+                                  (lambda (l) (and (pair? l) (or (string=? (extract (car l) path) path) (has (cdr l))))))
+                                (go (subr spin ((listof cf-world-notes acyclic)) (listof cf-world-notes acyclic))
+                                  (lambda (l) (cond ((null? l) nil) ((has (extract (car l) files)) (go (cdr l)))
+                                                    (else (cons (car l) (go (cdr l))))))))
+                         (go (get cf-analysed))))
+      (tagcase (get cf-job-now)
+        (job j (if (cf-member? path (extract j paths)) (set cf-job-now (sum none #u)) #u))
+        (else y #u))
+      (cf-invalidate! (cf-world-key path)))))
 (define* cf-world-notes-of (subr (maxeff spin (read @cf)) (string) (sumof (none unit) (some cf-world-notes)))
   (lambda (key) (letrec ((go (subr (maxeff (read @cf) spin) ((listof cf-world-notes acyclic)) (sumof (none unit) (some cf-world-notes)))
                            (lambda (l) (cond ((null? l) (sum none #u))
@@ -381,14 +397,14 @@ and the requests waiting on them answered."
                                    (letrec ((go (subr spin ((listof cf-text acyclic)) (listof cf-text acyclic))
                                               (lambda (l) (cond ((null? l) nil) ((string=? (extract (car l) path) p) (go (cdr l))) (else (cons (car l) (go (cdr l))))))))
                                      (go (get cf-dataset)))))
-             (cf-invalidate! (cf-world-key p)))))
+             (cf-invalidate-path! p))))
         ((string=? word "forget")
          (let ((p (field 0)))
            (begin
              (set cf-dataset (letrec ((go (subr spin ((listof cf-text acyclic)) (listof cf-text acyclic))
                                         (lambda (l) (cond ((null? l) nil) ((string=? (extract (car l) path) p) (go (cdr l))) (else (cons (car l) (go (cdr l))))))))
                                (go (get cf-dataset))))
-             (cf-invalidate! (cf-world-key p)))))
+             (cf-invalidate-path! p))))
         ((or (string=? word "notes") (string=? word "callees") (string=? word "callers") (string=? word "contexts"))
          (begin (set cf-pending (append (get cf-pending) (list (product (kind word) (key (field 0)) (path (field 1)) (pos (cf-decimal (field 2)))))))
            (cf-answer-pending!)))

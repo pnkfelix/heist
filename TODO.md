@@ -79,8 +79,6 @@ commit that did it says so.
    unknown. Left:
    - the next seeds (`census` walks Larceny's heap: rightly unknown;
      `lambda->core`'s records);
-   - a library edited does not re-analyse the worlds that import it (a
-     world's key is its file);
    - libraries share one namespace, so names the libraries keep to
      themselves can collide.
    - Lists a site a position (yank's spine, 32; 2026-10-28): `list`, rest
