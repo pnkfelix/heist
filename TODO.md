@@ -90,9 +90,17 @@ commit that did it says so.
      1081, but 2.6 s to 8.2 s (a spine of 8: the same notes, 7.0 s --
      the cost is `map`'s results flowing, not the sites). Not yet: a
      function's results apart by position (they are per task: at depth
-     0, `map`'s positions hold the same), and yank's per-call-site
-     contexts and sites split by contour, with which yank runs `map` as
-     Scheme.
+     0, `map`'s positions hold the same).
+   - Small procedures' call sites as contexts, and sites split by
+     contour (2026-10-28, yank's): a named, non-recursive procedure of
+     at most 40 nodes is called in a contour of its call site even at
+     depth 0, and a lambda made in one runs where it was made; a site in
+     a recursive procedure is split by the contour allocating it, at most
+     8 a site. Yank's cfa.sld: notes holding unknown 1081 to 1052, but
+     8.2 s to 19.7 s (yank measured +15%: here 1877 contours, the
+     closures made in small procedures copied for each); splitting every
+     site, not only recursive procedures', was 48 s for the same notes.
+     To measure: what of the cost is the closures made in small ones.
 4. **Worlds across languages.** s7st's builtins are FX-26 code
    (`s7st/prims.fx`): a Scheme world could link to them, rather than take
    them as primitives.
