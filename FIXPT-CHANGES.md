@@ -8,11 +8,19 @@ do it, and what it cost. Kayak will need the same changes later
 
 ## Base
 
-- Fixpt `main` at 0c2e4dd5 (2026-10-28), pulled from GitHub by Heist's
+- Fixpt `main` at 8ff01fe3 (2026-10-28), pulled from GitHub by Heist's
+  556d8e43 (squash f1c8eabb): `.fasl` files of module files and programs
+  (`fixpt compile-file`; Fixpt `docs/research/fasl.md`, `DONE.md`
+  §156-§157), a maker's kept with its parameters as written. Heist's tests
+  pass on it. Tried in a copy, not adopted: the editor starts in 5.0 s
+  from `.fasl`s against 5.9 s from source; through eldoc.fx 2.65 s against
+  4.75 s, as Fixpt measured, but making main.fx from modules read from
+  `.fasl`s costs 2 s against 0.5 s from source, with or without main's
+  own `.fasl`. Heist has no edits of its own on it.
+- Before: Fixpt 0c2e4dd5 (2026-10-28), pulled by Heist's
   ea918aa7 (squash 36335552): native code on arm64 only -- a module's
   maker with frames past 4080 bytes, `new`/`make-array` and their region
   forms in line, and compiled code's names, lines and values in `lldb`.
-  Heist has no edits of its own on it.
 - Before: Fixpt 35bf4c4f (2026-10-28), pulled by Heist's
   48ec00d0 (squash 8beaa5b8): `(module-parameters ())`, a maker of no
   arguments that `load-module` and `load-moduleof` take (Heist's ask,
