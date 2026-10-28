@@ -16,7 +16,15 @@ do it, and what it cost. Kayak will need the same changes later
   Fixpt made are said stale and their sources run, but s7st's and the
   CFA's tests compare that warning, so they failed until
   `bin/heist-compile all` (8.5 s). Then all 99 tests pass (5 UI tests on a
-  retry). Heist has no edits of its own on it.
+  retry). Heist has no edits of its own on it. From clean, compiled
+  (`bin/heist-compile all`, which now has a `cfa` target): the editor's 20
+  files in 3.0 s (`frame.fx` 0.8 s, the rest 0.01-0.3 s each); s7st's 13
+  in 5.5 s (`expand.fx` 1.5 s, `prims.fx` 1.0 s, `machine.fx` 0.6 s); the
+  CFA's, after s7st's (the same `.fasl`s, byte for byte), 7.7 s
+  (`scheme.fx` 1.0 s, `engine.fx` 0.5 s); 16 MB in all. Start-up, from
+  source against from `.fasl`s: the editor loaded through main.fx 3.0 s
+  against 0.79 s; s7st to its prompt and out at end of input 3.9 s
+  against 1.07 s; the CFA's server likewise 5.1 s against 1.56 s.
 - Before: Fixpt `main` at fff9f9e4 (2026-10-28), pulled from GitHub by Heist's
   3922431e (squash 2c45243c): the recursive types a substitution makes
   interned, and a maker's `.fasl` naming its parameters' types again. The

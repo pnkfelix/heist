@@ -8,7 +8,8 @@
 #                  made it: back to loading everything from source
 # TARGET: `editor` (the default): the modules base.fx loads, then each file
 #   of editor/program, in order; `s7st`: s7st's program, one `.fasl` a file
-#   (slow: minutes); `all`: both.
+#   (slow: minutes); `cfa`: the CFA's program, s7st's files (but main.fx)
+#   then cfa/'s, a `.fasl` beside each; `all`: the three.
 # MODE:
 #   --force        compile every file (the default, until Fixpt can say
 #                  which are stale by its own digests)
@@ -39,8 +40,8 @@ for a in "$@"; do
     --timestamps) mode=timestamps;;
     --clean) mode=clean;;
     --dry-run|-n) dry=1;;
-    editor|s7st) targets="$targets $a";;
-    all) targets="editor s7st";;
+    editor|s7st|cfa) targets="$targets $a";;
+    all) targets="editor s7st cfa";;
     -h|--help) sed -n '2,/^heist=/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 0;;
     *) echo "heist-compile: unknown argument \`$a' (--help)" >&2; exit 2;;
   esac
@@ -54,6 +55,10 @@ files_of() {
       sed -n 's/.*(load-module "\([^":]*\.fx\)").*/\1/p' "$heist/editor/base.fx"
       cat "$heist/editor/program" | tr ' ' '\n' | sed '/^$/d';;
     s7st) cat "$heist/s7st/program" | tr ' ' '\n' | sed '/^$/d'; echo main.fx;;
+    # Paths from Heist's directory: the program is of two directories.
+    cfa) for d in s7st cfa; do
+           cat "$heist/$d/program" | tr ' ' '\n' | sed "/^\$/d; s|^|$d/|"
+         done;;
   esac
 }
 
@@ -75,24 +80,24 @@ outdated() {
 
 status=0
 for t in $targets; do
-  dir="$heist/$t"
+  dir="$heist/$t"; [ "$t" = cfa ] && dir="$heist"
   all=$(files_of "$t")
   case "$mode" in
     clean)
       for f in $all; do
         fasl="$dir/${f%.fx}.fasl"
         [ -e "$fasl" ] || continue
-        echo "rm $t/${f%.fx}.fasl"; [ -n "$dry" ] || rm -f "$fasl"
+        echo "rm ${fasl#$heist/}"; [ -n "$dry" ] || rm -f "$fasl"
       done
       continue;;
     force) todo=$all;;
     timestamps)
       todo=
-      # s7st's files are one program, each `.fasl` of the globals of the files
-      # before: if one is outdated, they all are compiled.
+      # s7st's and the CFA's files are each one program, each `.fasl` of the
+      # globals of the files before: if one is outdated, they all are compiled.
       for f in $all; do
         if outdated "$dir" "$f"; then
-          if [ "$t" = s7st ]; then todo=$all; break; fi
+          if [ "$t" != editor ]; then todo=$all; break; fi
           todo="$todo $f"
         fi
       done;;
@@ -101,7 +106,7 @@ for t in $targets; do
   if [ -n "$dry" ]; then echo "$t: would compile" $todo; continue; fi
   echo "$t: compiling" $todo
   case "$t" in
-    s7st) (cd "$dir" && "$fixpt" compile-file --program $todo) || status=1;;
+    s7st|cfa) (cd "$dir" && "$fixpt" compile-file --program $todo) || status=1;;
     *) (cd "$dir" && "$fixpt" compile-file $todo) || status=1;;
   esac
 done
