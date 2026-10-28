@@ -8,13 +8,19 @@ do it, and what it cost. Kayak will need the same changes later
 
 ## Base
 
-- Fixpt `main` at b26b2efc (2026-10-28), pulled from GitHub by Heist's
+- Fixpt `main` at fc9e56fe (2026-10-28), pulled from GitHub by Heist's
+  598ccfe7 (squash 5b0960cc): a program's `.fasl` names types by the
+  earlier files' abbreviations, and recursive types print as their minimal
+  graph (`docs/requests/fixpt-program-fasl-types.md`, Heist's request).
+  `bin/heist-compile all` in 13.3 s (s7st's alone was 444 s); s7st's
+  `.fasl`s 4.0 MB, and it starts in 1.08 s against 3.90 s from source.
+  Heist has no edits of its own on it.
+- Before: Fixpt b26b2efc (2026-10-28), pulled by Heist's
   90390000 (squash 33105471): a module file's `.fasl` names the standard
   types and the closed types it repeats. The editor from `.fasl`s
   (`bin/heist-compile`) starts in 2.56 s against 5.86 s from source, and
   its tests pass with them. A program's `.fasl` still writes its types in
   full, so s7st's are unusable (`docs/requests/fixpt-program-fasl-types.md`).
-  Heist has no edits of its own on it.
 - Before: Fixpt 8ff01fe3 (2026-10-28), pulled by Heist's
   556d8e43 (squash f1c8eabb): `.fasl` files of module files and programs
   (`fixpt compile-file`; Fixpt `docs/research/fasl.md`, `DONE.md`

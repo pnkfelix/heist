@@ -1,8 +1,9 @@
 # Request to Fixpt: a program `.fasl` writes recursive types out in full
 
-Status: drafted 2026-10-28 by Heist, for the user to take to the Fixpt
-team. Against Fixpt b26b2efc. Heist's `bin/heist-compile s7st` is not
-usable until it is fixed; the editor (module files) is fine.
+Status: done by Fixpt in fc9e56fe (2026-10-28), pulled by Heist's
+598ccfe7: s7st's `.fasl`s 4.0 MB in all, compiled in seconds, s7st
+starting in 1.08 s against 3.90 s from source. Not checked again: the
+stale `prims.fasl` and the abort. Drafted against Fixpt b26b2efc.
 
 ## The prompt
 
