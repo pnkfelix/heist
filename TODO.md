@@ -107,11 +107,3 @@ commit that did it says so.
    (`s7st/prims.fx`): a Scheme world could link to them, rather than take
    them as primitives.
 
-## Fixpt
-
-- **The checkers disagree on how to print a list type.** Since Fixpt
-  fc9e56fe, `fixpt check editor.fx` ends "the checkers disagree"; both
-  accept the program. Written up, with a six-line repro (a module
-  importing a list type and an abbreviation using it):
-  `docs/requests/fixpt-checkers-print-lists.md`, for the user to take to
-  Fixpt.

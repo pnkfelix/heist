@@ -8,7 +8,16 @@ do it, and what it cost. Kayak will need the same changes later
 
 ## Base
 
-- Fixpt `main` at fff9f9e4 (2026-10-28), pulled from GitHub by Heist's
+- Fixpt `main` at ec7a02b0 (2026-10-28), pulled from GitHub by Heist's
+  d2879d07 (squash f47238d0): the checkers print an imported list type
+  alike (`docs/requests/fixpt-checkers-print-lists.md`, Heist's request),
+  so `fixpt check editor.fx` no longer says they disagree; built-in module
+  files get `.fasl`s; a `.fasl` keeps native code. The `.fasl`s an older
+  Fixpt made are said stale and their sources run, but s7st's and the
+  CFA's tests compare that warning, so they failed until
+  `bin/heist-compile all` (8.5 s). Then all 99 tests pass (5 UI tests on a
+  retry). Heist has no edits of its own on it.
+- Before: Fixpt `main` at fff9f9e4 (2026-10-28), pulled from GitHub by Heist's
   3922431e (squash 2c45243c): the recursive types a substitution makes
   interned, and a maker's `.fasl` naming its parameters' types again. The
   editor through main.fx starts in 1.96 s from `.fasl`s (2.56 s before),

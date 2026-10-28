@@ -1,7 +1,9 @@
 # Request to Fixpt: the checkers print an imported list type differently
 
-Status: drafted 2026-10-28 by Heist, for the user to take to the Fixpt
-team. Against Fixpt fff9f9e4 (seen since fc9e56fe). Heist's
+Status: done by Fixpt in ec7a02b0 (2026-10-28; a description shown by its
+body is its class's first node), pulled by Heist's d2879d07: `fixpt check
+editor/editor.fx` ends with no disagreement. Drafted 2026-10-28 by Heist, for
+the user to take to the Fixpt team. Against Fixpt fff9f9e4 (seen since fc9e56fe). Heist's
 `fixpt check editor/editor.fx` has ended "the checkers disagree" since;
 both checkers accept the program.
 
