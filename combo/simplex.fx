@@ -23,8 +23,6 @@
 (import tables make-table table-ref table-set! table-has? (type table))
 
 (define-type rats (arrayof rat @cb))
-(define-type bools (arrayof bool @cb))
-(define-type ivecs (arrayof ivec @cb))
 "A linear form over simplex variables: (variable, coefficient), sorted by
 variable."
 (define-type smono (productof (x int) (c rat)))
@@ -83,27 +81,12 @@ lower) of x was c + k delta, of reason literal `reason` (0: none)."
         (let ((w (the rats (make-array (* 2 (+ i 1)) fill))))
           (letrec ((go (subr cb-eff (int) rats) (lambda (k) (if (>= k (array-length v)) w (begin (array-set! w k (array-ref v k)) (go (+ k 1)))))))
             (go 0))))))
-(define* grow-bools (subr cb-eff (bools int bool) bools)
-  (lambda (v i fill)
-    (if (< i (array-length v)) v
-        (let ((w (the bools (make-array (* 2 (+ i 1)) fill))))
-          (letrec ((go (subr cb-eff (int) bools) (lambda (k) (if (>= k (array-length v)) w (begin (array-set! w k (array-ref v k)) (go (+ k 1)))))))
-            (go 0))))))
-(define* grow-ivecs (subr cb-eff (ivecs int) ivecs)
-  (lambda (v i)
-    (if (< i (array-length v)) v
-        (let ((w (the ivecs (make-array (* 2 (+ i 1)) (the ivec (make-array 0 0))))))
-          (letrec ((go (subr cb-eff (int) ivecs) (lambda (k) (if (>= k (array-length v)) w (begin (array-set! w k (array-ref v k)) (go (+ k 1)))))))
-            (go 0))))))
 (define* grow-forms (subr cb-eff ((arrayof sform @cb) int) (arrayof sform @cb))
   (lambda (v i)
     (if (< i (array-length v)) v
         (let ((w (the (arrayof sform @cb) (make-array (* 2 (+ i 1)) (the sform nil)))))
           (letrec ((go (subr cb-eff (int) (arrayof sform @cb)) (lambda (k) (if (>= k (array-length v)) w (begin (array-set! w k (array-ref v k)) (go (+ k 1)))))))
             (go 0))))))
-"`v` with room at i (as lockpick's `grow`)."
-(define* grow-ivec (subr cb-eff (ivec int int) ivec)
-  (lambda (v i fill) (if (< i (array-length v)) v (ivec-grow v (* 2 (+ i 1)) fill))))
 "`v` with x at i, made longer if need be."
 (define* put (subr cb-eff (ivec int int) ivec)
   (lambda (v i x) (let ((v (grow-ivec v i 0))) (begin (array-set! v i x) v))))

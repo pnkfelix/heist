@@ -82,6 +82,24 @@ reading the clock for deadlines."
 (define* ints-max (subr spin (int ints) int)
   (lambda (m l) (if (null? l) m (ints-max (max m (car l)) (cdr l)))))
 
+(define-type bools (arrayof bool @cb))
+(define-type ivecs (arrayof ivec @cb))
+(define* grow-bools (subr cb-eff (bools int bool) bools)
+  (lambda (v i fill)
+    (if (< i (array-length v)) v
+        (let ((w (the bools (make-array (* 2 (+ i 1)) fill))))
+          (letrec ((go (subr cb-eff (int) bools) (lambda (k) (if (>= k (array-length v)) w (begin (array-set! w k (array-ref v k)) (go (+ k 1)))))))
+            (go 0))))))
+(define* grow-ivecs (subr cb-eff (ivecs int) ivecs)
+  (lambda (v i)
+    (if (< i (array-length v)) v
+        (let ((w (the ivecs (make-array (* 2 (+ i 1)) (the ivec (make-array 0 0))))))
+          (letrec ((go (subr cb-eff (int) ivecs) (lambda (k) (if (>= k (array-length v)) w (begin (array-set! w k (array-ref v k)) (go (+ k 1)))))))
+            (go 0))))))
+"`v` with room at i (as lockpick's `grow`)."
+(define* grow-ivec (subr cb-eff (ivec int int) ivec)
+  (lambda (v i fill) (if (< i (array-length v)) v (ivec-grow v (* 2 (+ i 1)) fill))))
+
 "Sort `v`'s first `n` elements, stably (a merge sort, as R6RS's
 `vector-sort!`), by `less?`."
 (define* ivec-sort! (subr cb-eff (ivec int (subr cb-eff (int int) bool)) unit)
@@ -1150,6 +1168,8 @@ budget runs out."
 (define* sat-lit-value (subr (read @cb) (sat-solver int) bool)
   (lambda (s l) (let ((b (sat-value s (lit-var l)))) (if (lit-negative? l) (not b) b))))
 (define* sat-final-conflict (subr (read @cb) (sat-solver) ints) (lambda (s) (get (extract s final-conflict))))
+"The last model, by variable (`elim.fx` extends it)."
+(define* sat-model (subr (read @cb) (sat-solver) (arrayof bool @cb)) (lambda (s) (get (extract s model))))
 
 "A conflict budget (-1: none), and a deadline, in nanoseconds of the
 clock (`now-ns`; -1: none)."
