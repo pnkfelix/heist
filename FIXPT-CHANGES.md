@@ -8,10 +8,15 @@ do it, and what it cost. Kayak will need the same changes later
 
 ## Base
 
-- Fixpt `main` at 2d706414 (2026-10-28), pulled from GitHub by Heist's
-  c8eacb3c (squash 2b137803): a module's maker in native code, however
-  many its items (`docs/requests/fixpt-native-module-makers.md`, Heist's
-  request; Fixpt `DONE.md` §145). Heist has no edits of its own on it.
+- Fixpt `main` at 6447f9b0 (2026-10-28), pulled from GitHub by Heist's
+  30d080c6 (squash f6f8274a): `module-parameters` of modules and
+  expressions as module items (`docs/requests/fixpt-module-file-parameters.md`,
+  Heist's request), and strings at a region, `(stringof r)`. Heist has no
+  edits of its own on it.
+- Before: Fixpt 2d706414 (2026-10-28), pulled by Heist's c8eacb3c
+  (squash 2b137803): a module's maker in native code, however many its
+  items (`docs/requests/fixpt-native-module-makers.md`, Heist's request;
+  Fixpt `DONE.md` §145).
 - Before: Fixpt 5731f52e (2026-10-27), pulled by Heist's
   a9d57d8b (squash 358e4450): region and heap `new`/`make-array` in line
   in x86_64 native code (Heist's request), `load-moduleof` and
