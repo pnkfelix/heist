@@ -107,6 +107,12 @@ fn start(backend: Backend) -> Result<Fx26Session, i32> {
     if crate::NATIVE_CONVENTION.get().copied().unwrap_or(false) {
         s.set_native_convention(true);
         s.native_runner = Some(run_native);
+        // Lines for a debugger (`fixpt_native::jitdebug`): from the sources
+        // the session keeps.
+        if fixpt_native::jitdebug::enabled() {
+            fixpt_fx26::sources::want();
+            fixpt_native::jitdebug::set_resolver(fixpt_fx26::sources::resolve);
+        }
         s.native_compiler = Some(fixpt_native::direct::compile_closure);
         // What cellular code makes, compiled natively where it can be, on
         // the machine `run_native` runs on: by the compiler written in Rust,
@@ -518,7 +524,7 @@ pub fn repl(backend: Backend) -> i32 {
                 continue;
             }
             let before = timing.then(|| GcStats::start_form(&mut session));
-            let ran = session.run(form);
+            let ran = session.run_each(form);
             // A form that left the terminal raw, done or failed, leaves the
             // REPL's own as it was (`TODO.md` §95).
             let _ = fixpt_runtime::tty::restore();
@@ -535,11 +541,15 @@ pub fn repl(backend: Backend) -> i32 {
                 sources.push(fixpt_fx26::query::Source { name: name.clone(), text: before + &text[start..end], base: session.checker.base_dir.clone() });
             }
             match ran {
-                Ok(out) if disassembling => match &out.value {
-                    Ok(Some(v)) => print!("{}", unwrite_string(v).unwrap_or_else(|| format!("{v}\n"))),
-                    _ => show(&session, &out, show_code),
-                },
-                Ok(out) => show(&session, &out, show_code),
+                // A top-level `include`'s forms, each shown.
+                Ok(outs) => {
+                    for out in outs {
+                        match &out.value {
+                            Ok(Some(v)) if disassembling => print!("{}", unwrite_string(v).unwrap_or_else(|| format!("{v}\n"))),
+                            _ => show(&session, &out, show_code),
+                        }
+                    }
+                }
                 Err(e) => {
                     eprintln!("{}", located(&name, &text, &e));
                     if let Some(note) = pending_note(&mut session, &e.message) {
@@ -700,7 +710,15 @@ fn run_files_in(session: &mut Fx26Session, files: &[String], args: &[String]) ->
         };
         // A file is a whole program: its definitions may come in any order.
         warn_types_again(&session, f, &text, &forms);
-        let outs = match session.run_forms(&forms) {
+        // A load's path is from the directory of the file it is in, as
+        // `fixpt eval`'s and `,load`'s are.
+        let dir = std::path::Path::new(f).parent().map(|d| d.to_path_buf());
+        let outer = std::mem::replace(&mut session.checker.base_dir, dir);
+        let path = std::fs::canonicalize(f).map_or_else(|_| f.to_string(), |p| p.display().to_string());
+        session.source_file = Some(std::rc::Rc::new((path, text.clone())));
+        let ran = session.run_forms(&forms);
+        session.checker.base_dir = outer;
+        let outs = match ran {
             Ok(outs) => outs,
             Err(e) => {
                 eprintln!("fixpt: {}", located(f, &text, &e));
@@ -1249,11 +1267,13 @@ pub fn eval(backend: Backend, text: &str) -> i32 {
         }
     };
     for form in &forms {
-        match session.run(form) {
-            Ok(out) => {
-                show(&session, &out, false);
-                if out.value.is_err() {
-                    return 1;
+        match session.run_each(form) {
+            Ok(outs) => {
+                for out in &outs {
+                    show(&session, out, false);
+                    if out.value.is_err() {
+                        return 1;
+                    }
                 }
             }
             Err(e) => {
@@ -1337,14 +1357,20 @@ impl crate::help::Helpful for Checker {
         out
     }
 
-    fn fits(&mut self, type_text: &str) -> Option<Vec<String>> {
-        let want = self.type_of_str(type_text).ok()?;
-        Some(self.search(|c, params, _| params.first().is_some_and(|p| c.subtype(want, *p))))
+    fn fits(&mut self, type_text: &str) -> Option<Result<Vec<String>, String>> {
+        let want = match self.type_of_str(type_text) {
+            Ok(t) => t,
+            Err(e) => return Some(Err(e.message)),
+        };
+        Some(Ok(self.search(|c, params, _| params.first().is_some_and(|p| c.subtype(want, *p)))))
     }
 
-    fn returns(&mut self, type_text: &str) -> Option<Vec<String>> {
-        let want = self.type_of_str(type_text).ok()?;
-        Some(self.search(|c, _, result| c.subtype(result, want)))
+    fn returns(&mut self, type_text: &str) -> Option<Result<Vec<String>, String>> {
+        let want = match self.type_of_str(type_text) {
+            Ok(t) => t,
+            Err(e) => return Some(Err(e.message)),
+        };
+        Some(Ok(self.search(|c, _, result| c.subtype(result, want))))
     }
 }
 
@@ -1701,10 +1727,12 @@ mod commands {
     fn describe_and_search() {
         let mut c = Checker::new();
         assert_eq!(c.describe("+"), ["+ : (subr pure (int int) int)"]);
-        let returns = c.returns("bool").expect("typed");
+        let returns = c.returns("bool").expect("typed").expect("a type");
         assert!(returns.iter().any(|l| l.starts_with("= :")), "{returns:?}");
-        let fits = c.fits("int").expect("typed");
+        let fits = c.fits("int").expect("typed").expect("a type");
         assert!(fits.iter().any(|l| l.starts_with("+ :")), "{fits:?}");
+        let why = c.returns("no-such-type").expect("typed").expect_err("not a type");
+        assert!(why.contains("no-such-type"), "{why}");
     }
 
     #[test]
@@ -2006,6 +2034,7 @@ fn compile_by_fx26_in(s: &mut fixpt_scheme::Session, closure: fixpt_scheme::Hand
                 fields: ints(4),
                 callouts: ints(5),
                 err: r.field(6).and_then(|e| e.string()).unwrap_or_default(),
+                starts: ints(7),
             }
         });
         let mut taken = Ok(());

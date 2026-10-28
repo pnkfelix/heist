@@ -231,54 +231,23 @@
   (lambda (forms)
     (if (null? forms)
         #u
-        (begin (k-declare (car forms)) (k-declare-each (cdr forms))))))
-(define k-names-reversed (->* (k-names k-names) k-names)
-  (lambda (xs acc) (if (null? xs) acc (k-names-reversed (cdr xs) (cons (car xs) acc)))))
-;; The names simple `define-type`s give, in order, each as often as given.
-(define k-ahead-names-of (->* (k-tops k-names) k-names)
-  (lambda (forms acc)
-    (if (null? forms)
-        (k-names-reversed acc nil)
-        (k-ahead-names-of
-         (cdr forms)
-         (tagcase (car forms)
-           (t-define-type (name def a b)
-             (if (and (syn-symbol? name) (not (string=? (k-list-head def) "dlambda")))
-                 (cons (string->symbol (syn-name name)) acc)
-                 acc))
-           (else y acc))))))
-;; Whether `ns` has `n`.
-(define k-name-among? (->* (symbol k-names) bool)
-  (lambda (n ns) (and (not (null? ns)) (or (symbol=? n (car ns)) (k-name-among? n (cdr ns))))))
-;; The names `ns` gives more than once, each once, in the order each is
-;; given a second time.
-(define k-given-again (->* (k-names k-names k-names) k-names)
-  (lambda (ns seen again)
-    (cond ((null? ns) (k-names-reversed again nil))
-          ((not (k-name-among? (car ns) seen)) (k-given-again (cdr ns) (cons (car ns) seen) again))
-          ((k-name-among? (car ns) again) (k-given-again (cdr ns) seen again))
-          (else (k-given-again (cdr ns) seen (cons (car ns) again))))))
-;; A warning for each type a whole program defines more than once
-;; (`TODO.md` §34): not an error, but its values see only the last.
-(define k-again-lines (->* (k-names) k-out)
-  (lambda (ns)
-    (if (null? ns)
-        nil
-        (cons (k-cat3 "warning: `" (symbol->string (car ns))
-                      "` is defined as a type more than once; every value sees the last")
-              (k-again-lines (cdr ns))))))
+        (if (k-included? (car forms))
+            (set k-ahead-stop (k-type-top-start (car forms)))
+            (begin (if (k-read-in-order? (car forms)) #u (k-declare (car forms)))
+                   (k-declare-each (cdr forms)))))))
 ;; Those warnings, as `k-forms` keeps lines: the first last.
 (define k-types-again (->* (k-tops) k-out)
   (lambda (forms)
-    (k-push-lines (k-again-lines (k-given-again (k-ahead-names-of forms nil) nil nil)) nil)))
+    (k-push-lines (k-again-lines (k-given-again (k-ahead-names-of forms nil #f) nil nil)) nil)))
 ;; The first pass: abbreviations, so that types can refer to each other in
 ;; any order. Values cannot: a definition sees only those before it. Each
 ;; abbreviation defined once, by name, is in scope before any is read, and
 ;; checked grounded once all are.
 (define k-ahead (->* (k-tops) unit)
   (lambda (forms)
-    (let ((names (k-ahead-names-of forms nil)))
+    (let ((names (k-ahead-names-of forms nil #t)))
       (begin
+        (set k-ahead-stop -1)
         (set k-ahead-names nil)
         (set k-ahead-filled nil)
         (k-ahead-declare names names)
@@ -607,13 +576,17 @@
                (a-read (r) (tagcase r (r-global (g) #t) (r-globals () #t) (else y #f)))
                (else y #f))
              (k-reads-globals-only? (cdr e))))))
-;; The error that making a loaded file has effect `e`.
+;; The error that making a loaded file has effect `e`, and what to do.
+(define k-shared-impure-why string
+  (string-append "a file whose definitions make state as it is made is a program's: run it "
+                 "with `,load FILE` or `fixpt run`; or, a module, give its state in a "
+                 "`lambda` it gives, which each caller applies"))
 (define k-shared-impure (->* (k-eff) string)
   (lambda (e)
     (k-cat3 (string-append "a loaded file is one value for all its loads, made once, "
                            "so making it must be pure, and this one has ")
             (k-show-effect e)
-            ": make its state in a `lambda` it gives, which each caller applies")))
+            (k-cat3 (char->string (integer->char 10)) "  " k-shared-impure-why))))
 ;; `(define name init)`, of no type written: its line. A loaded file's, made
 ;; once for all its loads, must be pure but for reading globals, and has
 ;; none; the definition is at `a`..`b`, the form that loads it.
@@ -914,9 +887,15 @@
            (ss (k-sys-items subr))
            (ps (k-sys-items (car (cdr (cdr ss)))))
            (n (length ps))
+           ;; The call at the declared effect: `%syscallN`'s, a binder, so given.
+           (str (atom 'string a b))
+           (at (lst (list (atom 'subr a b) (car (cdr ss))
+                          (lst (cons str (cons str (cons str ps))) nil a b)
+                          (car (cdr (cdr (cdr ss)))))
+                    nil a b))
            (call (tagcase (asks (string->symbol (string-append "%syscall" (int->string n))) 1010)
                    (e-app (f xs a2 b2 k2)
-                     (e-app f (append xs (k-sys-xs n a b 1020 nil)) a b k2))
+                     (e-app (e-the at f a b 1016) (append xs (k-sys-xs n a b 1020 nil)) a b k2))
                    (else x x)))
            (body (e-lambda (k-sys-params 1 ps) (e-the (car (cdr (cdr (cdr ss)))) call a b 1030)
                            a b 1031))
@@ -954,7 +933,8 @@
   (lambda (form)
     (tagcase form
       (t-define-syscall (required s a b) (k-define-syscall required s a b))
-      (else y (k-defining form)))))
+      ;; A type naming a file, or after an `include`, declared in order.
+      (else y (begin (if (k-declared-later? form) (k-declare form) #u) (k-defining form))))))
 
 ;; The second pass: definitions and expressions, in order, each under
 ;; redefinition (`k-defining`).

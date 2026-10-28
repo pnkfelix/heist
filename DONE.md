@@ -3451,3 +3451,257 @@ type and its place, module items too (`docs/fx26.md`, "Queries";
   that answer: a lambda's parameters, a `let`'s and `letrec`'s names.
 - **Not yet**: a `tagcase` arm's names and a `typecase`'s among the
   locals; an entry the REPL holds (`,pending`) among the sources.
+
+## 134. A procedure type's parameter is named `(x : T)` (the user's, 2026-10-27)
+
+- **`(x : T)`** names a parameter in a `subr`, `->` or `->*` type, for
+  later types to select from (`(subr pure ((c : sig) (select c t)) int)`)
+  and a specification's clauses to name (`(-> ((n : int)) int (requires (>
+  n 0)))`). `(h T)` is always `h` applied. Before, `(h T)` was a named
+  parameter whenever `h` was not a type name known where it was read, so
+  a family an `include` or a `with` gives, known only when the module is
+  typed, was taken for a name: `(box thing)` became a parameter `box` of
+  type `thing` (Heist's problem A). FX-91 has no such ambiguity, every
+  parameter of its `subr` being named; Typed Racket writes `[x : T]`.
+- **Errors that say what to write**, at the parameter: where what follows
+  names `h`, `` `(c …)` applies `c`, but `(select c t)` after it names `c`:
+  to name a parameter, write `(c : type)` ``; where nothing does and `h` is
+  no family, `` `n` is not a description function: … ``. In a module with
+  `include`s or a `with` body, `(h T)` that nothing after names is the
+  family applied.
+- **Printed** as written, `(x : T)`, in a type with a specification.
+- **Migrated**: Fixpt's FX-26 programs, tests, `assert` and `assume`, and
+  the reference docs (`fx26.md`, `fx26-grammar.md`).
+- **Tests**: `modules/include-family-param.fx` (Heist's), `param-misnamed*.fx`.
+
+## 135. Heist's module problems B, D and E (2026-10-27)
+
+From Heist's report (`docs/research/derived-signatures.md`, "The problems
+Heist found"); A is §134.
+
+- **B: a `with` of a module a `let` binds to one written there** binds
+  that module's values in its body, for the check that an item names
+  nothing made after it: `(define f (lambda () (let ((m (module (define f
+  …)))) (with m (f)))))` named `m`'s `f`, but was refused as using itself.
+  The values are those the module's type will give: none hidden, and none
+  known if it has `include`s (then, as before, every name counts).
+  `free_into_in` and `k-free-in` carry them by where the `let` bound the
+  name, so a name bound again inside is not mistaken for it
+  (`modules/with-local-module*.fx`).
+- **D: a module file's `include`s** give their types by name in its items,
+  in the FX-26 checker as in Rust's: the mark that says a module includes
+  others looked at the module's first item, which in a file is the one that
+  says the file, so every file with an `include` whose items named an
+  included type was refused there, with or without `module-parameters`
+  (`modules/include-in-file.fx`, `include-in-params-file.fx`). Found with
+  it, not fixed: a file's item using an included *value* compiles to other
+  words in the compiler written in FX-26 (`TODO.md` §133).
+- **E: `fixpt run`'s loads** are from each program file's directory, as
+  `fixpt eval`'s and `,load`'s are; it had used the current directory.
+  The docs said neither that nor that a loaded file's own loads are from
+  its directory, and now say both (`fixpt-cli/tests/run_loads.rs`).
+
+## 136. A file's module type: `load-moduleof` and `load-input-moduleof` (2026-10-27)
+
+Heist's request (`docs/research/derived-signatures.md`), the user's names.
+
+- **`(load-moduleof "file" arg …)`** is the type of the module a
+  `load-module` of the file makes given `arg …`; **`(load-input-moduleof
+  "file" arg …)`**, of the module a `load-input` file's value makes. The
+  arguments take the value's type apart: a `poly`'s descriptions, a maker
+  of no parameters applied, a procedure's parameters each a module's name
+  where the types after select from it. What is left must be a module's
+  type. A file that is a function of the modules it uses types each by the
+  file that makes it, with no signature written out or kept in step.
+- **Abstract types are binders**, not shared and not fresh constants: a
+  parameter of the type stands for its argument's (the user's question,
+  the research note's Q2), so modules a maker makes twice stay apart.
+- **Loaded as loads are, in one order**: a form's type loads first, then
+  its expressions', in each parser (`type_loads`, `type-loaded`, which
+  makes them `(%type-made %shared:key "file" arg …)` for the FX-26 checker)
+  and in what the driver reads for the FX-26 front end (`syn.rs`), so the
+  hidden globals, and the files' places, are the same in both.
+- **A `define-type` of one is read in order**, not ahead with the other
+  types, since its file's hidden global is defined before it.
+- **The FX-26 checker's reading in a file of its own**,
+  `check-read-made.fx`, before the types' reader, which gives it its
+  description reader; `check-program.fx`'s own copies of `k-has-name?` and
+  `reverse` dropped for room.
+- **Stage 0's fixed cost unchanged**: 12.23-12.30G cycles against
+  12.18-12.29G; 28.37G instructions against 28.32G.
+- **Tests**: `modules/load-moduleof*.fx`, over `module-files/made-*.fx`.
+
+## 137. A file's abstract types are the same for every load of it (2026-10-27)
+
+The user's decision, the research note's Q2 (`docs/research/
+derived-signatures.md`), reversing 2026-10-08's "two bindings of one file
+keep theirs apart" for loads.
+
+- **A load's module type is strengthened**: where a load is used, its
+  hidden global, each abstract type is a transparent description of the
+  global's own (`strengthened`, `k-lookup-used`), so a binding of it has
+  no abstract types of its own to be renamed. Every binding of a load of a
+  file, in any file, names the same types, and a file may offer operations
+  on another's abstract type to whoever loads that one too. Sound because a
+  key is one value, made once (`TODO.md` §68): Sheldon's rule for two equal
+  `input`s, true here by construction.
+- **Named for the file**, `x.fx..t`, as a binding's are for its variable.
+- **Makers unchanged**: a module made by applying a file's maker has types
+  of its own, so two schedulers' stay apart (`load-moduleof-apart.fx`).
+- **The verifier of cellular code likewise** types a read of a load's
+  hidden global strengthened; its definition writes it as it is.
+- **Stage 0's fixed cost**: 28.40G instructions against 28.37G, cycles
+  unchanged (12.17-12.72G against 12.19-12.56G); the FX-26 checker asks
+  whether a name is a load's only of a module's type with abstract types.
+- **Tests**: `modules/load-shared.fx`, `load-shared-named.fx`.
+
+## 138. A top-level `include` (2026-10-27)
+
+Heist's problem F; the user asked for it.
+
+- **`(include m)` at the top level** defines every name the module `m`
+  bound there gives: `(import m x … (type t …) (effect e …))` of all of
+  them, none hidden. Inside a `module` it is as it was (`TODO.md` §69).
+- **Made an `import` where `m`'s type is known**: the Rust checker makes it
+  so as the form is checked (`include_forms`), and what runs the program
+  gives each front end the `import`'s forms (`Fx26Session::run_each`), so
+  that the REPL and `fixpt eval` show each definition. For a whole text
+  given to the front end written in FX-26 (`fixpt check`), the driver
+  tells its parser what each `include` gives, by where it starts
+  (`includes-given!`, as `loaded-files!` tells it of files), or why the
+  Rust checker refused it, which its checker then refuses at the same
+  place (`compare::includes_given`).
+- **It ends what is declared ahead**: a type or effect defined after it is
+  read in order (`declare_each`; the FX-26 checker's `k-ahead-stop`, at a
+  mark its parser leaves, `%included`). Its own types are defined there.
+- **The FX-26 checker's first pass's helpers** (`k-ahead-names-of`,
+  `k-given-again`, `k-again-lines`) moved to `check-read-descs.fx`, for
+  room in `check-program.fx`.
+- **Stage 0's fixed cost**: 28.45G instructions against 28.40G, cycles
+  unchanged (12.20-12.25G against 12.21-12.27G).
+- **Tests**: `tests/top_include.rs` on `programs/top-include/`, run as a
+  session runs them, and both checkers agreeing as `fixpt check` has them.
+
+## 139. `(restrict T name …)`: a module type narrowed to what a client uses (2026-10-27)
+
+The research note's narrowing (`moduleof-only` there); the user named it.
+
+- **Module type `T` with only the values, types and effects named.** It
+  drops names, not types: a description not named is spelt out where a
+  kept type uses it; an abstract type not named that a kept type mentions
+  stays, unnamed, `(abs %hidden:t type)`, so a client may take and pass its
+  values but not name it; one nothing kept mentions is dropped.
+- **A module of `T` fits it**: module subtyping pairs an abstract type by
+  its name without the mark (`bare_name`, `k-bare-name`), and the values
+  fewer are reshaped as width subtyping does (M4).
+- **Read where it is written**: `T` must be known as a module's type
+  there, so a `define-type` of one is read in order, as `load-moduleof`'s.
+- **Not done**: `hide` still refuses a hidden abstract type in a type the
+  module shows (`modules/hide-escape.fx`, the user's of 2026-10-09);
+  `restrict`'s unnamed binder would let it keep one instead.
+- **Stage 0's fixed cost unchanged**: 28.46G instructions against 28.45G.
+- **Tests**: `modules/restrict*.fx`, with `module-files/made-tickets.fx`.
+
+## 140. Compiled code named, and its frames told, to `gdb` and `lldb` (2026-10-27)
+
+The user, after asking how the debuggers see compiled code: "do 1, 2,
+and 3" of names, lines and values; this is the first.
+
+- **The GDB JIT interface**: `__jit_debug_descriptor` and
+  `__jit_debug_register_code` (`crates/fixpt-native/src/jitdebug.rs`);
+  every piece `symbols::note` names goes into an in-memory ELF object, one
+  per compile or install (`flush`), so that a debugger attaching reads
+  thousands rather than tens of thousands (gdb: 16 s to 2.4 s).
+- **Frames read from the code** (`cfi.rs`): a structured x86_64 decoder,
+  as `disasm::decode` case for case, and a walk of each procedure's
+  instructions keeping the frame's base, return address and caller's
+  `rbp`; `.debug_frame` rows where they change. Checked against the
+  disassembler's text on all of stage 0's code (`FIXPT_CFI_CHECK`).
+- **Frames made once a debugger is here** (`debugger_here`, the `int3` it
+  keeps), for their cost.
+- **Stage 0's fixed cost**: 28.68G instructions against 28.47G (names);
+  cycles 12.43-12.53G against 12.23-12.29G.
+- **Verified by hand** in gdb 12.1 and lldb: `bt` from compiled code to
+  `main`, `b go`, `x/i`. What is not: `docs/research/debugging.md`.
+
+## 141. `new`, `make-array`, `rnew` and `rmake-array` in line in native code on x86_64 (2026-10-27)
+
+Heist's request (`heist/docs/requests/fixpt-region-alloc-inline.md`).
+
+- **Both x86_64 compilers**: `direct/x64.rs` (`box_at`, `array_at`,
+  `region_slot`, `region_room`) and `native-direct-x64-flat.fx` (`df-alloc`
+  and its helpers), byte for byte (`tests/native_x64.rs`); `rcons` now
+  shares the region's helpers.
+- **Arrays of at most 16 fields** (`ARRAY_INLINE`, `d-array-inline`) in
+  line, filled by a loop; longer ones, and any whose length is not a
+  fixnum, call out as before.
+- **What the request named and what was slow**: it named the region
+  primitives, but `new` and `make-array` at a region variable (s7st's
+  `@sc`) are the heap's, `%make-box` and `%make-bloblet-filled`; both are
+  done.
+- **Heist's benchmark**: `make-array 3` 440 → 52–62 ms, `new` 290–320 →
+  34–37 ms per 10 million.
+- **Stage 0's fixed cost**: 28.38G instructions against 28.68G; cycles
+  12.27-12.37G against 12.40G.
+- **Not done**: arm64 (`direct.rs`), which cannot be run here.
+- **Test**: `programs/run/alloc-in-line.fx`, every length either side of
+  16, in the heap and in a region.
+
+## 142. Source lines for compiled code, in `gdb` and `lldb` (2026-10-27)
+
+The second of the user's three (names, lines, values).
+
+- **Places in register code**: both register compilers mark where each
+  expression's code starts (`RItem::Pos` / `r-pos`, a leaf's not), and a
+  register word keeps where each place begins in its suffix, with the
+  source it is in (`Heap::register_places`, `set_source`); the FX-26
+  compiler gives them to `set-register-twin-at`. The tests comparing the
+  two compilers compare them (`same_code`).
+- **Instruction starts in native code**: both native compilers say where
+  each register instruction's code begins (`Proc::starts`, `dx-starts`),
+  compared by `tests/native_x64.rs`.
+- **Sources** (`fixpt_fx26::sources`): each text compiled, with the form
+  written into it (`fixpt_read::write_syntax_mapped`), the file run and the
+  module files loaded; a place's file and line found from them when lines
+  are made, with frames, as DWARF 3 `.debug_line`, one unit per procedure.
+- **Stage 0's fixed cost**: 28.68G instructions against 28.38G; 28.39G
+  against 28.17G with `FIXPT_JIT_DEBUG=0` (the compilers' marks alone).
+- **Tests**: `fixpt-cli/tests/jit_lines.rs` (`FIXPT_LINES`), by both native
+  compilers, of the program's file and a module file's.
+
+## 143. FX-26's values in `gdb` and `lldb` (2026-10-27)
+
+The third of the user's three.
+
+- **The program writes a value for the debugger**: `fixpt_debug_show`
+  (`direct.rs`), a C function a debugger calls with a word, the run's
+  state found per thread (`SHOWN_IN`), the word written as the REPL writes
+  it, or refused if it is no value the heap holds (`Heap::plausible`).
+- **Commands** (`scripts/debuggers/fixpt_gdb.py`, `fixpt_lldb.py`):
+  `fx-print EXPR`, `fx-frame` (a native frame's live slots by its stack
+  map, a fixnum: its count of fields and live bits), `fx-regs`.
+- **Test**: `fixpt-cli/tests/jit_lines.rs` attaches gdb, where there is one
+  and attaching is allowed, to a program in a loop under frames that keep
+  values.
+
+## 144. A syscall's effect is what it says: no `(io sys)` required (2026-10-27)
+
+Kayak's request: a pure host function, such as a string's length in UTF-8
+bytes, had to be `(io sys)`, and so made every procedure reaching it
+impure.
+
+- **Both checkers** check a declaration's effect for its atoms only: reads,
+  writes and allocations of its regions, `io` effects, `spin`, `nondet`;
+  none is `pure`, printed so canonically (`syscall.rs`, `check-print.fx`).
+- **The call has the declared effect**: `%syscall0` to `%syscall6` are
+  polymorphic in it, and a declaration's call names its operator
+  `(the (subr E (string string string P …) R) %syscallN)`. Both checkers
+  note that `the` as the plain `%syscallN` (`plain_syscall`,
+  `k-note-sys-plain`), as they note `(with #%fx n)`, so every compiler
+  calls the primitive directly (`Compiler::exp_at`, `c-plain-fx`).
+- **`kayak:string-utf8-length/1`**, `(subr pure (string) int)`, in Fixpt's
+  runtime and the evaluator's: counted, since a string here is a character
+  a half-word, but nothing made.
+- **Tests**: `checker.rs` (a pure one called from a pure procedure, alike
+  in both); `fixpt-cli/tests/syscalls.rs` `a_pure_syscall`, on every
+  machine: called, and declared `(io sys)` refused as it loads.

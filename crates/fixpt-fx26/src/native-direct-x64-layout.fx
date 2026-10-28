@@ -80,6 +80,7 @@
 (define d-global-writes int 4)  ; a global's field
 (define d-regs int 8)  ; registers of register code
 (define d-region-slots int 256)  ; regions with a slot in the heap's table
+(define d-array-inline int 16)  ; the most fields of an array made in line
 (define d-tag-pair int 1)  ; a tag
 (define d-tag-suffix-ref int 2)  ; a tag
 (define d-tag-bloblet int 4)  ; a tag
@@ -465,7 +466,7 @@
       ((469) 2) ((470) 2) ((471) 1) ((472) 1) ((473) 2) ((474) 3) ((475) 2) ((476) 3) ((477) 1)
       ((478) 3) ((479) 0) ((480) 1) ((481) 3) ((482) 2) ((483) 2) ((484) -1) ((485) 1) ((486) 2)
       ((487) 1) ((488) 1) ((489) 1) ((490) 2) ((491) 0) ((492) 0) ((493) 2) ((494) 3) ((495) 2)
-      ((496) 3) ((497) 1) ((498) -1) ((499) -1) ((500) -1) ((501) 1) ((502) 2) ((503) 1) ((504) 1)
+      ((496) 3) ((497) 1) ((498) -1) ((499) -1) ((500) -1) ((501) 1) ((502) 3) ((503) 1) ((504) 1)
       ((505) 1) ((506) 3) ((507) 2) ((508) 9) ((509) 2) ((510) 2) ((511) 1) ((512) 1) ((513) 2)
       ((514) 1) ((515) 2)
       (else -1))))

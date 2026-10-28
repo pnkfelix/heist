@@ -22,7 +22,8 @@
        (check-effects-types (load-module "fx26:check-effects-types.fx"))
        (check-unions-types (load-module "fx26:check-unions-types.fx"))
        (reader-types (load-module "fx26:reader-types.fx"))
-       (check-specs-types (load-module "fx26:check-specs-types.fx")))
+       (check-specs-types (load-module "fx26:check-specs-types.fx"))
+       (check-read-made-types (load-module "fx26:check-read-made-types.fx")))
   ;; What it is given: the modules of the files before it that it uses.
   (lambda ((check-types (select check-types-types check-types-sig))
            (check-read-helpers (select check-read-helpers-types check-read-helpers-sig))
@@ -37,7 +38,8 @@
            (check-unions (select check-unions-types check-unions-sig))
            (parser (select reader-types parser-sig))
            (check-print-parts (select check-print-parts-types check-print-parts-sig))
-           (check-specs (select check-specs-types check-specs-sig)))
+           (check-specs (select check-specs-types check-specs-sig))
+           (check-read-made (select check-read-made-types check-read-made-sig)))
     (module
 
 ;; The types it uses of the files before it.
@@ -48,6 +50,7 @@
 (hide (include check-types) (include check-read-helpers) (include check-syntax)
       (include check-subst) (include check-env) (include check-print-parts) (include check-print)
       (include check-holds) (include check-proving) (include check-unions) (include parser))
+(import check-read-made k-type-made-by k-restrict-by)
 (import check-read k-at-name? k-atom-head? k-ctor-params k-effect-desc k-effect-named
         k-effect-selected k-frozen-into k-head k-items k-items-or-nil k-name-of k-not-applied
         k-parse-binders k-parse-place k-parse-region k-region-constant k-sfail k-symbol-head)
@@ -291,10 +294,10 @@
 ;; A procedure type's parameters and result, after its effect, with its
 ;; convention: `(subr …)`'s and `(-> …)`'s. A test's result, `(bool …)`, a
 ;; `bool` and what it proves, an `ensures` of it.
-(define k-subr-type (->* (k-eff syn syn k-conv) int)
-  (lambda (e params result cv)
+(define k-subr-type (->* (k-eff syn syn k-conv k-syns) int)
+  (lambda (e params result cv cs)
     (let* ((written (k-items-or-nil params "parameter types"))
-           (ts (k-read-params written result))
+           (ts (k-read-params written result cs))
            (spec (if (string=? (k-list-head result) "bool")
                      (the k-specs
                           (list (product (1 (k-spec-pnames written)) (2 k-no-name) (3 (sf-true))
@@ -303,14 +306,14 @@
       (k-ty-new (ty-subr e (k-ids-but-last ts) (k-ids-last ts) cv spec)))))
 ;; `(subr effect (param …) result)`, or with a convention first, `(subr
 ;; (conv C) effect (param …) result)`; left out, it is the program's.
-(define k-parse-subr (->* (syn k-syns) int)
-  (lambda (s items)
+(define k-parse-subr (->* (syn k-syns k-syns) int)
+  (lambda (s items cs)
     (let* ((conv? (and (= (k-length items) 5) (string=? (k-list-head (k-nth items 1)) "conv")))
            (cv (if conv? (k-parse-conv-form (k-nth items 1)) (get k-conv-default)))
            (items (if conv? (the k-syns (cons (car items) (cdr (cdr items)))) items)))
       (begin
         (k-shape (= (k-length items) 4) "`(subr effect (param …) result)`" s)
-        (k-subr-type (k-parse-effect (k-nth items 1)) (k-nth items 2) (k-nth items 3) cv)))))
+        (k-subr-type (k-parse-effect (k-nth items 1)) (k-nth items 2) (k-nth items 3) cv cs)))))
 ;; Whether `(subr …)` or `(-> …)`, `items`, ends in a specification.
 (define k-specified? (->* (k-syns) bool)
   (lambda (items)
@@ -334,10 +337,11 @@
     (let* ((k (- (k-length items) (k-clauses-ending items)))
            (plain (k-syns-take items k))
            (whole (tagcase s (lst (xs d a b) (lst plain d a b)) (else y s)))
+           (cs (k-syns-drop items k))
            (t (if (string=? (syn-name (car items)) "subr")
-                  (k-parse-subr whole plain)
-                  (k-parse-arrow whole plain))))
-      (k-specified t (k-nth plain (- k 2)) (k-syns-drop items k)))))
+                  (k-parse-subr whole plain cs)
+                  (k-parse-arrow whole plain cs))))
+      (k-specified t (k-nth plain (- k 2)) cs))))
 ;; Whether signature `s` is `(->* …)`, under any `poly`s.
 (define k-written-arrow-star? (->* (syn) bool)
   (lambda (s)
@@ -357,17 +361,17 @@
       (cond ((string=? head "->*")
              (begin
                (k-shape (= (k-length items) 3) "`(->* (param …) result)`" s)
-               (k-subr-type nil (k-nth items 1) (k-nth items 2) (get k-conv-default))))
+               (k-subr-type nil (k-nth items 1) (k-nth items 2) (get k-conv-default) nil)))
             ((string=? head "poly")
              (begin (set k-arrow-star #t)
                     (let ((t (k-parse-type-node s))) (begin (set k-arrow-star #f) t))))
             (else (k-parse-type-node s))))))
 ;; `(-> (param …) result)`: `(subr pure (param …) result)`.
-(define k-parse-arrow (->* (syn k-syns) int)
-  (lambda (s items)
+(define k-parse-arrow (->* (syn k-syns k-syns) int)
+  (lambda (s items cs)
     (begin
       (k-shape (= (k-length items) 3) "`(-> (param …) result)`" s)
-      (k-subr-type nil (k-nth items 1) (k-nth items 2) (get k-conv-default)))))
+      (k-subr-type nil (k-nth items 1) (k-nth items 2) (get k-conv-default) cs))))
 ;; `(proves prop)`.
 (define k-parse-proves-type (->* (syn k-syns) int)
   (lambda (s items)
@@ -377,14 +381,97 @@
         (k-shape (= (k-length items) 2) usage s)
         (let* ((saved (get k-dscope)) (t (k-parse-proves (k-nth items 1) usage)))
           (begin (set k-dscope saved) t))))))
+;; Whether top-level `form` is a `define-type` that names a file, its type
+;; `(%type-made …)` or `(%input-made …)` (`load-moduleof`): read in order,
+;; not ahead, as its file's hidden global is defined before it
+;; (`declare_each`).
+(define k-read-in-order? (->* (top) bool)
+  (lambda (form)
+    (tagcase form (t-define-type (name def a b) (k-names-a-file? def)) (else y #f))))
+(define k-names-a-file? (->* (syn) bool)
+  (lambda (s)
+    (tagcase s
+      (lst (items d a b)
+        (let ((h (if (and (not (null? items)) (syn-symbol? (car items)))
+                     (syn-name (car items))
+                     "")))
+          (or (string=? h "%type-made") (string=? h "%input-made") (string=? h "restrict")
+              (k-any-names-a-file? items))))
+      (else y #f))))
+(define k-any-names-a-file? (->* (k-syns) bool)
+  (lambda (xs)
+    (and (not (null? xs)) (or (k-names-a-file? (car xs)) (k-any-names-a-file? (cdr xs))))))
+;; A program's forms, and lines said of them (`check-program-types.fx`'s).
+(define-type k-tops (listof top acyclic))
+(define-type k-out (listof string acyclic))
+;; The names simple `define-type`s give, in order, each as often as given;
+;; if `stop?`, those before a top-level `include` (`k-included?`).
+(define k-ahead-names-of (->* (k-tops k-names bool) k-names)
+  (lambda (forms acc stop?)
+    (if (or (null? forms) (and stop? (k-included? (car forms))))
+        (the k-names (reverse acc))
+        (k-ahead-names-of
+         (cdr forms)
+         (tagcase (car forms)
+           (t-define-type (name def a b)
+             (if (and (syn-symbol? name) (not (string=? (k-list-head def) "dlambda"))
+                      (not (k-names-a-file? def)))
+                 (cons (string->symbol (syn-name name)) acc)
+                 acc))
+           (else y acc))
+         stop?))))
+;; The names `ns` gives more than once, each once, in the order each is
+;; given a second time.
+(define k-given-again (->* (k-names k-names k-names) k-names)
+  (lambda (ns seen again)
+    (cond ((null? ns) (the k-names (reverse again)))
+          ((not (k-has-name? seen (car ns))) (k-given-again (cdr ns) (cons (car ns) seen) again))
+          ((k-has-name? again (car ns)) (k-given-again (cdr ns) seen again))
+          (else (k-given-again (cdr ns) seen (cons (car ns) again))))))
+;; A warning for each type a whole program defines more than once
+;; (`TODO.md` §34): not an error, but its values see only the last.
+(define k-again-lines (->* (k-names) k-out)
+  (lambda (ns)
+    (if (null? ns)
+        nil
+        (cons (k-cat3 "warning: `" (symbol->string (car ns))
+                      "` is defined as a type more than once; every value sees the last")
+              (k-again-lines (cdr ns))))))
+;; Where a top-level `include` ended what is declared ahead (`k-included?`),
+;; or -1: a type or effect defined after it is read in order.
+(define k-ahead-stop (ref int @t) (new -1))
+;; Whether `form` is where a top-level `include` was (`included-mark`).
+(define k-included? (->* (top) bool)
+  (lambda (form)
+    (tagcase form
+      (t-define-effect (name def a b)
+        (and (syn-symbol? name) (string=? (syn-name name) "%included")))
+      (else y #f))))
+;; Where a type's or an effect's definition starts; -1 for any other form.
+(define k-type-top-start (->* (top) int)
+  (lambda (form)
+    (tagcase form
+      (t-define-type (n d a b) a) (t-define-effect (n d a b) a) (t-define-generative (h r a b) a)
+      (t-define-convention (n f a b) a) (else y -1))))
+;; Whether `form`, a type's or an effect's definition, is declared where it
+;; is, not ahead: it names a file (`k-read-in-order?`), or is after a
+;; top-level `include` (`declare_each`).
+(define k-declared-later? (->* (top) bool)
+  (lambda (form)
+    (or (k-read-in-order? form)
+        (let ((a (k-type-top-start form)))
+          (and (>= a 0) (>= (get k-ahead-stop) 0) (>= a (get k-ahead-stop)))))))
 ;; A type written as a form, `(hd …)`, `hd` no family's name.
 (define k-parse-type-form (->* (syn k-syns symbol) int)
   (lambda (s items hd)
     (let ((n (k-length items)))
       (case hd
-        ((subr) (if (k-specified? items) (k-parse-specified s items) (k-parse-subr s items)))
-        ((->) (if (k-specified? items) (k-parse-specified s items) (k-parse-arrow s items)))
+        ((subr) (if (k-specified? items) (k-parse-specified s items) (k-parse-subr s items nil)))
+        ((->) (if (k-specified? items) (k-parse-specified s items) (k-parse-arrow s items nil)))
         ((->*) (k-sfail k-arrow-star-only s))
+        ((%type-made) (k-type-made-by s items #f k-parse-d))
+        ((%input-made) (k-type-made-by s items #t k-parse-d))
+        ((restrict) (k-restrict-by s items k-parse-type))
         ((proves) (k-parse-proves-type s items))
         ((bool) (k-sfail "`(bool …)` is a procedure's result, and only that" s))
         ((poly)
@@ -878,18 +965,19 @@
                    (let ((r (k-subst t nil))) (begin (set k-select-map outer) r))))))))
 ;; A `subr` type's parameters `ps` (from those named `names`) and its
 ;; result `r`, read: their types, the result last.
-(define k-read-params-from (->* (k-syns syn k-names) k-ids)
-  (lambda (ps r names)
+(define k-read-params-from (->* (k-syns syn k-names k-syns) k-ids)
+  (lambda (ps r names cs)
     (if (null? ps)
         ;; A test's result, `(bool …)`: here, and only here, a `bool`
         ;; (`k-subr-type` reads what it proves).
         (let ((t (if (string=? (k-list-head r) "bool") k-bool (k-parse-type r))))
           (cons (k-select-params t names) nil))
-        (let* ((named (k-param-name (car ps)))
-               (written (if (null? named) (car ps) (k-nth (k-items (car ps) "a parameter") 1)))
+        (let* ((checked (k-misnamed-param (car ps) (the k-syns (append (cdr ps) (cons r cs)))))
+               (named (k-param-name (car ps)))
+               (written (if (null? named) (car ps) (k-nth (k-items (car ps) "a parameter") 2)))
                (t (k-select-params (k-parse-type written) names))
                (name (if (null? named) k-no-name (car named)))
-               (rest (k-read-params-from (cdr ps) r (k-names-snoc names name))))
+               (rest (k-read-params-from (cdr ps) r (k-names-snoc names name) cs)))
           (cons t rest)))))
-(define k-read-params (->* (k-syns syn) k-ids)
-  (lambda (ps r) (k-read-params-from ps r nil))))))
+(define k-read-params (->* (k-syns syn k-syns) k-ids)
+  (lambda (ps r cs) (k-read-params-from ps r nil cs))))))

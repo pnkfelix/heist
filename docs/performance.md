@@ -71,6 +71,13 @@ left in `/tmp`, as perf's convention is, one per process. Code collected
 has its room used again, and perf knows no time of a name, so an address
 reused shows one of its names.
 
+**`gdb` and `lldb`** (2026-10-27). Compiled code is named for them
+too, always, through the GDB JIT interface, and its frames are told once
+a debugger is here (`docs/research/debugging.md`, "Since"). Names cost
+0.7% of stage 0's instructions; frames, made from the start
+(`FIXPT_JIT_DEBUG=frames`), some 7%; `FIXPT_JIT_DEBUG=0` registers
+nothing.
+
 **Who allocates in Rust** (2026-10-24). The heap FX-26 programs run on
 never calls `malloc`: it allocates in memory it reserved, by bumping a
 pointer. What does call it is Fixpt's Rust (the compilers' and the
@@ -2968,3 +2975,31 @@ Left: the image of the kept front end read into a buffer and then copied
 into the heap (`image::load`), which a mapping of the file could do with
 neither; and the cellular machine's code space, collected by copying into
 pages first written then.
+
+## References and arrays made in line natively (2026-10-27)
+
+Heist's request (s7st, its R7RS interpreter, makes a frame of slots per
+call and two references per pair): the native convention on x86_64 called
+out to Rust for every `new` and `make-array`, some 30 and 45 ns each,
+against 2–4 ns for a sum made in line. Both compilers (`direct/x64.rs`,
+`native-direct-x64-flat.fx`'s `df-alloc`) now make them in line:
+
+- **`new`** (`%make-box`), from the heap's free space as `cons`;
+- **`make-array`** (`%make-bloblet-filled` of no suffix) of at most 16
+  fields (`ARRAY_INLINE`), its header and trailer from the length, its
+  fields stored by a loop; a longer one calls out;
+- **`rnew` and `rmake-array`** likewise in a region's current chunk, as
+  `rcons` already was, calling out when the chunk is full or the region
+  has no slot in the table.
+
+Heist's `region-alloc.fx`, 10 million of each (ms), on
+`fx-regs-rsjit-nativecc`:
+
+| per iteration        | before | after |
+| -------------------- | -----: | ----: |
+| `(make-array 3 …)`   |    440 |  52–62 |
+| `(new …)`            |    290–320 |  34–37 |
+
+The same on `fx-regs-fxjit-nativecc`. Its `@sc` is a region variable, not
+a place: what it measures is the heap's two, which is what s7st uses too.
+arm64's back end (`direct.rs`) is not done: nothing here runs arm64 code.
