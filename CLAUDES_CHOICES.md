@@ -2267,3 +2267,36 @@ The user: "Yeah do 1, 2, and 3" (names, lines, values). Names first.
 - **16 KiB**: a frame is pushed before the stack's limit is checked, and
   the limit leaves `STACK_SLACK` (64 KiB) below it; a quarter of it leaves
   room for the overflow's own frames.
+
+## Strings at a region (2026-10-28)
+
+- **`string` kept as the name, `(stringof const)` made as it**: the user
+  chose one type; making the frozen form *as* `string`, rather than
+  `string` as an abbreviation expanded everywhere, keeps every rule that
+  knows `string` (data, shapes, syscalls' crossing types, the printer) as
+  it was, and needs only the matching where a region is still unknown.
+  `acyclic` too, since a string holds no cycle.
+- **Only the reads that a mutable string needs are generalized**: `length`,
+  `ref`, `substring`, `=?`, `->list`, `->utf8`. The comparisons, the
+  searches and `string-append` still take `string`; a string at a region
+  is frozen or copied first. Generalizing more is a type each, later.
+- **`substring` still gives a `string`**: its region would otherwise be a
+  new binder nothing solves, and every `(define x (substring …))` would
+  change its type.
+
+## `module-parameters` of modules (2026-10-28)
+
+- **Read as a `load-input` file**: a file of module parameters is the
+  `lambda` Heist wrote by hand, and is read as one, its key `input:`;
+  so the checkers' scoping, already proven by Heist's editor, is unchanged,
+  and no rule is new. A file is told by its first form, in both parsers
+  and the driver alike, before its key is chosen.
+- **Every module parameter included, hidden**: (2) as the default, with no
+  way to opt out yet; a file that wants a module's names only by `with`
+  can still be written as a `lambda`.
+- **A pure expression item refused**: found converting Heist's editor, where
+  a `load-input` file loaded by `load-module` became one pure expression
+  item, its module empty, silently.
+- **(3), a parameter typed by its file alone, not done**: Heist measured
+  the parameters' types as costing nothing to check, so it would save only
+  writing.
