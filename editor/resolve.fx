@@ -10,10 +10,8 @@
 ;;; else to nothing known here (a standard name, or another file's). Types
 ;;; and values are looked up alike: FX-26 keeps them apart, but a name's
 ;;; binder is what M-. wants either way.
-(lambda ((m-base (load-input-moduleof "base.fx"))
-         (m-buffer (load-input-moduleof "buffer.fx" m-base)))
-(module
-(hide (include m-base) (include m-buffer))
+(module-parameters ((m-base (load-input-moduleof "base.fx"))
+                    (m-buffer (load-moduleof "buffer.fx" m-base))))
 
 
 (define-type syns-a (listof syn acyclic))
@@ -333,4 +331,3 @@ place, and the file."
                                       (if (string=? f "") acc (names (cdr (cdr is)) f acc)))
                                     acc)))))))
       (imports xs (modules xs nil) nil))))
-))

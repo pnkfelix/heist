@@ -13,11 +13,9 @@
 ;;; The whole text is read again each time: about 150 ns a character, 9 ms
 ;;; for a 60 KB file. Reading only the list an edit is in is cahoots' next
 ;;; step, and this one's.
-(lambda ((m-base (load-input-moduleof "base.fx"))
-         (m-buffer (load-input-moduleof "buffer.fx" m-base))
-         (m-resolve (load-input-moduleof "resolve.fx" m-base m-buffer)))
-(module
-(hide (include m-base) (include m-buffer) (include m-resolve))
+(module-parameters ((m-base (load-input-moduleof "base.fx"))
+                    (m-buffer (load-moduleof "buffer.fx" m-base))
+                    (m-resolve (load-moduleof "resolve.fx" m-base m-buffer))))
 
 (define keywords strings
   (list "define" "define*" "define-rec" "define-type" "define-datatype" "define-effect"
@@ -307,4 +305,3 @@ and subscribe it; for another, none."
           (list (lambda () (set-class! sx idle))
                 (tell b (subscribe -1 (lambda ((s snapshot)) (tell-latest sx "snapshot" (syntax-snapshot s)))))))
         nil)))
-))

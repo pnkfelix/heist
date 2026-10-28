@@ -1,7 +1,8 @@
 ;;; Typing, timed: the frame, a buffer of a large file, its view and the
 ;;; painter, as the editor runs them, the screen written to stdout (send
-;;; it to /dev/null). Run after base.fx … frame.fx:
-;;;   fixpt run base.fx buffer.fx view.fx frame.fx tests/bench-typing.fx -- FILE > /dev/null
+;;; it to /dev/null). Run after a prelude that makes and includes the
+;;; modules of editor.fx through frame.fx, as tests/run.sh makes one:
+;;;   fixpt run prelude.fx tests/bench-typing.fx -- FILE > /dev/null
 ;;; needs: base.fx buffer.fx resolve.fx syntax.fx index.fx view.fx frame.fx
 (define* bench-main (subr (maxeff cmd-eff (io args) (io clock) (io stderr) (alloc @a)) () int)
   (lambda ()

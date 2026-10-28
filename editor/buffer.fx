@@ -6,9 +6,7 @@
 ;;; which share most of themselves with the text it has. A command is code
 ;;; run in a turn of the buffer's: a procedure from the buffer to the
 ;;; buffer after it, what to do, and a message for the echo area.
-(lambda ((m-base (load-input-moduleof "base.fx")))
-(module
-(hide (include m-base))
+(module-parameters ((m-base (load-input-moduleof "base.fx"))))
 
 "What a party outside the text (the syntax actor) knows of a revision of
 it: faces for stretches of the text, the definitions it makes, and a
@@ -587,4 +585,3 @@ not modified, if it has not changed since."
                                (all-modified (extract b undo)) (extract b subscribers))))
             (reply-with b2 (notify b2)))
           (same b)))))
-))

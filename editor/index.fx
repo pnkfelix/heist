@@ -5,14 +5,12 @@
 ;;; in it, and reads them one a turn -- each read a command after its turn,
 ;;; by Fixpt's own reader, as the syntax actor reads a buffer -- so keys
 ;;; are read between files. M-. looks in the buffers first, then here.
-(lambda ((m-base (load-input-moduleof "base.fx"))
-         (m-buffer (load-input-moduleof "buffer.fx" m-base))
-         (m-resolve (load-input-moduleof "resolve.fx" m-base m-buffer))
-         (m-syntax (load-input-moduleof "syntax.fx" m-base m-buffer m-resolve))
-         (m-sexp (load-input-moduleof "sexp.fx" m-base m-buffer m-resolve m-syntax))
-         (m-flow (load-input-moduleof "flow.fx" m-base m-buffer m-resolve m-syntax m-sexp)))
-(module
-(hide (include m-base) (include m-buffer) (include m-resolve) (include m-syntax) (include m-sexp) (include m-flow))
+(module-parameters ((m-base (load-input-moduleof "base.fx"))
+                    (m-buffer (load-moduleof "buffer.fx" m-base))
+                    (m-resolve (load-moduleof "resolve.fx" m-base m-buffer))
+                    (m-syntax (load-moduleof "syntax.fx" m-base m-buffer m-resolve))
+                    (m-sexp (load-moduleof "sexp.fx" m-base m-buffer m-resolve m-syntax))
+                    (m-flow (load-moduleof "flow.fx" m-base m-buffer m-resolve m-syntax m-sexp))))
 
 (define-type indexed (productof (file string) (definitions definitions) (links links)))
 (define-type index-state
@@ -116,4 +114,3 @@ file and there is an index."
       (if (and (pair? ixs) (fx26-file? file) (not (string=? dir "")))
           (list (tell (car ixs) (index-directory (car ixs) dir)))
           nil))))
-))

@@ -9,17 +9,15 @@
 ;;; one visits it. The analysis runs on demand, in a command after the
 ;;; frame's turn: on the editor's own twelve files it takes about 20 ms,
 ;;; after reading them.
-(lambda ((m-base (load-input-moduleof "base.fx"))
-         (m-buffer (load-input-moduleof "buffer.fx" m-base))
-         (m-resolve (load-input-moduleof "resolve.fx" m-base m-buffer))
-         (m-syntax (load-input-moduleof "syntax.fx" m-base m-buffer m-resolve))
-         (m-sexp (load-input-moduleof "sexp.fx" m-base m-buffer m-resolve m-syntax))
-         (m-flow (load-input-moduleof "flow.fx" m-base m-buffer m-resolve m-syntax m-sexp))
-         (m-index (load-input-moduleof "index.fx" m-base m-buffer m-resolve m-syntax m-sexp m-flow))
-         (m-view (load-input-moduleof "view.fx" m-base m-buffer m-resolve m-syntax m-sexp m-flow m-index))
-         (m-frame (load-input-moduleof "frame.fx" m-base m-buffer m-resolve m-syntax m-sexp m-flow m-index m-view)))
-(module
-(hide (include m-base) (include m-buffer) (include m-resolve) (include m-syntax) (include m-sexp) (include m-flow) (include m-index) (include m-view) (include m-frame))
+(module-parameters ((m-base (load-input-moduleof "base.fx"))
+                    (m-buffer (load-moduleof "buffer.fx" m-base))
+                    (m-resolve (load-moduleof "resolve.fx" m-base m-buffer))
+                    (m-syntax (load-moduleof "syntax.fx" m-base m-buffer m-resolve))
+                    (m-sexp (load-moduleof "sexp.fx" m-base m-buffer m-resolve m-syntax))
+                    (m-flow (load-moduleof "flow.fx" m-base m-buffer m-resolve m-syntax m-sexp))
+                    (m-index (load-moduleof "index.fx" m-base m-buffer m-resolve m-syntax m-sexp m-flow))
+                    (m-view (load-moduleof "view.fx" m-base m-buffer m-resolve m-syntax m-sexp m-flow m-index))
+                    (m-frame (load-moduleof "frame.fx" m-base m-buffer m-resolve m-syntax m-sexp m-flow m-index m-view))))
 
 "The files of the program `file` is part of, as program-files: read with
 Fixpt's reader, from the buffers that visit them if any (`texts`: file
@@ -227,12 +225,12 @@ texts: a message for the frame."
                                            (pos (rope-line-start (extract got text) (max 0 (- lineno 1)))))
                                       (tell! fr (visit-position fr file pos))))))))))))
 
-(hide (define calls-reg-1 (define-command! "flow-callees" (sum on-frame (callees-at-point)))))
-(hide (define calls-reg-2 (define-command! "flow-callers" (sum on-frame (callers-at-point)))))
-(hide (define calls-reg-3 (define-command! "xref-visit" (sum on-frame (xref-visit)))))
-(hide (define calls-reg-4 (define-key! "C-c e" "flow-callees")))
-(hide (define calls-reg-5 (define-key! "C-c r" "flow-callers")))
-(hide (define calls-reg-6 (define-buffer-key! "*xref*" "RET" "xref-visit")))
+(define-command! "flow-callees" (sum on-frame (callees-at-point)))
+(define-command! "flow-callers" (sum on-frame (callers-at-point)))
+(define-command! "xref-visit" (sum on-frame (xref-visit)))
+(define-key! "C-c e" "flow-callees")
+(define-key! "C-c r" "flow-callers")
+(define-buffer-key! "*xref*" "RET" "xref-visit")
 
 ;;; ------------------------------------------------------------ the type at point (C-c t)
 
@@ -315,6 +313,5 @@ said; or why the program does not check."
                                         (begin (tell! b (in-buffer fr (mark-span a e 'use)))
                                           (tell! fr (echo ty))))))))))))))
 
-(hide (define calls-reg-7 (define-command! "type-at-point" (sum on-frame (type-at-point)))))
-(hide (define calls-reg-8 (define-key! "C-c t" "type-at-point")))
-))
+(define-command! "type-at-point" (sum on-frame (type-at-point)))
+(define-key! "C-c t" "type-at-point")

@@ -21,13 +21,11 @@
 ;;; State: global, at region @fl, so the analysis runs in a command (as the
 ;;; reader does). Not yet: contexts (1CFA, call sites for small procedures),
 ;;; a worklist instead of whole passes, a warm start after an edit.
-(lambda ((m-base (load-input-moduleof "base.fx"))
-         (m-buffer (load-input-moduleof "buffer.fx" m-base))
-         (m-resolve (load-input-moduleof "resolve.fx" m-base m-buffer))
-         (m-syntax (load-input-moduleof "syntax.fx" m-base m-buffer m-resolve))
-         (m-sexp (load-input-moduleof "sexp.fx" m-base m-buffer m-resolve m-syntax)))
-(module
-(hide (include m-base) (include m-buffer) (include m-resolve) (include m-syntax) (include m-sexp))
+(module-parameters ((m-base (load-input-moduleof "base.fx"))
+                    (m-buffer (load-moduleof "buffer.fx" m-base))
+                    (m-resolve (load-moduleof "resolve.fx" m-base m-buffer))
+                    (m-syntax (load-moduleof "syntax.fx" m-base m-buffer m-resolve))
+                    (m-sexp (load-moduleof "sexp.fx" m-base m-buffer m-resolve m-syntax))))
 
 ;;; ------------------------------------------------------------ the core
 
@@ -1070,4 +1068,3 @@ code not known."
                                             (unknown (vals-has? vs unknown)))
                                    acc)))))))
         (go calls (- (length calls) 1) nil)))))
-))

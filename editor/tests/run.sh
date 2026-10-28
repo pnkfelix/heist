@@ -7,11 +7,19 @@ fixpt="$here/../../fixpt/target/release/fixpt"
 status=0
 for t in "$here"/*-test.fx; do
   # A test that uses the editor's files says which (`;;; needs: a.fx …`),
-  # and its arguments (`;;; args: …`); it runs after them, in editor/.
+  # and its arguments (`;;; args: …`). It runs in editor/, after a prelude
+  # that makes the modules of editor.fx up to the last file it needs (each
+  # made of all those before it) and includes them.
   needs=$(sed -n 's/^;;; needs: //p' "$t")
   args=$(sed -n 's/^;;; args: //p' "$t")
   if [ -n "$needs" ]; then
-    out=$(cd "$here/.." && "$fixpt" run $needs "tests/$(basename "$t")" -- $(for a in $args; do echo "tests/$a"; done) 2>&1)
+    last=$(basename "${needs##* }" .fx)
+    prelude="$here/../prelude-$$.fx"
+    { sed -n "1,/^(define m-$last /p" "$here/../editor.fx"
+      sed -n "s/^(define \(m-[^ ]*\) .*/(include \1)/p; /^(define m-$last /q" "$here/../editor.fx"
+    } > "$prelude"
+    out=$(cd "$here/.." && "$fixpt" run "$(basename "$prelude")" "tests/$(basename "$t")" -- $(for a in $args; do echo "tests/$a"; done) 2>&1)
+    rm -f "$prelude"
   else
     out=$(cd "$here" && "$fixpt" run "$(basename "$t")" 2>&1)
   fi

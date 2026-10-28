@@ -1,8 +1,10 @@
 ;;; base.fx: what the editor's files share -- the modules they use, and
-;;; the effect of what commands do outside. The editor is one program in
-;;; several files, run in one session (`bin/heist-edit`), each file seeing
-;;; the globals of those before it:
-;;;   base.fx buffer.fx … frame.fx calls.fx process.fx main.fx (as `program` lists them)
+;;; the effect of what commands do outside. The editor is several files,
+;;; each a module made once by editor.fx (`bin/heist-edit`) from the
+;;; modules of those before it, in the order `program` lists them:
+;;;   base.fx buffer.fx … frame.fx calls.fx process.fx main.fx
+;;; This one takes none, but has state, so it is a `lambda` that makes it;
+;;; the others are files of `module-parameters`.
 (lambda ()
 (module
 

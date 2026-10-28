@@ -1,6 +1,6 @@
 ;;; main.fx: the terminal, and the scheduler between keys (cahoots'
-;;; `(yank actor main)`, c337e2a). Run last of the files `program` lists,
-;;; by `bin/heist-edit FILE`.
+;;; `(yank actor main)`, c337e2a). Made last by editor.fx, whose `main`
+;;; is this one, run by `bin/heist-edit FILE`.
 ;;;
 ;;; Turns run while any wait, a batch at a time, keys typed meanwhile read
 ;;; between batches and sent to the frame. A batch stops after a turn of a
@@ -8,22 +8,20 @@
 ;;; such turn. With none waiting, it waits for a key, and every half second
 ;;; looks at the terminal's size; with processes running (process.fx), it
 ;;; looks for their output every 50 ms.
-(lambda ((m-base (load-input-moduleof "base.fx"))
-         (m-buffer (load-input-moduleof "buffer.fx" m-base))
-         (m-resolve (load-input-moduleof "resolve.fx" m-base m-buffer))
-         (m-syntax (load-input-moduleof "syntax.fx" m-base m-buffer m-resolve))
-         (m-sexp (load-input-moduleof "sexp.fx" m-base m-buffer m-resolve m-syntax))
-         (m-flow (load-input-moduleof "flow.fx" m-base m-buffer m-resolve m-syntax m-sexp))
-         (m-index (load-input-moduleof "index.fx" m-base m-buffer m-resolve m-syntax m-sexp m-flow))
-         (m-view (load-input-moduleof "view.fx" m-base m-buffer m-resolve m-syntax m-sexp m-flow m-index))
-         (m-frame (load-input-moduleof "frame.fx" m-base m-buffer m-resolve m-syntax m-sexp m-flow m-index m-view))
-         (m-calls (load-input-moduleof "calls.fx" m-base m-buffer m-resolve m-syntax m-sexp m-flow m-index m-view m-frame))
-         (m-process (load-input-moduleof "process.fx" m-base m-buffer m-resolve m-syntax m-sexp m-flow m-index m-view m-frame m-calls))
-         (m-files (load-input-moduleof "files.fx" m-base m-buffer m-resolve m-syntax m-sexp m-flow m-index m-view m-frame m-calls m-process))
-         (m-help (load-input-moduleof "help.fx" m-base m-buffer m-resolve m-syntax m-sexp m-flow m-index m-view m-frame m-calls m-process m-files))
-         (m-eldoc (load-input-moduleof "eldoc.fx" m-base m-buffer m-resolve m-syntax m-sexp m-flow m-index m-view m-frame m-calls m-process m-files m-help)))
-(module
-(hide (include m-base) (include m-buffer) (include m-resolve) (include m-syntax) (include m-sexp) (include m-flow) (include m-index) (include m-view) (include m-frame) (include m-calls) (include m-process) (include m-files) (include m-help) (include m-eldoc))
+(module-parameters ((m-base (load-input-moduleof "base.fx"))
+                    (m-buffer (load-moduleof "buffer.fx" m-base))
+                    (m-resolve (load-moduleof "resolve.fx" m-base m-buffer))
+                    (m-syntax (load-moduleof "syntax.fx" m-base m-buffer m-resolve))
+                    (m-sexp (load-moduleof "sexp.fx" m-base m-buffer m-resolve m-syntax))
+                    (m-flow (load-moduleof "flow.fx" m-base m-buffer m-resolve m-syntax m-sexp))
+                    (m-index (load-moduleof "index.fx" m-base m-buffer m-resolve m-syntax m-sexp m-flow))
+                    (m-view (load-moduleof "view.fx" m-base m-buffer m-resolve m-syntax m-sexp m-flow m-index))
+                    (m-frame (load-moduleof "frame.fx" m-base m-buffer m-resolve m-syntax m-sexp m-flow m-index m-view))
+                    (m-calls (load-moduleof "calls.fx" m-base m-buffer m-resolve m-syntax m-sexp m-flow m-index m-view m-frame))
+                    (m-process (load-moduleof "process.fx" m-base m-buffer m-resolve m-syntax m-sexp m-flow m-index m-view m-frame m-calls))
+                    (m-files (load-moduleof "files.fx" m-base m-buffer m-resolve m-syntax m-sexp m-flow m-index m-view m-frame m-calls m-process))
+                    (m-help (load-moduleof "help.fx" m-base m-buffer m-resolve m-syntax m-sexp m-flow m-index m-view m-frame m-calls m-process m-files))
+                    (m-eldoc (load-moduleof "eldoc.fx" m-base m-buffer m-resolve m-syntax m-sexp m-flow m-index m-view m-frame m-calls m-process m-files m-help))))
 
 "The next byte typed, or #f if none comes within `timeout` ms (0: only
 one already there)."
@@ -134,4 +132,3 @@ queue; C-g at once. Whether any came."
         (write-out "\x1b;[?1049l")
         (terminal-restore)
         0))))
-))
