@@ -76,13 +76,17 @@ On the editor's own 20 files as one FX-26 world, there are 9,855 notes.
      FX-26 and Scheme buffer's revisions are sent as they are made
      (`flow-attach`).
    - `editor/flow.fx` and `s7st/flow.fx` are gone.
-2. **Types and regions as values** (FX-26). A `plambda` becomes a lambda
-   of its type and region parameters, and a `proj` (or a module made with
-   region arguments) becomes a call with region and type constants. Then
-   "where does region `r` come from" is "what reaches variable `r`". The
-   effects a call can have are its callees' declared effects, with their
-   region variables given what reaches them. Kinds are interned per world
-   (`cf-kind`) so that a front end can make `@ed` or a type name a kind.
+2. **Types and regions as values** (FX-26): done, where the text says
+   them.
+   - A `plambda`'s binders, and a module file's `(module-parameters ((r
+     region) …))`, are variables. Each `proj` gives them its arguments
+     (`k-inst`): a region, a type's name, or another binder's values.
+     `(proj (load-module "f") …)` of a world file gives `f`'s binders.
+   - A type variable used in a type is a reference to it, so it gets a
+     note (`r: @ed | @sc`).
+   - A call's note says its callees' declared effects, with each binder
+     said by what reaches it (`calls make-box; effect (alloc @ed)`).
+   - Not seen: instantiations the checker infers with no `proj`.
 3. **Yank's lessons not yet taken:**
    - per-definition numbering and warm continuation after an edit;
    - a set holding unknown dropping its data;

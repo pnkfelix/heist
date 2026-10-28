@@ -14,4 +14,9 @@ regions.fx:385-407: calls pair-of
 regions.fx:391-398: pair-of: pair-of
 regions.fx:423-448: calls pair-of
 regions.fx:429-436: pair-of: pair-of
+regions.fx:627-628: r: @ed
+regions.fx:671-690: calls make-box; effect (alloc @ed)
+regions.fx:677-685: make-box: make-box
+regions.fx:765-766: b: ref
+regions.fx:783-788: calls bump!; effect (write @sc)
 [exit 0]

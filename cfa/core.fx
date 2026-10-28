@@ -104,6 +104,11 @@ lambda's (site's) number, and the binders' variables."
 (define-type cf-poly (productof (number int) (binders (listof int acyclic))))
 (define cf-poly-lambdas (ref (listof cf-poly acyclic) @cf) (new nil))
 (define cf-poly-sites (ref (listof cf-poly acyclic) @cf) (new nil))
+"A lambda's declared effect, as its definition says it: text, and the
+variables of the type binders it names, to be said by what reaches them."
+(define-datatype cf-token (t-text string) (t-var int string))
+(define-type cf-effect (productof (lambda int) (tokens (listof cf-token acyclic))))
+(define cf-effects (ref (listof cf-effect acyclic) @cf) (new nil))
 "The world's files, by number."
 (define cf-files (ref strings @cf) (new nil))
 "The kinds of data the world's constants and primitives make, by name --
@@ -122,7 +127,7 @@ an instantiation gives (`@ed`) -- each numbered as first met."
       (array-set! cf-counts 0 0) (array-set! cf-counts 1 0) (array-set! cf-counts 2 0) (array-set! cf-counts 3 0)
       (set cf-globals (the (table string int @cf) (make-table string-hash string=?)))
       (set cf-global-count 0) (set cf-files nil) (set cf-definition "")
-      (set cf-kinds nil) (set cf-kind-count 0) (set cf-poly-lambdas nil) (set cf-poly-sites nil))))
+      (set cf-kinds nil) (set cf-kind-count 0) (set cf-poly-lambdas nil) (set cf-poly-sites nil) (set cf-effects nil))))
 
 "Kind `name`'s number, made on first use."
 (define* cf-kind (subr cf-eff (string) int)
@@ -173,6 +178,12 @@ makes, if it makes one, so said."
       (k-alloc (s inits) (set cf-poly-sites (cons (product (number s) (binders binders)) (get cf-poly-sites))))
       (k-seq (xs) (if (pair? xs) (cf-poly! (car (reverse xs)) binders) #u))
       (else y #u))))
+"The lambda core `x` makes, if it makes one (-1: none)."
+(define* cf-lambda-of (subr spin (core) int)
+  (lambda (x) (tagcase x
+                (k-lam (l) l)
+                (k-seq (xs) (if (pair? xs) (cf-lambda-of (car (reverse xs))) -1))
+                (else y -1))))
 (define* cf-poly-binders (subr spin ((listof cf-poly acyclic) int) ints)
   (lambda (l n) (cond ((null? l) nil) ((= (extract (car l) number) n) (extract (car l) binders)) (else (cf-poly-binders (cdr l) n)))))
 

@@ -5,14 +5,13 @@ commit that did it says so.
 
 ## The CFA (`cfa/`, `docs/cfa.md`)
 
-1. **Types and regions as values** (FX-26).
-   - A `plambda` becomes a lambda of its type and region parameters. A
-     `proj`, or a module made with region arguments, becomes a call whose
-     arguments are region and type constants (`cf-kind`: `@ed`, `buffer`).
-   - Then "where does region `r` come from" is "what reaches variable
-     `r`".
-   - The effects a call can have are its callees' declared effects, with
-     their region variables given what reaches them.
+1. **Types and regions: what is left.** Done: a `plambda`'s binders and a
+   module file's flow from each `proj` (cfa/fx26.fx), and a call's note
+   says its callees' declared effects with their binders said by what
+   reaches them. Left:
+   - Instantiations the checker infers (no `proj`) are not seen.
+   - Effect abbreviations (`cmd-eff`) are said by name, not expanded.
+   - A binder's values are those of the empty contour.
 2. **Yank's lessons, not yet taken** (`docs/cfa.md`, "Next"):
    - per-definition numbering and warm continuation after an edit, in
      place of a cold start on every change;

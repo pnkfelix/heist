@@ -142,6 +142,51 @@ module type): each its name and syntax."
                       (cons (car bs) (fx-kind-binders (cdr bs))))
                      (else (fx-kind-binders (cdr bs))))))
 
+(define* fx-append-tokens (subr spin ((listof cf-token acyclic) (listof cf-token acyclic)) (listof cf-token acyclic))
+  (lambda (a b) (if (null? a) b (cons (car a) (fx-append-tokens (cdr a) b)))))
+"Effect `x`, as tokens: each atom naming a type binder -- one of `names`,
+whose variables are `vars`, or one in scope -- that binder's variable."
+(define* fx-effect-tokens (subr fx-eff (int syn scope strings ints) (listof cf-token acyclic))
+  (lambda (file x env names vars)
+    (tagcase x
+      (atom (d a b)
+        (let* ((n (fx-sym x))
+               (i (if (string=? n "") -1 (cf-index n names)))
+               (v (cond ((string=? n "") -1)
+                        ((>= i 0) (letrec ((nth (subr spin (ints int) int) (lambda (l k) (cond ((null? l) -1) ((= k 0) (car l)) (else (nth (cdr l) (- k 1)))))))
+                                    (nth vars i)))
+                        (else (fx-type-var file n env)))))
+          (if (>= v 0) (list (t-var v n)) (list (t-text (if (string=? n "") "?" n))))))
+      (lst (items d a b)
+        (fx-append-tokens (list (t-text "("))
+                          (fx-append-tokens (letrec ((go (subr fx-eff ((listof syn acyclic) bool) (listof cf-token acyclic))
+                                                           (lambda (l first)
+                                                             (if (null? l) nil
+                                                                 (fx-append-tokens (if first nil (list (t-text " ")))
+                                                                                   (fx-append-tokens (fx-effect-tokens file (car l) env names vars)
+                                                                                                     (go (cdr l) #f)))))))
+                                              (go items #t))
+                                            (list (t-text ")")))))
+      (else y (list (t-text "?"))))))
+"A definition's type `t` and value's core `value`: the effect the type
+declares, kept for the lambda the value makes (a `poly`'s binders, by
+position, its `plambda`'s)."
+(define* fx-keep-effect! (subr fx-eff (int syn core scope) unit)
+  (lambda (file t value env)
+    (let* ((ts (fx-items t))
+           (poly (and (pair? ts) (string=? (fx-sym (car ts)) "poly") (pair? (cdr ts)) (pair? (cdr (cdr ts)))))
+           (names (if poly (letrec ((go (subr spin ((listof syn acyclic)) strings)
+                                          (lambda (l) (if (null? l) nil (let ((is (fx-items (car l)))) (cons (fx-sym (if (pair? is) (car is) (car l))) (go (cdr l))))))))
+                             (go (fx-items (car (cdr ts)))))
+                      nil))
+           (sub (fx-items (if poly (car (cdr (cdr ts))) t)))
+           (l (cf-lambda-of value)))
+      (if (and (>= l 0) (pair? sub) (string=? (fx-sym (car sub)) "subr") (pair? (cdr sub)))
+          (set cf-effects (cons (product (lambda l)
+                                         (tokens (fx-effect-tokens file (car (cdr sub)) env names (cf-poly-binders (get cf-poly-lambdas) l))))
+                                (get cf-effects)))
+          #u))))
+
 "Constructor `tag` of `n` fields, of variant syntax `x`: the global bound
 to a lambda making `(sum tag (product (1 p1) … (n pn)))`."
 (define* fx-constructor (subr fx-eff (int syn string int) core)
@@ -299,7 +344,8 @@ to a lambda making `(sum tag (product (1 p1) … (n pn)))`."
                       (typed (pair? (cdr (cdr rest))))
                       (value-syn (car (if typed (cdr (cdr rest)) (cdr rest))))
                       (refs (if typed (fx-type-refs file (car (cdr rest)) env) nil))
-                      (value (begin (if (null? env) (set cf-definition name) #u) (fx-named file value-syn name env))))
+                      (value (begin (if (null? env) (set cf-definition name) #u) (fx-named file value-syn name env)))
+                      (kept (if typed (fx-keep-effect! file (car (cdr rest)) value env) #u)))
                  (if (null? refs) (k-bind (cf-global-var name) value)
                      (k-seq (list (k-none refs) (k-bind (cf-global-var name) value)))))
                (k-none nil)))
