@@ -2312,3 +2312,152 @@ The user: "Yeah do 1, 2, and 3" (names, lines, values). Names first.
   rebuilds a type would have to keep them, in both checkers.
 - **Stage 0's 3% kept for now** (the user's word): to be brought down, by a
   cheaper lookup or fewer nodes looked up.
+
+## `.fasl` files (2026-10-28, overnight)
+
+The user: "implement fasl files; I'm going to sleep, so work autonomously
+and record your choices" (in `CLAUDE_CHOICES.md`, which is this file). The
+design is `docs/research/fasl.md`, its "Decided" the user's; what follows
+is what I chose where it left room, or departed from it.
+
+- **Module files first.** A load's value is one value, made purely, so a
+  `.fasl` can keep the value; a top-level file's forms run, define globals
+  and use the program's, which needs more (below, and `TODO.md`).
+- **The interface is the type the load is checked at, printed and read
+  back**, not a format of its own: the load is checked, in both checkers,
+  as `(begin (load-module "dep") … (the T %fasl-value))`. Neither checker
+  gains a rule; each parser reads that expression in place of the file
+  (`fasl_load`; `parse-load-file`'s field 8). The loads written into it are
+  what makes both front ends load the files it loads as its source would.
+- **`%fasl-value` is a standard `(poly ((t type)) t)`, not a procedure**:
+  a call of `(the (subr pure (string) T) …)` made the checker take the
+  dependent procedure in `T` apart at the call (`dependent_args`).
+- **Printed for reading back**: no alias a program defines (no
+  `type_names` abbreviation; a `moduleof`'s own descriptions still name
+  what follows them); a file loaded by its place, `%fasl-dep:i`, which the
+  loader replaces with its own hidden global's name (the keys are paths as
+  the loading program resolves them); its abstract types `(select
+  %fasl-dep:i t)`; a restricted module's hidden abstract types by their
+  component, `%hidden:t`; a dependent procedure's parameters named, `(%p.1
+  : T)`, the outermost's, as a call takes apart every `$k` however deep. A
+  type that still does not read back makes the `.fasl` stale, not an error.
+- **Fresh by transitive source digests** (a file's stamp: its text's
+  digest and its loads' stamps), not by interfaces: the compiler's guards
+  count a global's writes, so a member folded from a file loaded would be
+  kept stale if only that file's body changed. The executable (its size and
+  time, as the front end's cache), the architecture and the convention are
+  in the header too.
+- **The value kept, not its making**; cellular words, not native code
+  (departing from decision 2's default): native code calls out by numbers
+  its machine assigns as it compiles, and calls other code by address. A
+  native closure is kept as the cellular closure it was compiled from, its
+  words' compiled entries let go, register twins kept; in the native
+  convention the loader compiles the closures again (`native_procedures`):
+  as fast to run as from the source, and loading the measured module 0.24 s
+  against 0.57 s. Keeping native code needs a relocation table from the
+  native compilers (`TODO.md`).
+- **Globals linked by name, the newest cell**: what the compiler finds
+  compiling the file now. A file loaded is linked to by its load; a value
+  of one reached directly, the same.
+- **`compile-file` tells a `load-input` file by its form**: one form that
+  is no module item. It compiles in the session it is in, from source or a
+  fresh `.fasl` alike (the value is the same).
+- **A stale `.fasl` is said on the standard error by the driver**
+  (`Checker::fasl_notes`, the CLI's `say_fasl_notes`), never on the
+  program's output; `FIXPT_FASL_SAY` says each one read, `FIXPT_NO_FASL`
+  reads none.
+- **Not on `rs-scheme-vm` or `fx-ast-eval`**, which run no compiled code,
+  and not by `fixpt check`, which keeps its fresh checker.
+
+### Program files' `.fasl`s (the same night)
+
+The user: "I want the .fasl format to work for any file" (`,load` of a
+program's file). What I chose:
+- **Only the definitions of procedures are kept; every other form runs
+  from the source**: a program's forms do things in order and read the
+  program's globals, so a value made by running one could be wrong where
+  the program is loaded; a procedure's making does nothing else, and its
+  code reads globals through their cells as it runs. Types and loads are
+  cheap to read again.
+- **Compiling a program's file runs nothing of what it does**: its forms
+  are checked and given their globals, and only procedures' definitions
+  (and types', and loads) run. Running the program at compile time, as
+  `,load` would, would do what it does.
+- **Imports checked by the types of the globals used**: each kept
+  definition's uses, printed as the `.fasl` prints types, compared where
+  it is loaded; and every global of the session compiling it has its
+  writes counted on by 2^40 first, so that no code compiled then keeps an
+  assumption about what it holds (a guard passes only at the count it
+  saw), as a global of the same type but another value where it is loaded
+  would otherwise pass it.
+- **Whole or nothing at load**: its procedures were compiled together, so
+  a call of one may be made in line in another; a definition left to its
+  source at compile time (a type that does not read back, a lemma's proof,
+  a form after a top-level `include`, one that loads a file or uses a
+  load's hidden global, one whose declaration does not check at its type)
+  is safe, being compiled from the same text as before.
+- **A declaration made what its form would make for a redefinition**:
+  the `defs` entry gets the original form and the uses, so that redefining
+  a global it uses checks the form again from source, as without the
+  `.fasl`.
+- **Type names kept**, the standard ones (each checked to mean the same
+  where it is loaded) and the file's own (declared ahead from the same
+  text; each definition's type is checked, where it is declared, against
+  the type written out), so that `,load` shows types as it does from the
+  source.
+- **Which closures were native is kept**: a `(conv cellular)` procedure
+  must stay cellular, and a closure the native compiler declined says so
+  again (the notes a definition printed are kept with it).
+- **`compile-file` falls back to a program's `.fasl`** when the file is no
+  module file; `--program` (or `(compile-file "f" program)`) for a file
+  that is both. A load ignores a program's `.fasl`, and a program's run a
+  module file's, saying nothing.
+- **Measured on kayak's compiler** (kayak `d5840ee`, stage 0's
+  `loaded-select`), which made the next three choices:
+  - **`define-rec` groups kept**, declared as a `define-rec` of `lambda`s
+    whose bodies are `(the R %fasl-value)`: 185 groups there, none kept
+    at first.
+  - **Values made of what is kept, kept**: the big `(define m (module …))`
+    forms were 1.5 s of the 1.6 s still run from source. While compiling,
+    a definition that only reads globals already made runs; one that read
+    only kept definitions is kept, its declaration reading the same globals
+    (`(begin g … (the T %fasl-value))`) for the same effect.
+  - **No check of each declaration's type against the type written out**
+    at load: it cost more than checking the bodies saved. Instead every type
+    abbreviation a kept type names is compared when the `.fasl` is read;
+    one the file defines that does not read yet (it selects from a module a
+    later form loads) is compared when the first definition naming it is
+    declared, and if it differs that form runs from its source.
+  - **A declaration is of the type as printed, names and all**, not written
+    out (but to see a `poly`, or a procedure's parameters, an abbreviation
+    hides): written out, kayak's types were 2.4 MB against 90 KB, and
+    checking the declarations was most of loading.
+  - Stage 0, 3.30 s from source, 1.15 s from the `.fasl` (888 definitions
+    kept). `compile-file` of it is slow, 10 s (printing and reading back
+    big module types).
+
+### A maker's `.fasl` keeps its parameters as written (the same night)
+
+Measured on Heist's editor (a snapshot of its fourteen `load-input`
+makers, each a `lambda` of the modules before it): from `.fasl`s it did
+not start in two minutes. A maker's type, printed, writes each parameter's
+module out in full, and each later file's again: `eldoc.fx`'s was 11 MB
+for 12 KB of source, and read back it is a tree where the checkers had a
+shared graph, so that comparing an argument's type with a parameter's took
+minutes (the user asked whether to check equality first, or to keep the
+graph in the file). What I chose, which keeps the graph by keeping the
+source's references to it:
+- **A maker's load is checked as `(module (define input (plambda (b …)
+  (lambda ((m T) …) ((the (subr E () R) %fasl-effects))))))`**, its
+  parameters `(m T)` as its source wrote them (`(load-input-moduleof
+  "buffer.fx" m-base)`), so that their types are made from the files they
+  name as from the source, shared; `%fasl-effects`, a standard `(poly ((e
+  effect) (t type)) (subr e () t))`, gives the `lambda` the maker's effect.
+- **In `R`, a description of a parameter's module is printed as its
+  select**, `(select m-frame frame)`, by its node: written out, it was
+  2 KB each, a hundred times in `calls.fx`'s.
+- Result: interfaces of 4 to 80 KB, and start-up through `eldoc.fx` in
+  2.39 s from the `.fasl`s against 4.52 s from source. Equality before
+  subtyping, and sharing in the file in general (`dletrec` of the closed
+  parts), not done: neither was needed for this, and the second cannot
+  name what depends on a `plambda`'s or a procedure's parameters.

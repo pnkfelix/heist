@@ -70,6 +70,10 @@ usage:
   fixpt compile --full-literals INPUT
                                  the same, every literal in full, in a form
                                  read back exactly (docs/fx26.md)
+  fixpt compile-file [--program] FILE...
+                                 each FX-26 file's `.fasl` made beside it, which a
+                                 load of the file (a program's: `fixpt run`,
+                                 `,load`) reads while it is fresh
   fixpt machines                 the machines FX-26 runs on, and which run here
   fixpt bench [FILE...]          time FX-26 programs on each machine (`fixpt bench --help`)
   fixpt repl                     the REPL of the language (`fixpt fx26` too)
@@ -132,8 +136,8 @@ made with rather than being told.
 
 /// The commands, as the first word: a word that is none of them but names
 /// a file runs it (`fixpt FILE`).
-const COMMANDS: [&str; 20] = [
-    "repl", "fx26", "scheme", "run", "eval", "check", "query", "test", "verify", "compile", "machines", "bench", "dump-heap", "build", "run-image", "image",
+const COMMANDS: [&str; 21] = [
+    "repl", "fx26", "scheme", "run", "eval", "check", "query", "test", "verify", "compile", "compile-file", "machines", "bench", "dump-heap", "build", "run-image", "image",
     "front-end-files", "help", "regcode-survey", "--help",
 ];
 
@@ -386,6 +390,17 @@ fn run(args: &[String]) -> i32 {
                     }
                 },
             }
+        }
+        Some("compile-file") => {
+            if dialect != Dialect::Fx26 {
+                eprintln!("fixpt compile-file: FX-26 only");
+                return 2;
+            }
+            if rest.len() < 2 {
+                eprintln!("fixpt compile-file: needs at least one module file");
+                return 2;
+            }
+            fx26::compile_files(backend, &rest[1..])
         }
         Some(cmd @ ("check" | "compile")) => {
             if dialect != Dialect::Fx26 {
@@ -759,7 +774,7 @@ pub(crate) fn apply_gc_policy(session: &mut Session) {
 }
 
 /// The options a command takes after it, left for it to read.
-const COMMAND_OPTIONS: [&str; 7] = ["--raw", "--full-literals", "--eval", "--check", "--compile", "--help", "-h"];
+const COMMAND_OPTIONS: [&str; 8] = ["--raw", "--full-literals", "--program", "--eval", "--check", "--compile", "--help", "-h"];
 
 /// The options, read from anywhere before a `--`; the rest of the words,
 /// in order, with the `--` and all after it. Or why not: an unknown option.
