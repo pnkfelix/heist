@@ -1,0 +1,34 @@
+narrowing.scm:91-92: n: number
+narrowing.scm:129-130: x: pair | number
+narrowing.scm:137-138: x: pair
+narrowing.scm:140-141: x: number
+narrowing.scm:155-163: calls first-or
+narrowing.scm:170-173: inc: inc
+narrowing.scm:188-196: calls first-or
+narrowing.scm:237-238: f: inc | string
+narrowing.scm:241-242: calls inc
+narrowing.scm:246-247: f: string
+narrowing.scm:261-268: calls call-if
+narrowing.scm:269-272: inc: inc
+narrowing.scm:286-293: calls call-if
+narrowing.scm:323-324: x: inc | #f
+narrowing.scm:326-327: calls inc
+narrowing.scm:346-351: calls maybe
+narrowing.scm:368-373: calls maybe
+narrowing.scm:374-377: inc: inc
+narrowing.scm:417-418: l: ()
+narrowing.scm:448-456: calls not-null
+narrowing.scm:539-543: calls box?
+narrowing.scm:544-545: x: number | box
+narrowing.scm:548-553: calls box-v
+narrowing.scm:554-555: x: box
+narrowing.scm:557-558: x: number
+narrowing.scm:572-577: calls unbox
+narrowing.scm:579-587: calls make-box
+narrowing.scm:588-591: inc: inc
+narrowing.scm:606-611: calls unbox
+narrowing.scm:655-656: n: number
+narrowing.scm:660-661: n: number
+narrowing.scm:675-676: n: number
+narrowing.scm:678-679: n: number
+[exit 0]

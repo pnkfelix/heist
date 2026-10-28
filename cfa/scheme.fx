@@ -188,6 +188,49 @@ result is data of the kinds `s7-builtin-result` says."
                             ;; It may keep or call what it is given.
                             (else (m-data #t kinds))))))))
 
+;;; ------------------------------------------------------------ narrowing
+
+"What a predicate says of what it is given: the classes it is true of
+(`cf-narrowing`), and whether only of them (\"full\": false of all
+else), or of some of them only (\"partial\": `integer?` is false of some
+numbers). (none) if it is no predicate known."
+(define-type sc-pred (productof (classes strings) (full bool)))
+(define* sc-predicate (subr spin (string) (sumof (none unit) (pred sc-pred)))
+  (lambda (n)
+    (let ((full (lambda ((cs strings)) (the (sumof (none unit) (pred sc-pred)) (sum pred (product (classes cs) (full #t))))))
+          (partial (lambda ((cs strings)) (the (sumof (none unit) (pred sc-pred)) (sum pred (product (classes cs) (full #f)))))))
+      (cond ((string=? n "pair?") (full (list "pair")))
+            ((string=? n "null?") (full (list "()")))
+            ((string=? n "procedure?") (full (list "procedure")))
+            ((string=? n "number?") (full (list "number")))
+            ((string=? n "string?") (full (list "string")))
+            ((string=? n "symbol?") (full (list "symbol")))
+            ((string=? n "char?") (full (list "char")))
+            ((string=? n "boolean?") (full (list "#t" "#f" "boolean")))
+            ((string=? n "vector?") (full (list "vector")))
+            ((string=? n "bytevector?") (full (list "bytevector")))
+            ((string=? n "eof-object?") (full (list "eof")))
+            ((string=? n "port?") (full (list "port")))
+            ((string=? n "hash-table?") (full (list "hash-table")))
+            ((string=? n "list?") (partial (list "pair" "()")))
+            ((cf-member? n (list "integer?" "rational?" "real?" "complex?" "exact?" "inexact?" "exact-integer?" "exact-rational?"
+                                 "zero?" "positive?" "negative?" "odd?" "even?" "nan?" "infinite?" "finite?"))
+             (partial (list "number")))
+            ((cf-member? n (list "input-port?" "output-port?" "textual-port?" "binary-port?")) (partial (list "port")))
+            (else (sum none #u))))))
+"The globals that are records' predicates (define-record-type's), by
+name, and the type each is of."
+(define sc-record-preds (ref (listof (productof (name string) (type string)) acyclic) @cf) (new nil))
+(define* sc-record-pred (subr (maxeff spin (read @cf)) (string) string)
+  (lambda (n) (letrec ((go (subr spin ((listof (productof (name string) (type string)) acyclic)) string)
+                         (lambda (l) (cond ((null? l) "") ((string=? (extract (car l) name) n) (extract (car l) type)) (else (go (cdr l)))))))
+                (go (get sc-record-preds)))))
+
+"What a test tells each branch of a local variable (`cf-narrowing`): what
+the `then` branch knows, and what the `else` one does."
+(define-type sc-told (productof (yes (listof cf-narrowing acyclic)) (no (listof cf-narrowing acyclic))))
+(define sc-nothing-told sc-told (product (yes nil) (no nil)))
+
 ;;; ------------------------------------------------------------ the core
 
 "The frames around a node, innermost first: each a slot's variable by index."
@@ -206,8 +249,8 @@ result is data of the kinds `s7-builtin-result` says."
                 (letrec ((go (subr cf-eff (int) (arrayof int @cf)) (lambda (i) (if (>= i n) a (begin (array-set! a i (cf-new-var)) (go (+ i 1)))))))
                   (go 0)))))
 (define* sc-kind-of (subr cf-eff (s7-value) int)
-  (lambda (v) (cf-kind (letrec ((nth (subr spin (s7-strings int) string) (lambda (l k) (cond ((null? l) "other") ((= k 0) (car l)) (else (nth (cdr l) (- k 1)))))))
-                         (nth s7-fv-kinds (s7-fv-kind v))))))
+  (lambda (v) (cf-kind (tagcase v (bool b (if b "#t" "#f")) (else y (letrec ((nth (subr spin (s7-strings int) string) (lambda (l k) (cond ((null? l) "other") ((= k 0) (car l)) (else (nth (cdr l) (- k 1)))))))
+                         (nth s7-fv-kinds (s7-fv-kind v))))))))
 
 "The name of a global the world does not define, if it is a built-in."
 (define* sc-builtin? (subr s7-eff (s7-global) bool)
@@ -273,7 +316,8 @@ another definition. `name`: the definition's."
                        (if (< v 0) (k-escape nil) (cf-ref v (s7-symbol-name (extract l name)) sp))))
           (n-global g (sc-global g sp))
           (n-set-local x (let ((v (sc-slot fs (extract x depth) (extract x index))))
-                           (if (< v 0) (sc-core (extract x value) fs) (k-bind v (sc-core (extract x value) fs)))))
+                           (if (< v 0) (sc-core (extract x value) fs)
+                               (begin (set cf-assigned (cons v (get cf-assigned))) (k-bind v (sc-core (extract x value) fs))))))
           (n-set-global x (k-bind (cf-global-var (s7-symbol-name (extract (extract x cell) name))) (sc-core (extract x value) fs)))
           (n-define x (let ((name (s7-symbol-name (extract (extract x cell) name))))
                         (begin (if (null? fs) (set cf-definition name) #u)
@@ -281,12 +325,48 @@ another definition. `name`: the definition's."
                                   (tagcase (sc-record-proc (extract x value) name)
                                     (made c c)
                                     (else y (sc-core (extract x value) fs)))))))
-          (n-if x (k-seq (list (sc-core (extract x test) fs) (k-alt (list (sc-core (extract x then) fs) (sc-core (extract x else) fs))))))
+          (n-if x (let* ((told (sc-told-by (extract x test) fs))
+                         (t (sc-core (extract x test) fs))
+                         (a (sc-core (extract x then) fs))
+                         (b (sc-core (extract x else) fs)))
+                    (k-if t (extract told yes) a (extract told no) b)))
           (n-lambda ls (let ((cs (sc-lambdas ls fs))) (if (and (pair? cs) (null? (cdr cs))) (car cs) (k-alt cs))))
           (n-seq ns (k-seq (sc-all ns fs)))
           (n-call x (sc-call n (extract x op) (extract x args) fs))
           (n-scope x (sc-core (extract x body) (cons (sc-new-frame (extract x size)) fs)))
           (n-fail m (k-none nil))))))
+  ;; What test `t` tells each branch: of a local variable it is, its truth;
+  ;; of a predicate of one, the predicate's classes; `not` of one, the other
+  ;; way round.
+  (sc-told-by (subr sc-eff (s7-node sc-frames) sc-told)
+    (lambda (t fs)
+      (let ((local (lambda ((n s7-node)) (tagcase (extract n form)
+                                            (n-local l (sc-slot fs (extract l depth) (extract l index)))
+                                            (else y -1)))))
+        (tagcase (extract t form)
+          (n-local l (let ((v (local t)))
+                       (if (< v 0) sc-nothing-told
+                           (product (yes (list (product (var v) (classes (list "#f")) (keep #f))))
+                                    (no (list (product (var v) (classes (list "#f" "boolean")) (keep #t))))))))
+          (n-call x
+            (let* ((args (extract x args))
+                   (name (tagcase (extract (extract x op) form) (n-global g (s7-symbol-name (extract g name))) (else y ""))))
+              (if (or (string=? name "") (not (pair? args)) (pair? (cdr args))) sc-nothing-told
+                  (let ((v (local (car args))))
+                    (cond
+                      ((and (string=? name "not") (not (cf-global-defined? name)))
+                       (let ((inner (sc-told-by (car args) fs))) (product (yes (extract inner no)) (no (extract inner yes)))))
+                      ((< v 0) sc-nothing-told)
+                      ((not (string=? (sc-record-pred name) ""))
+                       (let ((cs (the strings (list (string-append "record:" (sc-record-pred name))))))
+                         (product (yes (list (product (var v) (classes cs) (keep #t)))) (no (list (product (var v) (classes cs) (keep #f)))))))
+                      ((cf-global-defined? name) sc-nothing-told)
+                      (else
+                       (tagcase (sc-predicate name)
+                         (pred p (product (yes (list (product (var v) (classes (extract p classes)) (keep #t))))
+                                          (no (if (extract p full) (list (product (var v) (classes (extract p classes)) (keep #f))) nil))))
+                         (else y sc-nothing-told))))))))
+          (else y sc-nothing-told)))))
   (sc-all (subr sc-eff (s7-nodes sc-frames) cores)
     (lambda (ns fs) (if (null? ns) nil (let ((c (sc-core (car ns) fs))) (cons c (sc-all (cdr ns) fs))))))
   (sc-global (subr sc-eff (s7-global cf-span) core)
@@ -351,7 +431,20 @@ another definition. `name`: the definition's."
     (if (null? ns) #u
         (begin
           (tagcase (extract (car ns) form)
-            (n-define x (begin (cf-global-var (s7-symbol-name (extract (extract x cell) name))) #u))
+            (n-define x (let ((name (s7-symbol-name (extract (extract x cell) name))))
+                          (begin
+                            (cf-global-var name)
+                            ;; A record's predicate: `(record-predicate T)`.
+                            (tagcase (extract (extract x value) form)
+                              (n-call c (let ((op (tagcase (extract (extract c op) form) (n-global g (s7-symbol-name (extract g name))) (else y ""))))
+                                          (if (and (string=? op " record-predicate") (pair? (extract c args)))
+                                              (tagcase (extract (car (extract c args)) form)
+                                                (n-global g (set sc-record-preds (cons (product (name name) (type (s7-symbol-name (extract g name))))
+                                                                                       (get sc-record-preds))))
+                                                (else y #u))
+                                              #u)))
+                              (else y #u))
+                            #u)))
             (n-seq l (sc-declare! l))
             (else y #u))
           (sc-declare! (cdr ns))))))
@@ -386,6 +479,7 @@ their own, thrown away after, with what its renaming made."
         (set s7-current-ns saved)
         (cf-reset!)
         (set cf-null-kind "()")
+        (set sc-record-preds nil)
         (letrec ((go (subr sc-eff (strings) unit) (lambda (ps) (if (null? ps) #u (begin (cf-file (car ps)) (go (cdr ps)))))))
           (go paths))
         (letrec ((go (subr sc-eff ((listof s7-nodes acyclic)) unit) (lambda (l) (if (null? l) #u (begin (sc-declare! (car l)) (go (cdr l)))))))

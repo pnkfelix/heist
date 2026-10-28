@@ -37,6 +37,14 @@
 
 ;;; ------------------------------------------------------------ the core
 
+"What a branch knows of a variable by the test before it (occurrence
+typing, as yank's `refine`): its values are only those of these classes
+(`keep`), or none of them. A class: a kind's name (`number`, `#f`), a
+site's kind (`pair`, `vector`), `record:T` for a record of type T, or
+`procedure`; unknown is kept either way. A variable assigned after it is
+bound (`cf-assigned`) is not narrowed: a call between test and use could
+change it."
+(define-type cf-narrowing (productof (var int) (classes (listof string acyclic)) (keep bool)))
 (define-datatype core
   (k-none (listof core acyclic))                ; evaluate these; the value is of no interest
   (k-const int)                                  ; a datum of a kind, by number (`cf-kind`)
@@ -52,7 +60,8 @@
   (k-store core string core)                     ; a field of what the first is, given the second
   (k-case core (listof arm acyclic))             ; tagcase: the subject, the arms
   (k-escape (listof core acyclic))               ; given to code not known: escapes; unknown
-  (k-inst core (listof core acyclic)))           ; instantiated: the value; its binders given these (`cf-poly`)
+  (k-inst core (listof core acyclic))            ; instantiated: the value; its binders given these (`cf-poly`)
+  (k-if core (listof cf-narrowing acyclic) core (listof cf-narrowing acyclic) core))  ; a test, and each branch with what it narrows
 (define-type field-init (productof (label string) (value core)))
 "A case's arm: its tag (\"\" for any), the variables it binds -- the
 payload; or (`fields`) its product's fields by position, labels `1`, `2`,
@@ -137,6 +146,8 @@ an instantiation gives (`@ed`) -- each numbered as first met."
 (define cf-definition (ref string @cf) (new ""))
 
 (define-type cf-rest (productof (lambda int) (site int)))
+"The variables assigned after they are bound (Scheme's `set!`)."
+(define cf-assigned (ref (listof int acyclic) @cf) (new nil))
 (define cf-rest-sites (ref (listof cf-rest acyclic) @cf) (new nil))
 (define cf-null-kind (ref string @cf) (new "null"))
 "Everything numbered forgotten: a world to be read."
@@ -148,7 +159,7 @@ an instantiation gives (`@ed`) -- each numbered as first met."
       (set cf-globals (the (table string int @cf) (make-table string-hash string=?)))
       (set cf-global-count 0) (set cf-files nil) (set cf-definition "")
       (set cf-kinds nil) (set cf-kind-count 0) (set cf-poly-lambdas nil) (set cf-poly-sites nil) (set cf-effects nil)
-      (set cf-rest-sites nil))))
+      (set cf-rest-sites nil) (set cf-assigned nil))))
 
 "Kind `name`'s number, made on first use."
 (define* cf-kind (subr cf-eff (string) int)

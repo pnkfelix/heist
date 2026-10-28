@@ -31,10 +31,20 @@ commit that did it says so.
          `member` and `assoc` with a procedure, hash tables' walkers, and
          ports' `call-with-…`;
        - records' procedures are lambdas over a record site.
+       - narrowing by tests (2026-10-28), as yank's first steps: a
+         branch knows what a builtin predicate (`pair?`, `procedure?`, …;
+         `integer?` only in the then-branch), a record's predicate, a
+         truth test (`#t` and `#f` are kinds of their own), or `not` of
+         one said of a local variable no `set!` assigns. Notes holding
+         several values 129 to 114.
        What is left is mostly the prelude's own library procedures, whose
-       callers are outside it. Next: narrowing by tests; unknown dropping
-       data; `make-parameter` and promises (the prelude makes them as
-       closures over pairs).
+       callers are outside it. Next, of yank's narrowing: after a test
+       whose other branch cannot return (`(unless (pair? x) (error …))`);
+       comparisons with constants (`eq?`, `memv`, `case`; quoted symbols as
+       values of their own); fields nothing modifies; predicates the
+       program defines, read as formulas. Also: unknown dropping data;
+       `make-parameter` and promises (the prelude makes them as closures
+       over pairs). FX-26 narrows by `tagcase` and `typecase` already.
    - Notes by contour (what a call or variable is in each context), not
      merged, before small procedures per call site can show anything.
 3. **Worlds across languages.** s7st's builtins are FX-26 code

@@ -35,6 +35,8 @@
   (lambda (l) (if (null? l) nil (vals-union (car l) (union-all (cdr l))))))
 (define* last-vals (subr spin ((listof vals acyclic)) vals)
   (lambda (l) (cond ((null? l) nil) ((null? (cdr l)) (car l)) (else (last-vals (cdr l))))))
+(define* append-ints (subr spin (ints ints) ints) (lambda (a b) (if (null? a) b (cons (car a) (append-ints (cdr a) b)))))
+(define* member-int? (subr spin (int ints) bool) (lambda (x l) (and (pair? l) (or (= (car l) x) (member-int? x (cdr l))))))
 (define* closure-val? (subr pure (int) bool) (lambda (x) (and (>= x 0) (= (remainder x 4) 0))))
 (define* site-val? (subr pure (int) bool) (lambda (x) (and (>= x 0) (= (remainder x 4) 1))))
 (define* kind-val? (subr pure (int) bool) (lambda (x) (and (>= x 0) (= (remainder x 4) 2))))
@@ -141,6 +143,38 @@ the lambdas' bodies use but do not bind, and its language."
 ;;; ------------------------------------------------------------ interning
 
 (define* pair-key (subr pure (int int) int) (lambda (a b) (+ (* a 16777216) b)))
+
+;;; ------------------------------------------------------------ narrowing
+
+"The narrowings of the branches being evaluated, innermost first."
+(define cf-refine (ref (listof cf-narrowing acyclic) @cf) (new nil))
+"The classes value `x` is of (`cf-narrowing`)."
+(define* val-classes (subr cf-eff (int) strings)
+  (lambda (x)
+    (cond ((or (closure-val? x) (prim-val? x)) (list "procedure"))
+          ((kind-val? x) (list (cf-kind-name (quotient x 4))))
+          ((site-val? x) (let ((info (array-ref (get cf-site-array) (quotient x 4))))
+                           (if (string=? (extract info kind) "record")
+                               (list "record" (string-append "record:" (extract info tag)))
+                               (list (extract info kind)))))
+          (else nil))))
+(define* any-member? (subr spin (strings strings) bool)
+  (lambda (a b) (and (pair? a) (or (cf-member? (car a) b) (any-member? (cdr a) b)))))
+"Values `s` of variable `v`, as the branches being evaluated narrow it."
+(define* narrow (subr cf-eff (int vals) vals)
+  (lambda (v s)
+    (letrec ((apply-one (subr cf-eff (cf-narrowing vals) vals)
+               (lambda (n s)
+                 (cond ((null? s) nil)
+                       ((= (car s) cf-unknown) (cons (car s) (apply-one n (cdr s))))
+                       ((eq? (any-member? (val-classes (car s)) (extract n classes)) (extract n keep))
+                        (cons (car s) (apply-one n (cdr s))))
+                       (else (apply-one n (cdr s))))))
+             (go (subr cf-eff ((listof cf-narrowing acyclic) vals) vals)
+               (lambda (ns s) (cond ((null? ns) s)
+                                    ((= (extract (car ns) var) v) (go (cdr ns) (apply-one (car ns) s)))
+                                    (else (go (cdr ns) s))))))
+      (if (or (null? (get cf-refine)) (member-int? v (get cf-assigned))) s (go (get cf-refine) s)))))
 (define* take-ints (subr spin (int ints) ints)
   (lambda (n l) (if (or (<= n 0) (null? l)) nil (cons (car l) (take-ints (- n 1) (cdr l))))))
 
@@ -340,7 +374,12 @@ lambda's own number; else one past them, numbered on first use."
       (tagcase x
         (k-none (xs) (begin (eval-all xs c) nil))
         (k-const (k) (list (+ 2 (* 4 k))))
-        (k-var (v r) (let ((s (cf-read (var-key v c)))) (begin (if (>= r 0) (cf-note! (get cf-ref-vals) r s) #u) s)))
+        (k-var (v r) (let ((s (narrow v (cf-read (var-key v c))))) (begin (if (>= r 0) (cf-note! (get cf-ref-vals) r s) #u) s)))
+        (k-if (test yes then no else)
+          (let* ((t (eval-core test c)) (outer (get cf-refine))
+                 (a (begin (set cf-refine (append yes outer)) (eval-core then c)))
+                 (b (begin (set cf-refine (append no outer)) (eval-core else c))))
+            (begin (set cf-refine outer) (vals-union a b))))
         (k-prim (name) (list (prim-val name)))
         (k-lam (l) (let ((cl (closure-of l c)))
                      ;; Made: its body evaluated where it was made, whether or not
@@ -477,8 +516,6 @@ lambda's own number; else one past them, numbered on first use."
 "The variables `x` refers to and binds (its lambdas' bodies and
 parameters included), onto `refs` and `binds`."
 (define-type refs-binds (productof (refs ints) (binds ints)))
-(define* append-ints (subr spin (ints ints) ints) (lambda (a b) (if (null? a) b (cons (car a) (append-ints (cdr a) b)))))
-(define* member-int? (subr spin (int ints) bool) (lambda (x l) (and (pair? l) (or (= (car l) x) (member-int? x (cdr l))))))
 (define-rec
   (refs-binds-of (subr cf-eff (core refs-binds) refs-binds)
     (lambda (x acc)
@@ -502,6 +539,7 @@ parameters included), onto `refs` and `binds`."
           (k-store (e label v) (refs-binds-of v (refs-binds-of e acc)))
           (k-escape (xs) (refs-binds-all xs acc))
           (k-inst (e args) (refs-binds-all args (refs-binds-of e acc)))
+          (k-if (test yes then no else) (refs-binds-all (list test then else) acc))
           (k-case (e arms)
             (letrec ((go (subr cf-eff ((listof arm acyclic) refs-binds) refs-binds)
                        (lambda (as acc)
