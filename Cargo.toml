@@ -1,0 +1,7 @@
+# Heist's tests, for `cargo nextest run` (or `cargo test`): the crate in
+# tests/ names each of the shell runners' tests as one of its own.
+# fixpt/ is a workspace of its own.
+[workspace]
+members = ["tests"]
+exclude = ["fixpt"]
+resolver = "2"

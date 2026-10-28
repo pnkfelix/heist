@@ -1,0 +1,22 @@
+# `cargo nextest run`: Heist's tests (tests/heist.rs), each a shell
+# runner's test run alone. Each starts Fixpt's FX-26 checkers, seconds and
+# half a gigabyte apiece.
+
+# The UI scenarios drive the editor through a terminal by time: under a
+# full machine's load one may read the screen early (isearch-back did,
+# twice, with two suites at once). So fewer at once, and a second try.
+[test-groups]
+ui = { max-threads = 8 }
+
+[[profile.default.overrides]]
+filter = 'test(/^ui::/)'
+test-group = 'ui'
+retries = 2
+
+# A conformance library runs many tests through the interpreter.
+[[profile.default.overrides]]
+filter = 'test(/^conformance::/)'
+slow-timeout = { period = "120s", terminate-after = 5 }
+
+[profile.default]
+slow-timeout = { period = "60s", terminate-after = 5 }

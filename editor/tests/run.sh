@@ -1,11 +1,14 @@
 #!/bin/sh
 # The editor's module tests, on Heist's own build of Fixpt (fixpt/).
 # A test passes if it prints no line starting with FAIL and exits 0.
+#   run.sh [NAME-test.fx …]    those tests; all if none named
 here=$(cd "$(dirname "$0")" && pwd)
 fixpt="$here/../../fixpt/target/release/fixpt"
 [ -x "$fixpt" ] || { echo "build fixpt first: (cd fixpt && cargo build --release -p fixpt-cli)"; exit 2; }
 status=0
-for t in "$here"/*-test.fx; do
+[ $# -gt 0 ] || set -- "$here"/*-test.fx
+for t in "$@"; do
+  t="$here/$(basename "$t")"
   # A test that uses the editor's files says which (`;;; needs: a.fx …`),
   # and its arguments (`;;; args: …`). It runs in editor/, after a prelude
   # that makes the modules of editor.fx up to the last file it needs (each

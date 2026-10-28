@@ -1,0 +1,16 @@
+[package]
+name = "heist-tests"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "lib.rs"
+
+[[test]]
+name = "heist"
+path = "heist.rs"
+harness = false
+
+[dev-dependencies]
+libtest-mimic = "0.8"

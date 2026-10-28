@@ -2,14 +2,24 @@
 # s7st's tests: each NAME.scm run by bin/s7st, and each NAME.serve given
 # to `bin/s7st --serve` as its requests; the output (and exit status)
 # compared with NAME.out. UPDATE=1 writes NAME.out instead.
+#   run.sh [NAME …]    those tests (NAME.scm or NAME.serve); all if none
+#                      named, and the check that prelude.fx is prelude.scm's
 here=$(cd "$(dirname "$0")" && pwd)
 s7st="$here/../../bin/s7st"
 status=0
-if ! python3 "$here/../gen-prelude.py" --check; then
+if [ $# -gt 0 ]; then
+  for n in "$@"; do n=$(basename "$n"); n=${n%.scm}; n=${n%.serve}
+    found=
+    for t in "$here/$n.scm" "$here/$n.serve"; do [ -e "$t" ] && { tests="$tests $t"; found=1; }; done
+    [ -n "$found" ] || { echo "FAIL $n: no $n.scm or $n.serve"; exit 1; }
+  done
+  set -- $tests
+elif ! python3 "$here/../gen-prelude.py" --check; then
   echo "FAIL prelude.fx is not prelude.scm's: run s7st/gen-prelude.py"
   status=1
 fi
-for t in "$here"/*.scm "$here"/*.serve; do
+[ $# -gt 0 ] || set -- "$here"/*.scm "$here"/*.serve
+for t in "$@"; do
   case "$t" in
     *.scm) name=$(basename "$t" .scm)
            # The tests' directory taken out of what errors say, so it is the same anywhere.
