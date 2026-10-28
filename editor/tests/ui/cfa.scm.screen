@@ -1,0 +1,25 @@
+(define (twice f x) (f (f x)))          |
+(define (inc n) (+ n 1))                |
+(define (dec n) (- n 1))                |
+(define a (twice inc 1))                |
+(define b (twice dec 2))                |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+---- a.scm   L1                         |
+calls inc | dec                         |
+cursor 0,21
+ kkkkkk  fffff                          |
+ kkkkkk  fff                            |
+ kkkkkk  fff                            |
+ kkkkkk f                               |
+ kkkkkk f                               |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm|
+                                        |

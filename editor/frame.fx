@@ -436,7 +436,7 @@ known by name and shown in the selected window."
                            (extract f next-id) (extract f echo) (extract f prefix) (extract f mini)))
              (r (show-buffer fr f2 b)))
         (reply-with (extract r state)
-                    (append (attach-syntax b name) (append (index-directory-of file) (extract r cmds))))))))
+                    (append (attach-syntax b name) (append (attach-flow b file) (append (index-directory-of file) (extract r cmds)))))))))
 
 "File name `name` as typed in the minibuffer, resolved against `dir` (a
 buffer's directory) unless it is absolute, as Emacs's default-directory
@@ -1286,7 +1286,7 @@ After C-h k, the keys are described (`key-describer`), not run."
              (f2 (frame-of f (list (extract made window)) id
                            (cons (product (name name) (file file) (actor b)) (extract f buffers))
                            (+ id 1) (extract f echo) (extract f prefix) (extract f mini))))
-        (reply-with f2 (append (attach-syntax b name) (append (index-directory-of file) (extract made cmds))))))))
+        (reply-with f2 (append (attach-syntax b name) (append (attach-flow b file) (append (index-directory-of file) (extract made cmds)))))))))
 
 "A command added by name, for M-x and keys."
 (define* define-command! (subr (maxeff (read @ed) (write @ed)) (string action) unit)

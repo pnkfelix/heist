@@ -1,0 +1,4 @@
+(define (twice f x) (f (f x)))\n(define (inc n) (+ n 1))\n(define (dec n) (- n 1))\n(define a (twice inc 1))\n(define b (twice dec 2))\n
+\x06\x06\x06\x06\x06\x06\x06\x06\x06\x06\x06\x06\x06\x06\x06\x06\x06\x06\x06\x06\x06
+\x03f
+@8000

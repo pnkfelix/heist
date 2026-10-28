@@ -23,7 +23,8 @@
                     (m-files (load-moduleof "files.fx" m-base m-buffer m-resolve m-syntax m-sexp m-flow m-index m-view m-frame m-calls m-process))
                     (m-help (load-moduleof "help.fx" m-base m-buffer m-resolve m-syntax m-sexp m-flow m-index m-view m-frame m-calls m-process m-files))
                     (m-eldoc (load-moduleof "eldoc.fx" m-base m-buffer m-resolve m-syntax m-sexp m-flow m-index m-view m-frame m-calls m-process m-files m-help))
-                    (m-scheme (load-moduleof "scheme.fx" m-base m-buffer m-resolve m-syntax m-sexp m-flow m-index m-view m-frame m-calls m-process m-files m-help m-eldoc))))
+                    (m-scheme (load-moduleof "scheme.fx" m-base m-buffer m-resolve m-syntax m-sexp m-flow m-index m-view m-frame m-calls m-process m-files m-help m-eldoc))
+                    (m-cfa (load-moduleof "cfa.fx" m-base m-buffer m-resolve m-syntax m-sexp m-flow m-index m-view m-frame m-calls m-process m-files m-help m-eldoc m-scheme))))
 
 "The next byte typed, or #f if none comes within `timeout` ms (0: only
 one already there)."
@@ -86,14 +87,15 @@ queue; C-g at once. Whether any came."
 (define* run-loop (subr (maxeff cmd-eff (io stdin) (io clock) (io terminal)) ((actor frame) int int) unit)
   (lambda (fr rows columns)
     (let* ((polling (poll-processes!))
-           (scheming (s7-poll!)))
+           (scheming (s7-poll!))
+           (flowing (cfa-poll!)))
       (pump-keys! fr)
       (run-turns! 100)
       (cond ((not (get running)) #u)
             ((or (turns-waiting?) (pair? (get pending-keys))) (begin (send-keys! fr 0) (run-loop fr rows columns)))
             ;; Processes' output looked for every 50 ms while any runs;
             ;; after a key, eldoc's turn when 100 ms pass with no other.
-            ((send-keys! fr (cond ((or polling scheming) 50) ((get eldoc-due) 100) (else 500))) (run-loop fr rows columns))
+            ((send-keys! fr (cond ((or polling scheming flowing) 50) ((get eldoc-due) 100) (else 500))) (run-loop fr rows columns))
             ((not (get running)) #u)
             ((get eldoc-due) (begin (set eldoc-due #f) (tell! fr (eldoc-now fr)) (run-loop fr rows columns)))
             (else
@@ -133,6 +135,7 @@ queue; C-g at once. Whether any came."
         (run-loop fr h w)
         (signal-processes! 1)
         (s7-stop!)
+        (cfa-stop!)
         (write-out "\x1b;[?1049l")
         (terminal-restore)
         0))))

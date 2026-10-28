@@ -1,0 +1,25 @@
+(define twice (lambda (f x) (f (f x)))) |
+(define inc (lambda (n) (+ n 1)))       |
+(define dec (lambda (n) (- n 1)))       |
+(define a (twice inc 1))                |
+(define b (twice dec 2))                |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+---- a.fx   L1                          |
+calls inc | dec                         |
+cursor 0,29
+ kkkkkk fffff  kkkkkk                   |
+ kkkkkk fff  kkkkkk                     |
+ kkkkkk fff  kkkkkk                     |
+ kkkkkk f                               |
+ kkkkkk f                               |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm|
+                                        |

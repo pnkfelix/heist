@@ -15,5 +15,6 @@
 (define m-help ((load-module "help.fx") m-base m-buffer m-resolve m-syntax m-sexp m-flow m-index m-view m-frame m-calls m-process m-files))
 (define m-eldoc ((load-module "eldoc.fx") m-base m-buffer m-resolve m-syntax m-sexp m-flow m-index m-view m-frame m-calls m-process m-files m-help))
 (define m-scheme ((load-module "scheme.fx") m-base m-buffer m-resolve m-syntax m-sexp m-flow m-index m-view m-frame m-calls m-process m-files m-help m-eldoc))
-(define m-main ((load-module "main.fx") m-base m-buffer m-resolve m-syntax m-sexp m-flow m-index m-view m-frame m-calls m-process m-files m-help m-eldoc m-scheme))
+(define m-cfa ((load-module "cfa.fx") m-base m-buffer m-resolve m-syntax m-sexp m-flow m-index m-view m-frame m-calls m-process m-files m-help m-eldoc m-scheme))
+(define m-main ((load-module "main.fx") m-base m-buffer m-resolve m-syntax m-sexp m-flow m-index m-view m-frame m-calls m-process m-files m-help m-eldoc m-scheme m-cfa))
 (define main (with m-main main))
