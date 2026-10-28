@@ -234,6 +234,13 @@ lambda's own number; else one past them, numbered on first use."
           ((= (car s) cf-unknown) (vals-union (list cf-unknown) (payload-of (cdr s) tag)))
           (else (payload-of (cdr s) tag)))))
 
+"Arguments `as` given, in contour `c`, to parameters `ps` (and the rest,
+`rest`, if not -1)."
+(define* pass-args (subr cf-eff (ints int (listof vals acyclic) int) unit)
+  (lambda (ps rest as c)
+    (cond ((null? ps) (if (>= rest 0) (cf-join! (var-key rest c) (union-all as)) #u))
+          ((null? as) #u)
+          (else (begin (cf-join! (var-key (car ps) c) (car as)) (pass-args (cdr ps) rest (cdr as) c))))))
 (define-rec
   ;; What `s` holds escapes to code not known: its closures may be called
   ;; with anything (their bodies evaluated where they were made, their
@@ -268,6 +275,19 @@ lambda's own number; else one past them, numbered on first use."
                          (each (table-ref (get cf-site-labels) site nil)))))
                  (escape! (cdr s)))))
             (else (escape! (cdr s))))))
+  ;; What `vs` holds that a `plambda` made, instantiated with `as`: its
+  ;; binders given them, where it was made.
+  (instantiate! (subr cf-eff (vals (listof vals acyclic)) unit)
+    (lambda (vs as)
+      (cond ((null? vs) #u)
+            ((closure-val? (car vs))
+             (let ((cl (quotient (car vs) 4)))
+               (begin (pass-args (cf-poly-binders (get cf-poly-lambdas) (closure-lambda cl)) -1 as (closure-contour cl))
+                 (instantiate! (cdr vs) as))))
+            ((site-val? (car vs))
+             (begin (pass-args (cf-poly-binders (get cf-poly-sites) (quotient (car vs) 4)) -1 as 0)
+               (instantiate! (cdr vs) as)))
+            (else (instantiate! (cdr vs) as)))))
   ;; Field `label` of the sites in `targets` given `s`.
   (store! (subr cf-eff (vals string vals) unit)
     (lambda (targets label s)
@@ -284,13 +304,6 @@ lambda's own number; else one past them, numbered on first use."
 
 ;;; ------------------------------------------------------------ evaluation
 
-"Arguments `as` given, in contour `c`, to parameters `ps` (and the rest,
-`rest`, if not -1)."
-(define* pass-args (subr cf-eff (ints int (listof vals acyclic) int) unit)
-  (lambda (ps rest as c)
-    (cond ((null? ps) (if (>= rest 0) (cf-join! (var-key rest c) (union-all as)) #u))
-          ((null? as) #u)
-          (else (begin (cf-join! (var-key (car ps) c) (car as)) (pass-args (cdr ps) rest (cdr as) c))))))
 "An arm's variables, in contour `c`, given the payload: all of it, or
 (`fields`) its product's fields by position."
 (define* bind-arm (subr cf-eff (ints bool vals int) unit)
@@ -331,6 +344,9 @@ lambda's own number; else one past them, numbered on first use."
         (k-field (e label) (fields-of (eval-core e c) label))
         (k-store (e label v) (let* ((targets (eval-core e c)) (s (eval-core v c))) (begin (store! targets label s) nil)))
         (k-escape (xs) (begin (escape! (union-all (eval-all xs c))) (list cf-unknown)))
+        (k-inst (e args)
+          (let* ((vs (eval-core e c)) (as (eval-all args c)))
+            (begin (instantiate! vs as) vs)))
         (k-case (e arms)
           (let ((subject (eval-core e c)))
             (union-all
@@ -429,6 +445,7 @@ parameters included), onto `refs` and `binds`."
           (k-field (e label) (refs-binds-of e acc))
           (k-store (e label v) (refs-binds-of v (refs-binds-of e acc)))
           (k-escape (xs) (refs-binds-all xs acc))
+          (k-inst (e args) (refs-binds-all args (refs-binds-of e acc)))
           (k-case (e arms)
             (letrec ((go (subr cf-eff ((listof arm acyclic) refs-binds) refs-binds)
                        (lambda (as acc)

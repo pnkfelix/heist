@@ -1,0 +1,17 @@
+regions.fx:169-170: r: @ed | @sc
+regions.fx:205-206: r: @ed | @sc
+regions.fx:231-247: calls fresh
+regions.fx:237-242: fresh: fresh
+regions.fx:261-277: calls fresh
+regions.fx:267-272: fresh: fresh
+regions.fx:307-308: t: int | string
+regions.fx:316-317: r: @ed | @fl
+regions.fx:339-340: t: int | string
+regions.fx:356-357: t: int | string
+regions.fx:358-359: r: @ed | @fl
+regions.fx:367-368: x: int | string
+regions.fx:385-407: calls pair-of
+regions.fx:391-398: pair-of: pair-of
+regions.fx:423-448: calls pair-of
+regions.fx:429-436: pair-of: pair-of
+[exit 0]

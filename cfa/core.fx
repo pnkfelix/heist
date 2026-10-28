@@ -9,6 +9,11 @@
 ;;; language's to say (`cf-model`), so the analysis itself knows neither
 ;;; language.
 ;;;
+;;; Types and regions (FX-26's): a `plambda`'s binders are variables, and
+;;; the lambda or site its body makes is said to be bound by them
+;;; (`cf-poly!`); an instantiation (`k-inst`) gives them what it is given.
+;;; Values themselves flow as if no type were there.
+;;;
 ;;; State: global, at region @cf. One world is read and analysed at a time.
 
 "What the CFA does to its own state."
@@ -46,7 +51,8 @@
   (k-field core string)                          ; a field of what the value is
   (k-store core string core)                     ; a field of what the first is, given the second
   (k-case core (listof arm acyclic))             ; tagcase: the subject, the arms
-  (k-escape (listof core acyclic)))              ; given to code not known: escapes; unknown
+  (k-escape (listof core acyclic))               ; given to code not known: escapes; unknown
+  (k-inst core (listof core acyclic)))           ; instantiated: the value; its binders given these (`cf-poly`)
 (define-type field-init (productof (label string) (value core)))
 "A case's arm: its tag (\"\" for any), the variables it binds -- the
 payload; or (`fields`) its product's fields by position, labels `1`, `2`,
@@ -93,6 +99,11 @@ payload; or (`fields`) its product's fields by position, labels `1`, `2`,
 "The globals' variables, by name; and how many variables are globals'."
 (define cf-globals (ref (table string int @cf) @cf) (new (the (table string int @cf) (make-table string-hash string=?))))
 (define cf-global-count (ref int @cf) (new 0))
+"The type binders of lambdas and sites made by a `plambda`'s body: each
+lambda's (site's) number, and the binders' variables."
+(define-type cf-poly (productof (number int) (binders (listof int acyclic))))
+(define cf-poly-lambdas (ref (listof cf-poly acyclic) @cf) (new nil))
+(define cf-poly-sites (ref (listof cf-poly acyclic) @cf) (new nil))
 "The world's files, by number."
 (define cf-files (ref strings @cf) (new nil))
 "The kinds of data the world's constants and primitives make, by name --
@@ -111,7 +122,7 @@ an instantiation gives (`@ed`) -- each numbered as first met."
       (array-set! cf-counts 0 0) (array-set! cf-counts 1 0) (array-set! cf-counts 2 0) (array-set! cf-counts 3 0)
       (set cf-globals (the (table string int @cf) (make-table string-hash string=?)))
       (set cf-global-count 0) (set cf-files nil) (set cf-definition "")
-      (set cf-kinds nil) (set cf-kind-count 0))))
+      (set cf-kinds nil) (set cf-kind-count 0) (set cf-poly-lambdas nil) (set cf-poly-sites nil))))
 
 "Kind `name`'s number, made on first use."
 (define* cf-kind (subr cf-eff (string) int)
@@ -152,6 +163,18 @@ an instantiation gives (`@ed`) -- each numbered as first met."
 "A use of variable `v`, named `name`, at `span`."
 (define* cf-ref (subr cf-eff (int string cf-span) core)
   (lambda (v name span) (k-var v (cf-add-ref (product (span span) (name name))))))
+
+"Core `x`, a `plambda`'s body, bound by `binders`: the lambda or site it
+makes, if it makes one, so said."
+(define* cf-poly! (subr cf-eff (core ints) unit)
+  (lambda (x binders)
+    (tagcase x
+      (k-lam (l) (set cf-poly-lambdas (cons (product (number l) (binders binders)) (get cf-poly-lambdas))))
+      (k-alloc (s inits) (set cf-poly-sites (cons (product (number s) (binders binders)) (get cf-poly-sites))))
+      (k-seq (xs) (if (pair? xs) (cf-poly! (car (reverse xs)) binders) #u))
+      (else y #u))))
+(define* cf-poly-binders (subr spin ((listof cf-poly acyclic) int) ints)
+  (lambda (l n) (cond ((null? l) nil) ((= (extract (car l) number) n) (extract (car l) binders)) (else (cf-poly-binders (cdr l) n)))))
 
 "File `path`'s number in the world, made on first use."
 (define* cf-file (subr cf-eff (string) int)
