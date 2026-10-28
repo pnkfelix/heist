@@ -15,3 +15,9 @@
 ;;; Each position its own: the first of l is inc only, pick's second dbl only.
 (define i ((car l) 1))
 (define j ((pick 1 dbl 3) 2))
+;;; Two lists to one apply: each formal the union of the lists' elements
+;;; there; a rest parameter () where the shorter ends.
+(define (three x y . z) z)
+(define (go l) (apply three l))
+(go (list inc "one" 'a))
+(go (list dbl 2))

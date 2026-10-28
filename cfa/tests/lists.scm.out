@@ -21,4 +21,11 @@ lists.scm:564-565: l: pair
 lists.scm:582-596: calls dbl
 lists.scm:583-587: calls pick
 lists.scm:590-593: dbl: dbl
+lists.scm:753-754: z: () | pair
+lists.scm:778-783: three: three
+lists.scm:784-785: l: pair
+lists.scm:789-791: calls go
+lists.scm:798-801: inc: inc
+lists.scm:814-816: calls go
+lists.scm:823-826: dbl: dbl
 [exit 0]

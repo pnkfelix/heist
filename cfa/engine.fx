@@ -397,8 +397,9 @@ given a closure or site, for finding where unknown comes from."
 "The elements of the lists `s`, a list of sets a position (car of each
 pair site; a vector's elements at every position); past `cf-max-spine`
 positions, or where the list may be any (unknown) or turns back on itself,
-the rest are one, the last, and `open` says so."
-(define-type cf-positions (productof (elems (listof vals acyclic)) (open bool)))
+the rest are one, the last, and `open` says so. `ends`: the positions a
+list may end before (one of `s` shorter than another, ending there)."
+(define-type cf-positions (productof (elems (listof vals acyclic)) (open bool) (ends ints)))
 (define* positions (subr cf-eff (vals) cf-positions)
   (lambda (s)
     (letrec ((sites (subr spin (vals) vals) (lambda (l) (cond ((null? l) nil) ((site-val? (car l)) (cons (car l) (sites (cdr l)))) (else (sites (cdr l))))))
@@ -413,20 +414,27 @@ the rest are one, the last, and `open` says so."
              (go (subr cf-eff (vals int vals) cf-positions)
                (lambda (s i seen)
                  (let ((ss (sites s)))
-                   (cond ((and (null? ss) (not (vals-has? s cf-unknown))) (the cf-positions (product (elems nil) (open #f))))
+                   (cond ((and (null? ss) (not (vals-has? s cf-unknown))) (the cf-positions (product (elems nil) (open #f) (ends (list i)))))
                          ((or (vals-has? s cf-unknown) (>= i (- cf-max-spine 1))
                               (letrec ((any (subr spin (vals) bool) (lambda (l) (and (pair? l) (or (member-int? (car l) seen) (any (cdr l)))))))
                                 (any ss))
                               (pair? (fields-of ss "elt")))
-                          (product (elems (list (all s seen nil))) (open #t)))
-                         (else (let ((rest (go (fields-of ss "cdr") (+ i 1) (append ss seen))))
-                                 (product (elems (cons (fields-of ss "car") (extract rest elems))) (open (extract rest open))))))))))
+                          (product (elems (list (all s seen nil))) (open #t) (ends (list i))))
+                         (else (let ((rest (go (fields-of ss "cdr") (+ i 1) (append ss seen)))
+                                     ;; Something here that is no pair: a list may end here.
+                                     (ends-here (letrec ((other (subr spin (vals) bool) (lambda (l) (and (pair? l) (or (not (site-val? (car l))) (other (cdr l)))))))
+                                                  (other s))))
+                                 (product (elems (cons (fields-of ss "car") (extract rest elems))) (open (extract rest open))
+                                          (ends (if ends-here (cons i (extract rest ends)) (extract rest ends)))))))))))
       (go s 0 nil))))
 
 "Every element of the lists `s`, whatever its position."
 (define* all-elements (subr cf-eff (vals) vals)
   (lambda (s) (union-all (extract (positions s) elems))))
 
+"The first `n` of `l`."
+(define* take-vals (subr spin (int (listof vals acyclic)) (listof vals acyclic))
+  (lambda (n l) (if (or (<= n 0) (null? l)) nil (cons (car l) (take-vals (- n 1) (cdr l))))))
 "`as` without its first `n`."
 (define* drop-vals (subr spin (int (listof vals acyclic)) (listof vals acyclic))
   (lambda (n l) (if (or (<= n 0) (null? l)) l (drop-vals (- n 1) (cdr l)))))
@@ -629,17 +637,26 @@ the rest are one, the last, and `open` says so."
                                     r)))
         (m-pass () (union-all as))
         (m-apply ()
-          ;; The last argument's elements by position; where it may go on, its
-          ;; last as many times as any lambda may take.
+          ;; The last argument's elements by position: a call for each length
+          ;; the list may have (where one of the lists may end), and, where it
+          ;; may go on, one with its last as many times as any lambda may take.
           (if (null? as) nil
-              (let* ((r (reverse as)) (ps (if (null? (cdr as)) (the cf-positions (product (elems nil) (open #f))) (positions (car r)))))
-                (call-all call c (car as)
-                          (append (reverse (cdr (reverse (cdr as))))
-                                  (append (extract ps elems)
-                                          (if (and (extract ps open) (pair? (extract ps elems)))
-                                              (letrec ((rep (subr spin (int) (listof vals acyclic)) (lambda (k) (if (<= k 0) nil (cons (last-vals (extract ps elems)) (rep (- k 1)))))))
-                                                (rep 16))
-                                              nil)))))))
+              (let* ((r (reverse as))
+                     (middle (the (listof vals acyclic) (reverse (cdr (reverse (cdr as))))))
+                     (ps (if (null? (cdr as)) (the cf-positions (product (elems nil) (open #f) (ends (list 0)))) (positions (car r))))
+                     (ended (letrec ((go (subr cf-eff (ints) vals)
+                                           (lambda (es) (if (null? es) nil
+                                                            (vals-union (call-all call c (car as) (append middle (take-vals (car es) (extract ps elems))))
+                                                                        (go (cdr es)))))))
+                              (go (extract ps ends)))))
+                (if (and (extract ps open) (pair? (extract ps elems)))
+                    (vals-union ended
+                                (call-all call c (car as)
+                                          (append middle
+                                                  (append (extract ps elems)
+                                                          (letrec ((rep (subr spin (int) (listof vals acyclic)) (lambda (k) (if (<= k 0) nil (cons (last-vals (extract ps elems)) (rep (- k 1)))))))
+                                                            (rep 16))))))
+                    ended))))
         (m-calls (specs result escapes)
           (letrec ((nth (subr spin ((listof vals acyclic) int) vals)
                           (lambda (l k) (cond ((null? l) nil) ((= k 0) (car l)) (else (nth (cdr l) (- k 1))))))
