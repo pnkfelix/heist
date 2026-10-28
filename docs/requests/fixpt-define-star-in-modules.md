@@ -1,8 +1,9 @@
 # Request to Fixpt: a `define*` item in a module reads `@globals`
 
-Status: drafted 2026-10-28 by Heist, for the user to take to the Fixpt
-team. Against Fixpt 6447f9b0. Heist's workaround: `editor/scheme.fx`'s
-three hook procedures are `define`, not `define*` (merge 0032cc98).
+Status: done by Fixpt in 7395549 (2026-10-28, `DONE.md` §148), pulled at
+62261413 by Heist's 2dde955f. The repro checks; `editor/scheme.fx`'s three
+hook procedures are `define*` again (the workaround of merge 0032cc98
+undone).
 
 ## The prompt
 

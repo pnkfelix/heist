@@ -1,7 +1,11 @@
 # Request to Fixpt: `include` costs the FX-26 checker too much
 
-Status: drafted 2026-10-28 by Heist, for the user to take to the Fixpt
-team. Against Fixpt 6447f9b0. Follows
+Status: done by Fixpt in d0b239f, 6226141 (types interned, the cyclic
+walk kept by type; `DONE.md` §149, §151) and 7395549 (`(m T qualified)`,
+the second ask), pulled at 62261413 by Heist's 2dde955f. Fixpt measured
+4.17 s against 4.10 s as globals; on Heist's machine the editor of
+87dae480 starts in 5.0 s against 3.8 s as globals (6.4 s against 4.5 s
+before), so not quite parity here. Drafted against Fixpt 6447f9b0. Follows
 `fixpt-module-file-parameters.md`, whose measurements these are.
 
 ## The prompt

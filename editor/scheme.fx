@@ -504,7 +504,7 @@ before (after) the one shown last."
 point, if it analysed this revision of the buffer (what can reach the
 variable, what the call can call); else what s7st knows of the name at
 point, or of the operator of the call around it -- if s7st runs."
-(define s7-eldoc (subr pure ((actor frame) (actor buffer) int int string string) cmd)
+(define* s7-eldoc (subr pure ((actor frame) (actor buffer) int int string string) cmd)
   (lambda (fr b rev p here op)
     (lambda ()
       (let ((note (s7-note-at b rev p)))
@@ -515,7 +515,7 @@ point, or of the operator of the call around it -- if s7st runs."
 (set scheme-eldoc (list s7-eldoc))
 
 "M-. on a name a Scheme buffer defines nowhere: what s7st knows of it."
-(define s7-no-definition (subr pure ((actor frame) string) cmd)
+(define* s7-no-definition (subr pure ((actor frame) string) cmd)
   (lambda (fr name)
     (lambda ()
       (if (and (pair? (get s7-server)) (get s7-ready))
@@ -547,7 +547,7 @@ sent last. The answer comes to `s7-answer!`."
                                         (s7-send! "analyze" (list (int->string key) (extract snap name) (rope->string (extract snap text))))))
                                     #u)))))))))
 "A Scheme buffer's analysis actor, idle, subscribed to it."
-(define s7-attach (subr (maxeff (alloc @ed) (read @globals)) ((actor buffer) string) cmds)
+(define* s7-attach (subr (maxeff (alloc @ed) (read @globals)) ((actor buffer) string) cmds)
   (lambda (b name)
     (let ((sx (spawn-actor (string-append "s7st analysis of " name) (product (buffer b) (revision -1)))))
       (list (lambda () (set-class! sx idle))

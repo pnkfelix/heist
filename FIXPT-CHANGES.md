@@ -8,11 +8,18 @@ do it, and what it cost. Kayak will need the same changes later
 
 ## Base
 
-- Fixpt `main` at 6447f9b0 (2026-10-28), pulled from GitHub by Heist's
+- Fixpt `main` at 62261413 (2026-10-28), pulled from GitHub by Heist's
+  2dde955f (squash 52e491a8): a module's `define*` used as a value
+  (`docs/requests/fixpt-define-star-in-modules.md`, Heist's request; Fixpt
+  `DONE.md` §148), `(m T qualified)` module parameters, not included, and
+  include made cheaper in the FX-26 checker by interning types and keeping
+  the cyclic walk by type (`docs/requests/fixpt-include-cost.md`, Heist's
+  request; §149, §151); frozen regions covariant in lifetimes (Kayak's,
+  §150). Heist has no edits of its own on it.
+- Before: Fixpt 6447f9b0 (2026-10-28), pulled by Heist's
   30d080c6 (squash f6f8274a): `module-parameters` of modules and
   expressions as module items (`docs/requests/fixpt-module-file-parameters.md`,
-  Heist's request), and strings at a region, `(stringof r)`. Heist has no
-  edits of its own on it.
+  Heist's request), and strings at a region, `(stringof r)`.
 - Before: Fixpt 2d706414 (2026-10-28), pulled by Heist's c8eacb3c
   (squash 2b137803): a module's maker in native code, however many its
   items (`docs/requests/fixpt-native-module-makers.md`, Heist's request;
