@@ -187,8 +187,8 @@ yank needed it on worlds that did not finish without it."
       (string-append (cond ((= space 0) (let ((v (quotient body 16777216)))
                                           (string-append "variable " (int->string v) (if (< v (get cf-global-count)) " (global)" ""))))
                            ((= space 1) (let ((site (quotient body 16777216)))
-                                          (string-append "field of " (extract (array-ref (get cf-site-array) site) kind) " site "
-                                                         (int->string (extract (extract (array-ref (get cf-site-array) site) span) start)))))
+                                          (string-append "field of a " (if (< site (array-length (get cf-site-array))) (extract (array-ref (get cf-site-array) site) kind) "site's instance")
+                                                         " site " (int->string site))))
                            (else "a result"))
                      " in " where))))
 (define* cf-join! (subr cf-eff (int vals) unit)
@@ -212,6 +212,92 @@ yank needed it on worlds that did not finish without it."
 
 (define* pair-key (subr pure (int int) int) (lambda (a b) (+ (* a 16777216) b)))
 
+"Allocation sites split by contour (as yank's `allocation-site`): site
+`site` allocated in contour `c` is an instance of its own, numbered on
+first use -- in the empty contour, the site's own number; else one past
+the sites -- at most `cf-max-site-contours` a site, past which the site's
+own."
+(define cf-max-site-contours int 8)
+(define cf-inst-ids (ref int-table @cf) (new (new-int-table)))
+(define cf-inst-site (ref int-table @cf) (new (new-int-table)))
+(define cf-inst-contour (ref int-table @cf) (new (new-int-table)))
+(define cf-site-contours (ref int-table @cf) (new (new-int-table)))
+(define cf-inst-count (ref int @cf) (new 0))
+"Which sites are split: those in recursive procedures (yank's), whose
+data a call apart from another's keeps apart (a loop's conses)."
+(define cf-split-sites (ref (arrayof bool @cf) @cf) (new (make-array 0 #f)))
+(define* site-inst (subr cf-eff (int int) int)
+  (lambda (site c)
+    (if (or (= c 0) (>= site (array-length (get cf-split-sites))) (not (array-ref (get cf-split-sites) site))) site
+        (let* ((k (pair-key site c)) (id (table-ref (get cf-inst-ids) k -1)))
+          (cond ((>= id 0) id)
+                ((>= (table-ref (get cf-site-contours) site 0) cf-max-site-contours) site)
+                (else (let ((n (+ (get cf-inst-count) (array-length (get cf-site-array)))))
+                        (begin (set cf-inst-count (+ (get cf-inst-count) 1))
+                          (table-set! (get cf-site-contours) site (+ 1 (table-ref (get cf-site-contours) site 0)))
+                          (table-set! (get cf-inst-ids) k n)
+                          (table-set! (get cf-inst-site) n site)
+                          (table-set! (get cf-inst-contour) n c)
+                          n))))))))
+"The sites lambda body `x` allocates itself (not its lambdas'), onto `acc`;
+and lambdas bound to variables (`k-bind v (k-lam l)`), each with v."
+(define-type cf-bound (productof (lambda int) (var int)))
+(define-rec
+  (sites-in (subr cf-eff (core ints) ints)
+    (lambda (x acc)
+      (tagcase x
+        (k-alloc (site inits) (sites-in-all (letrec ((vs (subr spin ((listof field-init acyclic)) cores)
+                                                       (lambda (is) (if (null? is) nil (cons (extract (car is) value) (vs (cdr is)))))))
+                                              (vs inits))
+                                            (cons site acc)))
+        (k-none (xs) (sites-in-all xs acc)) (k-seq (xs) (sites-in-all xs acc)) (k-alt (xs) (sites-in-all xs acc))
+        (k-escape (xs) (sites-in-all xs acc))
+        (k-app (call f args) (sites-in-all (cons f args) acc))
+        (k-bind (v e) (sites-in e acc))
+        (k-field (e label) (sites-in e acc))
+        (k-store (e label v) (sites-in-all (list e v) acc))
+        (k-inst (e args) (sites-in-all (cons e args) acc))
+        (k-if (t yes a no b) (sites-in-all (list t a b) acc))
+        (k-narrow (ns body) (sites-in body acc))
+        (k-case (e arms) (sites-in-all (cons e (letrec ((bs (subr spin ((listof arm acyclic)) cores)
+                                                          (lambda (as) (if (null? as) nil (cons (extract (car as) body) (bs (cdr as)))))))
+                                                 (bs arms)))
+                                       acc))
+        (else y acc))))
+  (sites-in-all (subr cf-eff (cores ints) ints)
+    (lambda (xs acc) (if (null? xs) acc (sites-in-all (cdr xs) (sites-in (car xs) acc))))))
+(define-rec
+  (bound-lambdas (subr cf-eff (core (listof cf-bound acyclic)) (listof cf-bound acyclic))
+    (lambda (x acc)
+      (tagcase x
+        (k-bind (v e) (tagcase e
+                        (k-lam (l) (cons (product (lambda l) (var v)) acc))
+                        (else y (bound-lambdas e acc))))
+        (k-none (xs) (bound-all xs acc)) (k-seq (xs) (bound-all xs acc)) (k-alt (xs) (bound-all xs acc))
+        (k-escape (xs) (bound-all xs acc))
+        (k-app (call f args) (bound-all (cons f args) acc))
+        (k-alloc (site inits) (bound-all (letrec ((vs (subr spin ((listof field-init acyclic)) cores)
+                                                    (lambda (is) (if (null? is) nil (cons (extract (car is) value) (vs (cdr is)))))))
+                                           (vs inits))
+                                         acc))
+        (k-field (e label) (bound-lambdas e acc))
+        (k-store (e label v) (bound-all (list e v) acc))
+        (k-inst (e args) (bound-all (cons e args) acc))
+        (k-if (t yes a no b) (bound-all (list t a b) acc))
+        (k-narrow (ns body) (bound-lambdas body acc))
+        (k-case (e arms) (bound-all (cons e (letrec ((bs (subr spin ((listof arm acyclic)) cores)
+                                                       (lambda (as) (if (null? as) nil (cons (extract (car as) body) (bs (cdr as)))))))
+                                              (bs arms)))
+                                    acc))
+        (else y acc))))
+  (bound-all (subr cf-eff (cores (listof cf-bound acyclic)) (listof cf-bound acyclic))
+    (lambda (xs acc) (if (null? xs) acc (bound-all (cdr xs) (bound-lambdas (car xs) acc))))))
+"The site an instance is of; its info."
+(define* site-of (subr cf-eff (int) int)
+  (lambda (i) (if (< i (array-length (get cf-site-array))) i (table-ref (get cf-inst-site) i 0))))
+(define* site-info-of (subr cf-eff (int) site-info)
+  (lambda (i) (array-ref (get cf-site-array) (site-of i))))
+
 ;;; ------------------------------------------------------------ narrowing
 
 "The narrowings of the branches being evaluated, innermost first."
@@ -222,7 +308,7 @@ yank needed it on worlds that did not finish without it."
     (cond ((or (closure-val? x) (prim-val? x)) (list "procedure"))
           ((kind-val? x) (let ((n (cf-kind-name (quotient x 4))))
                            (if (and (> (string-length n) 1) (char=? (string-ref n 0) #\')) (list n "symbol") (list n))))
-          ((site-val? x) (let ((info (array-ref (get cf-site-array) (quotient x 4))))
+          ((site-val? x) (let ((info (site-info-of (quotient x 4))))
                            (if (string=? (extract info kind) "record")
                                (list "record" (string-append "record:" (extract info tag)))
                                (list (extract info kind)))))
@@ -298,11 +384,22 @@ lambda's own number; else one past them, numbered on first use."
   (lambda (cl) (if (< cl (array-length (get cf-lambda-array))) cl (table-ref (get cf-closure-lambda) cl -1))))
 (define* closure-contour (subr cf-eff (int) int)
   (lambda (cl) (if (< cl (array-length (get cf-lambda-array))) 0 (table-ref (get cf-closure-contour) cl 0))))
-"The contour call `call`, in contour `c`, gives its callee."
-(define* push-contour (subr cf-eff (int int) int)
-  (lambda (call c)
-    (if (= (get cf-depth) 0) 0
-        (contour-of (take-ints (get cf-depth) (cons call (table-ref (get cf-contour-calls) c nil)))))))
+"Small procedures (yank's `call-site-size`): named, not calling
+themselves, of at most `cf-small-size` nodes; `cf-small` says which."
+(define cf-small-size int 40)
+(define cf-small (ref (arrayof bool @cf) @cf) (new (make-array 0 #f)))
+"The contour call `call`, in contour `c`, gives its callee, closure `cl`:
+at depth m, the call pushed onto the caller's, cut to m (m-CFA). At depth
+0, a small procedure's is the call (as yank, even at 0CFA), and another
+lambda's is where it was made: so one made in a small procedure runs in
+that call's (a loop, a helper), and one made at the top level in none."
+(define* push-contour (subr cf-eff (int int int) int)
+  (lambda (call c cl)
+    (let ((l (closure-lambda cl)))
+      (cond ((> (get cf-depth) 0) (contour-of (take-ints (get cf-depth) (cons call (table-ref (get cf-contour-calls) c nil)))))
+            ((array-ref (get cf-small) l) (contour-of (list call)))
+            (else (closure-contour cl))))))
+
 
 "Primitive `name`'s value."
 (define* prim-val (subr cf-eff (string) int)
@@ -352,7 +449,7 @@ lambda's own number; else one past them, numbered on first use."
   (lambda (s tag)
     (cond ((null? s) nil)
           ((site-val? (car s))
-           (let ((info (array-ref (get cf-site-array) (quotient (car s) 4))))
+           (let ((info (site-info-of (quotient (car s) 4))))
              (vals-union (if (and (string=? (extract info kind) "sum") (or (string=? tag "") (string=? (extract info tag) tag)))
                              (site-field (quotient (car s) 4) "payload")
                              nil)
@@ -494,20 +591,20 @@ list may end before (one of `s` shorter than another, ending there)."
       (let ((site (cf-rest-site (get cf-rest-sites) l)) (null (kind-vals (list (get cf-null-kind)))))
         (cond ((< site 0) (cf-join! (var-key rest c) (union-all extra)))
               ((null? extra) (cf-join! (var-key rest c) null))
-              (else (begin (spine! site extra) (cf-join! (var-key rest c) (list (+ 1 (* 4 site))))))))))
+              (else (begin (spine! site c extra) (cf-join! (var-key rest c) (list (+ 1 (* 4 (site-inst site c)))))))))))
   ;; Elements `es` put in the list of sites from `site` (`cf-spine-sites!`):
   ;; one a site, those past the last into it, its `cdr` itself too.
-  (spine! (subr cf-eff (int (listof vals acyclic)) unit)
-    (lambda (site es)
+  (spine! (subr cf-eff (int int (listof vals acyclic)) unit)
+    (lambda (site c es)
       (letrec ((go (subr cf-eff (int (listof vals acyclic)) unit)
                  (lambda (i es)
                    (if (null? es) #u
-                       (let ((s (the vals (list (+ 1 (* 4 (+ site i))))))
+                       (let ((s (the vals (list (+ 1 (* 4 (site-inst (+ site i) c))))))
                              (null (kind-vals (list (get cf-null-kind)))))
                          (if (= i (- cf-max-spine 1))
                              (begin (store! s "car" (union-all es)) (store! s "cdr" (vals-union s null)))
                              (begin (store! s "car" (car es))
-                               (store! s "cdr" (if (null? (cdr es)) null (list (+ 1 (* 4 (+ site (+ i 1)))))))
+                               (store! s "cdr" (if (null? (cdr es)) null (list (+ 1 (* 4 (site-inst (+ site (+ i 1)) c))))))
                                (go (+ i 1) (cdr es)))))))))
         (go 0 es))))
   ;; Field `label` of the sites in `targets` given `s`.
@@ -568,10 +665,10 @@ list may end before (one of `s` shorter than another, ending there)."
           (begin
             (letrec ((go (subr cf-eff ((listof field-init acyclic)) unit)
                        (lambda (is) (if (null? is) #u
-                                        (begin (store! (list (+ 1 (* 4 site))) (extract (car is) label) (eval-core (extract (car is) value) c))
+                                        (begin (store! (list (+ 1 (* 4 (site-inst site c)))) (extract (car is) label) (eval-core (extract (car is) value) c))
                                           (go (cdr is)))))))
               (go inits))
-            (list (+ 1 (* 4 site)))))
+            (list (+ 1 (* 4 (site-inst site c))))))
         (k-field (e label)
           (let ((s (fields-of (eval-core e c) label)) (p (path-of x)))
             (if (< (extract p var) 0) s (narrow (extract p var) (extract p path) s))))
@@ -607,7 +704,7 @@ list may end before (one of `s` shorter than another, ending there)."
              (let* ((cl (quotient (car ops) 4))
                     (l (closure-lambda cl))
                     (made (closure-contour cl))
-                    (c1 (push-contour call c))
+                    (c1 (push-contour call c (quotient (car ops) 4)))
                     (info (array-ref (get cf-lambda-array) l))
                     (task (closure-of l c1)))
                (begin
@@ -715,8 +812,8 @@ list may end before (one of `s` shorter than another, ending there)."
                                                                                     (args ps)))))
                                                                  (cons r (go (+ i 1))))))))
                                       (go 0))))
-                      (begin (spine! base results)
-                        (vals-union (kind-vals (list (get cf-null-kind))) (if (null? results) nil (list (+ 1 (* 4 base))))))))))))))
+                      (begin (spine! base c results)
+                        (vals-union (kind-vals (list (get cf-null-kind))) (if (null? results) nil (list (+ 1 (* 4 (site-inst base c)))))))))))))))
   ;; Task `t` run: its lambda's body evaluated in its contour, its result kept.
   (run-task! (subr cf-eff (int) unit)
     (lambda (t)
@@ -786,6 +883,70 @@ not global."
                          (else (go (cdr rs) (cons (car rs) acc)))))))
         (go (extract rb refs) nil)))))
 
+"The nodes of `x`, counted no further than `limit` (a lambda's body not
+counted: it is a procedure of its own)."
+(define-rec
+  (node-count (subr cf-eff (core int) int)
+    (lambda (x limit)
+      (if (<= limit 0) 0
+          (+ 1 (tagcase x
+                 (k-none (xs) (node-count-all xs (- limit 1)))
+                 (k-app (call f args) (node-count-all (cons f args) (- limit 1)))
+                 (k-seq (xs) (node-count-all xs (- limit 1)))
+                 (k-alt (xs) (node-count-all xs (- limit 1)))
+                 (k-bind (v e) (node-count e (- limit 1)))
+                 (k-alloc (site inits) (node-count-all (letrec ((vs (subr spin ((listof field-init acyclic)) cores)
+                                                                      (lambda (is) (if (null? is) nil (cons (extract (car is) value) (vs (cdr is)))))))
+                                                             (vs inits))
+                                                           (- limit 1)))
+                 (k-field (e label) (node-count e (- limit 1)))
+                 (k-store (e label v) (node-count-all (list e v) (- limit 1)))
+                 (k-escape (xs) (node-count-all xs (- limit 1)))
+                 (k-inst (e args) (node-count-all (cons e args) (- limit 1)))
+                 (k-if (t yes a no b) (node-count-all (list t a b) (- limit 1)))
+                 (k-narrow (ns body) (node-count body (- limit 1)))
+                 (k-case (e arms) (node-count-all (cons e (letrec ((bs (subr spin ((listof arm acyclic)) cores)
+                                                                         (lambda (as) (if (null? as) nil (cons (extract (car as) body) (bs (cdr as)))))))
+                                                                (bs arms)))
+                                                  (- limit 1)))
+                 (else y 0))))))
+  (node-count-all (subr cf-eff (cores int) int)
+    (lambda (xs limit) (if (null? xs) 0 (let ((n (node-count (car xs) limit))) (+ n (node-count-all (cdr xs) (- limit n))))))))
+"Whether lambda `l` is small: named for a definition, not calling itself
+by that name, its body of `cf-small-size` nodes or fewer."
+(define* small-lambda? (subr cf-eff (int) bool)
+  (lambda (l)
+    (let* ((info (array-ref (get cf-lambda-array) l)) (name (extract info name)) (n (string-length name)))
+      (and (> n 0)
+           (not (and (>= n 2) (string=? (substring name (- n 2) n) "/λ")))
+           (<= (node-count (extract info body) (+ cf-small-size 1)) cf-small-size)
+           (let ((g (table-ref (get cf-globals) name -1)))
+             (or (< g 0) (not (member-int? g (extract (refs-binds-of (extract info body) (product (refs nil) (binds nil))) refs)))))))))
+
+"The sites of recursive lambdas marked to be split: a lambda bound to a
+variable its body refers to (by its global name, or a loop's)."
+(define* mark-split! (subr cf-eff () unit)
+  (lambda ()
+    (let* ((bodies (letrec ((go (subr cf-eff (int cores) cores)
+                                  (lambda (l acc) (if (>= l (array-length (get cf-lambda-array))) acc
+                                                      (go (+ l 1) (cons (extract (array-ref (get cf-lambda-array) l) body) acc))))))
+                     (go 0 (get cf-tops))))
+           (bound (bound-all bodies nil)))
+      (begin
+        (set cf-split-sites (make-array (array-length (get cf-site-array)) #f))
+        (letrec ((go (subr cf-eff ((listof cf-bound acyclic)) unit)
+                   (lambda (bs)
+                     (if (null? bs) #u
+                         (let* ((l (extract (car bs) lambda)) (body (extract (array-ref (get cf-lambda-array) l) body)))
+                           (begin
+                             (if (member-int? (extract (car bs) var) (extract (refs-binds-of body (product (refs nil) (binds nil))) refs))
+                                 (letrec ((mark (subr cf-eff (ints) unit)
+                                            (lambda (ss) (if (null? ss) #u (begin (array-set! (get cf-split-sites) (car ss) #t) (mark (cdr ss)))))))
+                                   (mark (sites-in body nil)))
+                                 #u)
+                             (go (cdr bs))))))))
+          (go bound))))))
+
 ;;; ------------------------------------------------------------ running
 
 "The list `l`, newest first, as an array oldest first."
@@ -818,6 +979,14 @@ language `lang`, to be analysed at depth `m` from the start: nothing run yet."
       (set cf-contour-ids (new-int-table)) (set cf-contour-calls (new-ints-table)) (set cf-contour-count 1)
       (set cf-closure-ids (new-int-table)) (set cf-closure-lambda (new-int-table)) (set cf-closure-contour (new-int-table))
       (set cf-closure-count 0)
+      (set cf-inst-ids (new-int-table)) (set cf-inst-site (new-int-table)) (set cf-inst-contour (new-int-table))
+      (set cf-site-contours (new-int-table)) (set cf-inst-count 0)
+      (set cf-small (make-array (array-length (get cf-lambda-array)) #f))
+      (letrec ((mark (subr cf-eff (int) unit)
+                 (lambda (l) (if (>= l (array-length (get cf-lambda-array))) #u
+                                 (begin (array-set! (get cf-small) l (small-lambda? l)) (mark (+ l 1)))))))
+        (mark 0))
+      (mark-split!)
       (set cf-prims nil) (set cf-prim-count 0)
       (set cf-labels (the (table string int @cf) (make-table string-hash string=?))) (set cf-label-count 0)
       (set cf-cells (new-vals-table)) (set cf-readers (new-ints-table))
@@ -836,6 +1005,7 @@ lambdas, calls and sites."
     (string-append "steps " (int->string (get cf-steps)) " queue " (int->string (get cf-queue-length))
                    " facts " (int->string (get cf-facts)) " cells " (int->string (get cf-cell-count))
                    " contours " (int->string (get cf-contour-count)) " closures " (int->string (get cf-closure-count))
+                   " site instances " (int->string (get cf-inst-count))
                    " lambdas " (int->string (array-length (get cf-lambda-array))) " calls " (int->string (length (get cf-calls)))
                    " sites " (int->string (array-length (get cf-site-array))))))
 "At most `fuel` tasks run. Whether the analysis is done: none left."

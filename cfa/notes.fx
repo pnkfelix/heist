@@ -22,7 +22,7 @@
            (let ((name (extract (array-ref (get cf-lambda-array) (closure-lambda (quotient v 4))) name)))
              (if (string=? name "") "λ" name)))
           ((site-val? v)
-           (let ((info (array-ref (get cf-site-array) (quotient v 4))))
+           (let ((info (site-info-of (quotient v 4))))
              (cond ((string=? (extract info kind) "sum") (string-append "(" (extract info tag) ")"))
                    ((and (string=? (extract info kind) "record") (not (string=? (extract info tag) ""))) (extract info tag))
                    (else (extract info kind)))))
