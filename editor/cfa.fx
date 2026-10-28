@@ -6,6 +6,8 @@
 ;;;   C-c e   the lambdas the call at point can call: the one visited, or
 ;;;           a list in *xref*
 ;;;   C-c r   the calls that can call the lambda point is in, in *xref*
+;;;   C-c d   what the variable or call at point is in each context (each
+;;;           call site of a small procedure, at depth 0), where they differ
 ;;;   eldoc   what the CFA found at point, where the text declares no type
 ;;;           (FX-26), or in place of s7st's description (Scheme)
 ;;;
@@ -218,6 +220,19 @@ start, end and name."
                                                                   "Lambdas the call can call" (if unknown " (and code not known)" "") ":\n"
                                                                   (cfa-xref-lines ps (extract q texts)))))))))
            (none u #u)))
+        ((string=? word "contexts")
+         (tagcase (cfa-take-query! key)
+           (found q (let ((t (s7-nth-field fields 2)) (fr (extract q frame)))
+                      (if (string=? t "") (tell! fr (echo "Every context sees the same here"))
+                          (tell! fr (show-xref fr (string-append "In " (extract q dir) "\n"
+                                                                 (letrec ((lines (subr spin (int int) string)
+                                                                                   ;; Each ` ; `-separated part a line.
+                                                                                   (lambda (i from)
+                                                                                     (let ((k (string-search t " ; " from)))
+                                                                                       (if (< k 0) (string-append (substring t from (string-length t)) "\n")
+                                                                                           (string-append (substring t from k) "\n" (lines i (+ k 3))))))))
+                                                                   (lines 0 0))))))))
+           (none u #u)))
         ((string=? word "callers")
          (tagcase (cfa-take-query! key)
            (found q
@@ -343,6 +358,8 @@ frame, the buffer, its file, revision and point, and the buffers' texts."
 (define-command! "cfa-at-point" (sum on-frame (cfa-at-point)))
 (define-command! "cfa-callees" (sum on-frame (cfa-query-at-point "callees")))
 (define-command! "cfa-callers" (sum on-frame (cfa-query-at-point "callers")))
+(define-command! "cfa-contexts" (sum on-frame (cfa-query-at-point "contexts")))
 (define-key! "C-c f" "cfa-at-point")
 (define-key! "C-c e" "cfa-callees")
 (define-key! "C-c r" "cfa-callers")
+(define-key! "C-c d" "cfa-contexts")

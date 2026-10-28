@@ -18,6 +18,8 @@
 ;;;                       PATH, characters) can call, answered so too
 ;;;   callers KEY PATH POS  the calls that can call the innermost lambda
 ;;;                       around POS
+;;;   contexts KEY PATH POS what the innermost variable or call around POS
+;;;                       is in each context, where contexts differ
 ;;;   depth N             the depth of analyses from now (m-CFA; 0: 0CFA)
 ;;;   status              how the analysis that runs is doing
 ;;; Answers:
@@ -30,6 +32,9 @@
 ;;;                       UNKNOWN 1 if it may call code not known; each
 ;;;                       PLACE, a lambda it can call: four fields, PATH
 ;;;                       START END NAME
+;;;   contexts KEY PATH TEXT  a `contexts`'s answer: notes.fx's context
+;;;                       note there (`x: in line 4: inc ; in line 5: dec`),
+;;;                       empty if none
 ;;;   callers KEY PATH FOUND NAME ESCAPED PLACE…
 ;;;                       the lambda's NAME (FOUND 0: none around POS);
 ;;;                       ESCAPED 1 if code not known may call it too; each
@@ -68,7 +73,7 @@ call, and whether it may call code not known."
 (define-type cf-lambda-found (productof (place cf-place) (escaped bool)))
 (define-type cf-call-found (productof (place cf-place) (callees ints) (unknown bool)))
 (define-type cf-world-notes
-  (productof (key string) (files (listof cf-file-notes-of acyclic))
+  (productof (key string) (files (listof cf-file-notes-of acyclic)) (contexts (listof cf-file-notes-of acyclic))
              (lambdas (arrayof cf-lambda-found @cf)) (calls (listof cf-call-found acyclic))))
 "A request waiting for its world: `notes`, `callees` or `callers`."
 (define-type cf-request-of (productof (kind string) (key string) (path string) (pos int)))
@@ -200,6 +205,20 @@ analysis, if it runs, stopped."
                                                                    ((string=? (extract (car l) path) path) (extract (car l) notes))
                                                                    (else (find (cdr l)))))))
                                     (cf-notes-field (find (extract w files)))))))
+        ((string=? kind "contexts")
+         ;; The narrowest context note around `pos`.
+         (cf-answer "contexts"
+                    (list (extract r key) path
+                          (letrec ((find (subr spin ((listof cf-file-notes-of acyclic)) cf-notes)
+                                         (lambda (l) (cond ((null? l) nil) ((string=? (extract (car l) path) path) (extract (car l) notes)) (else (find (cdr l))))))
+                                   (best (subr spin (cf-notes string int) string)
+                                     (lambda (l t size)
+                                       (cond ((null? l) t)
+                                             ((and (<= (extract (car l) start) pos) (<= pos (extract (car l) end))
+                                                   (or (< size 0) (< (- (extract (car l) end) (extract (car l) start)) size)))
+                                              (best (cdr l) (extract (car l) text) (- (extract (car l) end) (extract (car l) start))))
+                                             (else (best (cdr l) t size))))))
+                            (best (find (extract w contexts)) "" -1)))))
         ((string=? kind "callees")
          ;; The innermost call around `pos`.
          (let ((best (letrec ((go (subr spin ((listof cf-call-found acyclic) (sumof (none unit) (call cf-call-found))) (sumof (none unit) (call cf-call-found)))
@@ -331,6 +350,11 @@ and the requests waiting on them answered."
                                                                                           (let ((n (cf-file-notes (cf-file (car ps)))))
                                                                                             (cons (product (path (car ps)) (notes n)) (go (cdr ps))))))))
                                                             (go (extract j paths))))
+                                                   (contexts (letrec ((go (subr cf-eff (strings) (listof cf-file-notes-of acyclic))
+                                                                            (lambda (ps) (if (null? ps) nil
+                                                                                             (let ((n (cf-file-context-notes (cf-file (car ps)))))
+                                                                                               (cons (product (path (car ps)) (notes n)) (go (cdr ps))))))))
+                                                               (go (extract j paths))))
                                                    (lambdas (cf-lambdas-found))
                                                    (calls (cf-calls-found)))
                                           (get cf-analysed)))
@@ -365,7 +389,7 @@ and the requests waiting on them answered."
                                         (lambda (l) (cond ((null? l) nil) ((string=? (extract (car l) path) p) (go (cdr l))) (else (cons (car l) (go (cdr l))))))))
                                (go (get cf-dataset))))
              (cf-invalidate! (cf-world-key p)))))
-        ((or (string=? word "notes") (string=? word "callees") (string=? word "callers"))
+        ((or (string=? word "notes") (string=? word "callees") (string=? word "callers") (string=? word "contexts"))
          (begin (set cf-pending (append (get cf-pending) (list (product (kind word) (key (field 0)) (path (field 1)) (pos (cf-decimal (field 2)))))))
            (cf-answer-pending!)))
         ((string=? word "status")

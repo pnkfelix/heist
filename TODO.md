@@ -101,6 +101,10 @@ commit that did it says so.
      closures made in small procedures copied for each); splitting every
      site, not only recursive procedures', was 48 s for the same notes.
      To measure: what of the cost is the closures made in small ones.
+   - What each context sees (2026-10-28): notes stay the union, and
+     `bin/cfa --contexts`, the server's `contexts` query and the
+     editor's C-c d say, at a variable or call whose contexts see
+     different things, each: `in line 7: inc ; in line 8: dbl`.
 4. **Worlds across languages.** s7st's builtins are FX-26 code
    (`s7st/prims.fx`): a Scheme world could link to them, rather than take
    them as primitives.

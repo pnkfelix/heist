@@ -1,0 +1,21 @@
+contexts.scm:176-177: n: number
+contexts.scm:201-202: n: number
+contexts.scm:228-229: calls inc | dbl
+contexts.scm:231-232: calls inc | dbl
+contexts.scm:233-234: x: number
+contexts.scm:249-254: calls twice
+contexts.scm:255-258: inc: inc
+contexts.scm:274-279: calls twice
+contexts.scm:280-283: dbl: dbl
+contexts.scm:318-319: calls inc | dbl
+contexts.scm:320-321: y: number
+contexts.scm:336-346: calls wrap/λ
+contexts.scm:337-341: calls wrap
+contexts.scm:342-345: inc: inc
+contexts.scm:362-372: calls wrap/λ
+contexts.scm:363-367: calls wrap
+contexts.scm:368-371: dbl: dbl
+contexts.scm:228-229: by context: calls: in line 7: inc ; in line 8: dbl
+contexts.scm:231-232: by context: calls: in line 7: inc ; in line 8: dbl
+contexts.scm:318-319: by context: calls: in line 10: inc ; in line 11: dbl
+[exit 0]

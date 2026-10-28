@@ -140,6 +140,8 @@ variables of the type binders it names, to be said by what reaches them."
 (define cf-effects (ref (listof cf-effect acyclic) @cf) (new nil))
 "The world's files, by number."
 (define cf-files (ref strings @cf) (new nil))
+"The world's texts, by file number (for saying where a context's calls are)."
+(define cf-file-texts (ref strings @cf) (new nil))
 "The kinds of data the world's constants and primitives make, by name --
 the language's (`number`, `string`, …), and, in FX-26, a region or a type
 an instantiation gives (`@ed`) -- each numbered as first met."
@@ -170,7 +172,7 @@ call's sites (`cf-spine-sites!`), the list it gives."
       (set cf-vars 0) (set cf-lambdas nil) (set cf-calls nil) (set cf-sites nil) (set cf-refs nil)
       (array-set! cf-counts 0 0) (array-set! cf-counts 1 0) (array-set! cf-counts 2 0) (array-set! cf-counts 3 0)
       (set cf-globals (the (table string int @cf) (make-table string-hash string=?)))
-      (set cf-global-count 0) (set cf-files nil) (set cf-definition "")
+      (set cf-global-count 0) (set cf-files nil) (set cf-file-texts nil) (set cf-definition "")
       (set cf-kinds nil) (set cf-kind-count 0) (set cf-poly-lambdas nil) (set cf-poly-sites nil) (set cf-effects nil)
       (set cf-rest-sites nil) (set cf-call-results nil) (set cf-assigned nil) (set cf-stored nil) (set cf-widen nil))))
 
@@ -293,6 +295,14 @@ makes, if it makes one, so said."
                          (lambda (l i) (cond ((null? l) "") ((= i 0) (car l)) (else (go (cdr l) (- i 1)))))))
                 (go (get cf-files) i))))
 
+"The line (from 1) of offset `at` in file `file`."
+(define* cf-line-of (subr cf-eff (int int) int)
+  (lambda (file at)
+    (let ((t (letrec ((go (subr cf-eff (strings int) string) (lambda (l i) (cond ((null? l) "") ((= i 0) (car l)) (else (go (cdr l) (- i 1)))))))
+               (go (get cf-file-texts) file))))
+      (letrec ((count (subr spin (int int) int)
+                 (lambda (i n) (if (or (>= i at) (>= i (string-length t))) n (count (+ i 1) (if (char=? (string-ref t i) #\newline) (+ n 1) n))))))
+        (count 0 1)))))
 "A lambda's name where it has none of its own: of the definition it is in."
 (define* cf-anonymous (subr cf-eff () string)
   (lambda () (string-append (get cf-definition) "/λ")))

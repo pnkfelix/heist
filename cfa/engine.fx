@@ -204,6 +204,22 @@ yank needed it on worlds that did not finish without it."
                 (table-set! (get cf-cells) k new)
                 (letrec ((go (subr cf-eff (ints) unit) (lambda (l) (if (null? l) #u (begin (cf-enqueue! (car l)) (go (cdr l)))))))
                   (go (table-ref (get cf-readers) k nil)))))))))
+"What each reference and call is in each contour: the values, by
+(number, contour); and the contours each was evaluated in."
+(define cf-ref-ctx (ref vals-table @cf) (new (new-vals-table)))
+(define cf-call-ctx (ref vals-table @cf) (new (new-vals-table)))
+(define cf-ref-contours (ref ints-table @cf) (new (new-ints-table)))
+(define cf-call-contours (ref ints-table @cf) (new (new-ints-table)))
+(define* cf-note-ctx! (subr cf-eff (vals-table int int vals) unit)
+  (lambda (tbl n c s)
+    (if (null? s) #u
+        (let ((cs-table (if (eq? tbl (get cf-ref-ctx)) (get cf-ref-contours) (get cf-call-contours))))
+          (begin
+            (if (letrec ((has (subr spin (ints) bool) (lambda (l) (and (pair? l) (or (= (car l) c) (has (cdr l)))))))
+                  (has (table-ref cs-table n nil)))
+                #u
+                (table-set! cs-table n (cons c (table-ref cs-table n nil))))
+            (table-set! tbl (+ (* n 16777216) c) (vals-union (table-ref tbl (+ (* n 16777216) c) nil) s)))))))
 "A table of sets, `k`'s given `s` too (no readers: for the notes)."
 (define* cf-note! (subr cf-eff (vals-table int vals) unit)
   (lambda (tbl k s) (if (null? s) #u (table-set! tbl k (vals-union (table-ref tbl k nil) s)))))
@@ -643,7 +659,7 @@ list may end before (one of `s` shorter than another, ending there)."
       (tagcase x
         (k-none (xs) (begin (eval-all xs c) nil))
         (k-const (k) (list (+ 2 (* 4 k))))
-        (k-var (v r) (let ((s (narrow v nil (cf-read (var-key v c))))) (begin (if (>= r 0) (cf-note! (get cf-ref-vals) r s) #u) s)))
+        (k-var (v r) (let ((s (narrow v nil (cf-read (var-key v c))))) (begin (if (>= r 0) (begin (cf-note! (get cf-ref-vals) r s) (cf-note-ctx! (get cf-ref-ctx) r c s)) #u) s)))
         (k-narrow (ns body)
           (let ((outer (get cf-refine)))
             (begin (set cf-refine (append ns outer))
@@ -692,6 +708,7 @@ list may end before (one of `s` shorter than another, ending there)."
           (let* ((ops (eval-core f c)) (as (eval-all args c)))
             (begin
               (cf-note! (get cf-callees) call ops)
+              (cf-note-ctx! (get cf-call-ctx) call c ops)
               (call-all call c ops as)))))))
   (eval-all (subr cf-eff (cores int) (listof vals acyclic))
     (lambda (xs c) (if (null? xs) nil (let ((v (eval-core (car xs) c))) (cons v (eval-all (cdr xs) c))))))
@@ -991,6 +1008,7 @@ language `lang`, to be analysed at depth `m` from the start: nothing run yet."
       (set cf-labels (the (table string int @cf) (make-table string-hash string=?))) (set cf-label-count 0)
       (set cf-cells (new-vals-table)) (set cf-readers (new-ints-table))
       (set cf-ref-vals (new-vals-table)) (set cf-callees (new-vals-table))
+      (set cf-ref-ctx (new-vals-table)) (set cf-call-ctx (new-vals-table)) (set cf-ref-contours (new-ints-table)) (set cf-call-contours (new-ints-table))
       (set cf-escaped (new-int-table)) (set cf-site-escaped (new-int-table)) (set cf-site-labels (new-ints-table))
       (set cf-front nil) (set cf-back nil) (set cf-queued (new-int-table)) (set cf-made (new-int-table))
       (set cf-steps 0) (set cf-to-escape nil)

@@ -534,6 +534,7 @@ top levels, a core each, in order."
                    (go texts))))
       (begin
         (cf-reset!)
+        (set cf-file-texts texts)
         (set cf-null-kind "null")
         (set fx-binder-names nil)
         (letrec ((declare (subr fx-eff (strings (listof (listof syn acyclic) acyclic)) unit)

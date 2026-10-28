@@ -987,6 +987,7 @@ their own, thrown away after, with what its renaming made."
       (begin
         (set s7-current-ns saved)
         (cf-reset!)
+        (set cf-file-texts texts)
         (set cf-null-kind "()")
         (set sc-record-preds nil) (set sc-record-fields nil) (set sc-user-preds nil) (set sc-aliases nil) (set sc-pending-args nil)
         (set sc-params nil) (set sc-undefined nil)

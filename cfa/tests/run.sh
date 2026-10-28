@@ -1,6 +1,7 @@
 #!/bin/sh
 # The CFA's tests: each NAME.fx or NAME.scm analysed by bin/cfa (as a world
-# of its own, at the depth its first line says, `;;; depth: N`, else 0),
+# of its own, at the depth its first line says, `;;; depth: N`, else 0, with
+# the options a line of its first three says, `;;; options: …`),
 # its notes compared with NAME.fx.out (NAME.scm.out). UPDATE=1 writes them.
 #   run.sh [FILE …]    those tests (NAME.fx, NAME.scm); all if none named
 here=$(cd "$(dirname "$0")" && pwd)
@@ -19,7 +20,8 @@ for t in "$@"; do
   [ -e "$t" ] || continue
   name=$(basename "$t")
   depth=$(sed -n '1s/^;;; depth: //p' "$t")
-  got=$({ cd "$here" && "$cfa" -m "${depth:-0}" "$(basename "$t")" 2>&1; echo "[exit $?]"; })
+  options=$(sed -n '1,3s/^;;; options: //p' "$t")
+  got=$({ cd "$here" && "$cfa" $options -m "${depth:-0}" "$(basename "$t")" 2>&1; echo "[exit $?]"; })
   if [ -n "$UPDATE" ]; then
     printf '%s\n' "$got" > "$here/$name.out"; echo "wrote $name.out"
   elif [ "$got" = "$(cat "$here/$name.out" 2>/dev/null)" ]; then

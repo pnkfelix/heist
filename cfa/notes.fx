@@ -74,6 +74,84 @@ code not known, or there is more than one."
 (define* cf-calls-worth? (subr pure (vals) bool)
   (lambda (s) (and (pair? s) (or (pair? (cdr s)) (closure-val? (car s)) (= (car s) cf-unknown)))))
 
+"Contour `c`, said: its calls, newest first, each where it is (`line N`,
+another file's `file:N`); the empty one, `top`."
+(define* cf-say-contour (subr cf-eff (int int) string)
+  (lambda (file c)
+    (if (= c 0) "top"
+        (let ((calls (get cf-calls)) (n (length (get cf-calls))))
+          (cf-concat (letrec ((go (subr cf-eff (ints) strings)
+                                  (lambda (l) (if (null? l) nil
+                                                  (let* ((info (letrec ((nth (subr spin ((listof call-info acyclic) int) call-info)
+                                                                               (lambda (cs k) (if (or (null? (cdr cs)) (= k 0)) (car cs) (nth (cdr cs) (- k 1))))))
+                                                                 ;; `cf-calls` is newest first: call i is (n-1-i)th.
+                                                                 (nth calls (- (- n 1) (car l)))))
+                                                         (sp (extract info span))
+                                                         (where (string-append (if (= (extract sp file) file) "line "
+                                                                                   (string-append (let ((p (cf-file-name (extract sp file))))
+                                                                                                    (letrec ((b (subr spin (int) string) (lambda (i) (cond ((< i 0) p) ((char=? (string-ref p i) #\/) (substring p (+ i 1) (string-length p))) (else (b (- i 1)))))))
+                                                                                                      (b (- (string-length p) 1))))
+                                                                                                  ":"))
+                                                                               (int->string (cf-line-of (extract sp file) (extract sp start))))))
+                                                    (cons where (go (cdr l))))))))
+                       (go (table-ref (get cf-contour-calls) c nil)))
+                     " < ")))))
+"The context notes of file `file`: at each reference and call evaluated in
+contours that see different things, what each sees, `in CONTOUR: VALUES`
+joined by ` ; `."
+(define* cf-file-context-notes (subr cf-eff (int) cf-notes)
+  (lambda (file)
+    (let ((acc (the (ref cf-notes @cf) (new nil))))
+      (letrec ((one (subr cf-eff (vals-table ints-table int cf-span string) unit)
+                 (lambda (tbl ctab i sp prefix)
+                   (let* ((cs (the ints (reverse (table-ref ctab i nil))))
+                          (says (letrec ((go (subr cf-eff (ints) strings)
+                                               (lambda (l) (if (null? l) nil
+                                                               (cons (cf-say (table-ref tbl (+ (* i 16777216) (car l)) nil)) (go (cdr l)))))))
+                                  (go cs))))
+                     (if (or (null? cs) (null? (cdr cs))
+                             (letrec ((same (subr spin (strings) bool) (lambda (l) (or (null? (cdr l)) (and (string=? (car l) (car (cdr l))) (same (cdr l)))))))
+                               (same says)))
+                         #u
+                         (set acc (cons (product (start (extract sp start)) (end (extract sp end))
+                                                 (text (string-append prefix
+                                                                      (cf-concat (letrec ((go (subr cf-eff (ints strings) strings)
+                                                                                                (lambda (l ss) (if (null? l) nil
+                                                                                                                   (cons (string-append "in " (cf-say-contour file (car l)) ": " (car ss))
+                                                                                                                         (go (cdr l) (cdr ss)))))))
+                                                                                   (go cs says))
+                                                                                 " ; "))))
+                                        (get acc))))))))
+        (begin
+          (letrec ((go (subr cf-eff ((listof ref-info acyclic) int) unit)
+                     (lambda (rs i) (if (null? rs) #u
+                                        (begin (if (= (extract (extract (car rs) span) file) file)
+                                                   (one (get cf-ref-ctx) (get cf-ref-contours) i (extract (car rs) span) (string-append (extract (car rs) name) ": "))
+                                                   #u)
+                                          (go (cdr rs) (- i 1)))))))
+            (go (get cf-refs) (- (length (get cf-refs)) 1)))
+          (letrec ((go (subr cf-eff ((listof call-info acyclic) int) unit)
+                     (lambda (cs i) (if (null? cs) #u
+                                        (begin (if (= (extract (extract (car cs) operator) file) file)
+                                                   (one (get cf-call-ctx) (get cf-call-contours) i (extract (car cs) operator) "calls: ")
+                                                   #u)
+                                          (go (cdr cs) (- i 1)))))))
+            (go (get cf-calls) (- (length (get cf-calls)) 1)))
+          ;; A variable's at a call's operator is said by the call's.
+          (sort-notes (let ((all (get acc)))
+                        (letrec ((call-at? (subr spin (cf-notes int int) bool)
+                                   (lambda (l a e) (and (pair? l) (or (and (= (extract (car l) start) a) (= (extract (car l) end) e)
+                                                                           (>= (string-length (extract (car l) text)) 6)
+                                                                           (string=? (substring (extract (car l) text) 0 6) "calls:"))
+                                                                      (call-at? (cdr l) a e)))))
+                                 (keep (subr spin (cf-notes) cf-notes)
+                                   (lambda (l) (cond ((null? l) nil)
+                                                     ((and (not (and (>= (string-length (extract (car l) text)) 6) (string=? (substring (extract (car l) text) 0 6) "calls:")))
+                                                           (call-at? all (extract (car l) start) (extract (car l) end)))
+                                                      (keep (cdr l)))
+                                                     (else (cons (car l) (keep (cdr l))))))))
+                          (keep all)))))))))
+
 "The notes of file `file` (its number in the world), as the analysis has
 them now."
 (define* cf-file-notes (subr cf-eff (int) cf-notes)

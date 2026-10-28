@@ -1,6 +1,6 @@
 ;;; main.fx: the CFA from the command line (bin/cfa).
 ;;;
-;;;   bin/cfa [-L DIR]… [--progress] [--collapse] [-m N] FILE …
+;;;   bin/cfa [-L DIR]… [--contexts] [--progress] [--collapse] [-m N] FILE …
 ;;;                           the files analysed as one world, of the
 ;;;                           language their names say (.fx: FX-26), with
 ;;;                           the libraries Scheme files import (found in
@@ -11,7 +11,10 @@
 ;;;                           --collapse, a set holding unknown drops its
 ;;;                           sites (engine.fx's `collapse`); with
 ;;;                           --progress, every 2000 tasks a line on the
-;;;                           standard error: ms, then `cf-status`
+;;;                           standard error: ms, then `cf-status`; with
+;;;                           --contexts, after a file's notes, `by
+;;;                           context:` ones, what each context sees where
+;;;                           they see different things
 ;;;   bin/cfa --serve         a server, for a client such as the editor:
 ;;;                           serve.fx says its requests and answers
 
@@ -26,6 +29,9 @@
 
 "The world read (core.fx) analysed, of `lang`, at depth `m`, to the end;
 the notes of its files `paths` written."
+"Whether to say, after each file's notes, what each context sees where
+contexts see different things (`--contexts`)."
+(define cf-contexts (ref bool @cf) (new #f))
 "Whether to say the analysis's progress on the standard error (`--progress`)."
 (define cf-progress (ref bool @cf) (new #f))
 (define* cf-run-world (subr (maxeff cf-eff (io stdout) (io stderr) (io clock) spin) (cf-lang cores strings int) unit)
@@ -58,7 +64,15 @@ the notes of its files `paths` written."
                                                      (begin (cf-say-line (string-append (car ps) ":" (int->string (extract (car ns) start)) "-"
                                                                                          (int->string (extract (car ns) end)) ": " (extract (car ns) text)))
                                                        (say (cdr ns)))))))
-                           (say (cf-file-notes (cf-file (car ps)))))
+                           (say (cf-file-notes (cf-file (car ps))))
+                           (if (get cf-contexts)
+                               (say (letrec ((mark (subr spin (cf-notes) cf-notes)
+                                                (lambda (l) (if (null? l) nil
+                                                                (cons (product (start (extract (car l) start)) (end (extract (car l) end))
+                                                                               (text (string-append "by context: " (extract (car l) text))))
+                                                                      (mark (cdr l)))))))
+                                      (mark (cf-file-context-notes (cf-file (car ps))))))
+                               #u))
                          (files (cdr ps)))))))
           (files paths))))))
 
@@ -74,12 +88,14 @@ the notes of its files `paths` written."
                                                 l))))
                    (go as)))
            (as dirs)
+           (contexts (and (pair? as) (string=? (car as) "--contexts")))
+           (as (if contexts (cdr as) as))
            (progress (and (pair? as) (string=? (car as) "--progress")))
            (as (if progress (cdr as) as))
            (collapse (and (pair? as) (string=? (car as) "--collapse")))
            (as (if collapse (cdr as) as))
            (m (if (and (pair? as) (string=? (car as) "-m") (pair? (cdr as))) (cf-decimal (car (cdr as))) 0))
-           (files (begin (set cf-collapse collapse) (set cf-progress progress)
+           (files (begin (set cf-collapse collapse) (set cf-progress progress) (set cf-contexts contexts)
                     (if (and (pair? as) (string=? (car as) "-m") (pair? (cdr as))) (cdr (cdr as)) as)))
            (fx (cf-filter files #f))
            (sc (cf-filter files #t)))
