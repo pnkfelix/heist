@@ -27,7 +27,7 @@ continuations splits capture), combo's state at @cb (`--solver combo`),
 and the I/O of a checker: the clock, the standard output and error, files,
 processes (z3, playback), the command line."
 "What working on ratfink's own data does."
-(define-effect rf-st (maxeff spin (read @globals) (read @rf) (write @rf) (alloc @rf)))
+(define-effect rf-st (maxeff spin (read @globals) (read @rf) (write @rf) (alloc @rf) (io stderr)))
 (define-effect rf-eff
   (maxeff spin (read @globals) (read @rf) (write @rf) (alloc @rf) (goto @rk) (comefrom @rk)
           (read @cb) (write @cb) (alloc @cb)

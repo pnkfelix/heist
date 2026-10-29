@@ -630,6 +630,33 @@ integers is taken one value at a time, in a join."
     (if (= radix 10) (parse-number s)
         (parse-number (string-append (cond ((= radix 16) "#x") ((= radix 8) "#o") ((= radix 2) "#b") (else "")) s)))))
 
+;;; ------------------------------------------------------------ the environment
+
+"The environment ratfink runs in, as the program's: FX-26 cannot read it,
+so bin/ratfink gives it (env -0's output, --environment)."
+(define-type env-entry (productof (name string) (value string)))
+(define environment (ref (listof env-entry acyclic) @rf) (new nil))
+"Take the environment from text: NAME=VALUE entries, each ended by a NUL."
+(define set-environment! (subr rf-st (string) unit)
+  (lambda (text)
+    (letrec ((loop (subr rf-st (int int (listof env-entry acyclic)) (listof env-entry acyclic))
+               (lambda (i start acc)
+                 (cond ((>= i (string-length text)) (the (listof env-entry acyclic) (reverse acc)))
+                       ((= 0 (char->integer (string-ref text i)))
+                        (let* ((entry (substring text start i))
+                               (eq (letrec ((find (subr rf-st (int) int) (lambda (j) (cond ((>= j (string-length entry)) -1) ((char=? (string-ref entry j) #\=) j) (else (find (+ j 1)))))))
+                                     (find 0))))
+                          (loop (+ i 1) (+ i 1)
+                                (if (< eq 0) acc
+                                    (the (listof env-entry acyclic) (cons (product (name (substring entry 0 eq)) (value (substring entry (+ eq 1) (string-length entry)))) acc))))))
+                       (else (loop (+ i 1) start acc))))))
+      (set environment (loop 0 0 nil)))))
+(define environment-variable (subr rf-st (string) rf-value)
+  (lambda (name)
+    (letrec ((find (subr rf-st ((listof env-entry acyclic)) rf-value)
+               (lambda (l) (cond ((null? l) rf-false) ((string=? (extract (car l) name) name) (rf-str (extract (car l) value))) (else (find (cdr l)))))))
+      (find (get environment)))))
+
 ;;; ------------------------------------------------------------ output and errors
 
 "A value as shakedown shows it: terms with ? for their constants, unions
@@ -661,7 +688,7 @@ and symbol choices as #<union a | b>, and the rest as write writes it."
       (define-lifted! 'get-environment-variable (exactly 1)
         (lambda ((ctx rf-ctx) (src rf-value) (args rf-vals))
           (begin (if (rf-string? (car args)) #u (fail! ctx 'error (describe-call src "argument is not a string")))
-                 rf-false)))
+                 (environment-variable (rf-str-of (car args))))))
       (define-primitive! 'values (at-least 0)
         (lambda ((ctx rf-ctx) (src rf-value) (vs rf-vals))
           (if (and (pair? vs) (null? (cdr vs))) (car vs) (sum multiple vs))))

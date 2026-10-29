@@ -105,6 +105,19 @@
 (define new-term-table (subr rf-st () term-table) (lambda () ((proj ht-make term-key rf-term) key-hash key-same?)))
 (define the-terms (ref term-table @rf) (new (new-term-table)))
 
+"Whether to write each term made to the standard error (--trace-terms), to
+find where ratfink's terms part from shakedown's."
+(define trace-terms? (ref bool @rf) (new #f))
+(define set-trace-terms! (subr rf-st (bool) unit) (lambda (b) (set trace-terms? b)))
+(define arg-trace (subr rf-st (rf-value) string)
+  (lambda (a) (tagcase a (term t (string-append "t" (int->string (extract t id)))) (int i (int->string i)) (bool b (if b "#t" "#f")) (else x "?"))))
+(define trace-term! (subr rf-st (int string rf-vals) unit)
+  (lambda (id op args)
+    (if (get trace-terms?)
+        (tagcase (write-err (string-append "T " (int->string id) " " op (strings-concat (map (lambda ((a rf-value)) (string-append " " (arg-trace a))) args)) "\n"))
+          (done u #u) (failed e #u))
+        #u)))
+
 "The term of op and args, made if it is not there."
 (define mk (subr rf-st (int int rf-vals) rf-value)
   (lambda (op sort args)
@@ -113,7 +126,7 @@
       (if (>= (extract t id) 0)
           (sum term t)
           (let ((t (product (id (fresh-term-id!)) (op op) (args args) (sort sort))))
-            (begin ((proj ht-set! term-key rf-term) (get the-terms) key t) (sum term t)))))))
+            (begin ((proj ht-set! term-key rf-term) (get the-terms) key t) (trace-term! (extract t id) (op-name op) args) (sum term t)))))))
 
 "Tables keyed by terms' ids."
 (define-type (by-id (v type)) (table int v @rf))
@@ -125,7 +138,7 @@
 
 "A fresh symbolic constant of the sort."
 (define make-constant (subr rf-st (int) rf-value)
-  (lambda (sort) (sum term (product (id (fresh-term-id!)) (op op-const) (args nil) (sort sort)))))
+  (lambda (sort) (let ((id (fresh-term-id!))) (begin (trace-term! id "const" nil) (sum term (product (id id) (op op-const) (args nil) (sort sort)))))))
 "An Int constant whose value is known to be in [0, n): an index that picks
 one of n things. The solver may encode it as n booleans (smt.fx)."
 (define make-index-constant (subr rf-st (int) rf-value)
