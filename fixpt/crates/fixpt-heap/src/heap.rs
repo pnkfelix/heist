@@ -402,6 +402,12 @@ pub struct Heap {
     name_buf: String,
     /// `intern_static`'s: each name's address, and its symbol's index.
     static_symbols: Vec<(usize, u32)>,
+    /// The symbols an image spliced into an empty heap brought, by their
+    /// names' hashes (`symbol_hash_of`, the symbol's own field), sorted:
+    /// each name looked up there when first asked for and then kept in
+    /// `symbol_index`, rather than every name made a `String` and hashed at
+    /// the load (`TODO.md` §160 item 4; `splice_image`).
+    image_symbols: Vec<(i64, u32)>,
     /// The global slot holding the native adapters' shared code, once one
     /// is made (`set_adapter_code`).
     adapter_slot: Option<usize>,
@@ -521,6 +527,7 @@ impl Heap {
             symbol_index: HashMap::default(),
             name_buf: String::new(),
             static_symbols: Vec::new(),
+            image_symbols: Vec::new(),
             adapter_slot: None,
             planned_writes: HashMap::new(),
             gc_count: 0,
@@ -1297,10 +1304,18 @@ impl Heap {
 
     /// String `o`'s characters, after what `out` holds.
     pub fn string_into(&self, o: Value, out: &mut String) {
-        let n = self.string_len(o);
+        // Its body found once, not at every code point (`string_points_into`).
+        let base = self.payload_base(o);
+        let n = self.word(base) as usize;
         out.reserve(n);
         for i in 0..n {
-            out.push(char::from_u32(self.string_point(o, i)).expect("string holds valid code points"));
+            let w = self.word(base + 1 + i / 2);
+            let c = if i.is_multiple_of(2) { w as u32 } else { (w >> 32) as u32 };
+            if c < 0x80 {
+                out.push(c as u8 as char);
+            } else {
+                out.push(char::from_u32(c).expect("string holds valid code points"));
+            }
         }
     }
 
@@ -1794,7 +1809,7 @@ impl Heap {
                 todo.extend([from.car(v), from.cdr(v)]);
                 continue;
             }
-            if from.is_a(v, ObjType::Symbol) && from.symbol_index.contains_key(&from.symbol_name(v)) {
+            if from.is_a(v, ObjType::Symbol) && from.interned(&from.symbol_name(v)).is_some() {
                 let name = from.symbol_name(v);
                 slot.insert(self.intern(&name));
                 continue;
@@ -1984,7 +1999,42 @@ impl Heap {
     // ----------------------------------------------------------------- symbols
     /// The symbol `name`, if it has been interned; making none.
     pub fn interned(&self, name: &str) -> Option<Value> {
-        self.symbol_index.get(name).map(|&i| self.symbols[i as usize])
+        self.symbol_number(name).map(|i| self.symbols[i as usize])
+    }
+
+    /// Where `name`'s symbol is in `symbols`, if it is interned: in
+    /// `symbol_index`, or among an image's not yet asked for
+    /// (`image_symbols`).
+    fn symbol_number(&self, name: &str) -> Option<u32> {
+        self.symbol_index.get(name).copied().or_else(|| self.image_symbol(name))
+    }
+
+    /// `name`'s symbol among those an image brought (`image_symbols`): by
+    /// its hash, then its name compared, nothing made.
+    fn image_symbol(&self, name: &str) -> Option<u32> {
+        if self.image_symbols.is_empty() {
+            return None;
+        }
+        let h = symbol_hash_of(name);
+        let from = self.image_symbols.partition_point(|&(k, _)| k < h);
+        self.image_symbols[from..]
+            .iter()
+            .take_while(|&&(k, _)| k == h)
+            .map(|&(_, i)| i)
+            .find(|&i| self.string_is(self.obj_ref(self.symbols[i as usize], 0), name))
+    }
+
+    /// Whether string `o` holds `text`, compared in place.
+    pub fn string_is(&self, o: Value, text: &str) -> bool {
+        let n = self.string_len(o);
+        let mut i = 0;
+        for c in text.chars() {
+            if i >= n || self.string_point(o, i) != c as u32 {
+                return false;
+            }
+            i += 1;
+        }
+        i == n
     }
 
     /// `intern(name)`, for a name the runtime asks for at every turn (the
@@ -1996,7 +2046,7 @@ impl Heap {
             return self.symbols[i as usize];
         }
         let v = self.intern(name);
-        let i = self.symbol_index[name];
+        let i = self.symbol_number(name).expect("interned just now");
         self.static_symbols.push((key, i));
         v
     }
@@ -2016,6 +2066,11 @@ impl Heap {
 
     pub fn intern(&mut self, name: &str) -> Value {
         if let Some(&i) = self.symbol_index.get(name) {
+            return self.symbols[i as usize];
+        }
+        // An image's, asked for the first time: kept where it is found next.
+        if let Some(i) = self.image_symbol(name) {
+            self.symbol_index.insert(name.to_string(), i);
             return self.symbols[i as usize];
         }
         let s = self.make_string(name);
@@ -2051,9 +2106,7 @@ impl Heap {
     /// Look up an already-interned symbol without allocating. Useful when a
     /// `&Heap` is all that is available, e.g. after loading an image.
     pub fn intern_existing(&self, name: &str) -> Option<Value> {
-        self.symbol_index
-            .get(name)
-            .map(|&i| self.symbols[i as usize])
+        self.interned(name)
     }
 
     /// Two symbols' names compared, as `string_cmp`, with nothing copied.
@@ -2798,9 +2851,8 @@ impl Heap {
         assert_eq!(self.all_live_regions(), 0, "an image is made with no region live");
         assert!(self.immutable_top == STATIC_BASE && self.static_top == STATIC_MUTABLE_BASE, "an old space made static where there is a static area already");
         let mem = self.mem.words();
-        // Each object, where it is and where it goes, in address order.
-        let mut moved: Vec<(usize, usize)> = Vec::new();
-        let mut halves = [Vec::new(), Vec::new()];
+        // Each object: where it is, how long, and which half it goes in.
+        let mut objects: Vec<(usize, usize, usize)> = Vec::new();
         for (lo, hi) in [(self.active, self.top), (NURSERY_BASE, self.nursery_top)] {
             let mut at = lo;
             while at < hi {
@@ -2812,13 +2864,37 @@ impl Heap {
                 } else {
                     (2, false)
                 };
-                let k = if immutable { 0 } else { 1 };
-                let goes = [STATIC_BASE, STATIC_MUTABLE_BASE][k] + halves[k].len();
-                moved.push((at, goes));
-                halves[k].extend_from_slice(&mem[at..at + n]);
+                objects.push((at, n, if immutable { 0 } else { 1 }));
                 at += n;
             }
         }
+        // The interned symbols and their names first in the immutable half,
+        // together: what a load reads of every symbol (its hash, `splice`)
+        // and of many names (jitdebug's) is then on a few pages, not on
+        // most of the half (the front end's: 153 pages, not 1,604). An
+        // object by a reference to it, as `goes` finds it below.
+        let mut first = vec![false; objects.len()];
+        let object_of = |i: usize| objects.partition_point(|&(at, _, _)| at < i).checked_sub(1);
+        for &sym in &self.symbols {
+            for v in [sym, self.obj_ref(sym, 0)] {
+                let i = v.index() - self.base;
+                if let Some(k) = object_of(i).filter(|&k| objects[k].2 == 0 && i <= objects[k].0 + objects[k].1) {
+                    first[k] = true;
+                }
+            }
+        }
+        // Each object, where it is and where it goes, by where it is.
+        let mut moved: Vec<(usize, usize)> = Vec::with_capacity(objects.len());
+        let mut halves = [Vec::new(), Vec::new()];
+        for pass in [true, false] {
+            for (k, &(at, n, half)) in objects.iter().enumerate() {
+                if first[k] == pass {
+                    moved.push((at, [STATIC_BASE, STATIC_MUTABLE_BASE][half] + halves[half].len()));
+                    halves[half].extend_from_slice(&mem[at..at + n]);
+                }
+            }
+        }
+        moved.sort_unstable();
         // Where word `i` of an object of the old space or the nursery goes:
         // a pair's reference is to its first word, a bloblet's past its
         // header (to its suffix, which for one with none is where the next
