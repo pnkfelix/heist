@@ -38,6 +38,10 @@
                     (m-files (load-moduleof "files.fx" m-base m-buffer m-resolve m-syntax m-sexp m-index m-view m-frame m-calls m-process))
                     (m-help (load-moduleof "help.fx" m-base m-buffer m-resolve m-syntax m-sexp m-index m-view m-frame m-calls m-process m-files))
                     (m-eldoc (load-moduleof "eldoc.fx" m-base m-buffer m-resolve m-syntax m-sexp m-index m-view m-frame m-calls m-process m-files m-help))))
+(hide (define kit-lists (load-module "../kit/lists.fx"))
+      (import kit-lists map))
+(hide (define kit-strings (load-module "../kit/strings.fx"))
+      (import kit-strings string-split))
 
 (define s7-prompt string "s7st> ")
 "The server's process, once started; whether it has said it is ready; and
@@ -186,22 +190,7 @@ comint keeps it. Output is no change of the user's."
 
 "The fields of an answer's rest, `s`: split at its tabs, each unescaped."
 (define* s7-fields (subr spin (string) strings)
-  (lambda (s)
-    (letrec ((go (subr spin (int int strings) strings)
-               (lambda (i start acc)
-                 (cond ((>= i (string-length s)) (reverse-strings (cons (s7-unescape (substring s start i)) acc)))
-                       ((char=? (string-ref s i) #\tab) (go (+ i 1) (+ i 1) (cons (s7-unescape (substring s start i)) acc)))
-                       (else (go (+ i 1) start acc))))))
-      (go 0 0 nil))))
-"The words of `s`, separated by spaces."
-(define* s7-words (subr spin (string) strings)
-  (lambda (s)
-    (letrec ((go (subr spin (int int strings) strings)
-               (lambda (i start acc)
-                 (cond ((>= i (string-length s)) (reverse-strings (if (> i start) (cons (substring s start i) acc) acc)))
-                       ((char=? (string-ref s i) #\space) (go (+ i 1) (+ i 1) (if (> i start) (cons (substring s start i) acc) acc)))
-                       (else (go (+ i 1) start acc))))))
-      (go 0 0 nil))))
+  (lambda (s) (map s7-unescape (string-split s #\tab))))
 "Integer `s`, perhaps negative; 0 if it is none."
 (define* s7-integer (subr spin (string) int)
   (lambda (s)
@@ -216,7 +205,7 @@ comint keeps it. Output is no change of the user's."
   (lambda (fs rev)
     (let* ((ints (lambda ((s string)) (letrec ((go (subr spin (strings) ints)
                                                     (lambda (l) (if (null? l) nil (cons (s7-integer (car l)) (go (cdr l)))))))
-                                         (go (s7-words s)))))
+                                         (go (words s)))))
            (faces (letrec ((go (subr spin (ints) text-faces)
                              (lambda (l)
                                (if (or (null? l) (null? (cdr l)) (null? (cdr (cdr l)))) nil
@@ -230,7 +219,7 @@ comint keeps it. Output is no change of the user's."
                               (if (or (null? l) (null? (cdr l)) (null? (cdr (cdr l)))) nil
                                   (cons (product (name (car l)) (start (s7-integer (car (cdr l)))) (end (s7-integer (car (cdr (cdr l))))))
                                         (go (cdr (cdr (cdr l)))))))))
-                   (go (s7-words (s7-nth-field fs 2)))))
+                   (go (words (s7-nth-field fs 2)))))
            (refs (letrec ((go (subr spin (ints) references)
                             (lambda (l)
                               (if (or (null? l) (null? (cdr l)) (null? (cdr (cdr l))) (null? (cdr (cdr (cdr l))))) nil

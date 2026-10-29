@@ -12,7 +12,9 @@
                     (m-view (load-moduleof "view.fx" m-base m-buffer m-resolve m-syntax m-sexp m-index))
                     (m-frame (load-moduleof "frame.fx" m-base m-buffer m-resolve m-syntax m-sexp m-index m-view))))
 (hide (define kit-lists (load-module "../kit/lists.fx"))
-      (import kit-lists member?))
+      (import kit-lists member? map remove))
+(hide (define kit-strings (load-module "../kit/strings.fx"))
+      (import kit-strings string-split))
 
 "Each visited buffer's file and text, for the analysis."
 (define* buffer-texts (subr turn-eff (buffer-infos) (listof (productof (file string) (text string)) acyclic))
@@ -96,9 +98,9 @@ line`; the text the buffers have (`texts`), else the file's."
 
 ;;; ------------------------------------------------------------ the type at point (C-c t)
 
-(define* reverse-strings (subr pure (strings) strings)
-  (lambda (l) (letrec ((go (subr pure (strings strings) strings) (lambda (l acc) (if (null? l) acc (go (cdr l) (cons (car l) acc))))))
-                (go l nil))))
+"The words of `s`: what is between its spaces, none empty."
+(define* words (subr spin (string) strings)
+  (lambda (s) (remove (lambda ((w string)) (string=? w "")) (string-split s #\space))))
 
 "The files of the program `file` is part of, in order: those its
 directory's `program` file lists (one a line), if it has one, and `file`
@@ -107,15 +109,8 @@ among them; else `file` alone."
   (lambda (file)
     (let* ((dir (directory-of file))
            (listing (text-of-file (string-append dir "program")))
-           (names (letrec ((lines (subr spin (int int strings) strings)
-                             ;; The lines of `listing` from `i`, the current one from `start`.
-                             (lambda (i start acc)
-                               (cond ((>= i (string-length listing))
-                                      (reverse-strings (if (> i start) (cons (string-append dir (substring listing start i)) acc) acc)))
-                                     ((char=? (string-ref listing i) #\newline)
-                                      (lines (+ i 1) (+ i 1) (if (> i start) (cons (string-append dir (substring listing start i)) acc) acc)))
-                                     (else (lines (+ i 1) start acc))))))
-                    (lines 0 0 nil))))
+           (names (map (lambda ((l string)) (string-append dir l))
+                       (remove (lambda ((l string)) (string=? l "")) (string-split listing #\newline)))))
       (if (member? file names string=?) names (list file)))))
 
 "Message for a buffer: `a`..`e` marked, in face `face`, alone."
@@ -148,7 +143,7 @@ said; or why the program does not check."
                                                                  (productof (pieces strings) (offset int)))
                                                           (lambda (fs at acc offset)
                                                             (if (null? fs)
-                                                                (product (pieces (reverse-strings acc)) (offset offset))
+                                                                (product (pieces (reverse acc)) (offset offset))
                                                                 (let ((t (string-append (text-for (car fs)) "\n")))
                                                                   (go (cdr fs) (+ at (string-length t)) (cons t acc)
                                                                       (if (string=? (car fs) file) at offset)))))))

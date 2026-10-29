@@ -27,6 +27,8 @@
                     (m-files (load-moduleof "files.fx" m-base m-buffer m-resolve m-syntax m-sexp m-index m-view m-frame m-calls m-process))))
 (hide (define kit-lists (load-module "../kit/lists.fx"))
       (import kit-lists every list-sort))
+(hide (define kit-strings (load-module "../kit/strings.fx"))
+      (import kit-strings string-join))
 
 (define-type command-doc (productof (name string) (doc string)))
 "What each command does, in a line or two, by its name."
@@ -51,14 +53,6 @@
                (lambda (cs) (if (null? cs) nil (cons (extract (car cs) name) (go (cdr cs)))))))
       (go (append (commands) (get more-commands))))))
 
-"The words of `s`, split at its spaces."
-(define* words (subr spin (string) strings)
-  (lambda (s)
-    (let ((i (string-search s " " 0)))
-      (cond ((< i 0) (if (string=? s "") nil (list s)))
-            ((= i 0) (words (substring s 1 (string-length s))))
-            (else (cons (substring s 0 i) (words (substring s (+ i 1) (string-length s)))))))))
-
 "The keys command `name` is on: everywhere, then in buffers of one name
 or kind (\"RET (in *grep*)\")."
 (define* keys-of (subr (maxeff (read @ed) spin) (string) strings)
@@ -75,12 +69,6 @@ or kind (\"RET (in *grep*)\")."
                                  (else (local (cdr m)))))))
       (append (global keymap) (append (global (get more-keys)) (local (get buffer-keys)))))))
 
-"`ss` joined, `sep` between."
-(define* joined (subr spin (strings string) string)
-  (lambda (ss sep)
-    (cond ((null? ss) "")
-          ((null? (cdr ss)) (car ss))
-          (else (string-append (car ss) (string-append sep (joined (cdr ss) sep)))))))
 
 "`s` with spaces after it to `n` columns (32 at most), and one at least."
 (define* padded (subr pure (string int) string)
@@ -106,7 +94,7 @@ what it does."
     (let ((ks (keys-of name)) (doc (doc-of name)))
       (string-append (cond ((string=? name "self-insert-command") "It is on the characters that are not bound.\n")
                            ((null? ks) (string-append "It is on no key: M-x " name " runs it.\n"))
-                           (else (string-append "It is on " (joined ks ", ") ".\n")))
+                           (else (string-append "It is on " (string-join ks ", ") ".\n")))
                      "\n" (if (string=? doc "") "Not documented." doc) "\n"))))
 
 "What *Apropos* says of commands `ns`: each name, its keys, and what it does."
@@ -115,7 +103,7 @@ what it does."
     (if (null? ns)
         ""
         (let ((doc (doc-of (car ns))))
-          (string-append (padded (car ns) 28) (joined (keys-of (car ns)) ", ") "\n"
+          (string-append (padded (car ns) 28) (string-join (keys-of (car ns)) ", ") "\n"
                          (if (string=? doc "") "" (string-append "  " doc "\n"))
                          (apropos-text (cdr ns)))))))
 
@@ -169,7 +157,7 @@ described by this."
                          (let ((ks (keys-of name)))
                            (draw (with-echo f (if (null? ks)
                                                   (string-append name " is not on any key")
-                                                  (string-append name " is on " (joined ks ", ")))))))))))
+                                                  (string-append name " is on " (string-join ks ", ")))))))))))
 
 "C-h b: the keys bound in the selected buffer, and then everywhere, with
 their commands, in *Help*."

@@ -18,6 +18,8 @@
                     (m-frame (load-moduleof "frame.fx" m-base m-buffer m-resolve m-syntax m-sexp m-index m-view))
                     (m-calls (load-moduleof "calls.fx" m-base m-buffer m-resolve m-syntax m-sexp m-index m-view m-frame))
                     (m-process (load-moduleof "process.fx" m-base m-buffer m-resolve m-syntax m-sexp m-index m-view m-frame m-calls))))
+(hide (define kit-strings (load-module "../kit/strings.fx"))
+      (import kit-strings string-prefix?))
 
 "The text of the line point is on in `st`, and its number."
 (define* point-line (subr spin (buffer) (productof (text string) (line int)))
@@ -54,7 +56,7 @@ longest name the line has after its flags."
                                 (if (null? bs) best
                                     (let ((name (extract (car bs) name)))
                                       (go (cdr bs)
-                                          (if (and (starts-with? rest (string-append name " "))
+                                          (if (and (string-prefix? (string-append name " ") rest)
                                                    (tagcase best
                                                      (found b (> (string-length name) (string-length (extract b name))))
                                                      (none u #t)))

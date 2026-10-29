@@ -17,6 +17,8 @@
                     (m-view (load-moduleof "view.fx" m-base m-buffer m-resolve m-syntax m-sexp m-index))))
 (hide (define kit-lists (load-module "../kit/lists.fx"))
       (import kit-lists member?))
+(hide (define kit-strings (load-module "../kit/strings.fx"))
+      (import kit-strings string-prefix?))
 
 (define-type window
   (productof (id int) (buffer (actor buffer)) (view (actor view)) (height int)
@@ -1088,11 +1090,6 @@ names of their commands."
     (product (prompt (extract m prompt)) (text t) (point q) (then (extract m then))
              (complete (extract m complete)) (hint h))))
 
-"Whether `s` starts with `pre`."
-(define* starts-with? (subr spin (string string) bool)
-  (lambda (s pre)
-    (and (<= (string-length pre) (string-length s)) (string=? (substring s 0 (string-length pre)) pre))))
-
 "TAB on `typed`, among `names`: the longest start that all the names
 starting with it share, and what to say after it -- nothing, or no
 match, the sole completion, or the names it could be."
@@ -1100,7 +1097,7 @@ match, the sole completion, or the names it could be."
   (lambda (typed names)
     (let ((ms (letrec ((go (subr spin (strings) strings)
                          (lambda (l) (cond ((null? l) nil)
-                                           ((starts-with? (car l) typed) (cons (car l) (go (cdr l))))
+                                           ((string-prefix? typed (car l)) (cons (car l) (go (cdr l))))
                                            (else (go (cdr l)))))))
                 (go names))))
       (if (null? ms)
