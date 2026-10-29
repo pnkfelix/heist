@@ -522,7 +522,7 @@ for true or false."
                 (none u (sum none #u))
                 (some ys
                   (let ((pairs (the cases
-                                 (apply-append
+                                 (apply append
                                   (map (lambda ((x a-case))
                                          (map (lambda ((y a-case))
                                                 (product (value (op (extract x value) (extract y value)))
@@ -541,8 +541,6 @@ for true or false."
                                                (sum none #u)))
                                          (loop (cdr pairs) (add-cases cs (list (car pairs))))))))))
                       (loop pairs (sum some (the cases nil)))))))))))))
-(define apply-append (subr rf-st ((listof cases acyclic)) cases)
-  (lambda (ls) (if (null? ls) nil (append (car ls) (apply-append (cdr ls))))))
 (define filter-cases (subr rf-st (cases) cases)
   (lambda (cs) (cond ((null? cs) nil)
                      ((rf-false? (extract (car cs) cond)) (filter-cases (cdr cs)))

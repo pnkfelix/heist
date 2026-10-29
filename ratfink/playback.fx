@@ -159,7 +159,7 @@ prelude's, which call procedures in the order ratfink does."
     (let ((ctor (rf-caddr form)))
       (vals-append (cond ((rf-pair? ctor) (list (rf-car ctor))) ((rf-false? ctor) nil) (else (list ctor)))
                    (cons (rf-cadddr form)
-                         (apply-append-vals (map (lambda ((spec rf-value)) (if (rf-pair? spec) (rf-elements (rf-cdr spec)) nil))
+                         (apply append (map (lambda ((spec rf-value)) (if (rf-pair? spec) (rf-elements (rf-cdr spec)) nil))
                                                  (rf-elements (rf-cddddr form)))))))))
 
 "The names a program's top-level forms define."
@@ -298,7 +298,7 @@ builds the form from the parts or their temporaries."
                                         (lambda (bs rs)
                                           (if (null? bs)
                                               (rf-cons (q 'let) (rf-cons (rf-list (map (lambda ((p name-temp)) (L2 (extract p name) (extract p temp)))
-                                                                                       (apply-append-name-temps (map (lambda ((r renamed-formals)) (extract r alist)) renamed))))
+                                                                                       (the (listof name-temp acyclic) (apply append (map (lambda ((r renamed-formals)) (extract r alist)) renamed)))))
                                                                          (body-of (rf-cddr x))))
                                               (let* ((f (playback-form (rf-cadr (car bs))))
                                                      (inner (nest (cdr bs) (cdr rs))))
@@ -337,8 +337,6 @@ builds the form from the parts or their temporaries."
 to temporary."
 (define-type name-temp (productof (name rf-value) (temp rf-value)))
 (define-type renamed-formals (productof (formals rf-value) (alist (listof name-temp acyclic))))
-(define apply-append-name-temps (subr rf-st ((listof (listof name-temp acyclic) acyclic)) (listof name-temp acyclic))
-  (lambda (ls) (if (null? ls) nil (append (car ls) (apply-append-name-temps (cdr ls))))))
 (define rename-formals (subr rf-eff (rf-value) renamed-formals)
   (lambda (b)
     (letrec ((loop (subr rf-eff (rf-value (listof name-temp acyclic)) renamed-formals)
@@ -530,7 +528,7 @@ names of each library before."
 (define user-imports (subr rf-eff (rf-vals) rf-vals)
   (lambda (import-forms)
     (vals-append
-     (apply-append-vals
+     (apply append
       (map (lambda ((form rf-value))
              (map without-macros
                   (filter (lambda ((set rf-value))
@@ -624,7 +622,7 @@ the names they are imported under, as well as their own."
     (let* ((name (rf-cadr form))
            (decls (rf-elements (rf-cddr form)))
            (of-kind (lambda ((kind symbol)) (filter (lambda ((d rf-value)) (keyword? (rf-car d) kind)) decls)))
-           (bodies (apply-append-vals (map (lambda ((d rf-value)) (rf-elements (rf-cdr d))) (of-kind 'begin))))
+           (bodies (the rf-vals (apply append (map (lambda ((d rf-value)) (rf-elements (rf-cdr d))) (of-kind 'begin)))))
            (defined (defined-names bodies pb-error))
            (in-prelude (filter (lambda ((v symbol)) (memq-val? (rf-sym v) (prelude-names))) (extract defined vars)))
            (macros-before (get macros)))
@@ -641,7 +639,7 @@ the names they are imported under, as well as their own."
                                                   (lambda (ms acc) (if (eq? ms macros-before) acc (loop (cdr ms) (cons (extract (car ms) name) acc))))))
                                          (loop (get macros) nil))))
                (exports (filter (lambda ((e binding-name)) (not (symbols-member? (extract e name) library-macros)))
-                                (parse-exports (apply-append-vals (map (lambda ((d rf-value)) (rf-elements (rf-cdr d))) (of-kind 'export))) pb-error))))
+                                (parse-exports (apply append (map (lambda ((d rf-value)) (rf-elements (rf-cdr d))) (of-kind 'export))) pb-error))))
           (begin
             (set playback-library rf-false)
             (let ((imports (user-imports (of-kind 'import))))
@@ -667,8 +665,8 @@ program) for it in its body."
 (define with-contracts (subr rf-eff (rf-value rf-vals) rf-value)
   (lambda (form contracts-fors)
     (let* ((name (rf-cadr form))
-           (forms (apply-append-vals (map (lambda ((c rf-value)) (rf-elements (rf-cddr c)))
-                                          (filter (lambda ((c rf-value)) (equal-datum? (strip (rf-cadr c)) name)) contracts-fors))))
+           (forms (the rf-vals (apply append (map (lambda ((c rf-value)) (rf-elements (rf-cddr c)))
+                                          (filter (lambda ((c rf-value)) (equal-datum? (strip (rf-cadr c)) name)) contracts-fors)))))
            (contracts (filter (lambda ((f rf-value)) (and (rf-pair? f) (keyword? (rf-car f) 'contract))) forms))
            (helpers (filter (lambda ((f rf-value)) (not (and (rf-pair? f) (keyword? (rf-car f) 'contract)))) forms))
            (contract-of (lambda ((f rf-value))

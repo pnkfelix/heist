@@ -70,9 +70,7 @@ file relative to the directory of the file x was read from."
             #u)
         (let ((dir (let ((file (source-file x))) (if (string=? file "") "." (directory-of file))))
               (ci? (keyword? (rf-car x) 'include-ci)))
-          (apply-append-forms (map (lambda ((f rf-value)) (read-file-data (resolve-file dir (rf-str-of f)) ci?)) (rf-elements (rf-cdr x)))))))))
-(define apply-append-forms (subr rf-st ((listof rf-vals acyclic)) rf-vals)
-  (lambda (ls) (if (null? ls) nil (vals-append (car ls) (apply-append-forms (cdr ls))))))
+          (apply append (map (lambda ((f rf-value)) (read-file-data (resolve-file dir (rf-str-of f)) ci?)) (rf-elements (rf-cdr x)))))))))
 
 "A library's declarations with include, include-ci and
 include-library-declarations done (relative to dir) and cond-expand
@@ -90,12 +88,12 @@ chosen: a list of export, import and begin forms."
                                  ((or (eq? head 'include) (eq? head 'include-ci))
                                   (loop (cdr decls)
                                         (cons (rf-cons (rf-sym 'begin)
-                                                       (rf-list (apply-append-forms
+                                                       (rf-list (apply append
                                                                  (map (lambda ((f rf-value)) (read-file-data (resolve-file dir (rf-str-of f)) (eq? head 'include-ci)))
                                                                       (rf-elements (rf-cdr d))))))
                                               acc)))
                                  ((eq? head 'include-library-declarations)
-                                  (loop (vals-append (apply-append-forms (map (lambda ((f rf-value)) (read-forms (resolve-file dir (rf-str-of f))))
+                                  (loop (vals-append (apply append (map (lambda ((f rf-value)) (read-forms (resolve-file dir (rf-str-of f))))
                                                                               (rf-elements (rf-cdr d))))
                                                      (cdr decls))
                                         acc))
@@ -233,7 +231,5 @@ define-syntax, in begin and include too (not through macro uses)."
         (let ((ctor (rf-caddr form)))
           (append (cond ((rf-pair? ctor) (list (rf-sym-of (rf-car ctor)))) ((rf-symbol? ctor) (list (rf-sym-of ctor))) (else nil))
                   (list (rf-sym-of (rf-cadddr form)))
-                  (apply-append-symbols (map (lambda ((spec rf-value)) (if (rf-pair? spec) (map (lambda ((s rf-value)) (rf-sym-of s)) (rf-elements (rf-cdr spec))) nil))
+                  (apply append (map (lambda ((spec rf-value)) (if (rf-pair? spec) (map (lambda ((s rf-value)) (rf-sym-of s)) (rf-elements (rf-cdr spec))) nil))
                                              (rf-elements (rf-cddddr form)))))))))
-(define apply-append-symbols (subr rf-st ((listof symbols acyclic)) symbols)
-  (lambda (ls) (if (null? ls) nil (append (car ls) (apply-append-symbols (cdr ls))))))

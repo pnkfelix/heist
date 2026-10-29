@@ -149,7 +149,7 @@ number of proofs that did not pass, or -1 if there were none."
 "Failures in how a proof uses contracts."
 (define check-contract-use! (subr rf-eff (proof) unit)
   (lambda (p)
-    (let ((checked (apply-append-syms (map (lambda ((q proof)) (tagcase (extract q for-contract) (some n (the symbols (list n))) (none u (the symbols nil)))) (all-proofs)))))
+    (let ((checked (the symbols (apply append (map (lambda ((q proof)) (tagcase (extract q for-contract) (some n (the symbols (list n))) (none u (the symbols nil)))) (all-proofs))))))
       (begin
         (for-each (lambda ((name symbol))
                     (cond ((not (contract-defined? name))
@@ -165,8 +165,6 @@ number of proofs that did not pass, or -1 if there were none."
                   ((= 0 (proof-contract-calls)) (record-failure! 'contract-frame (string-append "the proof never calls " (symbol->string target))))
                   (else #u)))
           (none u #u))))))
-(define apply-append-syms (subr rf-st ((listof symbols acyclic)) symbols)
-  (lambda (ls) (if (null? ls) nil (append (car ls) (apply-append-syms (cdr ls))))))
 
 "Each obligation with its status, model and the rest; constants are all
 the constants made, in order."

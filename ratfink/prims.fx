@@ -718,7 +718,7 @@ and symbol choices as #<union a | b>, and the rest as write writes it."
       (define-primitive! 'disjoint? (exactly 2)
         (lambda ((ctx rf-ctx) (src rf-value) (args rf-vals))
           (let* ((bs (footprint rf-true (arg2 args))) (as (footprint rf-true (car args))))
-            (t-and* (apply-append-vals
+            (t-and* (apply append
                      (map (lambda ((x footprint-entry))
                             (map (lambda ((y footprint-entry))
                                    (tagcase (extract x obj)
@@ -728,8 +728,6 @@ and symbol choices as #<union a | b>, and the rest as write writes it."
                                      (none u rf-true)))
                                  bs))
                           as)))))))))
-(define apply-append-vals (subr rf-st ((listof rf-vals acyclic)) rf-vals)
-  (lambda (ls) (if (null? ls) nil (vals-append (car ls) (apply-append-vals (cdr ls))))))
 (define error-field (subr rf-st (symbol int) unit)
   (lambda (name i)
     (define-lifted! name (exactly 1)
@@ -909,7 +907,7 @@ first)."
       (define-lifted! 'vector-append (at-least 0)
         (lambda ((ctx rf-ctx) (src rf-value) (vs rf-vals))
           (begin (for-each (lambda ((v rf-value)) (begin (vector-arg ctx src v) #u)) vs)
-                 (new-vector (apply-append-vals (map (lambda ((v rf-value)) (slots-list (rf-slots-of v))) vs))))))
+                 (new-vector (apply append (map (lambda ((v rf-value)) (slots-list (rf-slots-of v))) vs))))))
       (define-lifted! 'vector->list (exactly 1)
         (lambda ((ctx rf-ctx) (src rf-value) (args rf-vals)) (rf-list (slots-list (vector-arg ctx src (car args))))))
       (define-primitive! 'list->vector (exactly 1)
