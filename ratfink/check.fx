@@ -59,8 +59,11 @@ the values for playback, and the trace (each branch's source and value)."
 (define-type model-entry (productof (k rf-value) (v rf-value)))
 (define-type model (listof model-entry acyclic))
 (define-type trace-entry (productof (source rf-value) (value rf-value)))
+"An input of a proof, as its value in a model is written."
+(define-type input-text (productof (name rf-value) (text string)))
 (define-type result
-  (productof (ob obligation) (status symbol) (model model) (values rf-vals) (trace (listof trace-entry acyclic)) (has-trace bool)))
+  (productof (ob obligation) (status symbol) (model model) (values rf-vals) (trace (listof trace-entry acyclic)) (has-trace bool)
+             (inputs (listof input-text acyclic))))
 
 "Check the proofs in a program's forms, writing a report with out. The
 number of proofs that did not pass, or -1 if there were none."
@@ -124,6 +127,7 @@ number of proofs that did not pass, or -1 if there were none."
     (begin
       (begin-session! (if (>= (extract p unwind) 0) (extract p unwind) (extract options unwind)) (or (extract options split) (extract p split)))
       (begin-proof-mode! (sum some p))
+      (reset-proof-inputs!)
       (rf-catch (lambda () (begin (apply-value (make-ctx rf-true 0 nil) (extract p body) nil (rf-sym (extract p name))) rf-unspecified))
                 (lambda ((s rf-signal)) (tagcase s (abort u rf-unspecified) (finished v rf-unspecified) (err e (rf-signal! s)))))
       (finish-splits!)
@@ -213,20 +217,42 @@ values of the constants."
     (let* ((kind (extract ob kind)) (condition (extract ob condition))
            (sa (satisfiable s condition constants))
            (answer (extract sa answer)) (m (extract sa model))
-           (plain (lambda ((status symbol)) (the result (product (ob ob) (status status) (model nil) (values nil) (trace nil) (has-trace #f)))))
+           (plain (lambda ((status symbol)) (the result (product (ob ob) (status status) (model nil) (values nil) (trace nil) (has-trace #f) (inputs nil)))))
            (with-model (lambda ((status symbol))
                          (let ((relevant (term-constants (cons condition (extract ob assumptions)))))
                            (the result (product (ob ob) (status status)
                                     (model (filter (lambda ((e model-entry)) (memq-val? (extract e k) relevant)) m))
                                     (values (playback-values constants m))
                                     (trace (trace ob m))
-                                    (has-trace #t)))))))
+                                    (has-trace #t)
+                                    (inputs (input-texts m))))))))
       (cond ((eq? kind 'cover)
              (if (eq? answer 'sat) (with-model 'satisfied) (plain (if (eq? answer 'unsat) 'unsatisfiable 'undetermined))))
             ((eq? answer 'sat) (with-model 'failure))
             ((eq? answer 'unknown) (plain 'undetermined))
             ((and (eq? kind 'assert) (eq? 'unsat (reachable? s (extract ob pc) reached))) (plain 'unreachable))
             (else (plain 'success))))))
+
+"The proof's inputs, their values in a model written."
+(define input-texts (subr rf-eff (model) (listof input-text acyclic))
+  (lambda (m)
+    (let ((value-of (model-value m)))
+      (map (lambda ((i proof-input)) (product (name (extract i name)) (text ((get input-renderer) (concrete (extract i value) value-of) (extract i type)))))
+           (get proof-inputs)))))
+"A value as it is in a model."
+(define concrete (subr rf-st (rf-value (subr rf-st (rf-value) rf-value)) rf-value)
+  (lambda (v value-of)
+    (tagcase v
+      (term t (term-value v value-of (new-term-memo)))
+      (choice t (term->symbol (term-value (sum term t) value-of (new-term-memo))))
+      (union ms (letrec ((find (subr rf-st (rf-members) rf-value)
+                           (lambda (l) (cond ((null? l) rf-unspecified)
+                                             ((rf-true? (term-value (extract (car l) g) value-of (new-term-memo))) (concrete (extract (car l) v) value-of))
+                                             (else (find (cdr l)))))))
+                  (find ms)))
+      (pair s (rf-cons (concrete (rf-car v) value-of) (concrete (rf-cdr v) value-of)))
+      (vec s (sum vec (list->array (map (lambda ((e rf-value)) (concrete e value-of)) (slots-list s)))))
+      (else x v))))
 
 "A constant's value in a model (another is any value)."
 (define model-value (subr rf-st (model) (subr rf-st (rf-value) rf-value))
@@ -317,10 +343,15 @@ library."
                        (out (string-append "  " (pad (status-name status) 14) (kind-prefix kind) label "\n"))
                        (let ((at (if (eq? status 'success) "" (source-location (extract ob source)))))
                          (if (string=? at "") #u (out (string-append "      at " at "\n"))))
+                       ;; A proof's inputs, as they are; then what else the
+                       ;; model says, of constants not made for them.
+                       (for-each (lambda ((i input-text)) (out (string-append "      " (datum->string (extract i name)) " = " (extract i text) "\n")))
+                                 (extract r inputs))
                        (for-each (lambda ((e model-entry))
                                    (out (string-append "      " (let ((d (constant-description (extract e k)))) (if (has-description? (extract e k)) d "?"))
                                                        "  ->  " (show-value (extract e v)) "\n")))
-                                 (extract r model))
+                                 (if (null? (extract r inputs)) (extract r model)
+                                     (filter (lambda ((e model-entry)) (not (memq-val? (extract e k) (get input-constants)))) (extract r model))))
                        (if (extract r has-trace) (write-trace (extract r trace) out) #u)
                        (tagcase playback
                          (some pb (if (and (eq? status 'failure) (or (eq? kind 'assert) (eq? kind 'error) (eq? kind 'contract)))

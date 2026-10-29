@@ -49,10 +49,22 @@ module."
 (define built-in-file? (subr rf-st (string) bool)
   (lambda (f) (or (string-starts? "fx26:" f) (string-ends? "ratfink/proof.fx" f) (string=? f "proof.fx"))))
 
+"A file's forms, read once (the survey reads them first)."
+(define-type read-file (productof (path string) (forms rf-vals)))
+(define files-read (ref (listof read-file acyclic) @rf) (new nil))
 (define fx26-read (subr rf-eff (string) rf-vals)
   (lambda (file)
-    (begin (set-fx26-syntax! #t)
-           (let ((forms (read-file-data file #f))) (begin (set-fx26-syntax! #f) forms)))))
+    (letrec ((find (subr rf-eff ((listof read-file acyclic)) rf-vals)
+               (lambda (l)
+                 (cond ((null? l)
+                        (begin (set-fx26-syntax! #t)
+                               (let ((forms (read-file-data file #f)))
+                                 (begin (set-fx26-syntax! #f)
+                                        (set files-read (cons (product (path file) (forms forms)) (get files-read)))
+                                        forms))))
+                       ((string=? (extract (car l) path) file) (extract (car l) forms))
+                       (else (find (cdr l)))))))
+      (find (get files-read)))))
 
 (define ignored-heads symbols
   (list 'module-parameters 'define-type 'define-effect 'define-generative 'define-syscall 'define-optional-syscall
@@ -93,10 +105,24 @@ proof of it."
           (list (rf-cons (q 'define-proof) (rf-cons (rf-list1 name) (rf-cddr v))))
           (tagcase (spec-of type)
             (none u (list (rf-list (list (q 'define) name e))))
-            (some sp
+            (some sp0
+              (let ((sp (with-formal-names sp0 v)))
               (cond ((specified? sp) (vals-append (contract-forms name sp e) (proof-forms name sp #t)))
                     ((harness? sp v) (cons (rf-list (list (q 'define) name e)) (proof-forms name sp #f)))
-                    (else (list (rf-list (list (q 'define) name e)))))))))))
+                    (else (list (rf-list (list (q 'define) name e))))))))))))
+
+"A specification whose unnamed parameters take the names of its lambda's."
+(define with-formal-names (subr rf-st (spec rf-value) spec)
+  (lambda (sp v)
+    (if (and (rf-pair? v) (rf-eqv? (rf-car v) (q 'lambda)) (rf-list? (rf-cadr v)) (= (rf-length (rf-cadr v)) (list-length (extract sp params))))
+        (let* ((renames (filter (lambda ((r param)) (string-starts? " arg" (symbol->string (rf-sym-of (extract r name)))))
+                                (map2 (lambda ((p param) (f rf-value)) (product (name (extract p name)) (type (if (rf-pair? f) (rf-car f) f))))
+                                      (extract sp params) (rf-elements (rf-cadr v)))))
+               (rename (lambda ((x rf-value)) (subst-type renames x))))
+          (product (params (map (lambda ((p param)) (product (name (rename (extract p name))) (type (extract p type)))) (extract sp params)))
+                   (result (extract sp result)) (requires (map rename (extract sp requires)))
+                   (result-name (extract sp result-name)) (ensures (map rename (extract sp ensures)))))
+        sp)))
 
 ;;; ------------------------------------------------------------ specifications
 ;;;
@@ -154,7 +180,7 @@ proof of it."
                                         (set count (+ 1 (get count)))
                                         (if (and (rf-pair? p) (= (rf-length p) 3) (rf-eqv? (rf-cadr p) (q ':)))
                                             (product (name (rf-car p)) (type (rf-caddr p)))
-                                            (product (name (rf-sym (string->symbol (string-append "arg" (int->string (get count)))))) (type p)))))
+                                            (product (name (rf-sym (string->symbol (string-append " arg" (int->string (get count)))))) (type p)))))
                                     (rf-elements ps)))
                        (requires (fx-append-all (map (lambda ((c rf-value)) (if (rf-eqv? (rf-car c) (q 'requires)) (rf-elements (rf-cdr c)) nil)) clauses)))
                        (ens (filter (lambda ((c rf-value)) (rf-eqv? (rf-car c) (q 'ensures))) clauses))
@@ -196,35 +222,277 @@ that name made r."
 (define nat-conditions (subr rf-st ((listof param acyclic)) rf-vals)
   (lambda (ps) (fx-append-all (map (lambda ((p param)) (if (nat-type? (extract p type)) (the rf-vals (list (F3 (q '<=) (rf-int 0) (extract p name)))) (the rf-vals nil))) ps))))
 
-"The shape of a type's values, or #f."
+"How many times a value's type may unfold a named type (a datatype's, a
+define-type's, mu's, dletrec's): the depth of recursive values."
+(define type-fuel int 3)
+
+"A type's definition, if the program gives one: a family's (define-type
+(name (p kind) …) type) is (fx26-family (p …) type)."
+(define type-definition (subr rf-st (rf-value) rf-value)
+  (lambda (n)
+    (letrec ((find (subr rf-st ((listof param acyclic)) rf-value)
+               (lambda (l) (cond ((null? l) rf-false) ((rf-eqv? (extract (car l) name) n) (extract (car l) type)) (else (find (cdr l)))))))
+      (find (get type-names)))))
+(define family? (subr rf-st (rf-value) bool) (lambda (d) (and (rf-pair? d) (rf-eqv? (rf-car d) (q 'fx26-family)))))
+
+"t with each name of s its type there."
+(define subst-type (subr rf-st ((listof param acyclic) rf-value) rf-value)
+  (lambda (s t)
+    (cond ((rf-symbol? t)
+           (letrec ((find (subr rf-st ((listof param acyclic)) rf-value)
+                      (lambda (l) (cond ((null? l) t) ((rf-eqv? (extract (car l) name) t) (extract (car l) type)) (else (find (cdr l)))))))
+             (find s)))
+          ((rf-pair? t) (rf-cons (subst-type s (rf-car t)) (subst-type s (rf-cdr t))))
+          (else t))))
+(define bind-types (subr rf-st (rf-vals rf-vals) (listof param acyclic))
+  (lambda (ns ts) (if (or (null? ns) (null? ts)) nil (cons (product (name (car ns)) (type (car ts))) (bind-types (cdr ns) (cdr ts))))))
+
+"A named type unfolded once (a type's name, a family applied, mu,
+dletrec); or #f."
+(define unfold-type (subr rf-st (rf-value) rf-value)
+  (lambda (t)
+    (cond ((rf-symbol? t) (let ((d (type-definition t))) (if (family? d) rf-false d)))
+          ((not (rf-pair? t)) rf-false)
+          ((and (rf-eqv? (rf-car t) (q 'mu)) (= (rf-length t) 3))
+           (subst-type (list (product (name (rf-cadr t)) (type t))) (rf-caddr t)))
+          ((and (rf-eqv? (rf-car t) (q 'dletrec)) (= (rf-length t) 3))
+           (let* ((bs (rf-elements (rf-cadr t)))
+                  (s (map (lambda ((b rf-value)) (product (name (rf-car b)) (type (F3 (q 'dletrec) (rf-cadr t) (rf-car b))))) bs))
+                  (body (rf-caddr t))
+                  (own (filter (lambda ((b rf-value)) (rf-eqv? (rf-car b) body)) bs)))
+             (subst-type s (if (pair? own) (rf-cadr (car own)) body))))
+          ((rf-symbol? (rf-car t))
+           (let ((d (type-definition (rf-car t))))
+             (if (and (family? d) (= (rf-length (rf-cadr d)) (rf-length (rf-cdr t))))
+                 (subst-type (bind-types (rf-elements (rf-cadr d)) (rf-elements (rf-cdr t))) (rf-caddr d))
+                 rf-false)))
+          (else rf-false))))
+
+(define type-head? (subr rf-st (rf-value symbol) bool)
+  (lambda (t h) (and (rf-pair? t) (rf-eqv? (rf-car t) (rf-sym h)))))
+"The integer types of fixed width: their least and greatest values."
+(define int-range (subr rf-st (rf-value) (sumof (none unit) (some (productof (lo int) (hi int)))))
+  (lambda (t)
+    (cond ((rf-eqv? t (q 'i32)) (sum some (product (lo (- 0 2147483648)) (hi 2147483647))))
+          ((rf-eqv? t (q 'u32)) (sum some (product (lo 0) (hi 4294967295))))
+          ((rf-eqv? t (q 'i64)) (sum some (product (lo (- 0 9223372036854775807)) (hi 9223372036854775807))))
+          ((rf-eqv? t (q 'u64)) (sum some (product (lo 0) (hi 9223372036854775807))))
+          (else (sum none #u)))))
+"Types of values FX-26 has no symbolic sort for: their values are those
+the program writes (its literals, domain), and a few more."
+(define domain-kind (subr rf-st (rf-value) symbol)
+  (lambda (t)
+    (cond ((rf-eqv? t (q 'char)) 'char) ((rf-eqv? t (q 'string)) 'string) ((rf-eqv? t (q 'symbol)) 'symbol)
+          ((or (rf-eqv? t (q 'f64)) (rf-eqv? t (q 'f32))) 'real)
+          (else '||))))
+(define unit-type? (subr rf-st (rf-value) bool)
+  (lambda (t) (or (rf-eqv? t (q 'unit)) (type-head? t 'proves))))
+"A product's label: as written (a datatype's are 1, 2, …)."
+(define product-fields (subr rf-st (rf-value) rf-vals) (lambda (t) (rf-elements (rf-cdr t))))
+
+"The shape of a type's values (for a stub's result), or #f: a product
+an alist of its labels, a sum (label . value)."
 (define type-shape (subr rf-st (rf-value int) rf-value)
-  (lambda (t0 bound)
-    (let ((t (expand-type t0)))
-      (cond ((or (rf-eqv? t (q 'int)) (rf-eqv? t (q 'nat)) (and (rf-pair? t) (rf-eqv? (rf-car t) (q 'nat)))) (q 'integer))
+  (lambda (t bound) (shape-of-type t bound type-fuel)))
+(define shape-of-type (subr rf-st (rf-value int int) rf-value)
+  (lambda (t bound fuel)
+    (let ((part (lambda ((x rf-value)) (shape-of-type x bound fuel))))
+      (cond ((or (rf-eqv? t (q 'int)) (rf-eqv? t (q 'nat)) (type-head? t 'nat)) (q 'integer))
+            ((tagcase (int-range t) (some r #t) (none u #f)) (q 'integer))
             ((rf-eqv? t (q 'bool)) (q 'boolean))
-            ((and (rf-pair? t) (rf-eqv? (rf-car t) (q 'listof)))
-             (let ((e (type-shape (rf-cadr t) bound))) (if (rf-false? e) rf-false (F3 (q 'list-of) (rf-int bound) e))))
-            (else rf-false)))))
+            ((unit-type? t) (F2 (q 'one-of) rf-unspecified))
+            ((not (eq? (domain-kind t) '||)) (rf-cons (q 'one-of) (rf-list (domain (domain-kind t)))))
+            ((type-head? t 'listof)
+             (let ((e (part (rf-cadr t)))) (if (rf-false? e) rf-false (F3 (q 'list-of) (rf-int bound) e))))
+            ((and (type-head? t 'nlist) (rf-exact-integer? (rf-caddr t)))
+             (let ((e (part (rf-cadr t))))
+               (if (rf-false? e) rf-false
+                   (letrec ((spine (subr rf-st (int) rf-value) (lambda (k) (if (<= k 0) (F2 (q 'one-of) rf-nil) (F3 (q 'pair) e (spine (- k 1)))))))
+                     (spine (rf-int-of (rf-caddr t)))))))
+            ((type-head? t 'pairof)
+             (let ((a (part (rf-cadr t))) (d (part (rf-caddr t)))) (if (or (rf-false? a) (rf-false? d)) rf-false (F3 (q 'pair) a d))))
+            ((type-head? t 'productof)
+             (letrec ((fields (subr rf-st (rf-vals) rf-value)
+                        (lambda (fs)
+                          (if (null? fs) (F2 (q 'one-of) rf-nil)
+                              (let ((s (part (rf-cadr (car fs)))) (rest (fields (cdr fs))))
+                                (if (or (rf-false? s) (rf-false? rest)) rf-false
+                                    (F3 (q 'pair) (F3 (q 'pair) (F2 (q 'one-of) (rf-car (car fs))) s) rest)))))))
+               (fields (product-fields t))))
+            ((type-head? t 'sumof)
+             (let ((arms (filter (lambda ((x rf-value)) (not (rf-false? x)))
+                                 (map (lambda ((v rf-value))
+                                        (let ((s (part (rf-cadr v)))) (if (rf-false? s) rf-false (F3 (q 'pair) (F2 (q 'one-of) (rf-car v)) s))))
+                                      (product-fields t)))))
+               (cond ((null? arms) rf-false) ((null? (cdr arms)) (car arms)) (else (rf-cons (q 'or) (rf-list arms))))))
+            (else (let ((u (if (> fuel 0) (unfold-type t) rf-false)))
+                    (if (rf-false? u) rf-false (shape-of-type u bound (- fuel 1)))))))))
+
 "An expression making a symbolic value of a type, or #f."
 (define type-value (subr rf-st (rf-value) rf-value)
-  (lambda (t0)
-    (let ((t (expand-type t0)))
+  (lambda (t) (value-of-type t type-fuel)))
+(define value-of-type (subr rf-st (rf-value int) rf-value)
+  (lambda (t fuel)
+    (let ((part (lambda ((x rf-value)) (value-of-type x fuel))))
       (cond ((rf-eqv? t (q 'int)) (rf-list1 (q 'any-integer)))
             ;; (nat k): the size k.
-            ((and (rf-pair? t) (rf-eqv? (rf-car t) (q 'nat)) (rf-exact-integer? (rf-cadr t))) (rf-cadr t))
-            ;; A type variable: the procedure cannot look at its value.
-            ((and (rf-symbol? t) (type-variable? t)) (F2 (q 'quote) (q 'opaque)))
+            ((and (type-head? t 'nat) (rf-exact-integer? (rf-cadr t))) (rf-cadr t))
             ((rf-eqv? t (q 'nat)) (rf-list1 (q 'fx26-any-nat)))
             ((rf-eqv? t (q 'bool)) (rf-list1 (q 'any-boolean)))
-            ((and (rf-pair? t) (rf-eqv? (rf-car t) (q 'listof)))
-             (let ((e (type-value (rf-cadr t))))
+            ((tagcase (int-range t) (some r #t) (none u #f))
+             (tagcase (int-range t)
+               (some r (F3 (q 'fx26-any-range) (rf-int (extract r lo)) (rf-int (extract r hi))))
+               (none u rf-false)))
+            ((unit-type? t) (rf-list (list (q 'if) rf-false rf-false)))
+            ((not (eq? (domain-kind t) '||))
+             (F2 (q 'arbitrary) (F2 (q 'quote) (rf-cons (q 'one-of) (rf-list (domain (domain-kind t)))))))
+            ((type-head? t 'listof)
+             (let ((e (part (rf-cadr t))))
                (if (rf-false? e) rf-false (F3 (q 'any-list) (rf-int list-bound) (rf-list (list (q 'lambda) rf-nil e))))))
-            (else rf-false)))))
+            ((and (type-head? t 'nlist) (rf-exact-integer? (rf-caddr t)))
+             (let ((e (part (rf-cadr t))))
+               (if (rf-false? e) rf-false
+                   (rf-cons (q 'list) (rf-list (letrec ((copies (subr rf-st (int) rf-vals) (lambda (k) (if (<= k 0) nil (cons e (copies (- k 1)))))))
+                                                 (copies (rf-int-of (rf-caddr t)))))))))
+            ((type-head? t 'pairof)
+             (let ((a (part (rf-cadr t))) (d (part (rf-caddr t)))) (if (or (rf-false? a) (rf-false? d)) rf-false (F3 (q 'cons) a d))))
+            ((type-head? t 'arrayof)
+             (let ((e (part (F3 (q 'listof) (rf-cadr t) (rf-caddr t))))) (if (rf-false? e) rf-false (F2 (q 'list->vector) e))))
+            ((type-head? t 'ref)
+             (let ((e (part (rf-cadr t)))) (if (rf-false? e) rf-false (F2 (q 'vector) e))))
+            ((type-head? t 'productof)
+             (let ((vs (map (lambda ((f rf-value)) (part (rf-cadr f))) (product-fields t))))
+               (if (memq-val? rf-false vs) rf-false
+                   (rf-cons (q 'list) (rf-list (map2 (lambda ((f rf-value) (v rf-value)) (F3 (q 'cons) (F2 (q 'quote) (rf-car f)) v)) (product-fields t) vs))))))
+            ;; A sum: one of its labels' values.
+            ((type-head? t 'sumof)
+             (let ((arms (filter (lambda ((x rf-value)) (not (rf-false? x)))
+                                 (map (lambda ((v rf-value))
+                                        (let ((e (part (rf-cadr v)))) (if (rf-false? e) rf-false (F3 (q 'cons) (F2 (q 'quote) (rf-car v)) e))))
+                                      (product-fields t)))))
+               (cond ((null? arms) rf-false) ((null? (cdr arms)) (car arms)) (else (rf-cons (q 'any-of) (rf-list arms))))))
+            (else
+             (let ((u (if (> fuel 0) (unfold-type t) rf-false)))
+               (cond ((not (rf-false? u)) (value-of-type u (- fuel 1)))
+                     ;; A type variable: the procedure cannot look at its value.
+                     ((and (rf-symbol? t) (type-variable? t) (rf-false? (type-definition t))) (F2 (q 'quote) (q 'opaque)))
+                     (else rf-false))))))))
 
 "A name that is no type FX-26 has, nor the program: a type variable."
 (define type-variable? (subr rf-st (rf-value) bool)
   (lambda (t)
-    (not (symbols-member? (rf-sym-of t) (list 'int 'nat 'bool 'char 'string 'unit 'symbol 'datum 'i32 'u32 'i64 'u64 'f64 'f32 'void)))))
+    (not (symbols-member? (rf-sym-of t) (list 'int 'nat 'bool 'char 'string 'unit 'symbol 'datum 'i32 'u32 'i64 'u64 'f64 'f32 'void
+                                              'tword 'wcell 'wglobal)))))
+
+;;; ------------------------------------------------------------ inputs written
+;;;
+;;; A proof's inputs, as a report shows them in a model: FX-26's
+;;; expressions of their types, (product (x 1) (y 2)), (sum some 3),
+;;; (node (leaf) 0 (leaf)), (list 1 2), "yes", #\a, 'red.
+
+(define datatype-names (ref rf-vals @rf) (new nil))
+(define datatype? (subr rf-st (rf-value) bool)
+  (lambda (t) (memq-val? (if (rf-pair? t) (rf-car t) t) (get datatype-names))))
+(define render-input (subr rf-eff (rf-value rf-value) string)
+  (lambda (v t) (render-typed v t 32)))
+(define words (subr rf-st (strings) string)
+  (lambda (ws) (if (null? ws) "" (if (null? (cdr ws)) (car ws) (string-append (car ws) " " (words (cdr ws)))))))
+(define render-typed (subr rf-eff (rf-value rf-value int) string)
+  (lambda (v t fuel)
+    (let ((elements (lambda ((e rf-value) (vs rf-vals))
+                      (if (null? vs) "nil" (string-append "(list " (words (map (lambda ((x rf-value)) (render-typed x e fuel)) vs)) ")")))))
+      (cond ((rf-boolean? v) (if (rf-true? v) "#t" "#f"))
+            ((unit-type? t) "#u")
+            ((and (rf-symbol? v) (eq? (domain-kind t) 'symbol)) (string-append "'" (datum->string v)))
+            ((and (type-head? t 'listof) (rf-list? v)) (elements (rf-cadr t) (rf-elements v)))
+            ((and (type-head? t 'nlist) (rf-list? v)) (elements (rf-cadr t) (rf-elements v)))
+            ((and (type-head? t 'arrayof) (rf-vector? v)) (string-append "(list->array " (elements (rf-cadr t) (slots-list (rf-slots-of v))) ")"))
+            ((and (type-head? t 'ref) (rf-vector? v) (= (array-length (rf-slots-of v)) 1))
+             (string-append "(new " (render-typed (array-ref (rf-slots-of v) 0) (rf-cadr t) fuel) ")"))
+            ((and (type-head? t 'pairof) (rf-pair? v))
+             (string-append "(cons " (render-typed (rf-car v) (rf-cadr t) fuel) " " (render-typed (rf-cdr v) (rf-caddr t) fuel) ")"))
+            ((and (type-head? t 'productof) (rf-list? v))
+             (string-append "(product " (words (map (lambda ((f rf-value)) (string-append "(" (datum->string (rf-car f)) " " (render-typed (field-value v (rf-car f)) (rf-cadr f) fuel) ")"))
+                                                    (product-fields t)))
+                            ")"))
+            ((and (type-head? t 'sumof) (rf-pair? v))
+             (let ((arm (filter (lambda ((a rf-value)) (rf-eqv? (rf-car a) (rf-car v))) (product-fields t))))
+               (if (null? arm) (datum->string v)
+                   (string-append "(sum " (datum->string (rf-car v)) " " (render-typed (rf-cdr v) (rf-cadr (car arm)) fuel) ")"))))
+            ;; A datatype's value: its constructor applied.
+            ((and (datatype? t) (rf-pair? v) (> fuel 0))
+             (let* ((u (unfold-type t))
+                    (arm (if (type-head? u 'sumof) (filter (lambda ((a rf-value)) (rf-eqv? (rf-car a) (rf-car v))) (product-fields u)) nil)))
+               (if (null? arm) (datum->string v)
+                   (string-append "(" (words (cons (datum->string (rf-car v))
+                                                   (map (lambda ((f rf-value)) (render-typed (field-value (rf-cdr v) (rf-car f)) (rf-cadr f) (- fuel 1)))
+                                                        (product-fields (rf-cadr (car arm))))))
+                                  ")"))))
+            ((> fuel 0)
+             (let ((u (unfold-type t))) (if (rf-false? u) (datum->string v) (render-typed v u (- fuel 1)))))
+            (else (datum->string v))))))
+"An alist's value for a label, or unspecified."
+(define field-value (subr rf-st (rf-value rf-value) rf-value)
+  (lambda (alist label)
+    (cond ((not (rf-pair? alist)) rf-unspecified)
+          ((and (rf-pair? (rf-car alist)) (rf-eqv? (rf-caar alist) label)) (rf-cdar alist))
+          (else (field-value (rf-cdr alist) label)))))
+
+;;; ------------------------------------------------------------ domains
+;;;
+;;; Characters, strings, symbols and flonums have no sort in the solver: a
+;;; value of their type is one of those the program writes (its literals,
+;;; up to domain-limit of each, and in a quote its symbols) or of a few
+;;; more, which the program does not write ("", "a", #\a, a symbol of its
+;;; own, 0.0, 1.0, -0.5). A proof over them is exhaustive only over these.
+
+(define domain-limit int 6)
+(define-type domains (productof (char rf-vals) (string rf-vals) (symbol rf-vals) (real rf-vals)))
+(define program-literals (ref domains @rf) (new (product (char nil) (string nil) (symbol nil) (real nil))))
+(define literal-same? (subr rf-st (rf-value rf-value) bool)
+  (lambda (a b) (if (and (rf-string? a) (rf-string? b)) (string=? (rf-str-of a) (rf-str-of b)) (rf-eqv? a b))))
+(define literal-in? (subr rf-st (rf-value rf-vals) bool)
+  (lambda (x l) (cond ((null? l) #f) ((literal-same? x (car l)) #t) (else (literal-in? x (cdr l))))))
+(define add-literal (subr rf-st (rf-value rf-vals) rf-vals)
+  (lambda (x l) (if (or (literal-in? x l) (>= (list-length l) domain-limit)) l (vals-append l (list x)))))
+(define real-value? (subr rf-st (rf-value) bool) (lambda (v) (tagcase v (real r #t) (else x #f))))
+(define note-literal! (subr rf-st (rf-value) unit)
+  (lambda (x)
+    (let ((d (get program-literals)))
+      (cond ((rf-char? x) (set program-literals (product (char (add-literal x (extract d char))) (string (extract d string)) (symbol (extract d symbol)) (real (extract d real)))))
+            ((rf-string? x) (set program-literals (product (char (extract d char)) (string (add-literal x (extract d string))) (symbol (extract d symbol)) (real (extract d real)))))
+            ((rf-symbol? x) (set program-literals (product (char (extract d char)) (string (extract d string)) (symbol (add-literal x (extract d symbol))) (real (extract d real)))))
+            ((real-value? x) (set program-literals (product (char (extract d char)) (string (extract d string)) (symbol (extract d symbol)) (real (add-literal x (extract d real))))))
+            (else #u)))))
+"The literals of an expression: its characters, strings and flonums, and
+the symbols it quotes."
+(define note-literals! (subr rf-st (rf-value bool) unit)
+  (lambda (x quoted?)
+    (cond ((rf-pair? x)
+           (cond ((and (not quoted?) (rf-eqv? (rf-car x) (q 'quote)) (rf-pair? (rf-cdr x))) (note-literals! (rf-cadr x) #t))
+                 ((and (not quoted?) (memq-val? (rf-car x) (list (q 'load-module) (q 'the)))) #u)
+                 (else (begin (note-literals! (rf-car x) quoted?) (note-literals! (rf-cdr x) quoted?)))))
+          ((rf-symbol? x) (if quoted? (note-literal! x) #u))
+          ((rf-null? x) #u)
+          (else (note-literal! x)))))
+"The literals of a file's definitions."
+(define note-program-literals! (subr rf-st (rf-vals) unit)
+  (lambda (forms)
+    (for-each (lambda ((f rf-value))
+                (let ((h (head-sym f)))
+                  (cond ((or (eq? h 'define) (eq? h 'define*)) (if (pair? (loaded-files f)) #u (note-literals! (definition-value f) #f)))
+                        ((eq? h 'define-rec) (for-each (lambda ((b rf-value)) (note-literals! (rf-caddr b) #f)) (rf-elements (rf-cdr f))))
+                        (else #u))))
+              (filter rf-pair? forms))))
+(define add-extra (subr rf-st (rf-value rf-vals) rf-vals)
+  (lambda (x l) (if (literal-in? x l) l (vals-append l (list x)))))
+(define domain (subr rf-st (symbol) rf-vals)
+  (lambda (kind)
+    (let ((d (get program-literals)))
+      (cond ((eq? kind 'char) (add-extra (sum char #\a) (extract d char)))
+            ((eq? kind 'string) (add-extra (rf-str "a") (add-extra (rf-str "") (extract d string))))
+            ((eq? kind 'symbol) (add-extra (q 'ratfink-other) (extract d symbol)))
+            (else (add-extra (sum real -0.5) (add-extra (sum real 1.0) (add-extra (sum real 0.0) (extract d real)))))))))
 
 "A local procedure with a specification ((letrec ((name type lambda)) …)):
 callers see a stub, which asserts what it requires and gives a value of
@@ -317,20 +585,65 @@ contract, if for-contract?); none if a type has none."
   (lambda (name sp for-contract?)
     (let ((values (map (lambda ((p param)) (type-value (extract p type))) (extract sp params))))
       (if (memq-val? rf-false values) nil
+          ;; (define-proof (name …) (begin (fx26-inputs-begin) (let* ((x v) …) (fx26-inputs-end (x T) …) (name x …))))
           (list (rf-list (list (q 'define-proof)
                                (rf-cons name (if for-contract? (rf-list1 (F2 (q 'for-contract) name)) rf-nil))
-                               (F3 (q 'let*)
-                                   (rf-list (map2 (lambda ((p param) (v rf-value)) (F2 (extract p name) v)) (extract sp params) values))
-                                   (rf-cons name (rf-list (map (lambda ((p param)) (extract p name)) (extract sp params))))))))))))
+                               (F3 (q 'begin)
+                                   (rf-list1 (q 'fx26-inputs-begin))
+                                   (rf-list (list (q 'let*)
+                                                  (rf-list (map2 (lambda ((p param) (v rf-value)) (F2 (extract p name) v)) (extract sp params) values))
+                                                  (rf-cons (q 'fx26-inputs-end) (rf-list (map (lambda ((p param)) (F2 (extract p name) (extract p type))) (extract sp params))))
+                                                  (rf-cons name (rf-list (map (lambda ((p param)) (extract p name)) (extract sp params))))))))))))))
 
-"Collect the program's type abbreviations (of forms read)."
+"Collect the program's type definitions (of forms read): (define-type
+name type), a family's (define-type (name (p kind) …) type), and a
+datatype's, (define-datatype head (ctor type …) …), a sumof of productofs
+labelled 1, 2, …."
 (define note-types! (subr rf-st (rf-vals) unit)
   (lambda (forms)
     (for-each (lambda ((f rf-value))
-                (if (and (rf-eqv? (rf-car f) (q 'define-type)) (rf-symbol? (rf-cadr f)) (= (rf-length f) 3))
-                    (set type-names (cons (product (name (rf-cadr f)) (type (rf-caddr f))) (get type-names)))
-                    #u))
+                (let ((h (head-sym f)))
+                  (cond ((and (eq? h 'define-type) (= (rf-length f) 3)) (note-type! (rf-cadr f) (rf-caddr f)))
+                        ((and (eq? h 'define-datatype) (rf-pair? (rf-cdr f)))
+                         (begin
+                         (set datatype-names (cons (if (rf-pair? (rf-cadr f)) (rf-car (rf-cadr f)) (rf-cadr f)) (get datatype-names)))
+                         (note-type! (rf-cadr f)
+                                     (rf-cons (q 'sumof)
+                                              (rf-list (map (lambda ((v rf-value))
+                                                              (F2 (rf-car v)
+                                                                  (rf-cons (q 'productof)
+                                                                           (letrec ((fields (subr rf-st (rf-value int) rf-value)
+                                                                                              (lambda (ts i) (if (rf-pair? ts) (rf-cons (F2 (rf-int i) (rf-car ts)) (fields (rf-cdr ts) (+ i 1))) rf-nil))))
+                                                                             (fields (rf-cdr v) 1)))))
+                                                            (rf-elements (rf-cddr f))))))))
+                        (else #u))))
               (filter rf-pair? forms))))
+(define note-type! (subr rf-st (rf-value rf-value) unit)
+  (lambda (head t)
+    (cond ((rf-symbol? head) (set type-names (cons (product (name head) (type t)) (get type-names))))
+          ((and (rf-pair? head) (rf-symbol? (rf-car head)))
+           (set type-names (cons (product (name (rf-car head))
+                                          (type (F3 (q 'fx26-family) (rf-list (map (lambda ((p rf-value)) (if (rf-pair? p) (rf-car p) p)) (rf-elements (rf-cdr head)))) t)))
+                                 (get type-names))))
+          (else #u))))
+
+"Survey a program before translating it: its files' types and literals
+(so a definition's proof knows those of files loaded after it)."
+(define survey-file (subr rf-eff (string (ref strings @rf)) unit)
+  (lambda (file seen)
+    (begin
+      (set seen (cons file (get seen)))
+      (let ((forms (fx26-read file)) (dir (directory-of file)))
+        (begin
+          (note-types! forms)
+          (note-program-literals! forms)
+          (for-each (lambda ((form rf-value))
+                      (for-each (lambda ((f string))
+                                  (let ((path (if (string-starts? "/" f) f (string-append dir "/" f))))
+                                    (if (or (built-in-file? f) (symbols-member? (string->symbol path) (map string->symbol (get seen)))) #u
+                                        (survey-file path seen))))
+                                (loaded-files form)))
+                    forms))))))
 
 "A program's forms, from file, and the module files it loads; loaded holds
 the files read so far."
@@ -362,13 +675,14 @@ the files read so far."
                                     (definition (rf-cadr form) (if (= (rf-length form) 4) (rf-caddr form) rf-false) (definition-value form)))))
                              (else (let ((files (load-files form)))
                                      (if (pair? (loaded-files form)) files (list form)))))))))
-          (let ((forms (fx26-read file))) (begin (note-types! forms) (fx-append-all (map each forms)))))))))
+          (fx-append-all (map each (fx26-read file))))))))
 
 "An FX-26 program's forms for check-forms: FX-26's standard procedures,
 then the program's."
 (define fx26-program (subr rf-eff (string) rf-vals)
   (lambda (file)
-    (vals-append (fx26-prelude) (translate-file file (the (ref strings @rf) (new nil))))))
+    (begin (survey-file file (the (ref strings @rf) (new nil)))
+           (vals-append (fx26-prelude) (translate-file file (the (ref strings @rf) (new nil)))))))
 
 ;;; ------------------------------------------------------------ FX-26's standard procedures
 
@@ -394,6 +708,7 @@ shakedown's prelude is)."
 (define (bool=? a b) (eq? a b))
 (define (implies a b) (or (not a) b))
 (define (fx26-any-nat) (let ((n (any-integer))) (assume (<= 0 n)) n))
+(define (fx26-any-range lo hi) (let ((n (any-integer))) (assume (<= lo n)) (assume (<= n hi)) n))
 (define (int->f64 n) (inexact n))
 (define (f64->int x) (exact x))
 (define (f64+ a b) (+ a b))

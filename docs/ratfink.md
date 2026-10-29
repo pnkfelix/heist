@@ -47,3 +47,53 @@ Like combo (`docs/combo.md`), it is used two ways:
   aliases or temporaries in a `let`'s inits, ratfink makes them in the
   order Twobit does (right to left), as combo does, so that term ids,
   constant names and playback text are shakedown's.
+
+## The FX-26 front end (`ratfink/fx26.fx`)
+
+An `.fx` file is read with Fixpt's syntax (`#u`), the module files its
+`load-module`s name followed (Fixpt's `fx26:` modules and
+`ratfink/proof.fx` are ratfink's own, in Scheme), types erased: FX-26's
+forms are special forms of the compiler in FX-26 mode (`eval.fx`,
+`install-fx26-forms!`). A product is an alist of its labels, a sum
+`(label . value)`, a datatype's value a sum of a product labelled 1, 2, ….
+
+**Specifications.** A procedure whose type `requires` or `ensures` is a
+contract (`define/contract`), and has a proof of its own calling it on
+symbolic values of its parameters' types, its calls inside that proof
+stubs (a value of the result's type assumed to meet the `ensures`): the
+proof is modular, as Fixpt's verifier's. A `nat` parameter requires
+`(<= 0 x)`, a `nat` result ensures it; `(bool (then …) (else …))` is an
+`ensures` of `implies`. A local `letrec`'s specification is a stub for
+its callers, and a verification of its body where the `letrec` is. A
+*harness* (a `unit` result, a body that `assert`s; what `fixpt test`
+runs) has a proof on symbolic values too, as has a `proof-…` procedure
+of no arguments.
+
+**Values of a type** (`type-value`; a stub's result, `type-shape`):
+
+| type | symbolic value |
+| --- | --- |
+| `int`, `nat`, `(nat k)` | an integer; `nat`'s assumed `≥ 0`; `k` itself |
+| `i32`, `u32`, `i64`, `u64` | an integer in the type's range |
+| `bool` | a boolean |
+| `unit`, `(proves …)` | `#u` |
+| `char`, `string`, `symbol`, `f64`, `f32` | one of a *domain*: the program's literals of the type (up to 6; a quote's symbols), and `#\a`; `""`, `"a"`; `ratfink-other`; `0.0`, `1.0`, `-0.5` (the solver has no sort for them) |
+| `(listof T r)`, `(arrayof T r)` | up to 4 elements (a stub's result, 8) |
+| `(nlist T k)`, `(pairof A B r)`, `(ref T r)` | of their parts |
+| `(productof …)`, `(sumof …)` | each field's; one of the labels' |
+| a `define-type`'s name, a family applied, a datatype, `mu`, `dletrec` | unfolded, 3 deep at most (a recursive value's depth) |
+| a `poly`'s type variable | `'opaque` |
+
+A procedure with a parameter of another type (a procedure's, `datum`, a
+module's) has no proof. A proof over a domain's type is exhaustive only
+over the domain.
+
+**Counterexamples** show a proof's inputs as FX-26 expressions of their
+types (`proof-inputs`, rendered by `render-input`): `p = (product (x 2)
+(y 3))`, `t = (leaf)`, `xs = (list 0 0)`, `b = (new -1)`; then what else
+the model says, of constants not made for the inputs (a stub's result).
+
+**Not yet:** playback (running a counterexample under Fixpt); telling an
+`ensures` that is not inductive (Fixpt's verdict) from a false one; type
+checking (a program Fixpt refuses is checked as written).
+`ratfink/tests/fx26/types.fx` has true and false claims over these types.

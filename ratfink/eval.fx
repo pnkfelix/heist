@@ -2061,9 +2061,44 @@ allows, meeting its signals conditions."
   (lambda (ps) (if (rf-pair? ps) (rf-cons (param-name (rf-car ps)) (strip-params (rf-cdr ps))) ps)))
 (define body-of-form (subr rf-st (rf-value) rf-value) (lambda (forms) (rf-cons (q 'begin) forms)))
 
+"A proof's inputs (fx26.fx's proofs name them, (fx26-inputs-begin), then
+(fx26-inputs-end (name type) …) where they are bound): each one's name,
+its value as made (pairs and vectors copied, as the program may write
+them) and type, and the constants made for them; a report shows the
+inputs, in their language (input-renderer), for those constants."
+(define-type proof-input (productof (name rf-value) (value rf-value) (type rf-value)))
+(define proof-inputs (ref (listof proof-input acyclic) @rf) (new nil))
+(define input-constants (ref rf-vals @rf) (new nil))
+(define inputs-start (ref int @rf) (new 0))
+(define reset-proof-inputs! (subr rf-st () unit)
+  (lambda () (begin (set proof-inputs nil) (set input-constants nil) (set inputs-start 0))))
+(define input-renderer (ref (subr rf-eff (rf-value rf-value) string) @rf)
+  (new (lambda ((v rf-value) (t rf-value)) (datum->string v))))
+(define set-input-renderer! (subr rf-st ((subr rf-eff (rf-value rf-value) string)) unit) (lambda (f) (set input-renderer f)))
+(define snapshot (subr rf-st (rf-value) rf-value)
+  (lambda (v)
+    (tagcase v
+      (pair s (rf-cons (snapshot (rf-car v)) (snapshot (rf-cdr v))))
+      (vec s (sum vec (list->array (map snapshot (slots-list s)))))
+      (union ms (sum union (map (lambda ((m rf-member)) (member (extract m g) (snapshot (extract m v)))) ms)))
+      (else x v))))
+
 (define install-fx26-forms! (subr rf-st () unit)
   (lambda ()
     (begin
+      (define-fx26-form! 'fx26-inputs-begin
+        (lambda ((x rf-value) (cenv rf-cenv) (hint rf-value))
+          (lambda ((env rf-slots) (ctx rf-ctx)) (begin (set inputs-start (list-length (session-constants))) rf-unspecified))))
+      (define-fx26-form! 'fx26-inputs-end
+        (lambda ((x rf-value) (cenv rf-cenv) (hint rf-value))
+          (let* ((bindings (rf-elements (rf-cdr x)))
+                 (procs (map (lambda ((b rf-value)) (compile0 (rf-car b) cenv)) bindings)))
+            (lambda ((env rf-slots) (ctx rf-ctx))
+              (begin
+                (set input-constants (vals-tail (session-constants) (get inputs-start)))
+                (set proof-inputs (map2 (lambda ((b rf-value) (p rf-proc)) (product (name (rf-car b)) (value (snapshot (p env ctx))) (type (rf-cadr b))))
+                                        bindings procs))
+                rf-unspecified)))))
       (define-fx26-form! 'lambda
         (lambda ((x rf-value) (cenv rf-cenv) (hint rf-value))
           (compile-lambda (rf-cons (q 'lambda) (rf-cons (strip-params (rf-cadr x)) (rf-cddr x))) cenv hint)))

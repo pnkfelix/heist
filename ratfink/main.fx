@@ -146,7 +146,9 @@ makes FX-26's forms known to the compiler; a Scheme program's as read."
 "Check the files the arguments name: the exit status."
 (define ratfink-main (subr rf-eff (strings) int)
   (lambda (arguments)
+    (begin
+    (set-input-renderer! render-input)
     (tagcase (parse-arguments arguments)
       (usage u (begin (say usage-text) 2))
       (ok p (if (null? (extract p files)) (begin (say usage-text) 2)
-                (check-files (extract p files) (extract p options) (extract p library-dirs)))))))
+                (check-files (extract p files) (extract p options) (extract p library-dirs))))))))
