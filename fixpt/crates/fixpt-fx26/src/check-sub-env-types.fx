@@ -74,9 +74,21 @@
                        (k-assumed k-assumed)
                        unit))
             (val k-strail-has?
-                 (subr (maxeff (read @globals) (read @t))
+                 (subr (maxeff (read @globals) (read @t) spin)
                        (k-assumed int int k-benv k-benv)
                        bool))
+            (val k-proven?
+                 (subr (maxeff (alloc @t) (read @globals) (read @t) (write @t) spin)
+                       (int int)
+                       bool))
+            (val k-prove!
+                 (subr (maxeff (alloc @t) (read @globals) (read @t) (write @t) spin)
+                       (int int)
+                       unit))
+            (val k-question-begin!
+                 (subr (maxeff (alloc @t) (read @globals) (read @t) (write @t)) () unit))
+            (val k-question-end!
+                 (subr (maxeff (alloc @t) (read @globals) (read @t) (write @t)) () unit))
             (val k-restore
                  (subr (maxeff (alloc @t) (read @globals) (read @t) (write @t) spin)
                        (k-strail k-labels k-assumed k-label-list)

@@ -2693,3 +2693,106 @@ of `TODO.md` §141, working on my own.
   otherwise; every consumer must then know the form. Worth it if the
   checking half stays the larger.
 
+### Subtyping's trail indexed by pair (2026-10-28)
+
+- **What it is**: FX-87's trail, the pairs `a ≤ b` a subtype question has
+  assumed, each with its two binder environments; a pair met again under
+  the same environments holds (coinduction over recursive types). Every
+  pair compared is pushed and kept until the question ends, but those of a
+  failed union arm or lemma, so a module against its signature leaves a
+  long trail. What is matched is identity, the two nodes and equal
+  environments (`k-benv=?`), not a subtype comparison.
+- **What it cost**: a count by pair said at once that a pair was not
+  assumed, but one that was meant walking the whole trail from its newest
+  (`k-strail-in?`): 2.9% of Heist's start-up from `.fasl`s, the largest
+  single function of the FX-26 checker's 136 ms there.
+- **Chosen**: the count made a list of each pair's entries, newest first,
+  each with its question's depth (`k-question`, one more for each question
+  `k-subtype` opens). Questions nest and drop what they pushed, newest
+  first, before the one around them goes on, so the newest entry of a key
+  is the next dropped; a look reads only its key's entries of the asking
+  question's depth. The same answers; the trail's length no longer counts.
+- Result: start-up 0.45 s to 0.43-0.44 s; `fixpt check` of the makers,
+  the FX-26 checker 1.07 s to 1.05 s; the suite passes (862).
+
+### Proven module subtyping kept (2026-10-28)
+
+- **Why**: file `k`'s maker is given every file's module before it, so
+  Heist's 14 makers ask some 90 argument checks, of only about 13
+  distinct pairs: each later maker's first parameter is
+  `(load-input-moduleof "base.fx")`, one interned node, and each call
+  passes the same global `m-base`; the deeper parameters, instantiated,
+  name the call site's globals too.
+- **Chosen** (the user's: just `moduleof` pairs to begin with): a whole
+  subtype question (`k-subtype`) between two module types, shown where no
+  lemma is in force, no generative type is open and no size runs to the
+  end, is noted (`k-proven`) and answered at once when asked again.
+  Only what was shown, not what failed. A reset of the arena, which
+  numbers nodes again, lets it go (`k-arena-gen`).
+- **Measured**, alternating two binaries, the machine busy: Heist's
+  start-up from `.fasl`s 0.43 s to 0.39 s; `fixpt check` of the makers,
+  the FX-26 checker 1.10 to 1.08 s.
+- **Widened, as an experiment** (the user's: a miss may mean widen it):
+  every pair, under the same conditions: `fixpt check` no faster
+  (1.07 against 1.06 s). What is left there is not whole questions asked
+  again. Kept to module types, which need no argument about types whose
+  slots are filled later.
+
+
+### Images: trusted, mapped, and spliced (2026-10-28)
+
+- **Why** (the user's, from Heist's `docs/requests/fixpt-load-time.md`):
+  every run read the whole executable for its trailer, checked a CRC-32 of
+  the front end's 21 MB image, read it into a buffer, loaded it into a
+  heap of its own and copied it as a graph into the session's.
+- **Trusted images**: the CRC and `verify` skipped only for images this
+  executable wrote and keys (its embedded image, the front end's cache,
+  `.fasl`s), each written by a rename; kept for `--heap` and
+  `fixpt image verify`. Neither is security: an image holds native code.
+- **Mapped, not read** (`fixpt_memmgmt::Mapped`): the cache and `.fasl`s,
+  private and read-only; they are replaced by a rename, never written in
+  place. The words written into the heap straight from the bytes.
+- **Spliced, not copied** (`Heap::splice_image`): chosen over going
+  straight to a fixed base (§160 item 1) as the step that pays now, the
+  user agreeing to the order. The walk that moves references stays as the
+  fallback for a heap that cannot have its address, and under a flag for
+  tests (the user's). A splice that fails undoes what it added (symbols,
+  global slots, the top), so that the copy can follow it.
+- **Measured**: an empty program 145 ms to 54 ms; Heist through `eldoc.fx`
+  0.40 s to 0.33 s (copy against splice, one binary); 67 programs of
+  `tests/programs/run` print the same both ways, and under
+  `FIXPT_VERIFY_BARRIER=1` none misses a card.
+- **The static area's design** (the user's, `TODO.md` §161): static
+  objects never move nor are copied; static refers only to static, but
+  through mutable static objects; code's fields are written only as it is
+  made and as what they refer to moves, so an image's code, fields and
+  all, is immutable; a remembered set for the mutable static section, and
+  later its pruning.
+
+### Images made for a fixed base, and spliced in place (2026-10-28)
+
+- **Why** (TODO §160 item 1): the splice's walk moved every reference of
+  the front end's 2.6 M words; and a walk that writes every page is what a
+  mapped image (item 3) cannot afford.
+- **Chosen**: one fixed base (16 TiB), the first heap of a process's
+  (in a run, the runtime's), given back when that heap goes; every image
+  made for that base, whatever heap it is made of (an image's references
+  are only numbers: `image_rebase` makes them for any base). Not "the
+  dumping heap's own base": the front end's image is made of a heap of its
+  own, which cannot be at the base while the session's is.
+- **What a load in place still writes**: the image's fixups, found as it
+  is made: call-outs (numbered per process in the order met, so never
+  the same from run to run) and references to interned symbols (the
+  session's are made first, by the prelude). The symbols' own global
+  slots. 42,516 words for the front end.
+- **In place when**: the same base, the old space empty, each code part
+  empty or holding what the image's starts with alike: the shared stub,
+  which a native session makes before the front end is read, and which
+  the image's heap now makes first too. The adapter is the image's when
+  the session has none yet, so the native part is the image's alone.
+- **Rejected for now**: a static region of the reservation of its own
+  (§161), which the collector would have to scan: unneeded while the old
+  space is empty when the front end is read.
+- **Measured**: an empty program 55 ms to 50.5 ms (relocating against in
+  place, one binary); 67 programs of `tests/programs/run` give the same in
+  place, copied and relocated, and miss no card.

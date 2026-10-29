@@ -3501,6 +3501,20 @@ Heist found"); A is §134.
   The docs said neither that nor that a loaded file's own loads are from
   its directory, and now say both (`fixpt-cli/tests/run_loads.rs`).
 
+### A dependent parameter's `select`, checked where it is read (done 2026-10-28)
+
+(`TODO.md`'s §135, a number this section had already: the two are one
+number by a slip.) `(subr pure ((c : sig) (select c x)) int)` was taken
+though `sig` gives no `x`, and a call then put in the argument's own `x`,
+which a module given at a narrower type (`restrict`, an unnamed abstract
+type) may have: naming through a parameter reached what its type does not
+give. Now both checkers refuse it where the type is read, "`c` has no type
+`x`", as they refuse a `select` of a module bound there
+(`select_params` in `parse.rs`; `k-param-selects-given` in
+`check-read-made.fx`). A parameter whose type is not a module's is left to
+the call, as before (`modules/param-select-missing.fx`,
+`param-select-restricted.fx`).
+
 ## 136. A file's module type: `load-moduleof` and `load-input-moduleof` (2026-10-27)
 
 Heist's request (`docs/research/derived-signatures.md`), the user's names.
@@ -3961,3 +3975,21 @@ program of `tests/programs` that compiles (but `syscalls` and `bench`'s,
 not run) gives the same from its `.fasl` as from its source, 342 of them
 reading it (`crates/fixpt-cli/tests/fasl.rs` runs eight directories).
 Kayak's compiler: stage 0 in 1.15 s from its `.fasl`, 3.30 s from source.
+
+## 158. An executable's image found by its trailer alone (the user's, 2026-10-28)
+
+`image_run::embedded_in_self` read the whole executable (18 MB) on every
+run to look at its last 16 bytes (Heist's
+`docs/requests/fixpt-load-time.md`, item 2). Now `image::read_embedded`
+reads the trailer, and the image only if `EMBED_MAGIC` is there: an empty
+FX-26 program 148 ms to 138 ms.
+
+## 159. No checksum for an image this executable wrote (the user's, 2026-10-28)
+
+`image::load_trusted`, for an image whose writer is known (the
+executable's own embedded image, the front end's cache and `.fasl`s, each
+keyed by this executable and written by a rename), checks neither its
+CRC-32 nor `Heap::verify`, each a read of every page and neither a
+security measure (an image holds native code). `--heap` files and
+`fixpt image verify` still check both. An empty FX-26 program 137 ms to
+123 ms.

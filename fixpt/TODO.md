@@ -3087,6 +3087,17 @@ whose hot code is larger than the instruction cache.
 
 ## 126. Stage 0's fixed cost: Fixpt loading kayak's compiler (2026-10-24)
 
+**2026-10-28**: an image's CRC-32 was taken a byte at a time, 42 ms of
+the front end's 78 ms load at every start; eight bytes a step now
+(`c29f1974`), the floor of a run 0.18 s to 0.14-0.15 s, Heist's start-up
+from `.fasl`s 0.50 s to 0.45 s. Left of the front end's load: its words
+read into a vector (13 ms), the heap built from them (16 ms), verified
+(6 ms), then copied again into the session's heap (41 ms,
+`load_native_front_end`): loaded into the session's heap at once, or
+mapped, would leave one copy. Stage 0 itself (kayak `d5840ee`) is 5.15 s
+now, the same output; its profile is flat, kayak's own procedures first
+(`string-member?`, `mangled-length-from`), checking `kfx.fx` 9%.
+
 With kayak's facts indexed (§123), loading is most of stage 0, where it
 was about 1% at 610 s: `tests/kfx/loaded-select.kfx` in place of
 `kfx/kfx.unit OUT_DIR` (`docs/kayak-stage0-workload.md`) takes 20.7G of
@@ -3288,15 +3299,6 @@ client needs one yet (the user, 2026-10-27: noted for when one does). The
 same walk as `type_made` and `check-read-made.fx`'s, without the
 application of a procedure of no parameters and the check for a module.
 
-## 135. A dependent parameter's `select` is checked only at a call (found 2026-10-27)
-
-`(subr pure ((c : sig) (select c x)) int)` is taken though `sig` gives no
-`x`; a call then puts in the argument's own `x`, which a module given at
-a narrower type (`restrict`, an unnamed abstract type) may have. So
-naming through a parameter can reach what its type does not give. The
-type should be refused where it is read, as `(select m x)` of a module
-bound there is (`modules/restrict-unnamed.fx` shows the latter).
-
 ## 138. Checking a program of module makers is slow (Heist's, 2026-10-28)
 
 Heist's editor as makers (`load-input` files, each a `lambda` around a
@@ -3308,6 +3310,28 @@ start-up is 6.0 s against 2.9 s. Wanted: a parameter's type
 `load-input-moduleof` gives kept by reference to the file's module type,
 not expanded where each later file names it; or the walk over it made
 once per file.
+
+**Measured again 2026-10-28** (`f8bba29d`..`c29f1974`, the snapshot of
+Heist's 14 makers): `fixpt check` 3.2 s (the Rust checker 1.23 s, the
+FX-26 one 1.90 s), 13 s before; it prints 11 MB, `m-process`'s line 4 MB: no type from another file is
+named by it (no `(select m-buffer …)` in `m-process`'s), so each is
+written out where each later file has it. Both printers naming a type
+the same as a global module's description by its `select` would make
+the lines short; the Rust checker's interning (§141, item 3) the
+checking.
+
+**Printing done 2026-10-28** (the user's: "printing expensive types by
+their select when possible"): both printers name a type of the structure
+of a description of a module bound in scope by its `select`, after the
+names they had (the printed type's own, then `define-type`'s), the
+earliest bound module first (`module_selects`, `k-selects-gather!`); not
+a description's own body in a `moduleof`, which of the module printed
+would name it by itself, nor the global whose line is printed. Heist's
+14 makers: 11 MB printed to 149 KB, `m-process`'s line 4 MB to 15 KB;
+`fixpt check` 3.21 s to 1.74 s. (`fixpt check` reads no `.fasl`s; a
+first run after a build, which compiles the front end again for its
+cache, about 3 s, had looked like their cost.) **Left**: the checking
+itself, 1.7 s where the same files as globals check in under one.
 
 ## 139. A module's static part as a kind (the user's, 2026-10-28)
 
@@ -3470,3 +3494,114 @@ the makers (`docs/research/fasl.md`). In order:
    (`fasl::path_for_load`, `Fx26Session::cache_built_ins`). Heist's
    editor loads `fx26:eager-reader.fx` and `fx26:table.fx`, checked from
    source each start before: 0.77 s to 0.59 s.
+
+## 160. Images mapped, not read (the user's, 2026-10-28)
+
+Where an image's load goes now (an empty FX-26 program 145 ms to 54 ms,
+DONE §158, §159 and the first step below): the front end's cache and a
+`.fasl` mapped (`fixpt_heap::Mapped`), not read; the heap's words written
+straight from the image's bytes; and the native front end spliced into
+the session's heap (`Heap::splice_image`: its words past the old space's
+top, each code part's past that part's, every reference moved by one walk
+by objects, its interned symbols the session's), not loaded into a heap of
+its own and copied as a graph. `FIXPT_IMAGE_COPY=1` copies as before.
+Then item 1 below, done (2026-10-28): the first heap a process makes is at
+a fixed address (`FIXED_BASE`, 16 TiB; `MAP_FIXED_NOREPLACE`, a hint on
+macOS), and every image (format 9) is made for it, whatever heap it is made
+of: its references addresses there, with the words a load there must still
+write (`image::Parts::fixups`: each call-out, which a machine numbers in
+the order it meets them, and each reference to an interned symbol, which
+may be the session's). The front end's splice is in place when the
+session's heap is there with nothing in its old space and its code parts
+holding at most what the image's start with (the shared stub, made first
+in both): the words copied and only the fixups written (42,516 of 2.6 M),
+the image's adapter the session's. Elsewhere, and under
+`FIXPT_IMAGE_RELOCATE=1`, the walk. An empty program 55 ms to 50.5 ms.
+Left, in order:
+1. ~~**The heap at a fixed address**~~ (above). A static region of its own
+   (§161) is not needed while the session's old space is empty when the
+   front end is read.
+2. **A section table and page-aligned sections** (`dump`, `embed_into`):
+   code, immutable data, mutable static data (§161), at first all but
+   code mutable.
+3. **No writes in place first** (measured 2026-10-28: the front end's
+   fixups write 2,918 of its 5,164 pages, which a mapping would copy):
+   - **Call-outs** (15,342, on 1,623 pages, all code, which a write
+     through the heap's view would not even show through the executable
+     one): numbered alike by making them so. The image keeps its numbers
+     and its table of them, in order; the loader asks the machine for each
+     in that order, and where every number comes out the image's (none
+     numbered otherwise yet, as when the front end is read), writes
+     nothing.
+   - **References to the session's symbols** (5,279 of 27,174 symbol
+     references, on 1,962 pages): turned the other way, the session's own
+     made the image's. The session's 758 symbols are in the nursery when
+     the front end is read: each made to forward to the image's of its
+     name (its global slot given to that one), and the nursery collected,
+     which the forwarding moves every reference to; the symbol table's
+     entries the image's.
+4. **The sections mapped**: the code's twice from the file, privately,
+   read+execute where it runs and read-only where the heap reads it (the
+   two never written, so they agree); the immutable data read-only; the
+   mutable data copied on write. Then the call-out pass goes too, where
+   the image's call-out map is this machine's (a hash of it in the
+   header), and `cross_all` and the symbol index are kept or made lazily.
+5. **`.fasl`s** as segments of the same kind (§141 item 9), and
+   `fixpt build`'s executables.
+`FIXPT_IMAGE_VERIFY=1` (to add) to check an image this executable wrote
+as `--heap` files are (§159).
+
+## 161. A static area for mapped images (the user's, 2026-10-28)
+
+What the collector does with what §160 maps, the user's design:
+- **Static objects never move**, nor are copied: a forwarding pointer
+  cannot be written over a read-only header, and the static objects that
+  refer to one could not be made to refer to its copy. The copier's test
+  for an address in the static region, as for the code area.
+- **What is static refers only to what is static**, but through mutable
+  static objects (a global's cell), which may refer to anything. So a
+  code bloblet of an image refers only to what never moves, and is never
+  written: code's fields are written only as it is made and when what they
+  refer to moves (`direct.rs`'s `Field`), and the code area's marks are
+  kept apart (`mark_code`). The dumper checks this, and refuses an image
+  that breaks it.
+- **The immutable sections are not traced**, and a mutable object of them
+  is the dumper's mistake, to fix there: such an object can never be
+  copied out to be written.
+- **The mutable static section is a root**: its dirty cards for a minor
+  collection (the write barrier to cover its range); for a major one, a
+  remembered set of its objects that refer to what moves, kept by the
+  barrier (the user's). Static objects are immortal, garbage and all, and
+  a weak reference to one is never cleared; a new image is what reclaims.
+- **Later** (the user's): the remembered set pruned of static objects
+  that are no longer reached, by a trace through the static area now and
+  then (side marks), since what nothing reaches is reached never again;
+  so that static garbage does not keep the heap's alive.
+- **Copies between heaps share static objects** (`copy_graph_with`,
+  `copy_within`), as they share the code area's.
+- **Which objects are immutable**: by the dumper, conservatively, mutable
+  where it cannot tell; FX-26's types and effects know more than the
+  objects' kinds (a `(stringof const)`, a closure whose captured variables
+  no `set!` names), and a closure compiled to native code at its first
+  call writes itself.
+
+## 162. A collection from native code meets a word below the heap (found 2026-10-28)
+
+`direct.rs`'s `a_tag_moved_at_a_capture_across_machines_finds_its_prompt`
+(`programs/native/capture-across-collecting.fx`, collecting at every
+safepoint) aborts, "failed to initiate panic": a major collection called
+from native code (`direct::callout`, `collect_due`) copies a word whose
+index is below the heap's base (`copy_out_object`'s subtraction), and the
+panic cannot unwind through native frames. Since 29809141 (source lines
+for compiled code, 2026-10-27), bisected; not `FIXPT_JIT_DEBUG`. Likely
+what that commit added to register code (`RItem::Pos`, `r-pos`) moving
+what a frame's stack map says is live. The abort also ended `cargo test
+--workspace` before the binaries after `direct` ran.
+
+## 163. A deadline passed over is sometimes waited for, native (found 2026-10-28)
+
+`processes.rs`'s `a_deadline_passed_over_is_not_waited_for` fails now and
+then (1 run in 4 at 5b0d032a, alone; more under load): native, the
+program sleeps out the 30 s deadline a `pselect` passed over before it
+deadlocks, about 25 s, where lowered it does not. A waker left on the
+deadline's event some of the time.
