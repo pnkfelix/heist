@@ -22,7 +22,12 @@
 //!     24     8  global slot count
 //!     32     8  interned symbol count
 //!     40     8  explicit root count
-//!     48     -  heap words     (little-endian u64, references relative to 0)
+//!     48     8  the base its references are made for, in words: the fixed
+//!               base a process's first heap is at
+//!     56     8  fixup count
+//!     64     -  heap words     (little-endian u64, references addresses
+//!                               of a heap at the base, the image's words
+//!                               at its start)
 //!      -     -  global slots   (little-endian u64)
 //!      -     -  symbol table   (little-endian u64)
 //!      -     -  explicit roots (little-endian u64; root 0 is the runtime's
@@ -30,6 +35,9 @@
 //!      -     -  the code area, each of its two parts: its word count, its
 //!               free blocks' count, its words (references as the heap
 //!               words'), its free blocks (start and length, each a u64)
+//!      -     -  fixups: where a word is that a load at the base still
+//!               writes (a call-out, a reference to an interned symbol), by
+//!               its place in the heap's memory (little-endian u64)
 //!      -     4  CRC-32 of everything above
 //! ```
 
@@ -51,9 +59,11 @@ pub const MAGIC: &[u8; 8] = b"FIXPTHP\0";
 /// at its suffix (tag `010` retired); objects with fields have trailers, and
 /// closures and environment frames their own fixed layouts. Version 8 carries
 /// the code area, where every word is (`docs/research/code-stubs.md`), its
-/// references counted from where the heap's memory starts.
-pub const VERSION: u32 = 8;
-const HEADER_BYTES: usize = 48;
+/// references counted from where the heap's memory starts. Version 9 has
+/// references as addresses of the heap it was made of, its base and the
+/// fixups (`TODO.md` §160): loaded at the same base, nothing else moves.
+pub const VERSION: u32 = 9;
+const HEADER_BYTES: usize = 64;
 
 /// Trailer written after an image appended to an executable.
 pub const EMBED_MAGIC: &[u8; 8] = b"FIXPTEMB";
@@ -91,8 +101,11 @@ impl std::error::Error for ImageError {}
 /// Serialise the live heap. The collector has already compacted it, so this is
 /// a copy of a contiguous region plus the two root arrays.
 pub fn dump(heap: &Heap) -> Vec<u8> {
-    // Rebased to word 0, whichever semispace is active: an image loads there.
-    let (words, globals, symbols, roots) = heap.image_parts();
+    // Its active semispace the first, whichever it is: an image loads there.
+    let base = Heap::image_base_word();
+    let (words, globals, symbols, roots) = heap.image_parts_at(base);
+    let code = heap.image_code(base);
+    let fixups = crate::heap::image_fixups(&words, &code, &symbols);
     let (words, globals, symbols, roots) = (&words[..], &globals[..], &symbols[..], &roots[..]);
 
     let mut out = Vec::with_capacity(
@@ -105,6 +118,8 @@ pub fn dump(heap: &Heap) -> Vec<u8> {
     out.extend_from_slice(&(globals.len() as u64).to_le_bytes());
     out.extend_from_slice(&(symbols.len() as u64).to_le_bytes());
     out.extend_from_slice(&(roots.len() as u64).to_le_bytes());
+    out.extend_from_slice(&(base as u64).to_le_bytes());
+    out.extend_from_slice(&(fixups.len() as u64).to_le_bytes());
     for w in words {
         out.extend_from_slice(&w.to_le_bytes());
     }
@@ -117,7 +132,7 @@ pub fn dump(heap: &Heap) -> Vec<u8> {
     for v in roots {
         out.extend_from_slice(&v.raw().to_le_bytes());
     }
-    for (words, free) in heap.image_code() {
+    for (words, free) in code {
         out.extend_from_slice(&(words.len() as u64).to_le_bytes());
         out.extend_from_slice(&(free.len() as u64).to_le_bytes());
         for w in words {
@@ -128,6 +143,9 @@ pub fn dump(heap: &Heap) -> Vec<u8> {
             out.extend_from_slice(&(n as u64).to_le_bytes());
         }
     }
+    for f in fixups {
+        out.extend_from_slice(&(f as u64).to_le_bytes());
+    }
     let crc = crc32(&out);
     out.extend_from_slice(&crc.to_le_bytes());
     out
@@ -137,6 +155,62 @@ pub fn dump(heap: &Heap) -> Vec<u8> {
 /// own structural invariants — a corrupt image should fail here rather than
 /// somewhere deep inside the collector later on.
 pub fn load(bytes: &[u8]) -> Result<Heap, ImageError> {
+    load_checking(bytes, true)
+}
+
+/// [`load`] for an image this executable wrote, by a rename, and keyed by
+/// it (its own embedded image, the front end's cache, a `.fasl`): neither
+/// its checksum nor the heap's invariants checked, each a read of every
+/// page (`TODO.md` §159). Neither is security: an image holds native code.
+pub fn load_trusted(bytes: &[u8]) -> Result<Heap, ImageError> {
+    load_checking(bytes, false)
+}
+
+/// An image's parts, read but not yet made a heap: its live region's words
+/// as the file has them (little-endian), its roots, globals and symbols,
+/// and each part of its code area, its words (the same) and free blocks.
+/// For [`load`], and for [`Heap::splice_image`], which puts them in a heap
+/// that holds something already.
+pub struct Parts<'a> {
+    pub words: &'a [u8],
+    pub globals: Vec<Value>,
+    pub symbols: Vec<Value>,
+    pub roots: Vec<Value>,
+    pub code: [(&'a [u8], Vec<(usize, usize)>); 2],
+    /// Where the memory of the heap it was made of started, in words: its
+    /// references are addresses there.
+    pub base: usize,
+    /// The words a load at `base` still writes, by place.
+    pub fixups: Vec<usize>,
+}
+
+impl Parts<'_> {
+    pub fn n_words(&self) -> usize {
+        self.words.len() / 8
+    }
+
+    /// Word `i` of the live region.
+    pub fn word(&self, i: usize) -> u64 {
+        u64::from_le_bytes(self.words[i * 8..i * 8 + 8].try_into().unwrap())
+    }
+
+    /// A pair's car and cdr, in the image's own terms.
+    pub fn car(&self, p: Value) -> Value {
+        Value(self.word(p.index() - self.base))
+    }
+
+    pub fn cdr(&self, p: Value) -> Value {
+        Value(self.word(p.index() - self.base + 1))
+    }
+}
+
+/// Little-endian words, as a `Vec`.
+pub(crate) fn words_of(b: &[u8]) -> Vec<u64> {
+    b.chunks_exact(8).map(|w| u64::from_le_bytes(w.try_into().unwrap())).collect()
+}
+
+/// An image's [`Parts`], its checksum checked if `check`.
+pub fn parts(bytes: &[u8], check: bool) -> Result<Parts<'_>, ImageError> {
     if bytes.len() < HEADER_BYTES + 4 {
         return Err(ImageError::Truncated { expected: HEADER_BYTES + 4, found: bytes.len() });
     }
@@ -151,6 +225,8 @@ pub fn load(bytes: &[u8]) -> Result<Heap, ImageError> {
     let n_globals = u64::from_le_bytes(bytes[24..32].try_into().unwrap()) as usize;
     let n_symbols = u64::from_le_bytes(bytes[32..40].try_into().unwrap()) as usize;
     let n_roots = u64::from_le_bytes(bytes[40..48].try_into().unwrap()) as usize;
+    let base = u64::from_le_bytes(bytes[48..56].try_into().unwrap()) as usize;
+    let n_fixups = u64::from_le_bytes(bytes[56..64].try_into().unwrap()) as usize;
 
     // The code area's parts after the roots: each its counts, then its
     // words and free blocks.
@@ -164,12 +240,14 @@ pub fn load(bytes: &[u8]) -> Result<Heap, ImageError> {
         *c = (read_at(body), read_at(body + 8));
         body = c.1.checked_mul(2).and_then(|f| f.checked_add(c.0)).and_then(|n| n.checked_mul(8)).and_then(|n| (body + 16).checked_add(n)).ok_or_else(|| ImageError::Malformed("a code area larger than memory".into()))?;
     }
+    let fixups_at = body;
+    body = n_fixups.checked_mul(8).and_then(|n| body.checked_add(n)).ok_or_else(|| ImageError::Malformed("fixups larger than memory".into()))?;
     let total = body + 4;
     if bytes.len() < total {
         return Err(ImageError::Truncated { expected: total, found: bytes.len() });
     }
     let expected = u32::from_le_bytes(bytes[body..body + 4].try_into().unwrap());
-    let found = crc32(&bytes[..body]);
+    let found = if check { crc32(&bytes[..body]) } else { expected };
     if expected != found {
         return Err(ImageError::BadChecksum { expected, found });
     }
@@ -180,21 +258,23 @@ pub fn load(bytes: &[u8]) -> Result<Heap, ImageError> {
         *at += 8;
         w
     };
-    let words: Vec<u64> = (0..n_words).map(|_| read_u64(&mut at)).collect();
+    let words = &bytes[at..at + n_words * 8];
+    at += n_words * 8;
     let globals: Vec<Value> = (0..n_globals).map(|_| Value(read_u64(&mut at))).collect();
     let symbols: Vec<Value> = (0..n_symbols).map(|_| Value(read_u64(&mut at))).collect();
     let roots: Vec<Value> = (0..n_roots).map(|_| Value(read_u64(&mut at))).collect();
     let code = code_counts.map(|(n, f)| {
         at += 16;
-        let words: Vec<u64> = (0..n).map(|_| read_u64(&mut at)).collect();
+        let words = &bytes[at..at + n * 8];
+        at += n * 8;
         let free: Vec<(usize, usize)> = (0..f).map(|_| (read_u64(&mut at) as usize, read_u64(&mut at) as usize)).collect();
         (words, free)
     });
     // Free blocks in order, apart, within their part.
-    let apart = |w: &Vec<u64>, free: &Vec<(usize, usize)>| {
+    let apart = |w: &[u8], free: &Vec<(usize, usize)>| {
         let mut end = 0;
         free.iter().all(|&(s, n)| {
-            let ok = n > 0 && s >= end && s.checked_add(n).is_some_and(|e| e <= w.len());
+            let ok = n > 0 && s >= end && s.checked_add(n).is_some_and(|e| e <= w.len() / 8);
             end = s.saturating_add(n);
             ok
         })
@@ -203,8 +283,24 @@ pub fn load(bytes: &[u8]) -> Result<Heap, ImageError> {
         return Err(ImageError::Malformed("the code area's free blocks out of order or outside it".into()));
     }
 
-    let heap = Heap::from_image_with_code(&words, code, globals, symbols, roots).map_err(ImageError::Malformed)?;
-    heap.verify().map_err(ImageError::Malformed)?;
+    let fixups: Vec<usize> = bytes[fixups_at..fixups_at + n_fixups * 8].chunks_exact(8).map(|b| u64::from_le_bytes(b.try_into().unwrap()) as usize).collect();
+    if fixups.iter().any(|&f| f >= n_words && crate::heap::code_part_of(f).is_none_or(|(k, i)| i >= code[k].0.len() / 8)) {
+        return Err(ImageError::Malformed("a fixup outside the image".into()));
+    }
+    Ok(Parts { words, globals, symbols, roots, code, base, fixups })
+}
+
+fn load_checking(bytes: &[u8], check: bool) -> Result<Heap, ImageError> {
+    let Parts { words, globals, symbols, roots, code, base, fixups } = parts(bytes, check)?;
+    let code = code.map(|(w, free)| (words_of(w), free));
+    let heap = Heap::from_image_with_code(words.len() / 8, |w| {
+        for (w, b) in w.iter_mut().zip(words.chunks_exact(8)) {
+            *w = u64::from_le_bytes(b.try_into().unwrap());
+        }
+    }, code, globals, symbols, roots, base, &fixups).map_err(ImageError::Malformed)?;
+    if check {
+        heap.verify().map_err(ImageError::Malformed)?;
+    }
     Ok(heap)
 }
 
@@ -235,12 +331,40 @@ pub fn extract_embedded(exe_bytes: &[u8]) -> Option<&[u8]> {
     Some(&exe_bytes[start..tail])
 }
 
-/// CRC-32 (IEEE), a byte at a time from a table the compiler builds, so
-/// that no dependency is needed: a cached front end's image is 9.5 MB, which
-/// the bit-at-a-time form took 40 ms over.
+/// The image appended to the file at `path`, read without reading the rest:
+/// the trailer first, and the image only if [`EMBED_MAGIC`] is there. A plain
+/// runtime binary costs one seek and one 16-byte read.
+pub fn read_embedded(path: &std::path::Path) -> std::io::Result<Option<Vec<u8>>> {
+    use std::io::{Read as _, Seek as _, SeekFrom};
+    let mut f = std::fs::File::open(path)?;
+    let len = f.metadata()?.len();
+    if len < TRAILER_BYTES as u64 {
+        return Ok(None);
+    }
+    let mut trailer = [0u8; TRAILER_BYTES];
+    f.seek(SeekFrom::Start(len - TRAILER_BYTES as u64))?;
+    f.read_exact(&mut trailer)?;
+    if &trailer[8..] != EMBED_MAGIC {
+        return Ok(None);
+    }
+    let n = u64::from_le_bytes(trailer[..8].try_into().unwrap());
+    let Some(start) = (len - TRAILER_BYTES as u64).checked_sub(n) else {
+        return Ok(None);
+    };
+    let mut img = vec![0u8; n as usize];
+    f.seek(SeekFrom::Start(start))?;
+    f.read_exact(&mut img)?;
+    Ok(Some(img))
+}
+
+/// CRC-32 (IEEE), from tables the compiler builds, so that no dependency is
+/// needed: eight bytes a step, as a cached front end's image is 21 MB.
 pub fn crc32(data: &[u8]) -> u32 {
-    const TABLE: [u32; 256] = {
-        let mut t = [0u32; 256];
+    // "Slicing by 8": `TABLES[k][b]` is byte `b`'s CRC moved on `k` more
+    // bytes, so a word's eight lookups are one step. The same CRC as a byte
+    // at a time (`crc32_bytewise`): 42 ms that way over the front end's.
+    const TABLES: [[u32; 256]; 8] = {
+        let mut t = [[0u32; 256]; 8];
         let mut i = 0;
         while i < 256 {
             let mut c = i as u32;
@@ -249,14 +373,64 @@ pub fn crc32(data: &[u8]) -> u32 {
                 c = if c & 1 != 0 { (c >> 1) ^ 0xedb8_8320 } else { c >> 1 };
                 k += 1;
             }
-            t[i] = c;
+            t[0][i] = c;
             i += 1;
+        }
+        let mut k = 1;
+        while k < 8 {
+            let mut i = 0;
+            while i < 256 {
+                let prev = t[k - 1][i];
+                t[k][i] = (prev >> 8) ^ t[0][(prev & 0xff) as usize];
+                i += 1;
+            }
+            k += 1;
         }
         t
     };
     let mut crc: u32 = 0xffff_ffff;
-    for b in data {
-        crc = (crc >> 8) ^ TABLE[((crc ^ *b as u32) & 0xff) as usize];
+    let mut words = data.chunks_exact(8);
+    for w in &mut words {
+        let lo = u32::from_le_bytes([w[0], w[1], w[2], w[3]]) ^ crc;
+        let hi = u32::from_le_bytes([w[4], w[5], w[6], w[7]]);
+        crc = TABLES[7][(lo & 0xff) as usize]
+            ^ TABLES[6][((lo >> 8) & 0xff) as usize]
+            ^ TABLES[5][((lo >> 16) & 0xff) as usize]
+            ^ TABLES[4][(lo >> 24) as usize]
+            ^ TABLES[3][(hi & 0xff) as usize]
+            ^ TABLES[2][((hi >> 8) & 0xff) as usize]
+            ^ TABLES[1][((hi >> 16) & 0xff) as usize]
+            ^ TABLES[0][(hi >> 24) as usize];
+    }
+    for b in words.remainder() {
+        crc = (crc >> 8) ^ TABLES[0][((crc ^ *b as u32) & 0xff) as usize];
     }
     !crc
+}
+
+/// CRC-32 a byte at a time, as [`crc32`] was: what it is checked against.
+#[cfg(test)]
+fn crc32_bytewise(data: &[u8]) -> u32 {
+    let mut crc: u32 = 0xffff_ffff;
+    for b in data {
+        let mut c = (crc ^ *b as u32) & 0xff;
+        for _ in 0..8 {
+            c = if c & 1 != 0 { (c >> 1) ^ 0xedb8_8320 } else { c >> 1 };
+        }
+        crc = (crc >> 8) ^ c;
+    }
+    !crc
+}
+
+#[cfg(test)]
+mod crc_tests {
+    #[test]
+    fn eight_bytes_a_step_is_the_same_crc() {
+        // The standard check value, and lengths around a word's.
+        assert_eq!(super::crc32(b"123456789"), 0xcbf4_3926);
+        let data: Vec<u8> = (0..1000u32).map(|i| (i.wrapping_mul(2654435761) >> 13) as u8).collect();
+        for n in [0, 1, 7, 8, 9, 15, 16, 17, 100, 999, 1000] {
+            assert_eq!(super::crc32(&data[..n]), super::crc32_bytewise(&data[..n]), "{n} bytes");
+        }
+    }
 }

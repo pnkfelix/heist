@@ -626,7 +626,7 @@ pub type Read = (Heap, Value, Vec<(Value, Link)>, Vec<Value>);
 
 /// A `.fasl`'s image `bytes` read ([`Read`]).
 pub fn read_image(bytes: &[u8]) -> Result<Read, String> {
-    let heap = fixpt_heap::image::load(bytes).map_err(|e| format!("its image: {e:?}"))?;
+    let heap = fixpt_heap::image::load_trusted(bytes).map_err(|e| format!("its image: {e:?}"))?;
     let root = *heap.roots_slice().first().ok_or("its image has no root")?;
     if !root.is_pair() {
         return Err("its image's root is not a pair".into());
@@ -680,7 +680,7 @@ impl crate::check::Checker {
     pub(crate) fn fasl_load(&mut self, span: fixpt_read::Span, key: &str, path: &str, at: &Path, input: bool, source: u64) -> crate::R<Option<crate::ast::ExpId>> {
         let native = self.conv_default == crate::ast::Conv::Native;
         let Some(fasl) = path_for_load(at, path, native) else { return Ok(None) };
-        let Ok(bytes) = std::fs::read(&fasl) else { return Ok(None) };
+        let Ok(bytes) = fixpt_heap::Mapped::open(&fasl) else { return Ok(None) };
         // One built in is made again, quietly, by the run that reads its
         // source (`Fx26Session::cache_built_ins`).
         let built_in = crate::built_in_module(path).is_some();
@@ -849,7 +849,7 @@ impl crate::check::Checker {
         }
         // Each description of a parameter's module by its select, as the
         // source names it, not written out at each of its uses.
-        let mut tys = HashMap::new();
+        let mut tys = crate::ast::TyMap::default();
         for (p, n) in ptys.iter().zip(&names) {
             if let Ty::Module { descs, .. } = self.arena.get(self.arena.resolve(*p)) {
                 for (d, x) in descs {
