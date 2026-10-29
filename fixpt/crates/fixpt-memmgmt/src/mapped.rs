@@ -9,6 +9,8 @@ use std::io;
 pub struct Mapped {
     base: *const u8,
     len: usize,
+    /// The file, for mapping parts of it elsewhere ([`map_over`](Mapped::map_over)).
+    file: Option<std::fs::File>,
 }
 
 // SAFETY: a read-only mapping owned by whoever holds this value.
@@ -23,10 +25,10 @@ impl Mapped {
         let f = std::fs::File::open(path)?;
         let len = usize::try_from(f.metadata()?.len()).map_err(io::Error::other)?;
         if len == 0 {
-            return Ok(Mapped { base: std::ptr::NonNull::dangling().as_ptr(), len });
+            return Ok(Mapped { base: std::ptr::NonNull::dangling().as_ptr(), len, file: None });
         }
         // SAFETY: a fresh read-only private mapping of an open file, used
-        // only through this value; the descriptor may close once mapped.
+        // only through this value.
         let p = unsafe { libc::mmap(std::ptr::null_mut(), len, libc::PROT_READ, libc::MAP_PRIVATE, f.as_raw_fd(), 0) };
         if p == libc::MAP_FAILED {
             return Err(io::Error::last_os_error());
@@ -36,7 +38,45 @@ impl Mapped {
         unsafe {
             libc::madvise(p, len, libc::MADV_SEQUENTIAL | libc::MADV_WILLNEED)
         };
-        Ok(Mapped { base: p as *const u8, len })
+        Ok(Mapped { base: p as *const u8, len, file: Some(f) })
+    }
+
+    /// The part `part` of these bytes (a slice of them) mapped over the
+    /// memory at `to`, privately: what is written there afterwards is the
+    /// process's own copy, page by page, and the file is not written. The
+    /// whole pages that hold it, `part` from a page's start, `to` on one;
+    /// what the last page holds past `part` is the file's too (zeros, where
+    /// the file is laid out for it). Protected as `prot` says. False, and
+    /// nothing changed, where it cannot be ([`can_map`](Mapped::can_map)).
+    /// For [`Words::map_from`](crate::Words::map_from) and
+    /// [`ExecView::map_from`](crate::ExecView::map_from).
+    ///
+    /// # Safety
+    ///
+    /// The memory at `to`, the pages `part` spans, must be this process's,
+    /// mapped already (a reservation's), and nothing may hold a reference
+    /// into it while it is replaced.
+    pub(crate) unsafe fn map_over(&self, part: &[u8], to: *mut u8, prot: libc::c_int) -> bool {
+        use std::os::fd::AsRawFd as _;
+        let Some(f) = &self.file else { return false };
+        if !self.can_map(part) || !(to as usize).is_multiple_of(crate::reserve::probe::page()) {
+            return false;
+        }
+        let offset = part.as_ptr() as usize - self.base as usize;
+        let len = part.len().div_ceil(crate::reserve::probe::page()) * crate::reserve::probe::page();
+        // SAFETY: the caller's: `to` is this process's mapped memory, which
+        // a fixed mapping replaces; the file is open, `offset` a page's.
+        let p = unsafe { libc::mmap(to as *mut libc::c_void, len, prot, libc::MAP_PRIVATE | libc::MAP_FIXED, f.as_raw_fd(), offset as libc::off_t) };
+        p == to as *mut libc::c_void
+    }
+
+    /// Whether `part`, a slice of these bytes, may be mapped elsewhere
+    /// ([`map_over`](Mapped::map_over)): not empty, from a page's start in
+    /// the file.
+    pub fn can_map(&self, part: &[u8]) -> bool {
+        let offset = (part.as_ptr() as usize).wrapping_sub(self.base as usize);
+        let inside = offset <= self.len && part.len() <= self.len - offset;
+        self.file.is_some() && inside && !part.is_empty() && offset.is_multiple_of(crate::reserve::probe::page())
     }
 }
 

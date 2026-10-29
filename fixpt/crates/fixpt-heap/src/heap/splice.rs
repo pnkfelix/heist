@@ -7,6 +7,16 @@
 //! In place (`TODO.md` §160), where this heap is where the image's was and
 //! holds nothing yet in its old space or its code area: the image's words
 //! go where they were, and only the words its fixups name are written.
+//! Given the file the image is in ([`Heap::splice_image_from`]), its static
+//! area is mapped from it there rather than copied (`TODO.md` §160 item 4):
+//! privately, so that what a collection writes into its mutable half is
+//! the process's own copy of that page; its immutable half read-only, once
+//! the splice is done, where it ends on a page (`image::dump_static`). Its
+//! code too, where its parts end on pages (Linux): each of the code area's
+//! two views mapped from the file, the heap's read-only, so that they
+//! agree, the image's code never written (a collection writes a field only
+//! if what it refers to moved, and nothing the image's code refers to
+//! does).
 //!
 //! As that copy does, an interned symbol of the image is this heap's of the
 //! same name, where there is one, and the image's shared stub is this
@@ -52,6 +62,13 @@ impl Heap {
     /// object of the image's (by its value there) and this heap's object
     /// that stands for it. Nothing collects meanwhile.
     pub fn splice_image(&mut self, img: &Parts, given: &[(Value, Value)]) -> Result<Vec<Value>, String> {
+        self.splice_image_from(img, given, None)
+    }
+
+    /// [`splice_image`](Heap::splice_image) of an image whose bytes are
+    /// `file`'s: its static area mapped from it where the splice is in
+    /// place (the module's doc).
+    pub fn splice_image_from(&mut self, img: &Parts, given: &[(Value, Value)], file: Option<&crate::Mapped>) -> Result<Vec<Value>, String> {
         let (n, ib) = (img.n_words(), img.base);
         // In place where nothing is in the old space, and each code part
         // holds nothing or what the image's starts with alike (the shared
@@ -64,19 +81,28 @@ impl Heap {
         let same_code = as_image(0) && as_image(1);
         let [(immutable_at, half), (static_at, _)] = super::static_area();
         let empty = self.immutable_top == immutable_at && self.static_top == static_at;
-        let in_place = self.base == ib && !relocating() && self.top == 0 && self.active == 0 && empty && same_code;
         // The image's immutable half where its symbols are this heap's (no
         // symbol here may move: none here yet, as when the image is read
         // before anything else); else its mutable half, scanned, since this
         // heap's symbols, which move, may stand for the image's.
         let immutable_ok = !self.symbols.iter().any(|&s| self.moves(s));
+        // In place only where every part lands where it was made for: not
+        // where the immutable half goes to the mutable half, whose words
+        // the fixups alone would not reach (a front end read after the
+        // runtime's symbols are made, the old space still empty).
+        let in_place = self.base == ib && !relocating() && self.top == 0 && self.active == 0 && empty && same_code && immutable_ok;
         // Each from a card's start, so that the crossing map of the cards
         // before stays as it is.
         let card = 1 << super::young::CARD_SHIFT;
         let (old_top, old_immutable_top, old_static_top) = (self.top, self.immutable_top, self.static_top);
+        // Under `FIXPT_IMAGE_RELOCATE`, a card more before each, so that
+        // the image's words do not land where they were made for, and every
+        // reference to them is moved (a heap read into first would not
+        // move them otherwise: its static area empty, at the image's base).
+        let shift = if relocating() { card } else { 0 };
         for top in [&mut self.top, &mut self.immutable_top, &mut self.static_top] {
-            if !top.is_multiple_of(card) {
-                let gap = card - *top % card;
+            let gap = (card - *top % card) % card + shift;
+            if gap > 0 {
                 self.mem.words_mut()[*top] = make_header(const { layout::kind("bloblet") }, 0, (gap - 1) * 8);
                 *top += gap;
             }
@@ -105,7 +131,33 @@ impl Heap {
         }
         let moves = Moves { regions };
         let sources = [img.words, img.immutable, img.statics, img.code[0].0, img.code[1].0];
-        for (&(_, to, len), from) in moves.regions.iter().zip(sources) {
+        // The static area mapped, in place, rather than copied: the
+        // immutable half writable until the splice is done (a symbol's slot
+        // may be written), then read-only if it ends on a page.
+        let mut mapped = [false; 5];
+        if in_place && let Some(f) = file {
+            for k in [1, 2] {
+                let (_, to, len) = moves.regions[k];
+                mapped[k] = len > 0 && self.mem.map_from(to, f, sources[k], true);
+            }
+            let page = fixpt_memmgmt::reserve::probe::page();
+            for k in [3, 4] {
+                let (_, to, len) = moves.regions[k];
+                let whole = len > 0 && (len * 8).is_multiple_of(page) && f.can_map(sources[k]);
+                // Where it runs first, then where the heap reads it: a view
+                // mapped once can be the file's in the other too.
+                if whole && let Ok(view) = &self.code_exec && view.map_from((self.base + to) * 8, f, sources[k]) {
+                    if !self.mem.map_from(to, f, sources[k], false) {
+                        return Err(format!("the code area's part {} mapped to run but not to read", k - 3));
+                    }
+                    mapped[k] = true;
+                }
+            }
+        }
+        for (k, (&(_, to, len), from)) in moves.regions.iter().zip(sources).enumerate() {
+            if mapped[k] {
+                continue;
+            }
             let mem = &mut self.mem.words_mut()[to..to + len];
             for (w, b) in mem.iter_mut().zip(from.chunks_exact(8)) {
                 *w = u64::from_le_bytes(b.try_into().unwrap());
@@ -278,6 +330,11 @@ impl Heap {
         // swept: no collection scans that half to find it.
         if immutable_ok && ni > 0 {
             self.fix_code();
+        }
+        // Read-only: nothing may write there (`set_slot` refuses what
+        // would), and a page past it the heap writes next is not one of it.
+        if mapped[1] && (ni * 8).is_multiple_of(fixpt_memmgmt::reserve::probe::page()) {
+            self.mem.set_writable(iat..iat + ni, false);
         }
         Ok(img.roots.iter().map(|&r| map(r)).collect())
     }

@@ -136,3 +136,106 @@ fn a_splice_finds_an_object_at_its_halfs_end() {
     assert_eq!(into.intern_existing("last"), Some(into.car(l)));
     into.verify().unwrap();
 }
+
+/// An image spliced into a heap at the base it was made for, whose old
+/// space and static area are empty but which has a symbol of its own made
+/// already, in the nursery (a front end read after the runtime's symbols,
+/// `fixpt check` lowered): its immutable half goes to the mutable half,
+/// since the heap's symbol, which moves, stands for the image's, so it is
+/// not in place, and every field is moved, not only its fixups. (In place,
+/// the fixups were written where the immutable half was made for, and the
+/// words moved kept the image's references: `TODO.md` §168.)
+#[test]
+fn an_immutable_half_moved_aside_is_walked() {
+    let bytes = {
+        let mut h = Heap::new();
+        let text = h.make_string("text");
+        let sym = h.intern("a-symbol");
+        let sum = h.make_frozen(layout::kind("sum"), &[sym, text]);
+        let l = h.cons(sum, Value::NULL);
+        h.push_root(l);
+        image::dump_static(&h)
+    };
+    let mut into = Heap::new();
+    if into.base_word() != Heap::image_base_word() || !into.is_generational() {
+        return;
+    }
+    let mine = into.intern("a-symbol");
+    let img = image::parts(&bytes, true).unwrap();
+    assert!(!img.immutable.is_empty(), "the sum is immutable");
+    let roots = into.splice_image(&img, &[]).expect("splices");
+    let r = into.push_root(roots[0]);
+    let m = into.push_root(mine);
+    for round in 0..2 {
+        let sum = into.car(into.root_at(r));
+        assert_eq!(into.bloblet_slot(sum, 2), into.root_at(m), "round {round}: the image's symbol is this heap's");
+        assert_eq!(into.string_to_rust(into.bloblet_slot(sum, 3)), "text", "round {round}");
+        into.verify().unwrap();
+        into.collect(&mut []);
+    }
+}
+
+/// An image's static area mapped from its file (`TODO.md` §160 item 4), not
+/// copied, where it is spliced in place: what it holds is there, stays, and
+/// what its mutable half refers to follows its moves, across collections;
+/// its immutable half ends on a page (`dump_static`), mapped read-only.
+#[test]
+fn a_static_area_mapped_from_its_file() {
+    let bytes = {
+        let mut h = Heap::new();
+        let text = h.make_string("text");
+        let sym = h.intern("a-symbol");
+        let sum = h.make_frozen(layout::kind("sum"), &[sym, text]);
+        let v = h.make_vector(1, Value::fixnum(5));
+        let l = h.cons(v, Value::NULL);
+        let l = h.cons(sum, l);
+        h.push_root(l);
+        image::dump_static(&h)
+    };
+    let mut into = Heap::new();
+    if into.base_word() != Heap::image_base_word() {
+        return;
+    }
+    // As the front end's cache is: something first, the image on the next
+    // page.
+    let path = std::env::temp_dir().join(format!("fixpt-static-map-{}.img", std::process::id()));
+    let mut file = vec![0xaa; image::PAGE];
+    file.extend(&bytes);
+    std::fs::write(&path, &file).unwrap();
+    let m = fixpt_heap::Mapped::open(&path).unwrap();
+    std::fs::remove_file(&path).unwrap();
+    let img = image::parts(&m[image::PAGE..], true).unwrap();
+    assert!((img.immutable.len()).is_multiple_of(image::PAGE), "the immutable half ends on a page");
+    let roots = into.splice_image_from(&img, &[], Some(&m)).expect("splices");
+    drop(m);
+    let r = into.push_root(roots[0]);
+    // Mapped, not copied: the sum's page is the file's, read-only.
+    #[cfg(target_os = "linux")]
+    {
+        let at = into.car(into.root_at(r)).index() * 8;
+        let maps = std::fs::read_to_string("/proc/self/maps").unwrap();
+        let line = maps
+            .lines()
+            .find(|l| {
+                let (lo, hi) = l.split_once(' ').unwrap().0.split_once('-').unwrap();
+                (usize::from_str_radix(lo, 16).unwrap()..usize::from_str_radix(hi, 16).unwrap()).contains(&at)
+            })
+            .expect("mapped");
+        assert!(line.contains("fixpt-static-map") && line.split_whitespace().nth(1) == Some("r--p"), "{line}");
+    }
+    let young = into.cons(Value::fixnum(9), Value::NULL);
+    let v = into.car(into.cdr(into.root_at(r)));
+    assert!(into.is_static(v), "the vector is the static area's");
+    into.obj_set(v, 0, young);
+    for round in 0..3 {
+        let l = into.root_at(r);
+        let sum = into.car(l);
+        assert!(into.is_static(sum));
+        assert_eq!(into.symbol_name(into.bloblet_slot(sum, 2)), "a-symbol", "round {round}");
+        assert_eq!(into.string_to_rust(into.bloblet_slot(sum, 3)), "text", "round {round}");
+        let v = into.car(into.cdr(l));
+        assert_eq!(into.car(into.obj_ref(v, 0)), Value::fixnum(9), "round {round}: what the mutable half refers to follows");
+        into.verify().unwrap();
+        into.collect(&mut []);
+    }
+}

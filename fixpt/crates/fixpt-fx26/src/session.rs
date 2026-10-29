@@ -365,31 +365,33 @@ fn lowered_failure(m: String) -> String {
 /// Where the front end's register code is cached, if anywhere (native, the
 /// front end after its first run: `save_native_front_end`), and the key
 /// its file must start with: a heap image in the user's cache directory, one
-/// file for each executable, named by a hash of its path, and the key a hash
-/// of the front end's text and of the executable's size and time, so that a
-/// rebuilt compiler never reads what an older one made, but replaces it.
+/// file for each build of the sources (`FIXPT_BUILD_HASH`, `build.rs`),
+/// shared by every executable built from them, and the key a hash of the
+/// front end's text and of the build, so that a rebuilt compiler never
+/// reads what an older one made. (Each executable had a cache of its own
+/// before, which each test binary made at its first run: `TODO.md` §167.)
 /// `FIXPT_NO_CACHE` turns it off.
 fn front_end_cache(text: &str, native: bool) -> Option<(std::path::PathBuf, u64)> {
     use std::hash::{Hash, Hasher};
     if std::env::var_os("FIXPT_NO_CACHE").is_some() {
         return None;
     }
-    let exe = std::env::current_exe().ok()?;
-    let meta = std::fs::metadata(&exe).ok()?;
+    // By the sources and the build (`build.rs`), not the executable: every
+    // one built from them shares the cache, the CLI and each test binary.
+    let build = env!("FIXPT_BUILD_HASH");
     let mut name = std::collections::hash_map::DefaultHasher::new();
-    (exe, native).hash(&mut name);
+    (build, native).hash(&mut name);
     let mut key = std::collections::hash_map::DefaultHasher::new();
-    (text, meta.len(), meta.modified().ok()).hash(&mut key);
+    (text, build).hash(&mut key);
     let dir = crate::fasl::cache_dir()?;
     Some((dir.join(format!("front-end-{:016x}.img", name.finish())), key.finish()))
 }
 
 /// The front end's compiled word `w`, copied out of `heap` into a heap of
 /// its own and written to `path` as an image after `key`: by a temporary
-/// file renamed, so that a reader never sees half of one. Caches not used
-/// for a month (their executables gone, most likely) are removed, and so
-/// are the built-in modules' `.fasl`s not written for a month. Any
-/// failure only means no cache.
+/// file renamed, so that a reader never sees half of one; then the caches
+/// no longer wanted are removed (`sweep_cache`). Any failure only means no
+/// cache.
 fn save_front_end(heap: &fixpt_heap::Heap, w: fixpt_heap::Value, path: &std::path::Path, key: u64) {
     let mut alone = fixpt_heap::Heap::new();
     let copy = alone.copy_graph_from(heap, w);
@@ -432,7 +434,8 @@ fn save_native_front_end(heap: &fixpt_heap::Heap, pieces: fixpt_heap::Value, pat
 /// What [`save_native_front_end`] kept, copied into `heap`, its code made
 /// code again: the pieces; none if the image is not one, when the front
 /// end is compiled and run as ever.
-fn load_native_front_end(k: &NativeKeeping, heap: &mut fixpt_heap::Heap, bytes: &[u8]) -> Option<fixpt_heap::Value> {
+fn load_native_front_end(k: &NativeKeeping, heap: &mut fixpt_heap::Heap, file: &fixpt_heap::Mapped) -> Option<fixpt_heap::Value> {
+    let bytes = file.get(CACHE_IMAGE_AT..)?;
     use fixpt_heap::Value;
     let img = fixpt_heap::image::parts(bytes, false).ok()?;
     let root = *img.roots.first()?;
@@ -460,7 +463,11 @@ fn load_native_front_end(k: &NativeKeeping, heap: &mut fixpt_heap::Heap, bytes: 
         // A cache of this executable's that cannot be put in is said: the
         // front end is then made again at every run, as fast as from no
         // cache at all, and nothing else would show it.
-        let spliced = heap.splice_image(&img, &given).inspect_err(|e| eprintln!("fixpt: the front end's cache could not be read ({e}); it is made again"));
+        // Its static area mapped from the file where the splice is in place
+        // (`TODO.md` §160 item 4), unless `FIXPT_IMAGE_NO_MAP` asks for it
+        // copied.
+        let map = std::env::var_os("FIXPT_IMAGE_NO_MAP").is_none().then_some(file);
+        let spliced = heap.splice_image_from(&img, &given, map).inspect_err(|e| eprintln!("fixpt: the front end's cache could not be read ({e}); it is made again"));
         let root = *spliced.ok()?.first()?;
         let theirs = heap.car(heap.cdr(heap.cdr(root)));
         if mine.is_none() && theirs != Value::FALSE {
@@ -510,18 +517,45 @@ fn save_image(alone: &fixpt_heap::Heap, path: &std::path::Path, key: u64) {
     if std::fs::write(&tmp, &bytes).is_ok() && std::fs::rename(&tmp, path).is_err() {
         let _ = std::fs::remove_file(&tmp);
     }
-    let month = std::time::Duration::from_secs(30 * 24 * 3600);
+    sweep_cache(dir);
+}
+
+/// How long a cache unused is kept (`sweep_cache`): a day. Each build of the
+/// sources has caches of its own (`FIXPT_BUILD_HASH`), 20 MB each, so an
+/// edit makes new ones and leaves the old to no one; a day keeps those of
+/// another branch or profile still in use.
+const CACHE_LIFE: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
+/// And at most this many front-end caches, the most recently used: two
+/// kinds for each of a few builds (debug, release, a second tree).
+const CACHE_MOST: usize = 8;
+
+/// The caches in `dir` let go: front-end caches and the `.fasl`s of the
+/// module files built in (`fasl::path_for_load`, made again by the next run
+/// that wants them) unused for `CACHE_LIFE`, and the front-end caches past
+/// the `CACHE_MOST` most recent. Done by whatever writes a front-end cache
+/// (a process of the CLI, a test's session, `fixpt prewarm`): that is when
+/// a build is new. Used is read or written, by the file's times (access
+/// times may lag by a day where the file system keeps them `relatime`).
+fn sweep_cache(dir: &std::path::Path) {
+    let mut front_ends = Vec::new();
     for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
-        let age = e.metadata().and_then(|m| m.accessed().or(m.modified())).ok().and_then(|t| t.elapsed().ok());
+        let Ok(m) = e.metadata() else { continue };
+        let used = [m.accessed().ok(), m.modified().ok()].into_iter().flatten().max();
+        let old = used.and_then(|t| t.elapsed().ok()).is_some_and(|a| a > CACHE_LIFE);
         let name = e.file_name().to_string_lossy().into_owned();
-        if age.is_some_and(|a| a > month) && name.starts_with("front-end-") {
-            let _ = std::fs::remove_file(e.path());
-        }
-        // The `.fasl`s of the module files built in (`fasl::path_for_load`),
-        // made again by the next run that wants them.
-        if age.is_some_and(|a| a > month) && name.starts_with("built-in-") {
+        if name.starts_with("front-end-") {
+            if old {
+                let _ = std::fs::remove_file(e.path());
+            } else {
+                front_ends.push((used, e.path()));
+            }
+        } else if old && name.starts_with("built-in-") {
             let _ = std::fs::remove_dir_all(e.path());
         }
+    }
+    front_ends.sort_by(|a, b| b.0.cmp(&a.0));
+    for (_, p) in front_ends.into_iter().skip(CACHE_MOST) {
+        let _ = std::fs::remove_file(p);
     }
 }
 
@@ -668,7 +702,7 @@ impl Fx26Session {
             if b.get(..8)? != key.to_le_bytes() {
                 return None;
             }
-            load_native_front_end(&k, heap, b.get(CACHE_IMAGE_AT..)?)
+            load_native_front_end(&k, heap, &b)
         };
         let mut scheme = Session::with_backend_preloaded(backend, preload);
         scheme
@@ -676,13 +710,24 @@ impl Fx26Session {
             .map_err(|e| FxError::at(Span::new(FileId(0), 0, 0), format!("the FX-26 runtime failed to load: {e}")))?;
         scheme.engine.set_step_limit(Some(DEFAULT_STEP_LIMIT));
         scheme.runtime_unrooted().type_at = Some(crate::typeat::type_at);
+        // The front end run as register code (`front_end_compiled`), read
+        // back from its cache, on the hand register machine (where no
+        // machine code runs, the cellular machine written in Rust): lowered,
+        // on the bytecode VM, it is some 30 times as slow, and loading it
+        // took most of a session's start, a test's (`TODO.md` §167). A
+        // caller that wants it lowered says so.
+        scheme.runtime_unrooted().front_end_run_word.get_or_insert(if fixpt_native::CELLULAR_AVAILABLE {
+            fixpt_native::cellular::run_word_registers
+        } else {
+            fixpt_engine::cellular::run_word
+        });
         Ok(Fx26Session {
             checker: Checker::new(),
             scheme,
             globals: Globals::default(),
             strategy: Strategy::Lower,
             register_code: false,
-            front_end_compiled: false,
+            front_end_compiled: true,
             front_end_native: false,
             native_keeping: None,
             native_convention: false,
@@ -2407,7 +2452,7 @@ impl Fx26Session {
             let mut loaded = false;
             self.scheme.scope(|sc| {
                 sc.make(|m| {
-                    if let Some(p) = load_native_front_end(k, m.heap(), from.get(CACHE_IMAGE_AT..).unwrap_or_default()) {
+                    if let Some(p) = load_native_front_end(k, m.heap(), from) {
                         set_entries(m.heap(), p, entries, native);
                         loaded = true;
                     }
