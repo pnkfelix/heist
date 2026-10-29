@@ -14,6 +14,8 @@
 
 (hide (define kit-numbers (load-module "../kit/numbers.fx"))
       (import kit-numbers expt))
+(hide (define kit-strings (load-module "../kit/strings.fx"))
+      (import kit-strings string-index-from))
 
 ;;; ------------------------------------------------------------ places
 
@@ -121,9 +123,9 @@ all), then an exponent."
                          (else
                           (let* ((neg (char=? (string-ref s i) #\-))
                                  (k (if (or neg (char=? (string-ref s i) #\+)) (+ i 1) i))
-                                 (slash (index-from s #\/ k)))
+                                 (slash (string-index-from s #\/ k)))
                             (cond ((>= k j) (sum none #u))
-                                  ((>= slash 0)
+                                  ((not (bool? slash))
                                    (tagcase (parse-digits s k slash radix)
                                      (none u (sum none #u))
                                      (some n (tagcase (parse-digits s (+ slash 1) j radix)
@@ -146,8 +148,6 @@ all), then an exponent."
   (lambda (v) (tagcase v (int i (rf-int (- 0 i))) (ratio q (make-ratio (- 0 (extract q num)) (extract q den))) (else x v))))
 (define exactness-of (subr rf-st (rf-value int) (sumof (none unit) (some rf-value)))
   (lambda (v exactness) (sum some (if (= exactness 2) (sum real (exact->flonum v)) v))))
-(define index-from (subr rf-st (string char int) int)
-  (lambda (s c i) (cond ((>= i (string-length s)) -1) ((char=? (string-ref s i) c) i) (else (index-from s c (+ i 1))))))
 
 (define char-named (subr rf-st (string) int)
   (lambda (n)
@@ -173,10 +173,12 @@ all), then an exponent."
                                    ((char=? d #\n) (go (+ k 2) (cons (integer->char 10) acc)))
                                    ((char=? d #\r) (go (+ k 2) (cons (integer->char 13) acc)))
                                    ((char=? d #\x)
-                                    (let ((semi (index-from s #\; (+ k 2))))
-                                      (tagcase (if (< semi 0) (sum none #u) (parse-digits s (+ k 2) semi 16))
-                                        (some n (go (+ semi 1) (cons (integer->char n) acc)))
-                                        (none u (go (+ k 2) (cons d acc))))))
+                                    (let ((semi (string-index-from s #\; (+ k 2))))
+                                      (if (bool? semi)
+                                          (go (+ k 2) (cons d acc))
+                                          (tagcase (parse-digits s (+ k 2) semi 16)
+                                            (some n (go (+ semi 1) (cons (integer->char n) acc)))
+                                            (none u (go (+ k 2) (cons d acc)))))))
                                    ((or (char=? d #\newline) (char=? d #\space) (char=? d #\tab))
                                     ;; A line ending escaped: it and the space around it go.
                                     (letrec ((skip (subr rf-st (int bool) int)

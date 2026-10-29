@@ -35,6 +35,8 @@
 
 (hide (define kit-lists (load-module "../kit/lists.fx"))
       (import kit-lists map map2 for-each filter))
+(hide (define kit-strings (load-module "../kit/strings.fx"))
+      (import kit-strings string-concatenate))
 
 
 (define rd (subr rf-eff (string) rf-value) (lambda (s) (car (read-text* s "playback" #f #f))))
@@ -500,8 +502,8 @@ what it does raise."
   (lambda (name) (rf-sym (string->symbol (string-append "ratfink-proof-" (symbol->string (strip-name (rf-sym-of name))))))))
 (define mangle (subr rf-eff (rf-value rf-value) rf-value)
   (lambda (library name)
-    (rf-sym (string->symbol (string-append "ratfink/" (strings-concat (map (lambda ((p rf-value)) (string-append (tagcase p (sym s (symbol->string s)) (else x (datum->string p))) "/"))
-                                                                          (rf-elements library)))
+    (rf-sym (string->symbol (string-append "ratfink/" (string-concatenate (the strings (map (lambda ((p rf-value)) (string-append (tagcase p (sym s (symbol->string s)) (else x (datum->string p))) "/"))
+                                                                          (rf-elements library))))
                                            (symbol->string (rf-sym-of name)))))))
 
 "The playback libraries so far: name, the variables it defines and exports
@@ -722,7 +724,7 @@ place."
 
 (define written (subr rf-eff (rf-value) string) (lambda (f) (datum-text f #f #t larceny-record-text)))
 (define write-forms (subr rf-eff (rf-vals) string)
-  (lambda (forms) (strings-concat (map (lambda ((f rf-value)) (string-append (written f) "\n")) forms))))
+  (lambda (forms) (string-concatenate (the strings (map (lambda ((f rf-value)) (string-append (written f) "\n")) forms)))))
 
 "Write the playback program for a failure in proof-name (in library
 proof-library, or #f) of the program forms, which loaded libraries."
@@ -786,7 +788,7 @@ proof-library, or #f) of the program forms, which loaded libraries."
                            (L1 (if (rf-false? proof-library) (proof-procedure (rf-sym proof-name)) (mangle proof-library (proof-procedure (rf-sym proof-name))))))
                        (rd "(ratfink-report \"playback: PASSED: the failure did not happen\")")
                        (rd "(exit 0)"))))
-          (tagcase (write-file path (the (bytevectorof @rf) (string->utf8 (strings-concat (the strings (reverse (get text)))))))
+          (tagcase (write-file path (the (bytevectorof @rf) (string->utf8 (string-concatenate (the strings (reverse (get text)))))))
             (done u #u) (failed e #u)))))))
 
 "Run the playback program at path with Larceny; its last line starting
@@ -803,7 +805,7 @@ proof-library, or #f) of the program forms, which loaded libraries."
                        (let ((more (process-output id)))
                          (tagcase (process-status id)
                            (running u (begin (sleep-until (i64+ (clock) (int->i64 2000000))) (collect (the strings (cons more acc)))))
-                           (else x (strings-concat (the strings (reverse (the strings (cons (process-output id) (the strings (cons more acc))))))))))))
+                           (else x (string-concatenate (the strings (reverse (the strings (cons (process-output id) (the strings (cons more acc))))))))))))
                    (last-line (subr rf-st (string int int string) string)
                      (lambda (s start i found)
                        (cond ((>= i (string-length s))

@@ -290,8 +290,6 @@ of ratfink's own (a message and irritants, as Scheme's `error` takes)."
   (lambda (l k) (if (or (null? l) (<= k 0)) nil (cons (car l) (vals-head (cdr l) (- k 1))))))
 (define* symbols-member? (subr spin (symbol symbols) bool)
   (lambda (s l) (cond ((null? l) #f) ((eq? s (car l)) #t) (else (symbols-member? s (cdr l))))))
-(define* strings-concat (subr spin (strings) string)
-  (lambda (l) (if (null? l) "" (string-append (car l) (strings-concat (cdr l))))))
 (define* symbols-reverse (subr spin (symbols) symbols)
   (lambda (l) (letrec ((go (subr spin (symbols symbols) symbols) (lambda (l acc) (if (null? l) acc (go (cdr l) (cons (car l) acc))))))
                 (go l nil))))

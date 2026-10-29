@@ -28,6 +28,8 @@
 
 (hide (define kit-lists (load-module "../kit/lists.fx"))
       (import kit-lists map map2 for-each filter))
+(hide (define kit-strings (load-module "../kit/strings.fx"))
+      (import kit-strings string-concatenate))
 
 "A solver: what check.fx asks of one. check answers 'sat, 'unsat or
 'unknown; values, after sat, the value of each term."
@@ -73,7 +75,7 @@
 (define flush-log (subr rf-eff (z3-state) unit)
   (lambda (s)
     (if (string=? (extract s log-file) "") #u
-        (tagcase (write-file (extract s log-file) (the (bytevectorof @rf) (string->utf8 (strings-concat (the strings (reverse (get (extract s log))))))))
+        (tagcase (write-file (extract s log-file) (the (bytevectorof @rf) (string->utf8 (string-concatenate (the strings (reverse (get (extract s log))))))))
           (done u #u) (failed e #u)))))
 
 (define now-ms (subr rf-eff () int) (lambda () (quotient (i64->int (clock)) 1000000)))
@@ -138,15 +140,6 @@ symbol) if the deadline (ms, or -1) passed first."
             ((and (rf-pair? r) (rf-eqv? (rf-car r) (rf-sym 'error)))
              (begin (rf-error "The SMT solver reported an error:" (list (rf-cadr r))) r))
             (else r)))))
-
-(define split-words (subr rf-st (string) strings)
-  (lambda (s)
-    (letrec ((go (subr rf-st (int int strings) strings)
-               (lambda (i start acc)
-                 (cond ((>= i (string-length s)) (the strings (reverse (if (> i start) (the strings (cons (substring s start i) acc)) acc))))
-                       ((char=? (string-ref s i) #\space) (go (+ i 1) (+ i 1) (if (> i start) (the strings (cons (substring s start i) acc)) acc)))
-                       (else (go (+ i 1) start acc))))))
-      (go 0 0 nil))))
 
 (define start-process! (subr rf-eff (z3-state) unit)
   (lambda (s)
@@ -233,7 +226,7 @@ deeply."
                                                (let ((atom (index-atom s t)))
                                                  (if (string=? atom "")
                                                      (string-append "(" (op-name (term-op (term-of t)))
-                                                                    (strings-concat (map (lambda ((a rf-value)) (string-append " " (reference! s a))) (targs t)))
+                                                                    (string-concatenate (the strings (map (lambda ((a rf-value)) (string-append " " (reference! s a))) (targs t))))
                                                                     ")")
                                                      atom))
                                                ")"))
@@ -251,8 +244,8 @@ one is true, and k defined from them."
                    (loop (- n 1) nil))))
       (begin
         (for-each (lambda ((b string)) (smt-send s (string-append "(declare-const " b " Bool)"))) names)
-        (smt-send s (string-append "(assert ((_ pbeq 1" (strings-concat (map (lambda ((b string)) " 1") names)) ")"
-                               (strings-concat (map (lambda ((b string)) (string-append " " b)) names)) "))"))
+        (smt-send s (string-append "(assert ((_ pbeq 1" (string-concatenate (the strings (map (lambda ((b string)) " 1") names))) ")"
+                               (string-concatenate (the strings (map (lambda ((b string)) (string-append " " b)) names))) "))"))
         (smt-send s (string-append "(define-fun " (term-name k) " () Int "
                                (letrec ((loop (subr rf-st (int string) string)
                                           (lambda (i acc) (if (< i 0) acc
@@ -351,7 +344,7 @@ declare-index! declared it; else \"\"."
     (if (null? terms) nil
         (let ((names (the strings (map (lambda ((t rf-value)) (reference! s t)) terms))))
           (begin
-            (smt-send s (string-append "(get-value (" (strings-concat (map (lambda ((n string)) (string-append " " n)) (the strings names))) "))"))
+            (smt-send s (string-append "(get-value (" (string-concatenate (the strings (map (lambda ((n string)) (string-append " " n)) (the strings names)))) "))"))
             (map2 (lambda ((t rf-value) (entry rf-value)) (parse-value (rf-cadr entry))) terms (rf-elements (smt-receive s))))))))
 
 "Start the solver process. timeout: the limit on each check, in seconds,

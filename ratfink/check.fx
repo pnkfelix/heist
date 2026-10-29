@@ -32,6 +32,8 @@
 
 (hide (define kit-lists (load-module "../kit/lists.fx"))
       (import kit-lists map map2 for-each filter))
+(hide (define kit-strings (load-module "../kit/strings.fx"))
+      (import kit-strings string-pad-right))
 
 "The options of check-forms, with shakedown's defaults: unwind 10,
 timeout 10 (-1: none), playback \"\" (none), library-path (\".\"), proofs
@@ -296,8 +298,6 @@ values of the constants."
   (lambda (k)
     (cond ((or (eq? k 'assert) (eq? k 'cover)) "") ((eq? k 'error) "error: ") ((eq? k 'unwind) "unwinding: ")
           ((eq? k 'loop) "loop: ") ((eq? k 'unsupported) "unsupported: ") (else "contract: "))))
-(define pad (subr rf-st (string int) string)
-  (lambda (s n) (if (< (string-length s) n) (pad (string-append s " ") n) s)))
 (define show-value (subr rf-eff (rf-value) string)
   (lambda (v) (cond ((rf-true? v) "#t") ((rf-false? v) "#f") (else (datum->string v)))))
 
@@ -343,7 +343,7 @@ library."
                                       (any reached)))))
                      (begin
                        (if once? (set shown (cons (product (status status) (kind kind) (label label)) (get shown))) #u)
-                       (out (string-append "  " (pad (status-name status) 14) (kind-prefix kind) label "\n"))
+                       (out (string-append "  " (string-pad-right (status-name status) 14 #\space) (kind-prefix kind) label "\n"))
                        (let ((at (if (eq? status 'success) "" (source-location (extract ob source)))))
                          (if (string=? at "") #u (out (string-append "      at " at "\n"))))
                        ;; A proof's inputs, as they are; then what else the

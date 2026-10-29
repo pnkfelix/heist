@@ -13,7 +13,8 @@ value, control, I/O) is Fixpt's to give, and is not here.
 
 Started 2026-10-29, once Fixpt 61a2e792 fixed the masking hole that kit's
 signatures depend on (`docs/requests/fixpt-mask-hides-acyclic-writes.md`).
-combo uses it (`rat.fx`, `term.fx` and the modules given `term`).
+combo uses it (`rat.fx`, `term.fx` and the modules given `term`), and
+ratfink its numbers, lists and strings.
 
 ## Conventions
 
@@ -125,8 +126,17 @@ is kit's for completeness beside one that was.
   refused, "`p` cannot be inferred": `list` makes its list at a fresh
   region, which inference does not solve to `(acyclic p)`. A caller writes
   `(the (listof int acyclic) (list 1 2 3))`, or binds the list with that
-  type. Inference could solve a fresh region made only by `cons` to
-  `acyclic`: a candidate request to Fixpt.
+  type.
+- **So must a result that nothing at the call types.** Where the call's
+  context expects a type (an argument, a typed `define`, a declared
+  `lambda`'s body), the result's region is solved from it. Elsewhere it
+  is fresh, and must be said `acyclic`: a result bound by `let`, an `if`'s
+  branch in one, a `lambda`'s body given to `map`, a kit result given
+  straight to kit (`(string-concatenate (the strings (map f l)))`).
+  ratfink needed 101 such annotations at 366 calls of `map` and `filter`,
+  about 70 of them `let` bindings. Both cases are the request
+  `docs/requests/fixpt-region-default-acyclic.md`; prototyped, ratfink
+  needs none.
 - **Imported procedures are the program's globals**, so a caller's effect
   has `(read (globals map …))`, and a caller declared `pure` is refused.
   Within a module the reads are none. Exports read as constants are
@@ -145,4 +155,4 @@ list built in an arena.
 - Programs adopt kit, one at a time, each kept if its tests pass and its
   start-up does not grow: s7st and the CFA have the most to drop.
 - A `spin` variant of a list procedure, if a program needs one.
-- The list-literal inference, as a request to Fixpt.
+- Drop the annotations if Fixpt takes `fixpt-region-default-acyclic.md`.

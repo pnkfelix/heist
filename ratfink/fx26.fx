@@ -29,15 +29,12 @@
 
 (hide (define kit-lists (load-module "../kit/lists.fx"))
       (import kit-lists map map2 for-each filter))
+(hide (define kit-strings (load-module "../kit/strings.fx"))
+      (import kit-strings string-prefix? string-suffix?))
 
 (define fx-error (subr rf-eff (string rf-value) void) (lambda (m f) (rf-error (string-append "ratfink: " m) (list f))))
 (define head-sym (subr rf-st (rf-value) symbol)
   (lambda (f) (if (and (rf-pair? f) (rf-symbol? (rf-car f))) (rf-sym-of (rf-car f)) '||)))
-(define string-starts? (subr rf-st (string string) bool)
-  (lambda (prefix s) (and (>= (string-length s) (string-length prefix)) (string=? (substring s 0 (string-length prefix)) prefix))))
-(define string-ends? (subr rf-st (string string) bool)
-  (lambda (suffix s) (and (>= (string-length s) (string-length suffix))
-                          (string=? (substring s (- (string-length s) (string-length suffix)) (string-length s)) suffix))))
 
 "The files a form's load-modules name (not inside quotes)."
 (define loaded-files (subr rf-st (rf-value) strings)
@@ -50,7 +47,7 @@
 "Files ratfink has its own of: Fixpt's built-in modules, and its proof
 module."
 (define built-in-file? (subr rf-st (string) bool)
-  (lambda (f) (or (string-starts? "fx26:" f) (string-ends? "ratfink/proof.fx" f) (string=? f "proof.fx"))))
+  (lambda (f) (or (string-prefix? "fx26:" f) (string-suffix? "ratfink/proof.fx" f) (string=? f "proof.fx"))))
 
 "A file's forms, read once (the survey reads them first)."
 (define-type read-file (productof (path string) (forms rf-vals)))
@@ -103,7 +100,7 @@ proof of it."
 (define definition (subr rf-eff (rf-value rf-value rf-value) rf-vals)
   (lambda (name type e0)
     (let* ((e (rewrite-local-specs e0)) (v (strip-the e)))
-      (if (and (rf-symbol? name) (string-starts? "proof-" (symbol->string (rf-sym-of name)))
+      (if (and (rf-symbol? name) (string-prefix? "proof-" (symbol->string (rf-sym-of name)))
                (rf-pair? v) (rf-eqv? (rf-car v) (q 'lambda)) (rf-null? (rf-cadr v)))
           (list (rf-cons (q 'define-proof) (rf-cons (rf-list1 name) (rf-cddr v))))
           (tagcase (spec-of type)
@@ -118,7 +115,7 @@ proof of it."
 (define with-formal-names (subr rf-st (spec rf-value) spec)
   (lambda (sp v)
     (if (and (rf-pair? v) (rf-eqv? (rf-car v) (q 'lambda)) (rf-list? (rf-cadr v)) (= (rf-length (rf-cadr v)) (list-length (extract sp params))))
-        (let* ((renames (the (listof (productof (name rf-value) (type rf-value)) acyclic) (filter (lambda ((r param)) (string-starts? " arg" (symbol->string (rf-sym-of (extract r name)))))
+        (let* ((renames (the (listof (productof (name rf-value) (type rf-value)) acyclic) (filter (lambda ((r param)) (string-prefix? " arg" (symbol->string (rf-sym-of (extract r name)))))
                                 (the (listof param acyclic) (map2 (lambda ((p param) (f rf-value)) (product (name (extract p name)) (type (if (rf-pair? f) (rf-car f) f))))
                                       (extract sp params) (rf-elements (rf-cadr v)))))))
                (rename (lambda ((x rf-value)) (subst-type renames x))))
@@ -642,7 +639,7 @@ labelled 1, 2, …."
           (note-program-literals! forms)
           (for-each (lambda ((form rf-value))
                       (for-each (lambda ((f string))
-                                  (let ((path (if (string-starts? "/" f) f (string-append dir "/" f))))
+                                  (let ((path (if (string-prefix? "/" f) f (string-append dir "/" f))))
                                     (if (or (built-in-file? f) (symbols-member? (string->symbol path) (map string->symbol (get seen)))) #u
                                         (survey-file path seen))))
                                 (loaded-files form)))
@@ -659,7 +656,7 @@ the files read so far."
                    (lambda (form)
                      (fx-append-all
                       (map (lambda ((f string))
-                             (let ((path (if (string-starts? "/" f) f (string-append dir "/" f))))
+                             (let ((path (if (string-prefix? "/" f) f (string-append dir "/" f))))
                                (if (or (built-in-file? f) (symbols-member? (string->symbol path) (map string->symbol (get loaded)))) nil
                                    (translate-file path loaded))))
                            (loaded-files form)))))

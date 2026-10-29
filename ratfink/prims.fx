@@ -24,6 +24,8 @@
 
 (hide (define kit-lists (load-module "../kit/lists.fx"))
       (import kit-lists map map2 for-each filter))
+(hide (define kit-strings (load-module "../kit/strings.fx"))
+      (import kit-strings string-concatenate))
 
 (hide (define kit-numbers (load-module "../kit/numbers.fx"))
       (import kit-numbers gcd abs))
@@ -543,7 +545,7 @@ integers is taken one value at a time, in a join."
         (lambda ((a rf-vals)) (tagcase (car a) (sym s (ok (rf-str (symbol->string s)))) (else x (failed (string-append "symbol->string:  " (w (car a)) " \" is not a symbol.\""))))))
       (define-concrete! 'string->symbol (exactly 1)
         (lambda ((a rf-vals)) (tagcase (car a) (str s (ok (rf-sym (string->symbol s)))) (else x (failed (string-append "string->symbol:  " (w (car a)) " \" is not a string.\""))))))
-      (define-concrete! 'string-append (at-least 0) (lambda ((a rf-vals)) (on-strings a (lambda ((ss strings)) (ok (rf-str (strings-concat ss)))))))
+      (define-concrete! 'string-append (at-least 0) (lambda ((a rf-vals)) (on-strings a (lambda ((ss strings)) (ok (rf-str (string-concatenate ss)))))))
       (define-concrete! 'string-length (exactly 1) (lambda ((a rf-vals)) (on-strings a (lambda ((ss strings)) (ok (rf-int (string-length (car ss))))))))
       (define-concrete! 'string-ref (exactly 2)
         (lambda ((a rf-vals))
@@ -678,13 +680,13 @@ and symbol choices as #<union a | b>, and the rest as write writes it."
                     (closure c "#<procedure>")
                     (prim p (string-append "#<primitive " (write-symbol-string (extract p name)) ">"))
                     (unspec u "#<unspecified>")
-                    (multiple vs (string-append "#<values" (strings-concat (map (lambda ((v rf-value)) (string-append " " (show v))) vs)) ">"))
+                    (multiple vs (string-append "#<values" (string-concatenate (the strings (map (lambda ((v rf-value)) (string-append " " (show v))) vs))) ">"))
                     (else y (host-record-text y)))))))
 (define show-members (subr rf-eff (rf-members) string)
   (lambda (ms)
     (letrec ((loop (subr rf-eff (rf-members string) strings)
                (lambda (ms sep) (if (null? ms) nil (cons (string-append sep (show (extract (car ms) v))) (loop (cdr ms) " | "))))))
-      (strings-concat (loop ms " ")))))
+      (string-concatenate (loop ms " ")))))
 "How Larceny writes what is not data in shakedown: its own records."
 (define host-record-text (subr rf-st (rf-value) string) (lambda (v) (larceny-record-text v)))
 
@@ -704,7 +706,7 @@ and symbol choices as #<union a | b>, and the rest as write writes it."
                   (make-error-value (if (pair? args) (car args) (rf-str "")) (if (pair? args) (rf-list (cdr args)) rf-nil)
                                     (rf-str (let ((words (the strings (map (lambda ((a rf-value)) (tagcase a (str s s) (else x (show a)))) args))))
                                               (if (null? words) ""
-                                                  (string-append (car words) (strings-concat (map (lambda ((w string)) (string-append " " w)) (cdr words))))))))
+                                                  (string-append (car words) (string-concatenate (the strings (map (lambda ((w string)) (string-append " " w)) (cdr words)))))))))
                   #f rf-true)))
       (define-primitive! 'raise (exactly 1) (lambda ((ctx rf-ctx) (src rf-value) (args rf-vals)) (raise! ctx (car args) #f rf-true)))
       (define-primitive! 'raise-continuable (exactly 1) (lambda ((ctx rf-ctx) (src rf-value) (args rf-vals)) (raise! ctx (car args) #t rf-true)))

@@ -30,6 +30,8 @@
 
 (hide (define kit-lists (load-module "../kit/lists.fx"))
       (import kit-lists map))
+(hide (define kit-strings (load-module "../kit/strings.fx"))
+      (import kit-strings string-concatenate))
 
 (define say (subr rf-eff (string) unit) (lambda (s) (tagcase (write-out s) (done u #u) (failed e #u))))
 
@@ -41,7 +43,7 @@ condition."
 (define describe-signal (subr rf-eff (rf-signal) string)
   (lambda (s)
     (tagcase s
-      (err e (string-append (extract e message) (strings-concat (map (lambda ((i rf-value)) (string-append " " (datum->string i))) (extract e irritants)))))
+      (err e (string-append (extract e message) (string-concatenate (the strings (map (lambda ((i rf-value)) (string-append " " (datum->string i))) (extract e irritants))))))
       (else x "path aborted"))))
 
 (define parse-count (subr rf-st (string) int)

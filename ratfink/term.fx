@@ -16,6 +16,8 @@
 
 (hide (define kit-lists (load-module "../kit/lists.fx"))
       (import kit-lists map for-each))
+(hide (define kit-strings (load-module "../kit/strings.fx"))
+      (import kit-strings string-concatenate))
 
 ;;; ------------------------------------------------------------ operators and sorts
 
@@ -118,7 +120,7 @@ find where ratfink's terms part from shakedown's."
 (define trace-term! (subr rf-st (int string rf-vals) unit)
   (lambda (id op args)
     (if (get trace-terms?)
-        (tagcase (write-err (string-append "T " (int->string id) " " op (strings-concat (map (lambda ((a rf-value)) (string-append " " (arg-trace a))) args)) "\n"))
+        (tagcase (write-err (string-append "T " (int->string id) " " op (string-concatenate (the strings (map (lambda ((a rf-value)) (string-append " " (arg-trace a))) args))) "\n"))
           (done u #u) (failed e #u))
         #u)))
 

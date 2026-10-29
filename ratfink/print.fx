@@ -15,6 +15,8 @@
 ;;;   - strings with \a \b \t \n \r \" \\, and \x1f; for other controls.
 
 (module-parameters ((m-core (load-moduleof "core.fx"))))
+(hide (define kit-strings (load-module "../kit/strings.fx"))
+      (import kit-strings string-concatenate string-index))
 
 (define hex-digit (subr rf-st (int) string)
   (lambda (d) (char->string (string-ref "0123456789abcdef" d))))
@@ -44,9 +46,9 @@
       (if (or (f64-nan? x) (f64-infinite? x)) s
           (let* ((neg (char=? (string-ref s 0) #\-))
                  (body (if neg (substring s 1 (string-length s)) s))
-                 (dot (string-index-of body #\.))
-                 (int-part (if (< dot 0) body (substring body 0 dot)))
-                 (frac-part (if (< dot 0) "" (substring body (+ dot 1) (string-length body))))
+                 (dot (string-index body #\.))
+                 (int-part (if (bool? dot) body (substring body 0 dot)))
+                 (frac-part (if (bool? dot) "" (substring body (+ dot 1) (string-length body))))
                  (all (string-append int-part frac-part))
                  ;; The significant digits, and the exponent of the first.
                  (lead (count-leading #\0 all))
@@ -68,10 +70,6 @@
                    (string-append sign (substring digits 0 1) "."
                                   (if (> (string-length digits) 1) (substring digits 1 (string-length digits)) "0")
                                   "e" (int->string k)))))))))
-(define string-index-of (subr rf-st (string char) int)
-  (lambda (s c)
-    (letrec ((go (subr rf-st (int) int) (lambda (i) (cond ((>= i (string-length s)) -1) ((char=? (string-ref s i) c) i) (else (go (+ i 1)))))))
-      (go 0))))
 (define count-leading (subr rf-st (char string) int)
   (lambda (c s)
     (letrec ((go (subr rf-st (int) int) (lambda (i) (if (and (< i (string-length s)) (char=? (string-ref s i) c)) (go (+ i 1)) i))))
@@ -113,7 +111,7 @@
   (lambda (s)
     (letrec ((go (subr rf-st (int strings) strings)
                (lambda (i acc) (if (< i 0) acc (go (- i 1) (cons (string-escape (string-ref s i)) acc))))))
-      (string-append "\"" (strings-concat (go (- (string-length s) 1) nil)) "\""))))
+      (string-append "\"" (string-concatenate (go (- (string-length s) 1) nil)) "\""))))
 
 (define initial? (subr rf-st (char) bool)
   (lambda (c)
@@ -122,7 +120,7 @@
         (string-has? "!$%&*/:<=>?^_~@" c))))
 (define subsequent? (subr rf-st (char) bool)
   (lambda (c) (or (initial? c) (char-numeric? c) (string-has? "+-.@" c))))
-(define string-has? (subr rf-st (string char) bool) (lambda (s c) (>= (string-index-of s c) 0)))
+(define string-has? (subr rf-st (string char) bool) (lambda (s c) (not (bool? (string-index s c)))))
 (define all-subsequent? (subr rf-st (string int) bool)
   (lambda (s i) (or (>= i (string-length s)) (and (subsequent? (string-ref s i)) (all-subsequent? s (+ i 1))))))
 "Whether a symbol's name is written as it is."
@@ -143,7 +141,7 @@
                        (if (< i 0) acc
                            (let ((c (string-ref s i)))
                              (go (- i 1) (cons (cond ((char=? c #\|) "\\|") ((char=? c #\\) "\\\\") (else (char->string c))) acc)))))))
-            (string-append "|" (strings-concat (go (- (string-length s) 1) nil)) "|"))))))
+            (string-append "|" (string-concatenate (go (- (string-length s) 1) nil)) "|"))))))
 
 ;;; ------------------------------------------------------------ data
 
@@ -199,7 +197,7 @@ show writes pairs itself, without."
                  (cond ((>= i (array-length a)) (cons ")" acc))
                        ((= i 0) (walk (array-ref a 0) (elements a 1 acc)))
                        (else (cons " " (walk (array-ref a i) (elements a (+ i 1) acc))))))))
-      (strings-concat (walk v nil)))))
+      (string-concatenate (walk v nil)))))
 
 "How Larceny writes what is not data in shakedown: shakedown's own records
 (a term, a union, a closure, a primitive, …), by their record types' names."

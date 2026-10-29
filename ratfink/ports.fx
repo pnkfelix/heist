@@ -23,6 +23,8 @@
 
 (hide (define kit-lists (load-module "../kit/lists.fx"))
       (import kit-lists map))
+(hide (define kit-strings (load-module "../kit/strings.fx"))
+      (import kit-strings string-concatenate))
 
 (define make-port (subr rf-st (symbol string rf-slots) rf-value)
   (lambda (kind text cell) (sum port (product (kind kind) (text text) (cell cell)))))
@@ -223,7 +225,7 @@
                                  (lambda ((ctx rf-ctx) (strings rf-vals))
                                    (lift ctx strings
                                          (lambda ((ctx rf-ctx) (ss rf-vals))
-                                           (rf-str (strings-concat (map (lambda ((s rf-value)) (rf-str-of s)) (vals-reverse ss))))))))))))))
+                                           (rf-str (string-concatenate (the strings (map (lambda ((s rf-value)) (rf-str-of s)) (vals-reverse ss)))))))))))))))
           (define! 'current-output-port (exactly 0) (lambda ((ctx rf-ctx) (src rf-value) (args rf-vals)) (array-ref current-output 0)))
           (define! 'current-error-port (exactly 0) (lambda ((ctx rf-ctx) (src rf-value) (args rf-vals)) console))
           (writer 'display #t #f)
