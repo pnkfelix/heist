@@ -487,7 +487,7 @@ integers is taken one value at a time, in a join."
     (define-lifted! name arity (lambda ((ctx rf-ctx) (src rf-value) (args rf-vals)) (apply-concrete ctx src host args)))))
 
 "How Larceny writes a value in its messages."
-(define w (subr rf-eff (rf-value) string) (lambda (v) (datum-text v #f #t (lambda ((x rf-value)) "#<value>"))))
+(define w (subr rf-eff (rf-value) string) (lambda (v) (datum-text v #f #t larceny-record-text)))
 (define ok (subr rf-st (rf-value) host-result) (lambda (v) (sum ok v)))
 (define failed (subr rf-st (string) host-result) (lambda (m) (sum failed m)))
 
@@ -653,18 +653,7 @@ and symbol choices as #<union a | b>, and the rest as write writes it."
                (lambda (ms sep) (if (null? ms) nil (cons (string-append sep (show (extract (car ms) v))) (loop (cdr ms) " | "))))))
       (strings-concat (loop ms " ")))))
 "How Larceny writes what is not data in shakedown: its own records."
-(define host-record-text (subr rf-eff (rf-value) string)
-  (lambda (v)
-    (tagcase v
-      (inst i "#<record instance>")
-      (rtd r "#<record record-type>")
-      (port p "#<record port>")
-      (table t "#<record table>")
-      (frame f "#<frame>")
-      (unbound u "#<record unbound-type>")
-      (unassigned u "#<record unassigned-type>")
-      (deleted u "#<record deleted-type>")
-      (else x "#<value>"))))
+(define host-record-text (subr rf-st (rf-value) string) (lambda (v) (larceny-record-text v)))
 
 (define install-other-primitives! (subr rf-st () unit)
   (lambda ()

@@ -15,7 +15,7 @@
 
 ;;; ------------------------------------------------------------ aliases
 
-(define-type alias-info (productof (sym symbol) (cenv rf-cenv) (genv rf-genv)))
+(define-type alias-info (productof (sym symbol) (cenv rf-cenv) (genv rf-genv) (lib rf-value)))
 (define aliases (ref (table symbol alias-info @rf) @rf)
   (new (the (table symbol alias-info @rf) (make-table symbol-hash symbol=?))))
 (define alias-counter (ref int @rf) (new 0))
@@ -25,17 +25,17 @@
   (lambda () (begin (set aliases (the (table symbol alias-info @rf) (make-table symbol-hash symbol=?)))
                     (set alias-counter 0))))
 
-(define make-alias (subr rf-st (symbol rf-cenv rf-genv) symbol)
-  (lambda (sym cenv genv)
+(define make-alias (subr rf-st (symbol rf-cenv rf-genv rf-value) symbol)
+  (lambda (sym cenv genv lib)
     (begin
       (set alias-counter (+ (get alias-counter) 1))
       (let ((a (string->symbol (string-append (symbol->string (strip-name sym)) "~" (int->string (get alias-counter))))))
-        (begin (table-set! (get aliases) a (product (sym sym) (cenv cenv) (genv genv)))
+        (begin (table-set! (get aliases) a (product (sym sym) (cenv cenv) (genv genv) (lib lib)))
                a)))))
 
 (define alias? (subr rf-st (symbol) bool) (lambda (x) (table-has? (get aliases) x)))
 (define alias-info-of (subr rf-st (symbol) alias-info)
-  (lambda (a) (table-ref (get aliases) a (product (sym a) (cenv nil) (genv no-genv)))))
+  (lambda (a) (table-ref (get aliases) a (product (sym a) (cenv nil) (genv no-genv) (lib rf-false)))))
 (define no-genv rf-genv
   (product (cells (the (table symbol rf-slots @rf) (make-table symbol-hash symbol=?)))
            (macros (the (table symbol rf-maybe-macro @rf) (make-table symbol-hash symbol=?)))
@@ -43,6 +43,7 @@
 (define alias-symbol (subr rf-st (symbol) symbol) (lambda (a) (extract (alias-info-of a) sym)))
 (define alias-cenv (subr rf-st (symbol) rf-cenv) (lambda (a) (extract (alias-info-of a) cenv)))
 (define alias-genv (subr rf-st (symbol) rf-genv) (lambda (a) (extract (alias-info-of a) genv)))
+(define alias-lib (subr rf-st (symbol) rf-value) (lambda (a) (extract (alias-info-of a) lib)))
 (define value-alias? (subr rf-st (rf-value) bool) (lambda (v) (tagcase v (sym s (alias? s)) (else x #f))))
 
 "The symbol an alias stands for, at the end of the chain (a macro can make
@@ -73,7 +74,7 @@ are compared by name (not by binding)."
 
 "A datum as Larceny's write writes it, its aliases stripped."
 (define datum->string (subr rf-eff (rf-value) string)
-  (lambda (x) (datum-text (strip x) #f #t (lambda ((v rf-value)) (tagcase v (unspec u "#!unspecified") (else y "#<value>"))))))
+  (lambda (x) (datum-text (strip x) #f #t larceny-record-text)))
 
 ;;; ------------------------------------------------------------ syntax-rules
 
@@ -85,8 +86,8 @@ are compared by name (not by binding)."
 
 "A macro from (syntax-rules [ellipsis] (literal …) (pattern template) …),
 defined in environments cenv and genv."
-(define make-syntax-rules (subr rf-eff (rf-value rf-cenv rf-genv syntax-error-proc) rf-macro)
-  (lambda (spec cenv genv error)
+(define make-syntax-rules (subr rf-eff (rf-value rf-cenv rf-genv rf-value syntax-error-proc) rf-macro)
+  (lambda (spec cenv genv lib error)
     (begin
       (if (not (and (rf-list? spec) (rf-pair? spec) (keyword? (rf-car spec) 'syntax-rules) (rf-pair? (rf-cdr spec))))
           (error "expected (syntax-rules (literal ...) (pattern template) ...)" spec)
@@ -106,7 +107,7 @@ defined in environments cenv and genv."
                    (literals (map (lambda ((l rf-value)) (rf-sym-of l)) (rf-elements literals)))
                    (rules (map (lambda ((r rf-value)) (product (pattern (rf-cdr (rf-car r))) (template (rf-cadr r))))
                                (rf-elements rules)))
-                   (cenv cenv) (genv genv)))))))
+                   (cenv cenv) (genv genv) (lib lib)))))))
 
 "Bindings: pattern variables to what they matched; under an ellipsis, to
 one binding for each match."
@@ -209,7 +210,7 @@ one binding for each match."
                             (none u
                               (if (table-has? renamed s)
                                   (rf-sym (table-ref renamed s s))
-                                  (let ((a (make-alias s (extract m cenv) (extract m genv))))
+                                  (let ((a (make-alias s (extract m cenv) (extract m genv) (extract m lib))))
                                     (begin (table-set! renamed s a) (rf-sym a)))))
                             (some mb
                               (tagcase mb

@@ -130,11 +130,13 @@ index)."
 "A frame of macros (a body's, a let-syntax's): name to macro."
 (define-type rf-sframe (ref (listof (productof (name symbol) (macro rf-macro)) acyclic) @rf))
 "A syntax-rules macro: its ellipsis, literals, rules (pattern without its
-keyword, and template), and where it was defined."
+keyword, and template), and where it was defined; `lib`, for playback's
+macros, the library it is of (where shakedown keeps a library's name in
+place of the global environment), else #f."
 (define-type rf-rule (productof (pattern rf-value) (template rf-value)))
 (define-type rf-macro
   (productof (ellipsis symbol) (literals symbols) (rules (listof rf-rule acyclic))
-             (cenv rf-cenv) (genv rf-genv)))
+             (cenv rf-cenv) (genv rf-genv) (lib rf-value)))
 
 "A loop with an invariant (eval.fx): its name and arity; its invariants and
 measure, each an expression and its code (of a frame of the variables);

@@ -337,7 +337,7 @@ macros it defines go in sf, variables in vf, as they are found."
       (loop forms nil))))
 
 (define make-macro (subr rf-eff (rf-value rf-cenv) rf-macro)
-  (lambda (spec cenv) (make-syntax-rules spec cenv (get globals) syntax-error)))
+  (lambda (spec cenv) (make-syntax-rules spec cenv (get globals) rf-false syntax-error)))
 
 (define normalize-define (subr rf-eff (rf-value) def)
   (lambda (form)

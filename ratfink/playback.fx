@@ -1,6 +1,23 @@
 ;;; playback.fx: concrete playback of counterexamples, as in Kani:
-;;; shakedown's `(shakedown playback)`. (Being ported: for now it writes
-;;; nothing, and runs nothing.)
+;;; shakedown's `(shakedown playback)`.
+;;;
+;;; For a failed check, write an ordinary R7RS program: the checked program,
+;;; with any-integer and the rest returning the counterexample's values in
+;;; turn, and assert, assume and cover as plain run-time checks; it runs the
+;;; proof. Running it under Larceny shows the failure for real, and checks
+;;; ratfink: a failure that does not happen concretely means its symbolic
+;;; evaluation was wrong.
+;;;
+;;; Which values, in which order: on the concrete run, the program follows
+;;; the path the model picks, and asks for the constants made on that path
+;;; -- those whose path conditions hold in the model -- in the order
+;;; symbolic evaluation made them (check.fx).
+;;;
+;;; The program's last line of output starting "playback: " says what
+;;; happened: FAILED, PASSED, or INCONSISTENT.
+;;;
+;;; The program is shakedown's, but for its names (ratfink-…, where
+;;; shakedown's are shakedown-…).
 
 (module-parameters ((m-core (load-moduleof "core.fx")) (m-term (load-moduleof "term.fx" m-core))
                     (m-value (load-moduleof "value.fx" m-core m-term))
@@ -16,12 +33,784 @@
                     (m-library (load-moduleof "library.fx" m-core m-print m-syntax m-numbers m-reader))
                     (m-eval (load-moduleof "eval.fx" m-core m-term m-value m-print m-syntax m-numbers m-reader m-machine m-prims m-hashtables m-ports m-prelude m-library))))
 
-"Write the playback program for a failure."
+
+(define rd (subr rf-eff (string) rf-value) (lambda (s) (car (read-text* s "playback" #f #f))))
+(define rds (subr rf-eff (string) rf-vals) (lambda (s) (read-text* s "playback" #f #f)))
+
+"The definitions the playback program starts with."
+(define runtime-text string
+  "(define ratfink-values '())
+
+        (define (ratfink-report . things)
+          (for-each display things)
+          (newline)
+          (flush-output-port))
+
+        (define (ratfink-next!)
+          (when (null? ratfink-values)
+            (ratfink-report \"playback: INCONSISTENT: the program asked for more values\"
+                              \" than the counterexample has\")
+            (exit 3))
+          (let ((v (car ratfink-values)))
+            (set! ratfink-values (cdr ratfink-values))
+            v))
+
+        (define (any-integer) (ratfink-next!))
+        (define (any-boolean) (ratfink-next!))
+        (define (any-of . vs) (list-ref vs (ratfink-next!)))
+        (define (any-list n make)
+          (let loop ((i 0) (acc '()))
+            (if (= i n)
+                (let take ((l (reverse acc)) (k (ratfink-next!)))
+                  (if (zero? k) '() (cons (car l) (take (cdr l) (- k 1)))))
+                (loop (+ i 1) (cons (make) acc)))))
+
+        ;; As (shakedown eval) generates shapes: parts in order, then the
+        ;; choice.
+        (define (arbitrary shape)
+          (cond ((eq? shape 'integer) (ratfink-next!))
+                ((eq? shape 'boolean) (ratfink-next!))
+                ((eq? shape 'error)
+                 (guard (e (#t e)) (error \"(arbitrary 'error)\")))
+                ((eq? (car shape) 'one-of) (list-ref (cdr shape) (ratfink-next!)))
+                ((eq? (car shape) 'list-of)
+                 (any-list (cadr shape) (lambda () (arbitrary (caddr shape)))))
+                ((eq? (car shape) 'pair)
+                 (let* ((a (arbitrary (cadr shape))) (b (arbitrary (caddr shape)))) (cons a b)))
+                ((eq? (car shape) 'or)
+                 (let loop ((ss (cdr shape)) (acc '()))
+                   (if (null? ss)
+                       (list-ref (reverse acc) (ratfink-next!))
+                       (let ((v (arbitrary (car ss)))) (loop (cdr ss) (cons v acc))))))))
+
+        (define (fits? shape v)
+          (cond ((eq? shape 'integer) (exact-integer? v))
+                ((eq? shape 'boolean) (boolean? v))
+                ((eq? shape 'error) (error-object? v))
+                ((eq? (car shape) 'one-of) (and (member v (cdr shape)) #t))
+                ((eq? (car shape) 'list-of)
+                 (let loop ((v v) (k 0))
+                   (cond ((null? v) #t)
+                         ((pair? v) (and (< k (cadr shape)) (fits? (caddr shape) (car v))
+                                         (loop (cdr v) (+ k 1))))
+                         (else #f))))
+                ((eq? (car shape) 'pair)
+                 (and (pair? v) (fits? (cadr shape) (car v)) (fits? (caddr shape) (cdr v))))
+                ((eq? (car shape) 'or)
+                 (let loop ((ss (cdr shape)))
+                   (and (pair? ss) (or (fits? (car ss) v) (loop (cdr ss))))))))
+
+        (define (ratfink-assert ok label)
+          (unless ok
+            (ratfink-report \"playback: FAILED \" label)
+            (exit 1)))
+        (define (ratfink-assume ok label)
+          (unless ok
+            (ratfink-report \"playback: INCONSISTENT: an assumption is false: \" label)
+            (exit 3)))
+        (define (ratfink-cover ok label) #t)
+        (define (ratfink-error e)
+          (ratfink-report \"playback: FAILED error: \" (ratfink-describe e))
+          (exit 1))
+
+        ;; As footprint in (shakedown prims) finds the objects.
+        (define (ratfink-objects v)
+          (cond ((pair? v) (append (ratfink-objects (car v)) (ratfink-objects (cdr v))))
+                ((null? v) '())
+                (else (list v))))
+        (define (disjoint? a b)
+          (let loop ((as (ratfink-objects a)))
+            (or (null? as)
+                (and (not (memq (car as) (ratfink-objects b))) (loop (cdr as))))))
+
+        (define (ratfink-describe e)
+          (if (error-object? e)
+              (let ((port (open-output-string)))
+                (display (error-object-message e) port)
+                (for-each (lambda (i) (display \" \" port) (write i port))
+                          (error-object-irritants e))
+                (get-output-string port))
+              (let ((port (open-output-string)))
+                (write e port)
+                (get-output-string port))))")
+(define runtime-cache (ref (sumof (none unit) (some rf-vals)) @rf) (new (sum none #u)))
+(define runtime (subr rf-eff () rf-vals)
+  (lambda () (tagcase (get runtime-cache) (some r r) (none u (let ((r (rds runtime-text))) (begin (set runtime-cache (sum some r)) r))))))
+
+"Prelude procedures that (scheme base) has: the playback program uses the
+prelude's, which call procedures in the order ratfink does."
+(define in-scheme-base symbols
+  (list 'map 'for-each 'member 'memv 'memq 'assoc 'assv 'assq 'make-list 'vector-map 'vector-for-each))
+
+(define defined-name (subr rf-st (rf-value) rf-value)
+  (lambda (form)
+    (if (and (rf-pair? form) (rf-eqv? (rf-car form) (q 'define)) (rf-pair? (rf-cdr form)))
+        (letrec ((loop (subr rf-st (rf-value) rf-value) (lambda (t) (if (rf-pair? t) (loop (rf-car t)) t))))
+          (loop (rf-cadr form)))
+        rf-false)))
+
+(define pb-record-type-names (subr rf-eff (rf-value) rf-vals)
+  (lambda (form)
+    (let ((ctor (rf-caddr form)))
+      (vals-append (cond ((rf-pair? ctor) (list (rf-car ctor))) ((rf-false? ctor) nil) (else (list ctor)))
+                   (cons (rf-cadddr form)
+                         (apply-append-vals (map (lambda ((spec rf-value)) (if (rf-pair? spec) (rf-elements (rf-cdr spec)) nil))
+                                                 (rf-elements (rf-cddddr form)))))))))
+
+"The names a program's top-level forms define."
+(define program-names (subr rf-eff (rf-vals) rf-vals)
+  (lambda (forms)
+    (letrec ((loop (subr rf-eff (rf-vals rf-vals) rf-vals)
+               (lambda (forms acc)
+                 (cond ((null? forms) acc)
+                       ((head-is? (car forms) 'begin) (loop (vals-append (rf-elements (rf-cdr (car forms))) (cdr forms)) acc))
+                       ((head-is? (car forms) 'define-record-type) (loop (cdr forms) (vals-append (pb-record-type-names (car forms)) acc)))
+                       ((and (head-is? (car forms) 'define/contract) (rf-pair? (rf-cdr (car forms))) (rf-pair? (rf-cadr (car forms))))
+                        (loop (cdr forms) (cons (rf-car (rf-cadr (car forms))) acc)))
+                       ((head-is? (car forms) 'define-values)
+                        (loop (cdr forms) (vals-append (map rf-sym (extract (defined-names (list (car forms)) pb-error) vars)) acc)))
+                       ((not (rf-false? (defined-name (car forms)))) (loop (cdr forms) (cons (defined-name (car forms)) acc)))
+                       (else (loop (cdr forms) acc))))))
+      (loop forms nil))))
+
+"Larceny's error, as playback calls it (a message and a form)."
+(define pb-error (subr rf-eff (string rf-value) void) (lambda (m f) (rf-error m (list f))))
+
+;;; ------------------------------------------------------------ rewriting the program
+
+(define temp-counter (ref int @rf) (new 0))
+(define pb-fresh-temp (subr rf-st () rf-value)
+  (lambda () (begin (set temp-counter (+ 1 (get temp-counter)))
+                    (rf-sym (string->symbol (string-append "ratfink-t" (int->string (get temp-counter))))))))
+
+(define pb-literal? (subr rf-st (rf-value) bool)
+  (lambda (x) (or (not (or (rf-pair? x) (rf-symbol? x))) (and (rf-pair? x) (keyword? (rf-car x) 'quote)))))
+
+"Bind the parts of xs (already rewritten) in order, if need be; (k parts)
+builds the form from the parts or their temporaries."
+(define in-order (subr rf-eff (rf-vals (subr rf-eff (rf-vals) rf-value)) rf-value)
+  (lambda (xs k)
+    (let ((varying (filter (lambda ((x rf-value)) (not (pb-literal? x))) xs)))
+      (if (or (< (list-length varying) 2) (not (letrec ((any (subr rf-st (rf-vals) bool) (lambda (l) (and (pair? l) (or (rf-pair? (car l)) (any (cdr l)))))))
+                                                    (any varying))))
+          (k xs)
+          (let ((temps (map (lambda ((x rf-value)) (if (pb-literal? x) x (pb-fresh-temp))) xs)))
+            (L3 (q 'let*)
+                (rf-list (filter-map2-vals (lambda ((t rf-value) (x rf-value)) (if (pb-literal? x) rf-false (L2 t x))) temps xs))
+                (k temps)))))))
+(define filter-map2-vals (subr rf-eff ((subr rf-eff (rf-value rf-value) rf-value) rf-vals rf-vals) rf-vals)
+  (lambda (f as bs)
+    (if (or (null? as) (null? bs)) nil
+        (let ((v (f (car as) (car bs))))
+          (if (rf-false? v) (filter-map2-vals f (cdr as) (cdr bs)) (cons v (filter-map2-vals f (cdr as) (cdr bs))))))))
+
+(define check-call (subr rf-eff (rf-value) rf-value)
+  (lambda (x)
+    (let* ((h (strip-name (rf-sym-of (rf-car x))))
+           (name (q (cond ((eq? h 'assert) 'ratfink-assert) ((eq? h 'assume) 'ratfink-assume) (else 'ratfink-cover))))
+           (test (playback-form (rf-cadr x)))
+           (label (if (and (rf-pair? (rf-cddr x)) (rf-string? (rf-caddr x))) (rf-caddr x) (rf-str (datum->string x)))))
+      (L3 name test label))))
+
+"Forms in order, leaving out define-syntax."
+(define body (subr rf-eff (rf-vals) rf-vals)
+  (lambda (forms)
+    (letrec ((loop (subr rf-eff (rf-vals rf-vals) rf-vals)
+               (lambda (forms acc)
+                 (if (null? forms) (vals-reverse acc)
+                     (let ((f (playback-form (car forms))))
+                       (loop (cdr forms) (if (rf-eqv? f no-form) acc (cons f acc))))))))
+      (loop forms nil))))
+(define body-of (subr rf-eff (rf-value) rf-value) (lambda (forms) (rf-list (body (rf-elements forms)))))
+(define no-form rf-value (rf-sym '| no-form|))
+
+"Macros are expanded here, as eval.fx expands them, found by name."
+(define-type named-macro (productof (name symbol) (macro rf-macro)))
+(define macros (ref (listof named-macro acyclic) @rf) (new nil))
+(define macro-named (subr rf-st (rf-value) (sumof (none unit) (some rf-macro)))
+  (lambda (x)
+    (tagcase x
+      (sym s (let ((n (strip-name s)))
+               (letrec ((find (subr rf-st ((listof named-macro acyclic)) (sumof (none unit) (some rf-macro)))
+                          (lambda (l) (cond ((null? l) (sum none #u)) ((eq? (extract (car l) name) n) (sum some (extract (car l) macro))) (else (find (cdr l)))))))
+                 (find (get macros)))))
+      (else y (sum none #u)))))
+(define playback-library (ref rf-value @rf) (new rf-false))
+(define define-macro! (subr rf-eff (rf-value rf-value) unit)
+  (lambda (name spec)
+    (set macros (cons (product (name (strip-name (rf-sym-of name))) (macro (make-syntax-rules spec nil no-genv (get playback-library) pb-error)))
+                      (get macros)))))
+
+(define playback-form (subr rf-eff (rf-value) rf-value)
+  (lambda (x)
+    (if (not (and (rf-pair? x) (rf-list? x))) x
+        (tagcase (macro-named (rf-car x))
+          (some m (playback-form (expand-macro m x pb-error)))
+          (none u
+            (let ((h (if (rf-symbol? (rf-car x)) (strip-name (rf-sym-of (rf-car x))) '||)))
+              (cond ((eq? h 'define-syntax) (begin (define-macro! (rf-cadr x) (rf-caddr x)) no-form))
+                    ;; In the library's form instead (see with-contracts).
+                    ((eq? h 'contracts-for) no-form)
+                    ((or (eq? h 'let-syntax) (eq? h 'letrec-syntax))
+                     (begin (for-each (lambda ((b rf-value)) (define-macro! (rf-car b) (rf-cadr b))) (rf-elements (rf-cadr x)))
+                            (rf-cons (q 'let) (rf-cons rf-nil (body-of (rf-cddr x))))))
+                    ((or (eq? h 'quote) (eq? h 'quasiquote) (eq? h 'define-record-type)) x)
+                    ((or (eq? h 'assert) (eq? h 'assume) (eq? h 'cover)) (if (rf-pair? (rf-cdr x)) (check-call x) x))
+                    ((eq? h 'define-proof) (rf-cons (q 'define) (rf-cons (L1 (proof-procedure (rf-car (rf-cadr x)))) (body-of (rf-cddr x)))))
+                    ((eq? h 'define/contract) (playback-form (contract->define x)))
+                    ((eq? h 'lambda) (rf-cons (q 'lambda) (rf-cons (rf-cadr x) (body-of (rf-cddr x)))))
+                    ((eq? h 'case-lambda) (rf-cons (q 'case-lambda) (rf-list (map (lambda ((c rf-value)) (rf-cons (rf-car c) (body-of (rf-cdr c)))) (rf-elements (rf-cdr x))))))
+                    ((eq? h 'define) (rf-cons (q 'define) (rf-cons (rf-cadr x) (body-of (rf-cddr x)))))
+                    ((eq? h 'set!) (L3 (q 'set!) (rf-cadr x) (playback-form (rf-caddr x))))
+                    ((or (eq? h 'if) (eq? h 'when) (eq? h 'unless) (eq? h 'begin) (eq? h 'and) (eq? h 'or)) (rf-cons (rf-car x) (body-of (rf-cdr x))))
+                    ((eq? h 'let)
+                     (if (rf-symbol? (rf-cadr x))
+                         (let ((name (rf-cadr x)) (bindings (rf-elements (rf-caddr x))))
+                           (in-order (map (lambda ((b rf-value)) (playback-form (pb-binding-init b))) bindings)
+                                     (lambda ((inits rf-vals))
+                                       (rf-cons (q 'let) (rf-cons name (rf-cons (rf-list (map2 (lambda ((b rf-value) (i rf-value)) (L2 (rf-car b) i)) bindings inits))
+                                                                                 (rf-list (body (loop-body (rf-elements (rf-cdddr x)))))))))))
+                         (let ((bindings (rf-elements (rf-cadr x))))
+                           (in-order (map (lambda ((b rf-value)) (playback-form (pb-binding-init b))) bindings)
+                                     (lambda ((inits rf-vals))
+                                       (rf-cons (q 'let) (rf-cons (rf-list (map2 (lambda ((b rf-value) (i rf-value)) (L2 (rf-car b) i)) bindings inits))
+                                                                  (body-of (rf-cddr x)))))))))
+                    ((or (eq? h 'let*) (eq? h 'letrec) (eq? h 'letrec*))
+                     (rf-cons (if (eq? h 'let*) (q 'let*) (q 'letrec*))
+                              (rf-cons (rf-list (map (lambda ((b rf-value)) (L2 (rf-car b) (playback-form (pb-binding-init b)))) (rf-elements (rf-cadr x))))
+                                       (body-of (rf-cddr x)))))
+                    ((eq? h 'let-values)
+                     ;; In order, as for let: then each binding's formals are
+                     ;; temporaries, bound to the names inside them all.
+                     (let* ((bindings (rf-elements (rf-cadr x)))
+                            (varying (filter (lambda ((b rf-value)) (not (pb-literal? (rf-cadr b)))) bindings)))
+                       (if (or (< (list-length varying) 2) (not (letrec ((any (subr rf-st (rf-vals) bool) (lambda (l) (and (pair? l) (or (rf-pair? (rf-cadr (car l))) (any (cdr l)))))))
+                                                                     (any varying))))
+                           (rf-cons (q 'let-values) (rf-cons (rf-list (map (lambda ((b rf-value)) (L2 (rf-car b) (playback-form (rf-cadr b)))) bindings))
+                                                             (body-of (rf-cddr x))))
+                           (let ((renamed (map rename-formals bindings)))
+                             (letrec ((nest (subr rf-eff (rf-vals (listof renamed-formals acyclic)) rf-value)
+                                        (lambda (bs rs)
+                                          (if (null? bs)
+                                              (rf-cons (q 'let) (rf-cons (rf-list (map (lambda ((p name-temp)) (L2 (extract p name) (extract p temp)))
+                                                                                       (apply-append-name-temps (map (lambda ((r renamed-formals)) (extract r alist)) renamed))))
+                                                                         (body-of (rf-cddr x))))
+                                              (let* ((f (playback-form (rf-cadr (car bs))))
+                                                     (inner (nest (cdr bs) (cdr rs))))
+                                                (L3 (q 'let-values) (L1 (L2 (extract (car rs) formals) f)) inner))))))
+                               (nest bindings renamed))))))
+                    ((eq? h 'let*-values)
+                     (rf-cons (q 'let*-values) (rf-cons (rf-list (map (lambda ((b rf-value)) (L2 (rf-car b) (playback-form (rf-cadr b)))) (rf-elements (rf-cadr x))))
+                                                        (body-of (rf-cddr x)))))
+                    ((eq? h 'receive) (playback-form (rf-cons (q 'let-values) (rf-cons (L1 (L2 (rf-cadr x) (rf-caddr x))) (rf-cdddr x)))))
+                    ((eq? h 'define-values) (L3 (q 'define-values) (rf-cadr x) (playback-form (rf-caddr x))))
+                    ((or (eq? h 'include) (eq? h 'include-ci)) (rf-cons (q 'begin) (rf-list (body (included-forms x pb-error)))))
+                    ((eq? h 'parameterize)
+                     (rf-cons (q 'parameterize) (rf-cons (rf-list (map (lambda ((b rf-value)) (rf-list (map playback-form (rf-elements b)))) (rf-elements (rf-cadr x))))
+                                                         (body-of (rf-cddr x)))))
+                    ((eq? h 'cond) (rf-cons (q 'cond) (rf-list (map (lambda ((c rf-value)) (body-of c)) (rf-elements (rf-cdr x))))))
+                    ((eq? h 'guard)
+                     (let ((clauses (rf-list (map (lambda ((c rf-value)) (body-of c)) (rf-elements (rf-cdr (rf-cadr x)))))))
+                       (rf-cons (q 'guard) (rf-cons (rf-cons (rf-car (rf-cadr x)) clauses) (body-of (rf-cddr x))))))
+                    ((eq? h 'case)
+                     (let ((key (playback-form (rf-cadr x))))
+                       (rf-cons (q 'case) (rf-cons key (rf-list (map (lambda ((c rf-value)) (rf-cons (rf-car c) (body-of (rf-cdr c)))) (rf-elements (rf-cddr x))))))))
+                    ((eq? h 'do)
+                     ;; As eval.fx rewrites it.
+                     (let* ((loop (pb-fresh-temp)) (specs (rf-elements (rf-cadr x))))
+                       (playback-form
+                        (L4 (q 'let) loop (rf-list (map (lambda ((s rf-value)) (L2 (rf-car s) (rf-cadr s))) specs))
+                            (L4 (q 'if) (rf-car (rf-caddr x))
+                                (rf-cons (q 'begin) (if (rf-null? (rf-cdr (rf-caddr x))) (L1 (L3 (q 'if) rf-false rf-false)) (rf-cdr (rf-caddr x))))
+                                (rf-cons (q 'begin) (rf-append2 (rf-cdddr x) (L1 (rf-cons loop (rf-list (map (lambda ((s rf-value)) (if (rf-pair? (rf-cddr s)) (rf-caddr s) (rf-car s))) specs)))))))))))
+                    (else (in-order (body (rf-elements x)) (lambda ((parts rf-vals)) (rf-list parts)))))))))))
+
+(define pb-binding-init (subr rf-st (rf-value) rf-value)
+  (lambda (b) (if (rf-pair? (rf-cdr b)) (rf-cadr b) (L3 (q 'if) rf-false rf-false))))
+
+"Formals with each name a new temporary: the formals, and an alist of name
+to temporary."
+(define-type name-temp (productof (name rf-value) (temp rf-value)))
+(define-type renamed-formals (productof (formals rf-value) (alist (listof name-temp acyclic))))
+(define apply-append-name-temps (subr rf-st ((listof (listof name-temp acyclic) acyclic)) (listof name-temp acyclic))
+  (lambda (ls) (if (null? ls) nil (append (car ls) (apply-append-name-temps (cdr ls))))))
+(define rename-formals (subr rf-eff (rf-value) renamed-formals)
+  (lambda (b)
+    (letrec ((loop (subr rf-eff (rf-value (listof name-temp acyclic)) renamed-formals)
+               (lambda (f acc)
+                 (cond ((rf-null? f) (product (formals rf-nil) (alist (the (listof name-temp acyclic) (reverse acc)))))
+                       ((rf-symbol? f) (let ((t (pb-fresh-temp))) (product (formals t) (alist (the (listof name-temp acyclic) (reverse (the (listof name-temp acyclic) (cons (product (name f) (temp t)) acc))))))))
+                       (else (let* ((t (pb-fresh-temp)) (rest (loop (rf-cdr f) (the (listof name-temp acyclic) (cons (product (name (rf-car f)) (temp t)) acc)))))
+                               (product (formals (rf-cons t (extract rest formals))) (alist (extract rest alist)))))))))
+      (loop (rf-car b) nil))))
+
+"A named let's body without the clauses of a loop with an invariant."
+(define loop-body (subr rf-st (rf-vals) rf-vals)
+  (lambda (forms)
+    (if (and (pair? forms) (rf-pair? (car forms)) (rf-symbol? (rf-car (car forms)))
+             (symbols-member? (strip-name (rf-sym-of (rf-car (car forms)))) (list 'invariant 'decreases 'modifies 'shape)))
+        (loop-body (cdr forms))
+        forms)))
+
+"The aliases left by expanding macros, made into names: one that is bound
+by a local binding form keeps its name; the others mean their symbols, or,
+for a macro of another library, the name that library exports its
+definition of the symbol as."
+(define rename-aliases (subr rf-eff (rf-vals) rf-vals)
+  (lambda (forms)
+    (let ((bound (the (ref symbols @rf) (new nil))))
+      (letrec ((bind! (subr rf-st (rf-value) unit)
+                 (lambda (x) (cond ((value-alias? x) (set bound (cons (rf-sym-of x) (get bound))))
+                                   ((rf-pair? x) (begin (bind! (rf-car x)) (bind! (rf-cdr x))))
+                                   (else #u))))
+               (collect (subr rf-eff (rf-value bool) unit)
+                 (lambda (x top?)
+                   (if (and (rf-pair? x) (rf-list? x))
+                       (let ((h (if (rf-symbol? (rf-car x)) (strip-name (rf-sym-of (rf-car x))) '||))
+                             (each (lambda ((l rf-value) (top? bool)) (for-each (lambda ((f rf-value)) (collect f top?)) (rf-elements l)))))
+                         (cond ((eq? h 'quote) #u)
+                               ((eq? h 'begin) (each (rf-cdr x) top?))
+                               ((eq? h 'define)
+                                (if (rf-pair? (rf-cdr x))
+                                    (let ((target (rf-cadr x)))
+                                      (begin
+                                        (if (rf-pair? target)
+                                            (begin (if top? #u (bind! (rf-car target))) (bind! (rf-cdr target)))
+                                            (if top? #u (bind! target)))
+                                        (each (rf-cddr x) #f)))
+                                    #u))
+                               ((eq? h 'lambda) (begin (if (rf-pair? (rf-cdr x)) (bind! (rf-cadr x)) #u) (each (rf-cddr x) #f)))
+                               ((eq? h 'case-lambda)
+                                (for-each (lambda ((c rf-value)) (if (rf-pair? c) (begin (bind! (rf-car c)) (each (rf-cdr c) #f)) #u)) (rf-elements (rf-cdr x))))
+                               ((eq? h 'guard)
+                                (begin (if (and (rf-pair? (rf-cdr x)) (rf-pair? (rf-cadr x))) (bind! (rf-car (rf-cadr x))) #u) (each (rf-cdr x) #f)))
+                               ((or (eq? h 'let-values) (eq? h 'let*-values))
+                                (begin (if (and (rf-pair? (rf-cdr x)) (rf-list? (rf-cadr x)))
+                                           (for-each (lambda ((b rf-value)) (if (rf-pair? b) (bind! (rf-car b)) #u)) (rf-elements (rf-cadr x))) #u)
+                                       (each (rf-cdr x) #f)))
+                               ((eq? h 'receive) (begin (if (rf-pair? (rf-cdr x)) (bind! (rf-cadr x)) #u) (each (rf-cdr x) #f)))
+                               ((eq? h 'define-values) (begin (if (and (rf-pair? (rf-cdr x)) (not top?)) (bind! (rf-cadr x)) #u) (each (rf-cddr x) #f)))
+                               ((or (eq? h 'let) (eq? h 'let*) (eq? h 'letrec) (eq? h 'letrec*) (eq? h 'do))
+                                (let* ((named? (and (rf-pair? (rf-cdr x)) (rf-symbol? (rf-cadr x))))
+                                       (bindings (if named? (rf-caddr x) (rf-cadr x))))
+                                  (begin
+                                    (if named? (bind! (rf-cadr x)) #u)
+                                    (if (rf-list? bindings) (for-each (lambda ((b rf-value)) (if (rf-pair? b) (bind! (rf-car b)) #u)) (rf-elements bindings)) #u)
+                                    (each (rf-cdr x) #f))))
+                               (else (each x #f))))
+                       #u)))
+               (name (subr rf-eff (rf-value) rf-value)
+                 (lambda (x)
+                   (letrec ((loop (subr rf-eff (rf-value rf-value) rf-value)
+                              (lambda (x library)
+                                (cond ((and (value-alias? x) (not (symbols-member? (rf-sym-of x) (get bound))))
+                                       (loop (rf-sym (alias-symbol (rf-sym-of x))) (alias-lib (rf-sym-of x))))
+                                      ((and (not (rf-false? library)) (not (equal-datum? library (get playback-library)))
+                                            (tagcase (find-playback-library library) (some l (memq-val? x (extract l vars))) (none u #f)))
+                                       (mangle library x))
+                                      (else x)))))
+                     (loop x rf-false))))
+               (rename (subr rf-eff (rf-value) rf-value)
+                 (lambda (x)
+                   (cond ((rf-symbol? x) (name x))
+                         ((and (rf-pair? x) (rf-symbol? (rf-car x)) (rf-eqv? (name (rf-car x)) (q 'quote)) (rf-pair? (rf-cdr x)))
+                          (L2 (q 'quote) (strip (rf-cadr x))))
+                         ((rf-pair? x) (let* ((a (rename (rf-car x))) (d (rename (rf-cdr x)))) (rf-cons a d)))
+                         ((rf-vector? x) (sum vec (list->array (map rename (slots-list (rf-slots-of x))))))
+                         (else x)))))
+        (begin
+          (for-each (lambda ((f rf-value)) (collect f #t)) forms)
+          (map rename forms))))))
+
+"A contract as an ordinary procedure: it checks its pre- and
+postconditions, with the labels eval.fx gives them; it fails if it raises
+what its raises clause does not allow, and checks the signals conditions on
+what it does raise."
+(define contract->define (subr rf-eff (rf-value) rf-value)
+  (lambda (x)
+    (let* ((name (rf-car (rf-cadr x)))
+           (formals (rf-cdr (rf-cadr x)))
+           (args (letrec ((loop (subr rf-st (rf-value) rf-value) (lambda (f) (cond ((rf-null? f) rf-nil) ((rf-symbol? f) (L1 f)) (else (rf-cons (rf-car f) (loop (rf-cdr f))))))))
+                   (loop formals)))
+           (label (lambda ((what string) (e rf-value)) (string-append what " of " (str-of-sym name) ": " (datum->string e))))
+           (pre (the (ref rf-vals @rf) (new nil)))
+           (post (the (ref rf-vals @rf) (new nil)))
+           (raises (the (ref rf-value @rf) (new rf-false)))
+           (signals (the (ref rf-vals @rf) (new nil))))
+      (letrec ((loop (subr rf-eff (rf-value) rf-value)
+                 (lambda (forms)
+                   (let ((clause (if (and (rf-pair? forms) (rf-pair? (rf-car forms))) (rf-caar forms) rf-false)))
+                     (cond ((rf-eqv? clause (q 'requires))
+                            (begin (set pre (vals-append (get pre) (map (lambda ((e rf-value)) (L3 (q 'assert) e (rf-str (label "precondition" e)))) (rf-elements (rf-cdar forms)))))
+                                   (loop (rf-cdr forms))))
+                           ((rf-eqv? clause (q 'ensures))
+                            (let ((r (rf-car (rf-cadr (rf-car forms)))))
+                              (begin (set post (vals-append (get post) (map (lambda ((e rf-value)) (rf-cons r e)) (rf-elements (rf-cddr (rf-car forms))))))
+                                     (loop (rf-cdr forms)))))
+                           ((rf-eqv? clause (q 'signals))
+                            (let ((v (rf-car (rf-cadr (rf-car forms)))))
+                              (begin (set signals (vals-append (get signals) (map (lambda ((e rf-value)) (rf-cons v e)) (rf-elements (rf-cddr (rf-car forms))))))
+                                     (loop (rf-cdr forms)))))
+                           ((rf-eqv? clause (q 'raises)) (begin (set raises (rf-cadr (rf-car forms))) (loop (rf-cdr forms))))
+                           ((or (rf-eqv? clause (q 'returns)) (rf-eqv? clause (q 'modifies)) (rf-eqv? clause (q 'decreases))) (loop (rf-cdr forms)))
+                           (else
+                            (let* ((ex (extract-olds (map rf-cdr (vals-append (get post) (get signals)))))
+                                   (all (extract ex exprs)) (olds (extract ex olds))
+                                   (es (vals-head all (list-length (get post))))
+                                   (ss (vals-tail all (list-length (get post))))
+                                   (rf-result (q 'ratfink-result)) (rf-raised (q 'ratfink-raised))
+                                   (raise-clauses
+                                    (if (rf-false? (get raises)) rf-nil
+                                        (L1 (rf-cons (L3 (q 'fits?) (L2 (q 'quote) (get raises)) rf-raised)
+                                                     (rf-append2 (rf-list (map2 (lambda ((p rf-value) (e rf-value))
+                                                                                  (L3 (q 'let) (L1 (L2 (rf-car p) rf-raised)) (L3 (q 'assert) e (rf-str (label "raise condition" (rf-cdr p))))))
+                                                                                (get signals) ss))
+                                                                 (L1 (L2 (q 'raise) rf-raised)))))))
+                                   (guard-form
+                                    (L3 (q 'guard)
+                                        (rf-cons rf-raised
+                                                 (rf-append2 raise-clauses
+                                                             (L2 (L2 (L2 (q 'error-object?) rf-raised) (L2 (q 'ratfink-error) rf-raised))
+                                                                 (L2 rf-true (L3 (q 'ratfink-assert) rf-false
+                                                                                 (rf-str (if (rf-false? (get raises))
+                                                                                             (string-append (str-of-sym name) " raised an exception, which its contract does not allow")
+                                                                                             (string-append (str-of-sym name) " raised what its " (datum->string (L2 (q 'raises) (get raises))) " does not allow"))))))))
+                                        (if (rf-list? formals)
+                                            (rf-cons (rf-cons (q 'lambda) (rf-cons formals forms)) args)
+                                            (rf-cons (q 'apply) (rf-cons (rf-cons (q 'lambda) (rf-cons formals forms)) args))))))
+                              (rf-cons (q 'define)
+                                       (rf-cons (rf-cons name formals)
+                                                (rf-append2 (rf-list (get pre))
+                                                            (L1 (rf-cons (q 'let*)
+                                                                         (rf-cons (rf-append2 (rf-list (map (lambda ((o old-entry)) (L2 (rf-sym (extract o var)) (extract o expr))) olds))
+                                                                                              (L1 (L2 rf-result guard-form)))
+                                                                                  (rf-append2 (rf-list (map2 (lambda ((p rf-value) (e rf-value))
+                                                                                                               (L3 (q 'let) (L1 (L2 (rf-car p) rf-result)) (L3 (q 'assert) e (rf-str (label "postcondition" (rf-cdr p))))))
+                                                                                                             (get post) es))
+                                                                                              (L1 rf-result)))))))))))))))
+        (loop (rf-cddr x))))))
+
+;;; ------------------------------------------------------------ libraries
+
+"The procedure a proof becomes."
+(define proof-procedure (subr rf-st (rf-value) rf-value)
+  (lambda (name) (rf-sym (string->symbol (string-append "ratfink-proof-" (symbol->string (strip-name (rf-sym-of name))))))))
+(define mangle (subr rf-eff (rf-value rf-value) rf-value)
+  (lambda (library name)
+    (rf-sym (string->symbol (string-append "ratfink/" (strings-concat (map (lambda ((p rf-value)) (string-append (tagcase p (sym s (symbol->string s)) (else x (datum->string p))) "/"))
+                                                                          (rf-elements library)))
+                                           (symbol->string (rf-sym-of name)))))))
+
+"The playback libraries so far: name, the variables it defines and exports
+(mangled), its macros."
+(define-type pb-library (productof (name rf-value) (vars rf-vals) (macros symbols)))
+(define playback-libraries (ref (listof pb-library acyclic) @rf) (new nil))
+(define find-playback-library (subr rf-st (rf-value) (sumof (none unit) (some pb-library)))
+  (lambda (name)
+    (letrec ((find (subr rf-st ((listof pb-library acyclic)) (sumof (none unit) (some pb-library)))
+               (lambda (l) (cond ((null? l) (sum none #u)) ((equal-datum? (extract (car l) name) name) (sum some (car l))) (else (find (cdr l)))))))
+      (find (get playback-libraries)))))
+
+(define standard-imports-text string
+  "((except (scheme base) map for-each member memv memq assoc assv assq make-list vector-map vector-for-each) (scheme write) (scheme cxr) (scheme char) (scheme complex) (scheme inexact) (scheme process-context) (scheme file) (scheme case-lambda) (scheme time) (rnrs hashtables) (rnrs arithmetic fixnums) (rnrs arithmetic bitwise))")
+(define standard-imports (subr rf-eff () rf-vals) (lambda () (rf-elements (rd standard-imports-text))))
+(define standard-libraries (subr rf-eff () rf-vals)
+  (lambda () (cons (rd "(rnrs sorting)") (map (lambda ((set rf-value)) (import-set-library set pb-error)) (standard-imports)))))
+(define member-datum? (subr rf-st (rf-value rf-vals) bool)
+  (lambda (x l) (and (pair? l) (or (equal-datum? x (car l)) (member-datum? x (cdr l))))))
+
+"The import sets to keep: of user libraries; of standard ones the
+standard imports and the prelude do not stand in for; and the mangled
+names of each library before."
+(define user-imports (subr rf-eff (rf-vals) rf-vals)
+  (lambda (import-forms)
+    (vals-append
+     (apply-append-vals
+      (map (lambda ((form rf-value))
+             (map without-macros
+                  (filter (lambda ((set rf-value))
+                            (let ((l (import-set-library set pb-error)))
+                              (or (not (builtin-library? l)) (not (member-datum? l (standard-libraries))))))
+                          (rf-elements (rf-cdr form)))))
+           import-forms))
+     (map (lambda ((l pb-library)) (rf-cons (q 'only) (rf-cons (extract l name) (rf-list (map (lambda ((v rf-value)) (mangle (extract l name) v)) (extract l vars))))))
+          (filter (lambda ((l pb-library)) (pair? (extract l vars))) (the (listof pb-library acyclic) (reverse (get playback-libraries))))))))
+
+"Make the macros the import forms import from playback libraries known by
+the names they are imported under, as well as their own."
+(define import-macros! (subr rf-eff (rf-vals) unit)
+  (lambda (import-forms)
+    (for-each
+     (lambda ((form rf-value))
+       (for-each
+        (lambda ((iset rf-value))
+          (tagcase (find-playback-library (import-set-library iset pb-error))
+            (some l (for-each (lambda ((ln name-temp))
+                                (tagcase (macro-named (extract ln temp))
+                                  (some m (if (not (rf-eqv? (extract ln name) (extract ln temp)))
+                                              (set macros (cons (product (name (rf-sym-of (extract ln name))) (macro m)) (get macros)))
+                                              #u))
+                                  (none u #u)))
+                              (import-renames iset (extract l macros))))
+            (none u #u)))
+        (rf-elements (rf-cdr form))))
+     import-forms)))
+
+"The names an import iset imports, as (local . name)."
+(define import-renames (subr rf-eff (rf-value symbols) (listof name-temp acyclic))
+  (lambda (iset names)
+    (let ((head (if (and (rf-pair? iset) (rf-symbol? (rf-car iset))) (strip-name (rf-sym-of (rf-car iset))) '||)))
+      (if (and (symbols-member? head (list 'only 'except 'prefix 'rename)) (rf-pair? (rf-cdr iset)) (rf-pair? (rf-cadr iset)))
+          (let* ((inner (import-renames (rf-cadr iset) names))
+                 (args (map strip (rf-elements (rf-cddr iset)))))
+            (cond ((eq? head 'only) (filter (lambda ((p name-temp)) (memq-val? (extract p name) args)) inner))
+                  ((eq? head 'except) (filter (lambda ((p name-temp)) (not (memq-val? (extract p name) args))) inner))
+                  ((eq? head 'prefix)
+                   (map (lambda ((p name-temp)) (product (name (rf-sym (string->symbol (string-append (str-of-sym (car args)) (str-of-sym (extract p name)))))) (temp (extract p temp))))
+                        inner))
+                  (else
+                   (map (lambda ((p name-temp))
+                          (letrec ((find (subr rf-st (rf-vals) name-temp)
+                                     (lambda (rs) (cond ((null? rs) p)
+                                                        ((rf-eqv? (rf-car (car rs)) (extract p name)) (product (name (rf-cadr (car rs))) (temp (extract p temp))))
+                                                        (else (find (cdr rs)))))))
+                            (find args)))
+                        inner))))
+          (map (lambda ((n symbol)) (product (name (rf-sym n)) (temp (rf-sym n)))) names)))))
+
+"An import iset without the names of macros."
+(define without-macros (subr rf-eff (rf-value) rf-value)
+  (lambda (iset)
+    (tagcase (find-playback-library (import-set-library iset pb-error))
+      (none u iset)
+      (some l
+        (let ((ms (extract l macros)))
+          (letrec ((walk (subr rf-eff (rf-value) rf-value)
+                     (lambda (iset)
+                       (if (and (rf-pair? iset) (rf-symbol? (rf-car iset))
+                                (symbols-member? (strip-name (rf-sym-of (rf-car iset))) (list 'only 'except 'prefix 'rename))
+                                (rf-pair? (rf-cdr iset)) (rf-pair? (rf-cadr iset)))
+                           (let ((inner (walk (rf-cadr iset))) (h (strip-name (rf-sym-of (rf-car iset)))))
+                             (cond ((or (eq? h 'only) (eq? h 'except))
+                                    (rf-cons (rf-car iset) (rf-cons inner (rf-list (filter (lambda ((n rf-value)) (not (symbols-member? (strip-name (rf-sym-of n)) ms))) (rf-elements (rf-cddr iset)))))))
+                                   ((eq? h 'rename)
+                                    (rf-cons (q 'rename) (rf-cons inner (rf-list (filter (lambda ((r rf-value)) (not (symbols-member? (strip-name (rf-sym-of (rf-car r))) ms))) (rf-elements (rf-cddr iset)))))))
+                                   (else (rf-cons (rf-car iset) (rf-cons inner (rf-cddr iset))))))
+                           iset))))
+            (walk iset)))))))
+
+(define prelude-names (subr rf-eff () rf-vals) (lambda () (map defined-name (prelude-forms))))
+(define runtime-names (subr rf-eff () rf-vals)
+  (lambda () (filter (lambda ((n rf-value)) (not (rf-eqv? n (q 'ratfink-values)))) (map defined-name (runtime)))))
+
+"The names set! somewhere in forms."
+(define assigned-names (subr rf-eff (rf-vals) rf-vals)
+  (lambda (forms)
+    (letrec ((walk (subr rf-eff (rf-value rf-vals) rf-vals)
+               (lambda (x acc)
+                 (cond ((not (rf-pair? x)) acc)
+                       ((and (keyword? (rf-car x) 'set!) (rf-pair? (rf-cdr x)) (rf-symbol? (rf-cadr x))) (walk (rf-cddr x) (cons (strip-name-value (rf-cadr x)) acc)))
+                       ((keyword? (rf-car x) 'quote) acc)
+                       (else (walk (rf-cdr x) (walk (rf-car x) acc)))))))
+      (walk (rf-list forms) nil))))
+
+(define playback-define-library (subr rf-eff (rf-value) rf-value)
+  (lambda (form)
+    (let* ((name (rf-cadr form))
+           (decls (rf-elements (rf-cddr form)))
+           (of-kind (lambda ((kind symbol)) (filter (lambda ((d rf-value)) (keyword? (rf-car d) kind)) decls)))
+           (bodies (apply-append-vals (map (lambda ((d rf-value)) (rf-elements (rf-cdr d))) (of-kind 'begin))))
+           (defined (defined-names bodies pb-error))
+           (in-prelude (filter (lambda ((v symbol)) (memq-val? (rf-sym v) (prelude-names))) (extract defined vars)))
+           (macros-before (get macros)))
+      (begin
+        (import-macros! (of-kind 'import))
+        (set playback-library name)
+        (let* ((rewritten (rename-aliases (body bodies)))
+               ;; Larceny does not export a variable that is assigned.
+               (vars (let ((assigned (assigned-names rewritten)))
+                       (filter (lambda ((v rf-value)) (not (memq-val? v assigned))) (map rf-sym (extract (defined-names rewritten pb-error) vars)))))
+               ;; Its macros, with those that macro uses define.
+               (library-macros (append (extract defined macros)
+                                       (letrec ((loop (subr rf-st ((listof named-macro acyclic) symbols) symbols)
+                                                  (lambda (ms acc) (if (eq? ms macros-before) acc (loop (cdr ms) (cons (extract (car ms) name) acc))))))
+                                         (loop (get macros) nil))))
+               (exports (filter (lambda ((e binding-name)) (not (symbols-member? (extract e name) library-macros)))
+                                (parse-exports (apply-append-vals (map (lambda ((d rf-value)) (rf-elements (rf-cdr d))) (of-kind 'export))) pb-error))))
+          (begin
+            (set playback-library rf-false)
+            (let ((imports (user-imports (of-kind 'import))))
+              (begin
+                (set playback-libraries (cons (product (name name) (vars vars) (macros library-macros)) (get playback-libraries)))
+                (rf-list (list (q 'define-library) name
+                    (rf-cons (q 'export)
+                             (rf-append2 (rf-list (map (lambda ((e binding-name))
+                                                         (if (eq? (extract e local) (extract e name)) (rf-sym (extract e local))
+                                                             (L3 (q 'rename) (rf-sym (extract e name)) (rf-sym (extract e local)))))
+                                                       exports))
+                                         (rf-list (map (lambda ((v rf-value)) (L3 (q 'rename) v (mangle name v))) vars))))
+                    (rf-cons (q 'import)
+                             (rf-append2 (rf-list (standard-imports))
+                                         (rf-cons (rd "(ratfink playback runtime)")
+                                                  (rf-cons (if (null? in-prelude) (rd "(ratfink playback prelude)")
+                                                               (rf-cons (q 'except) (rf-cons (rd "(ratfink playback prelude)") (rf-list (map rf-sym in-prelude)))))
+                                                           (rf-list imports)))))
+                    (rf-cons (q 'begin) (rf-list rewritten))))))))))))
+
+"A library's define-library form with the contracts-for forms (of the
+program) for it in its body."
+(define with-contracts (subr rf-eff (rf-value rf-vals) rf-value)
+  (lambda (form contracts-fors)
+    (let* ((name (rf-cadr form))
+           (forms (apply-append-vals (map (lambda ((c rf-value)) (rf-elements (rf-cddr c)))
+                                          (filter (lambda ((c rf-value)) (equal-datum? (strip (rf-cadr c)) name)) contracts-fors))))
+           (contracts (filter (lambda ((f rf-value)) (and (rf-pair? f) (keyword? (rf-car f) 'contract))) forms))
+           (helpers (filter (lambda ((f rf-value)) (not (and (rf-pair? f) (keyword? (rf-car f) 'contract)))) forms))
+           (contract-of (lambda ((f rf-value))
+                          (letrec ((loop (subr rf-st (rf-vals) rf-value)
+                                     (lambda (cs) (cond ((null? cs) rf-false)
+                                                        ((eq? (strip-name (rf-sym-of (rf-car (rf-cadr (car cs))))) (strip-name (rf-sym-of f))) (car cs))
+                                                        (else (loop (cdr cs)))))))
+                            (loop contracts))))
+           (contracted
+            (lambda ((x rf-value))
+              (let* ((target (if (and (rf-pair? x) (keyword? (rf-car x) 'define) (rf-pair? (rf-cdr x))) (rf-cadr x) rf-false))
+                     (lambda-form (cond ((rf-pair? target) (rf-cons (q 'lambda) (rf-cons (rf-cdr target) (rf-cddr x))))
+                                        ((and (rf-symbol? target) (rf-pair? (rf-cddr x)) (rf-pair? (rf-caddr x)) (keyword? (rf-car (rf-caddr x)) 'lambda)) (rf-caddr x))
+                                        (else rf-false)))
+                     (c (if (rf-false? lambda-form) rf-false (contract-of (if (rf-pair? target) (rf-car target) target)))))
+                (if (rf-false? c) x
+                    (let* ((formals (rf-cdr (rf-cadr c)))
+                           (args (letrec ((loop (subr rf-st (rf-value) rf-value) (lambda (f) (cond ((rf-null? f) rf-nil) ((rf-symbol? f) (L1 f)) (else (rf-cons (rf-car f) (loop (rf-cdr f))))))))
+                                   (loop formals))))
+                      (rf-cons (q 'define/contract)
+                               (rf-cons (rf-cadr c)
+                                        (rf-append2 (rf-cddr c)
+                                                    (L1 (if (rf-list? formals) (rf-cons lambda-form args) (rf-cons (q 'apply) (rf-cons lambda-form args)))))))))))))
+      (if (null? forms) form
+          (letrec ((walk (subr rf-eff (rf-value) rf-value)
+                     (lambda (bs) (cond ((rf-null? bs) rf-nil)
+                                        ((and (rf-pair? (rf-car bs)) (keyword? (rf-caar bs) 'begin))
+                                         (let* ((a (rf-cons (rf-caar bs) (walk (rf-cdar bs)))) (d (walk (rf-cdr bs)))) (rf-cons a d)))
+                                        (else (let* ((a (contracted (rf-car bs))) (d (walk (rf-cdr bs)))) (rf-cons a d))))))
+                   (loop (subr rf-eff (rf-vals rf-vals) rf-value)
+                     (lambda (decls acc)
+                       (if (pair? decls)
+                           (let ((d (car decls)))
+                             (if (keyword? (rf-car d) 'begin)
+                                 (loop (cdr decls) (cons (rf-cons (rf-car d) (walk (rf-cdr d))) acc))
+                                 (loop (cdr decls) (cons d acc))))
+                           (rf-cons (q 'define-library) (rf-cons name (rf-append2 (rf-list (vals-reverse acc)) (L1 (rf-cons (q 'begin) (rf-list helpers))))))))))
+            (loop (rf-elements (rf-cddr form)) nil))))))
+
+"Top-level forms with the forms of include, include-ci and load in their
+place."
+(define splice-included (subr rf-eff (rf-vals) rf-vals)
+  (lambda (forms)
+    (letrec ((loop (subr rf-eff (rf-vals rf-vals) rf-vals)
+               (lambda (forms acc)
+                 (cond ((null? forms) (vals-reverse acc))
+                       ((and (rf-pair? (car forms)) (rf-symbol? (rf-car (car forms)))
+                             (symbols-member? (strip-name (rf-sym-of (rf-car (car forms)))) (list 'include 'include-ci 'load)))
+                        (loop (vals-append (included-forms (car forms) pb-error) (cdr forms)) acc))
+                       ((and (rf-pair? (car forms)) (keyword? (rf-car (car forms)) 'begin)) (loop (vals-append (rf-elements (rf-cdr (car forms))) (cdr forms)) acc))
+                       (else (loop (cdr forms) (cons (car forms) acc)))))))
+      (loop forms nil))))
+
+(define written (subr rf-eff (rf-value) string) (lambda (f) (datum-text f #f #t larceny-record-text)))
+(define write-forms (subr rf-eff (rf-vals) string)
+  (lambda (forms) (strings-concat (map (lambda ((f rf-value)) (string-append (written f) "\n")) forms))))
+
+"Write the playback program for a failure in proof-name (in library
+proof-library, or #f) of the program forms, which loaded libraries."
 (define write-playback! (subr rf-eff (string rf-vals (listof loaded-library acyclic) symbol rf-value strings rf-vals) unit)
-  (lambda (path forms libraries proof-name proof-library header values) #u))
-"Run the playback program at path; its last line starting \"playback: \",
-or \"\"."
-(define run-playback (subr rf-eff (string) string) (lambda (path) ""))
+  (lambda (path forms libraries proof-name proof-library header values)
+    (begin
+      (set macros nil)
+      (set playback-libraries nil)
+      (let* ((forms (splice-included forms))
+             (contracts (filter (lambda ((f rf-value)) (and (rf-pair? f) (keyword? (rf-car f) 'contracts-for))) forms))
+             (libs (map (lambda ((l loaded-library)) (playback-define-library (with-contracts (extract l form) contracts))) libraries))
+             (names (program-names forms))
+             (prelude (letrec ((loop (subr rf-eff (rf-vals rf-vals) rf-vals)
+                                 (lambda (ps acc)
+                                   (cond ((null? ps) (vals-reverse acc))
+                                         ((memq-val? (defined-name (car ps)) names) (loop (cdr ps) acc))
+                                         (else (loop (cdr ps) (cons (playback-form (car ps)) acc)))))))
+                        (loop (prelude-forms) nil)))
+             (top-level? (lambda ((f rf-value) (kind symbol)) (and (rf-pair? f) (keyword? (rf-car f) kind))))
+             (imported (import-macros! (filter (lambda ((f rf-value)) (top-level? f 'import)) forms)))
+             (program0 (letrec ((loop (subr rf-eff (rf-vals rf-vals) rf-vals)
+                                  (lambda (fs acc)
+                                    (cond ((null? fs) (vals-reverse acc))
+                                          ((or (top-level? (car fs) 'import) (top-level? (car fs) 'define-library)) (loop (cdr fs) acc))
+                                          (else (let ((f (playback-form (car fs)))) (loop (cdr fs) (if (rf-eqv? f no-form) acc (cons f acc)))))))))
+                         (loop forms nil)))
+             (program (rename-aliases program0))
+             (imports (user-imports (filter (lambda ((f rf-value)) (top-level? f 'import)) forms)))
+             (text (the (ref strings @rf) (new nil)))
+             (emit (lambda ((s string)) (set text (cons s (get text))))))
+        (begin
+          (emit ";;; Concrete playback, made by ratfink.\n")
+          (for-each (lambda ((line string)) (emit (string-append ";;; " line "\n"))) header)
+          (emit ";;; Run it with: larceny -r7rs -program FILE\n\n")
+          (emit (write-forms (list (rf-cons (q 'define-library)
+                                            (rf-cons (rd "(ratfink playback runtime)")
+                                                     (rf-list (list (rf-cons (q 'export) (rf-list (runtime-names)))
+                                                                    (rd "(import (scheme base) (scheme cxr) (scheme write) (scheme process-context))")
+                                                                    (rf-cons (q 'begin) (rf-cons (L3 (q 'define) (q 'ratfink-values) (L2 (q 'quote) (rf-list values)))
+                                                                                                 (rf-list (cdr (runtime))))))))))))
+          (if (pair? libs)
+              (begin
+                (emit "\n;; ratfink's prelude, for the libraries.\n")
+                (emit (write-forms (list (rf-list (list (q 'define-library) (rd "(ratfink playback prelude)")
+                                                        (rf-cons (q 'export) (rf-list (prelude-names)))
+                                                        (rf-cons (q 'import) (rf-list (standard-imports)))
+                                                        (rf-cons (q 'begin) (rf-list (map playback-form (prelude-forms)))))))))
+                (emit "\n;; The program's libraries.\n")
+                (emit (write-forms libs)))
+              #u)
+          (emit "\n")
+          (emit (written (rf-cons (q 'import) (rf-append2 (rf-list (standard-imports)) (rf-cons (rd "(ratfink playback runtime)") (rf-list imports))))))
+          (emit "\n")
+          (emit "\n;; Procedures of ratfink's prelude.\n")
+          (emit (write-forms prelude))
+          (emit "\n;; The program.\n")
+          (emit (write-forms program))
+          (emit "\n;; The proof.\n")
+          (emit (write-forms
+                 (list (L3 (q 'guard) (rd "(e (#t (ratfink-report \"playback: FAILED error: \" (ratfink-describe e)) (exit 1)))")
+                           (L1 (if (rf-false? proof-library) (proof-procedure (rf-sym proof-name)) (mangle proof-library (proof-procedure (rf-sym proof-name))))))
+                       (rd "(ratfink-report \"playback: PASSED: the failure did not happen\")")
+                       (rd "(exit 0)"))))
+          (tagcase (write-file path (the (bytevectorof @rf) (string->utf8 (strings-concat (the strings (reverse (get text)))))))
+            (done u #u) (failed e #u)))))))
+
+"Run the playback program at path with Larceny; its last line starting
+\"playback: \", or \"\"."
+(define run-playback (subr rf-eff (string) string)
+  (lambda (path)
+    (tagcase (process-start (list (get larceny-command) "-r7rs" "-program" path) "")
+      (failed e "")
+      (started id
+        (begin
+          (process-close-input id)
+          (letrec ((collect (subr rf-eff (strings) string)
+                     (lambda (acc)
+                       (let ((more (process-output id)))
+                         (tagcase (process-status id)
+                           (running u (begin (sleep-until (i64+ (clock) (int->i64 2000000))) (collect (the strings (cons more acc)))))
+                           (else x (strings-concat (the strings (reverse (the strings (cons (process-output id) (the strings (cons more acc))))))))))))
+                   (last-line (subr rf-st (string int int string) string)
+                     (lambda (s start i found)
+                       (cond ((>= i (string-length s))
+                              (let ((l (substring s start i))) (if (string-prefix-10? l) l found)))
+                             ((char=? (string-ref s i) #\newline)
+                              (let ((l (substring s start i))) (last-line s (+ i 1) (+ i 1) (if (string-prefix-10? l) l found))))
+                             (else (last-line s start (+ i 1) found))))))
+            (last-line (collect nil) 0 0 "")))))))
+(define string-prefix-10? (subr rf-st (string) bool)
+  (lambda (l) (and (>= (string-length l) 10) (string=? (substring l 0 10) "playback: "))))
 
 "The Larceny that runs playback programs (bin/ratfink passes $LARCENY)."
 (define larceny-command (ref string @rf) (new "larceny"))

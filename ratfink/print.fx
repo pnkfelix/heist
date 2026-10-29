@@ -200,3 +200,15 @@ show writes pairs itself, without."
                        ((= i 0) (walk (array-ref a 0) (elements a 1 acc)))
                        (else (cons " " (walk (array-ref a i) (elements a (+ i 1) acc))))))))
       (strings-concat (walk v nil)))))
+
+"How Larceny writes what is not data in shakedown: shakedown's own records
+(a term, a union, a closure, a primitive, …), by their record types' names."
+(define larceny-record-text (subr rf-st (rf-value) string)
+  (lambda (v)
+    (tagcase v
+      (term t "#<record term>") (choice c "#<record symbol-choice>") (union u "#<record union>")
+      (multiple m "#<record multiple>") (closure c "#<record closure>") (prim p "#<record primitive>")
+      (rtd r "#<record record-type>") (inst i "#<record instance>") (port p "#<record port>")
+      (table t "#<record table>") (unspec u "#<record unspecified-type>") (unbound u "#<record unbound-type>")
+      (unassigned u "#<record unassigned-type>") (deleted u "#<record deleted-type>") (frame f "#<frame>")
+      (else x "#<value>"))))

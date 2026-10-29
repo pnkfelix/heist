@@ -12,7 +12,7 @@
 (define library-path (subr rf-st () strings) (lambda () (get the-library-path)))
 (define set-library-path! (subr rf-st (strings) unit) (lambda (dirs) (set the-library-path dirs)))
 
-(define library-features symbols (list 'r7rs 'exact-closed 'exact-complex 'ratios 'full-unicode 'larceny 'ratfink))
+(define library-features symbols (list 'r7rs 'exact-closed 'exact-complex 'ratios 'full-unicode 'larceny 'shakedown 'ratfink))
 
 "Libraries ratfink has itself: their names are all its primitives and
 prelude, whichever of them is imported."
