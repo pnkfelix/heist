@@ -2,7 +2,8 @@
 
 Status: items 2 and 3 done in Fixpt 795d2b88 and 21f4b60e (pulled
 2026-10-29): combo starts in 0.29 s, an empty program in 0.05 s. Item 1
-(`takes_modules_at`) is still open. Drafted 2026-10-28 by Heist, for the
+(`takes_modules_at`) is still open; re-measured 2026-10-29 at Fixpt 61a2e792: with it, combo starts in 163 ms
+rather than 282 ms (`fixpt-module-type-per-dependent.md`). Drafted 2026-10-28 by Heist, for the
 user to take to the Fixpt team. Against Fixpt ec7a02b0 (Heist's subtree). Measured on Heist's
 `combo/`, a program of 15 module files. Prototyped in a scratch build only;
 Heist's Fixpt is unchanged.
