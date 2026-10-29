@@ -13,6 +13,9 @@
 
 (module-parameters ((m-sat (load-moduleof "sat.fx")) (m-rat (load-moduleof "rat.fx"))))
 
+(hide (define kit-lists (load-module "../kit/lists.fx"))
+      (import kit-lists map filter member? list=? list-sort))
+
 (define bool-sort int -1)
 (define int-sort int -2)
 (define real-sort int -3)
@@ -54,8 +57,6 @@
 "The number of terms made so far: every term is below it."
 (define* term-count (subr (read @cb) () int) (lambda () (get count)))
 
-(define* ints=? (subr spin (ints ints) bool)
-  (lambda (a b) (if (null? a) (null? b) (and (pair? b) (= (car a) (car b)) (ints=? (cdr a) (cdr b))))))
 (define* mix (subr pure (int int) int) (lambda (h x) (bitwise-and (+ (* h 31) x) 281474976710655)))
 (define* mix-ints (subr spin (int ints) int) (lambda (h l) (if (null? l) h (mix-ints (mix h (bitwise-and (car l) 1099511627775)) (cdr l)))))
 
@@ -80,7 +81,7 @@ that of sort Real are two terms."
                    (cond ((< t 0) -1)
                          ((let ((x (info t)))
                             (and (= (extract x hash) h) (= (extract x sort) sort) (string=? (extract x op) op)
-                                 (ints=? (extract x params) params) (ints=? (extract x args) args)))
+                                 (list=? = (extract x params) params) (list=? = (extract x args) args)))
                           t)
                          (else (find (array-ref (get chain) t)))))))
         (let ((found (find (array-ref b i))))
@@ -113,16 +114,6 @@ them apart."
 ;;; ------------------------------------------------------------ lists of terms
 
 "`l` sorted (a merge sort, stable), duplicates kept."
-(define* sort-ints (subr spin (ints) ints)
-  (lambda (l)
-    (letrec ((split (subr spin (ints ints ints) (productof (a ints) (b ints)))
-               (lambda (l a b) (if (null? l) (product (a a) (b b)) (split (cdr l) b (cons (car l) a)))))
-             (merge (subr spin (ints ints) ints)
-               (lambda (a b) (cond ((null? a) b) ((null? b) a)
-                                   ((<= (car a) (car b)) (cons (car a) (merge (cdr a) b)))
-                                   (else (cons (car b) (merge a (cdr b))))))))
-      (if (or (null? l) (null? (cdr l))) l
-          (let ((p (split l nil nil))) (merge (sort-ints (extract p a)) (sort-ints (extract p b))))))))
 "Terms sorted by id, without duplicates."
 (define* list-sort-terms (subr spin (ints) ints)
   (lambda (l)
@@ -130,14 +121,7 @@ them apart."
                (lambda (l) (cond ((or (null? l) (null? (cdr l))) l)
                                  ((= (car l) (car (cdr l))) (dedup (cdr l)))
                                  (else (cons (car l) (dedup (cdr l))))))))
-      (dedup (sort-ints l)))))
-(define* memv? (subr spin (int ints) bool) (lambda (x l) (and (pair? l) (or (= x (car l)) (memv? x (cdr l))))))
-(define* filter-ints (subr cb-eff ((subr cb-eff (int) bool) ints) ints)
-  (lambda (p l) (cond ((null? l) nil) ((p (car l)) (cons (car l) (filter-ints p (cdr l)))) (else (filter-ints p (cdr l))))))
-(define* map-ints (subr cb-eff ((subr cb-eff (int) int) ints) ints)
-  (lambda (f l) (if (null? l) nil (let ((x (f (car l)))) (cons x (map-ints f (cdr l)))))))
-(define* append-ints (subr spin (ints ints) ints)
-  (lambda (a b) (if (null? a) b (cons (car a) (append-ints (cdr a) b)))))
+      (dedup (the ints (list-sort < l))))))
 
 ;;; ------------------------------------------------------------ Boolean terms
 
@@ -170,11 +154,11 @@ hold zero, or a term and its negation."
                                    ((term-op? (car ts) op) (go (cdr ts) (go (term-args (car ts)) acc)))
                                    (else (go (cdr ts) (cons (car ts) acc)))))))
                   (go ts nil))))
-      (if (memv? zero flat) (product (zero #t) (args nil))
-          (let ((args (list-sort-terms (filter-ints (lambda ((t int)) (not (= t unit))) flat))))
+      (if (member? zero flat =) (product (zero #t) (args nil))
+          (let ((args (list-sort-terms (the ints (filter (lambda ((t int)) (not (= t unit))) flat)))))
             ;; t and (not t): look for each not's argument among the others.
             (if (letrec ((go (subr cb-eff (ints) bool)
-                           (lambda (as) (and (pair? as) (or (and (not-term? (car as)) (memv? (term-arg0 (car as)) args)) (go (cdr as)))))))
+                           (lambda (as) (and (pair? as) (or (and (not-term? (car as)) (member? (term-arg0 (car as)) args =)) (go (cdr as)))))))
                   (go args))
                 (product (zero #t) (args nil))
                 (product (zero #f) (args args))))))))
@@ -225,7 +209,7 @@ theories)."
     (letrec ((go (subr cb-eff (ints ints) int)
                (lambda (ts acc)
                  (if (null? ts) (mk-and acc)
-                     (go (cdr ts) (append-ints (map-ints (lambda ((u int)) (mk-not (mk-eq (car ts) u))) (cdr ts)) acc))))))
+                     (go (cdr ts) (the ints (append (the ints (map (lambda ((u int)) (mk-not (mk-eq (car ts) u))) (cdr ts))) acc)))))))
       (go ts nil))))
 
 "Cardinality: (card lo hi) of Boolean terms holds when at least lo and at
@@ -244,9 +228,9 @@ constant, or the negation of an and is that."
                                    ;; acc without pairs of a term and its negation, and their number.
                                    (lambda (ts acc pairs)
                                      (if (null? ts)
-                                         (card-of (- lo pairs) (if (= hi no-bound) no-bound (- hi pairs)) (sort-ints acc))
+                                         (card-of (- lo pairs) (if (= hi no-bound) no-bound (- hi pairs)) (the ints (list-sort < acc)))
                                          (let ((u (mk-not (car ts))))
-                                           (if (memv? u (cdr ts)) (rm (remv-once u (cdr ts)) acc (+ pairs 1))
+                                           (if (member? u (cdr ts) =) (rm (remv-once u (cdr ts)) acc (+ pairs 1))
                                                (rm (cdr ts) (cons (car ts) acc) pairs)))))))
                           (rm acc nil 0)))
                        ((true-term? (car ts)) (go (cdr ts) (- lo 1) (if (= hi no-bound) no-bound (- hi 1)) acc))
@@ -260,7 +244,7 @@ constant, or the negation of an and is that."
             ((and (= lo 0) none) (true-term))
             ((and none (= lo n)) (mk-and ts))
             ((and none (= lo 1)) (mk-or ts))
-            ((= hi 0) (mk-and (map-ints mk-not ts)))
+            ((= hi 0) (mk-and (the ints (map mk-not ts))))
             ((and (= lo 0) (= hi (- n 1))) (mk-not (mk-and ts)))
             (else (make-app "card" (list lo hi) ts -1))))))
 (define* mk-at-least (subr cb-eff (int ints) int) (lambda (k ts) (mk-card k no-bound ts)))

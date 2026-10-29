@@ -4,8 +4,8 @@
 
 (define-type rat (productof (n int) (d int)))
 
-(define kit-numbers (load-module "../kit/numbers.fx"))
-(import kit-numbers gcd lcm)
+(hide (define kit-numbers (load-module "../kit/numbers.fx"))
+      (import kit-numbers gcd lcm))
 
 "n/d, made canonical (d not 0)."
 (define* make-rat (subr spin (int int) rat)

@@ -26,6 +26,9 @@
                     (m-sexp (load-moduleof "sexp.fx" m-sat m-rat))
                     (m-smt (load-moduleof "smt.fx" m-sat m-rat m-term m-bv m-arith m-eval m-simplex m-blast))))
 
+(hide (define kit-lists (load-module "../kit/lists.fx"))
+      (import kit-lists map))
+
 ;;; ------------------------------------------------------------ the session
 
 (define-type param (productof (name string) (sort int)))
@@ -286,7 +289,7 @@ for to_real)."
 (define* coerce (subr cb-eff (ints) ints)
   (lambda (args) (if (letrec ((go (subr cb-eff (ints) bool) (lambda (l) (and (pair? l) (or (= (term-sort (car l)) real-sort) (go (cdr l)))))))
                        (go args))
-                     (map-ints mk-to-real args) args)))
+                     (the ints (map mk-to-real args)) args)))
 "Chained relations: (= a b c) is (and (= a b) (= b c))."
 (define* chain (subr cb-eff ((subr cb-eff (int int) int) ints) int)
   (lambda (mk args)
@@ -461,7 +464,7 @@ copies times the bound."
        (else
         (let* ((k (car is))
                (card? (or (string=? name "at-most") (string=? name "at-least")))
-               (cs (if card? (map-ints (lambda ((a int)) 1) args) (cdr is))))
+               (cs (if card? (the ints (map (lambda ((a int)) 1) args)) (cdr is))))
           (if (not (and (= (list-length cs) (list-length args)) (or (not card?) (null? (cdr is)))))
               (fail! s (string-append "invalid number of arguments to " (sexp->string head)))
               (if (and (> (letrec ((go (subr cb-eff (ints int) int) (lambda (l t) (if (null? l) t (go (cdr l) (+ t (if (< (car l) 0) (- 0 (car l)) (car l)))))))) (go cs 0)) 64)

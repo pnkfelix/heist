@@ -23,6 +23,9 @@
                     (m-simplex (load-moduleof "simplex.fx" m-sat m-rat))
                     (m-blast (load-moduleof "blast.fx" m-sat m-rat m-term m-bv m-arith m-eval m-simplex))))
 
+(hide (define kit-lists (load-module "../kit/lists.fx"))
+      (import kit-lists member?))
+
 "A level above 0: its activation literal, and its assertions, newest first."
 (define-type smt-frame (productof (act int) (assertions (ref ints @cb))))
 (define-type smt
@@ -62,8 +65,8 @@
 (define* smt-assertions (subr cb-eff (smt) ints)
   (lambda (c)
     (letrec ((go (subr cb-eff ((listof smt-frame acyclic) ints) ints)
-               (lambda (fs acc) (if (null? fs) (append-ints (reverse-ints (get (extract c base))) acc)
-                                    (go (cdr fs) (append-ints (reverse-ints (get (extract (car fs) assertions))) acc))))))
+               (lambda (fs acc) (if (null? fs) (the ints (append (reverse-ints (get (extract c base))) acc))
+                                    (go (cdr fs) (the ints (append (reverse-ints (get (extract (car fs) assertions))) acc)))))))
       (go (get (extract c frames)) nil))))
 
 "Assert a Boolean term."
@@ -132,10 +135,10 @@ fuzzed formula away from its small solutions."
                      (begin
                        (if (blaster-has-simplex? b) (simplex-set-cuts! (blaster-simplex b) (not (= (car bounds) 256))) #u)
                        (let* ((blits (box-lits b (car bounds)))
-                              (answer (sat-solve s (append-ints acts (append-ints alits blits)))))
+                              (answer (sat-solve s (the ints (append acts (the ints (append alits blits)))))))
                          (if (and (= answer sat-unsat) (>= (car bounds) 0)
                                   (let ((failed (sat-final-conflict s)))
-                                    (letrec ((any (subr cb-eff (ints) bool) (lambda (ls) (and (pair? ls) (or (memv? (car ls) failed) (any (cdr ls)))))))
+                                    (letrec ((any (subr cb-eff (ints) bool) (lambda (ls) (and (pair? ls) (or (member? (car ls) failed =) (any (cdr ls)))))))
                                       (any blits))))
                              (go (cdr bounds))
                              (finish-check! c answer assumptions alits)))))))
@@ -147,13 +150,13 @@ fuzzed formula away from its small solutions."
       (begin
         (cond ((= answer sat-sat)
                (begin (set (extract c has-model) #t)
-                      (if (get (extract c check-models)) (check-model c (append-ints assumptions (smt-assertions c))) #u)))
+                      (if (get (extract c check-models)) (check-model c (the ints (append assumptions (smt-assertions c)))) #u)))
               ((= answer sat-unsat)
                (let ((failed (sat-final-conflict s)))
                  (set (extract c failed)
                       (letrec ((go (subr cb-eff (ints ints) ints)
                                  (lambda (ts ls) (cond ((null? ts) nil)
-                                                       ((memv? (car ls) failed) (cons (car ts) (go (cdr ts) (cdr ls))))
+                                                       ((member? (car ls) failed =) (cons (car ts) (go (cdr ts) (cdr ls))))
                                                        (else (go (cdr ts) (cdr ls)))))))
                         (go assumptions alits)))))
               (else (set (extract c reason) (if (< (get (extract c timeout)) 0) "unknown" "timeout"))))

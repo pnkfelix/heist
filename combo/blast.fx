@@ -27,6 +27,9 @@
                     (m-eval (load-moduleof "eval.fx" m-sat m-rat m-term))
                     (m-simplex (load-moduleof "simplex.fx" m-sat m-rat))))
 
+(hide (define kit-lists (load-module "../kit/lists.fx"))
+      (import kit-lists map member?))
+
 (define-type divided (productof (q ivec) (r ivec)))
 
 (define-type blaster
@@ -182,14 +185,14 @@
                          (lambda (ls acc)
                            (cond ((null? ls) acc)
                                  ((= (car ls) (tt b)) (go (cdr ls) acc))
-                                 ((memv? (car ls) acc) (go (cdr ls) acc))
+                                 ((member? (car ls) acc =) (go (cdr ls) acc))
                                  (else (go (cdr ls) (cons (car ls) acc)))))))
                 (go ls nil))))
-      (cond ((memv? (ff b) ls) (ff b))
+      (cond ((member? (ff b) ls =) (ff b))
             ((null? ls) (tt b))
             ((null? (cdr ls)) (car ls))
             ((null? (cdr (cdr ls))) (and2 b (car ls) (car (cdr ls))))
-            ((letrec ((go (subr cb-eff (ints) bool) (lambda (l) (and (pair? l) (or (memv? (neg (car l)) ls) (go (cdr l)))))))
+            ((letrec ((go (subr cb-eff (ints) bool) (lambda (l) (and (pair? l) (or (member? (neg (car l)) ls =) (go (cdr l)))))))
                (go ls))
              (ff b))
             (else
@@ -589,10 +592,10 @@ variable for a sum."
                    (lambda (paths)
                      (if (null? paths) #u
                          (let* ((path (car paths))
-                                (guards (map-ints (lambda ((c int)) (if (term-op? c "not") (term-arg0 c) (mk-not c))) (cdr path))))
+                                (guards (the ints (map (lambda ((c int)) (if (term-op? c "not") (term-arg0 c) (mk-not c))) (cdr path)))))
                            (begin
-                             (define! b (mk-or (append-ints guards (list (mk-le t (car path))))))
-                             (define! b (mk-or (append-ints guards (list (mk-ge t (car path))))))
+                             (define! b (mk-or (the ints (append guards (list (mk-le t (car path)))))))
+                             (define! b (mk-or (the ints (append guards (list (mk-ge t (car path)))))))
                              (go (cdr paths))))))))
           (go (ite-leaves b t))))
        ((or (string=? op "div") (string=? op "mod"))
@@ -659,7 +662,7 @@ need no literal of their own."
                      (cond
                       ((string=? op "and") (letrec ((each (subr cb-eff (ints) unit) (lambda (l) (if (null? l) #u (begin (go (car l)) (each (cdr l)))))))
                                              (each (term-args t))))
-                      ((string=? op "or") (clause! b (append-ints g (blast-list! b (term-args t)))))
+                      ((string=? op "or") (clause! b (the ints (append g (blast-list! b (term-args t))))))
                       ;; At most one of a few: a clause for each pair (and one
                       ;; of them all, for exactly one), which propagate at once.
                       ((string=? op "card")
@@ -667,22 +670,22 @@ need no literal of their own."
                          (if (and (= hi 1) (<= (list-length args) 6))
                              (let ((ls (blast-list! b args)))
                                (begin
-                                 (if (= lo 1) (clause! b (append-ints g ls)) #u)
+                                 (if (= lo 1) (clause! b (the ints (append g ls))) #u)
                                  (letrec ((pairs (subr cb-eff (ints) unit)
                                             (lambda (ls)
                                               (if (null? ls) #u
                                                   (begin
                                                     (letrec ((each (subr cb-eff (ints) unit)
-                                                               (lambda (l) (if (null? l) #u (begin (clause! b (append-ints g (list (neg (car ls)) (neg (car l))))) (each (cdr l)))))))
+                                                               (lambda (l) (if (null? l) #u (begin (clause! b (the ints (append g (list (neg (car ls)) (neg (car l)))))) (each (cdr l)))))))
                                                       (each (cdr ls)))
                                                     (pairs (cdr ls)))))))
                                    (pairs ls))))
-                             (clause! b (append-ints g (list (blast-bool! b t)))))))
+                             (clause! b (the ints (append g (list (blast-bool! b t))))))))
                       ((string=? op "not")
                        (let ((a (term-arg0 t)))
                          (if (term-op? a "or")
                              (letrec ((each (subr cb-eff (ints) unit) (lambda (l) (if (null? l) #u (begin (go (mk-not (car l))) (each (cdr l)))))))
                                (each (term-args a)))
-                             (clause! b (append-ints g (list (blast-bool! b t)))))))
-                      (else (clause! b (append-ints g (list (blast-bool! b t))))))))))
+                             (clause! b (the ints (append g (list (blast-bool! b t))))))))
+                      (else (clause! b (the ints (append g (list (blast-bool! b t)))))))))))
         (go t)))))

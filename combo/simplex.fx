@@ -19,6 +19,9 @@
 
 (module-parameters ((m-sat (load-moduleof "sat.fx")) (m-rat (load-moduleof "rat.fx"))))
 
+(hide (define kit-numbers (load-module "../kit/numbers.fx"))
+      (import kit-numbers gcd lcm))
+
 (define tables (load-module "fx26:table.fx"))
 (import tables make-table table-ref table-set! table-has? (type table))
 

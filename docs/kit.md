@@ -13,7 +13,7 @@ value, control, I/O) is Fixpt's to give, and is not here.
 
 Started 2026-10-29, once Fixpt 61a2e792 fixed the masking hole that kit's
 signatures depend on (`docs/requests/fixpt-mask-hides-acyclic-writes.md`).
-No program uses kit yet.
+combo uses it (`rat.fx`, `term.fx` and the modules given `term`).
 
 ## Conventions
 
@@ -105,7 +105,21 @@ is kit's for completeness beside one that was.
 - The written forms are R7RS's: `#\x1f`, `"\x1;"`. s7st's and ratfink's
   follow their hosts.
 
-## Two things a caller meets
+## Three things a caller meets
+
+- **In a module file, kit is loaded in a `hide`**, by each file that uses
+  it:
+
+      (hide (define kit-lists (load-module "../kit/lists.fx"))
+            (import kit-lists map filter))
+
+  Otherwise kit's module and the names imported are items of the file's
+  module, and in its type; every maker given that module (`(load-moduleof
+  "term.fx" …)`) reads the whole of that type as it is loaded, about 1 ms
+  for kit's lists. In combo, `term.fx` holding kit visibly cost 13 ms of
+  start-up; hidden, nothing measurable. Each file loading kit itself is
+  cheap: every load of a path is one module, made once
+  (`docs/requests/fixpt-module-type-per-dependent.md`).
 
 - **A list literal must be said acyclic.** `(map f (list 1 2 3))` is
   refused, "`p` cannot be inferred": `list` makes its list at a fresh

@@ -21,6 +21,11 @@
 (module-parameters ((m-sat (load-moduleof "sat.fx")) (m-rat (load-moduleof "rat.fx"))
                     (m-term (load-moduleof "term.fx" m-sat m-rat))))
 
+(hide (define kit-lists (load-module "../kit/lists.fx"))
+      (import kit-lists map filter)
+      (define kit-numbers (load-module "../kit/numbers.fx"))
+      (import kit-numbers gcd lcm))
+
 (define* int-term? (subr cb-eff (int) bool) (lambda (t) (= (term-sort t) int-sort)))
 
 (define* num (subr cb-eff (rat int) int)
@@ -109,15 +114,15 @@
       (go ts nil rat-0))))
 (define* mk-neg (subr cb-eff (int) int) (lambda (t) (mk-mul (list (num-int -1 (term-sort t)) t))))
 (define* mk-sub (subr cb-eff (int ints) int)
-  (lambda (t ts) (if (null? ts) (mk-neg t) (mk-add (cons t (map-ints mk-neg ts))))))
+  (lambda (t ts) (if (null? ts) (mk-neg t) (mk-add (cons t (the ints (map mk-neg ts)))))))
 
 "Products: linear if all factors but one are constants; otherwise a
 nonlinear product, which the theory does not handle."
 (define mk-mul (subr cb-eff (ints) int)
   (lambda (ts)
     (let* ((sort (sum-sort ts))
-           (consts (filter-ints (lambda ((t int)) (term-op? t "num")) ts))
-           (others (filter-ints (lambda ((t int)) (not (term-op? t "num"))) ts))
+           (consts (the ints (filter (lambda ((t int)) (term-op? t "num")) ts)))
+           (others (the ints (filter (lambda ((t int)) (not (term-op? t "num"))) ts)))
            (c (letrec ((go (subr cb-eff (ints rat) rat) (lambda (l c) (if (null? l) c (go (cdr l) (rat* c (num-value (car l))))))))
                 (go consts rat-1))))
       (cond ((null? others) (num c sort))
@@ -216,5 +221,5 @@ nonlinear product, which the theory does not handle."
     (letrec ((go (subr cb-eff (ints ints) int)
                (lambda (ts acc)
                  (if (null? ts) (mk-and acc)
-                     (go (cdr ts) (append-ints (map-ints (lambda ((u int)) (mk-not (mk-arith-eq (car ts) u))) (cdr ts)) acc))))))
+                     (go (cdr ts) (the ints (append (the ints (map (lambda ((u int)) (mk-not (mk-arith-eq (car ts) u))) (cdr ts))) acc)))))))
       (go ts nil))))
