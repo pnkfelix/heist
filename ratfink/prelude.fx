@@ -7,6 +7,9 @@
 (module-parameters ((m-core (load-moduleof "core.fx")) (m-numbers (load-moduleof "numbers.fx" m-core))
                     (m-reader (load-moduleof "reader.fx" m-core m-numbers))))
 
+(hide (define kit-lists (load-module "../kit/lists.fx"))
+      (import kit-lists map for-each filter))
+
 (define prelude-text string
   "(define (map f l . ls)
           (if (null? ls)

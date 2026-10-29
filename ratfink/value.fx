@@ -19,6 +19,9 @@
 
 (module-parameters ((m-core (load-moduleof "core.fx")) (m-term (load-moduleof "term.fx" m-core))))
 
+(hide (define kit-lists (load-module "../kit/lists.fx"))
+      (import kit-lists map))
+
 (define make-union (subr rf-st (rf-members) rf-value) (lambda (ms) (sum union ms)))
 (define union-members (subr rf-st (rf-value) rf-members) (lambda (v) (tagcase v (union ms ms) (else x nil))))
 (define member (subr rf-st (rf-value rf-value) rf-member) (lambda (g v) (product (g g) (v v))))

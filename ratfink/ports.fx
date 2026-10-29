@@ -21,6 +21,9 @@
                     (m-prims (load-moduleof "prims.fx" m-core m-term m-value m-print m-syntax m-numbers m-reader m-machine))
                     (m-hashtables (load-moduleof "hashtables.fx" m-core m-term m-value m-print m-syntax m-numbers m-reader m-machine m-prims))))
 
+(hide (define kit-lists (load-module "../kit/lists.fx"))
+      (import kit-lists map))
+
 (define make-port (subr rf-st (symbol string rf-slots) rf-value)
   (lambda (kind text cell) (sum port (product (kind kind) (text text) (cell cell)))))
 (define new-cell2 (subr rf-st (rf-value rf-value) rf-slots)

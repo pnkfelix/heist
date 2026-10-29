@@ -22,6 +22,9 @@
                     (m-reader (load-moduleof "reader.fx" m-core m-numbers))
                     (m-machine (load-moduleof "machine.fx" m-core m-term m-value))))
 
+(hide (define kit-lists (load-module "../kit/lists.fx"))
+      (import kit-lists map map2 for-each filter))
+
 (hide (define kit-numbers (load-module "../kit/numbers.fx"))
       (import kit-numbers gcd abs))
 
@@ -699,7 +702,7 @@ and symbol choices as #<union a | b>, and the rest as write writes it."
         (lambda ((ctx rf-ctx) (src rf-value) (args rf-vals))
           (raise! ctx
                   (make-error-value (if (pair? args) (car args) (rf-str "")) (if (pair? args) (rf-list (cdr args)) rf-nil)
-                                    (rf-str (let ((words (map (lambda ((a rf-value)) (tagcase a (str s s) (else x (show a)))) args)))
+                                    (rf-str (let ((words (the strings (map (lambda ((a rf-value)) (tagcase a (str s s) (else x (show a)))) args))))
                                               (if (null? words) ""
                                                   (string-append (car words) (strings-concat (map (lambda ((w string)) (string-append " " w)) (cdr words))))))))
                   #f rf-true)))
@@ -715,13 +718,13 @@ and symbol choices as #<union a | b>, and the rest as write writes it."
           (let* ((bs (footprint rf-true (arg2 args))) (as (footprint rf-true (car args))))
             (t-and* (apply-append-vals
                      (map (lambda ((x footprint-entry))
-                            (map (lambda ((y footprint-entry))
+                            (the rf-vals (map (lambda ((y footprint-entry))
                                    (tagcase (extract x obj)
                                      (some o (if (tagcase (extract y obj) (some p (eq? o p)) (none u #f))
                                                  (t-not (t-and (extract x g) (extract y g)))
                                                  rf-true))
                                      (none u rf-true)))
-                                 bs))
+                                 bs)))
                           as)))))))))
 (define apply-append-vals (subr rf-st ((listof rf-vals acyclic)) rf-vals)
   (lambda (ls) (if (null? ls) nil (vals-append (car ls) (apply-append-vals (cdr ls))))))
@@ -773,7 +776,7 @@ list of (variable . e), in order."
                          (else (letrec ((loop (subr rf-eff (rf-value) rf-value)
                                           (lambda (x) (if (rf-pair? x) (let* ((a (walk (rf-car x))) (d (loop (rf-cdr x)))) (rf-cons a d)) x))))
                                  (loop x)))))))
-        (let ((new (map walk xs)))
+        (let ((new (the rf-vals (map walk xs))))
           (product (exprs new) (olds (the (listof old-entry acyclic) (reverse (get olds))))))))))
 
 "Install the primitives (in shakedown's order: the table is its own, newest
@@ -802,7 +805,7 @@ first)."
       (define-primitive! 'equal? (exactly 2) (lambda ((ctx rf-ctx) (src rf-value) (args rf-vals)) (equal-value (car args) (arg2 args))))
       (define-primitive! 'cons (exactly 2) (lambda ((ctx rf-ctx) (src rf-value) (args rf-vals)) (rf-cons (car args) (arg2 args))))
       (define-primitive! 'list (at-least 0) (lambda ((ctx rf-ctx) (src rf-value) (args rf-vals)) (rf-list args)))
-      (for-each define-cxr! (list 'car 'cdr 'caar 'cadr 'cdar 'cddr 'caaar 'caadr 'cadar 'caddr 'cdaar 'cdadr 'cddar 'cdddr 'cadddr 'cddddr))
+      (for-each define-cxr! (the symbols (list 'car 'cdr 'caar 'cadr 'cdar 'cddr 'caaar 'caadr 'cadar 'caddr 'cdaar 'cdadr 'cddar 'cdddr 'cadddr 'cddddr)))
       (define-pair-setter! 'set-car! 0)
       (define-pair-setter! 'set-cdr! 1)
       (define-primitive! 'list? (exactly 1)

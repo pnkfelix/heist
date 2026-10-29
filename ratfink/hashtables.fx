@@ -23,6 +23,9 @@
                     (m-machine (load-moduleof "machine.fx" m-core m-term m-value))
                     (m-prims (load-moduleof "prims.fx" m-core m-term m-value m-print m-syntax m-numbers m-reader m-machine))))
 
+(hide (define kit-lists (load-module "../kit/lists.fx"))
+      (import kit-lists map for-each))
+
 "Applies a procedure value (eval.fx's apply-value)."
 (define-type applier (subr rf-eff (rf-ctx rf-value rf-vals rf-value) rf-value))
 
@@ -196,5 +199,5 @@
                                   (if (rf-term? (car args))
                                       (begin (fail! ctx 'unsupported (describe-call src "a hash of a symbolic value")) rf-unspecified)
                                       (rf-int (modulo (string-hash (datum->string (car args))) 536870912))))))))
-                    (list 'equal-hash 'string-hash 'symbol-hash))
+                    (the symbols (list 'equal-hash 'string-hash 'symbol-hash)))
           (get prims))))))

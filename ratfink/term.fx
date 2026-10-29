@@ -14,6 +14,9 @@
 
 (module-parameters ((m-core (load-moduleof "core.fx"))))
 
+(hide (define kit-lists (load-module "../kit/lists.fx"))
+      (import kit-lists map for-each))
+
 ;;; ------------------------------------------------------------ operators and sorts
 
 (hide (define kit-numbers (load-module "../kit/numbers.fx"))
@@ -466,8 +469,8 @@ among few integers and b. Memoized: c is a DAG."
                      (none u (sum none #u))
                      (some ns
                        ;; add-cases's arguments, left to right.
-                       (let* ((a (map (lambda ((k a-case)) (product (value (extract k value)) (cond (t-and c (extract k cond))))) ys))
-                              (b (map (lambda ((k a-case)) (product (value (extract k value)) (cond (t-and (t-not c) (extract k cond))))) ns)))
+                       (let* ((a (the (listof (productof (value int) (cond rf-value)) acyclic) (map (lambda ((k a-case)) (product (value (extract k value)) (cond (t-and c (extract k cond))))) ys)))
+                              (b (the (listof (productof (value int) (cond rf-value)) acyclic) (map (lambda ((k a-case)) (product (value (extract k value)) (cond (t-and (t-not c) (extract k cond))))) ns))))
                          (add-cases a b))))))))
       (begin (table-set! (get cases-table) (tid t) cs) cs))))
 
@@ -519,10 +522,10 @@ for true or false."
                   (let ((pairs (the cases
                                  (apply-append
                                   (map (lambda ((x a-case))
-                                         (map (lambda ((y a-case))
+                                         (the (listof (productof (value int) (cond rf-value)) acyclic) (map (lambda ((y a-case))
                                                 (product (value (op (extract x value) (extract y value)))
                                                          (cond (t-and (extract x cond) (extract y cond)))))
-                                              ys))
+                                              ys)))
                                        xs)))))
                     (letrec ((loop (subr rf-st (cases maybe-cases) (sumof (none unit) (some rf-value)))
                                (lambda (pairs acc)

@@ -33,6 +33,9 @@
                     (m-library (load-moduleof "library.fx" m-core m-print m-syntax m-numbers m-reader))
                     (m-eval (load-moduleof "eval.fx" m-core m-term m-value m-print m-syntax m-numbers m-reader m-machine m-prims m-hashtables m-ports m-prelude m-library))))
 
+(hide (define kit-lists (load-module "../kit/lists.fx"))
+      (import kit-lists map map2 for-each filter))
+
 
 (define rd (subr rf-eff (string) rf-value) (lambda (s) (car (read-text* s "playback" #f #f))))
 (define rds (subr rf-eff (string) rf-vals) (lambda (s) (read-text* s "playback" #f #f)))
@@ -190,11 +193,11 @@ prelude's, which call procedures in the order ratfink does."
 builds the form from the parts or their temporaries."
 (define in-order (subr rf-eff (rf-vals (subr rf-eff (rf-vals) rf-value)) rf-value)
   (lambda (xs k)
-    (let ((varying (filter (lambda ((x rf-value)) (not (pb-literal? x))) xs)))
+    (let ((varying (the rf-vals (filter (lambda ((x rf-value)) (not (pb-literal? x))) xs))))
       (if (or (< (list-length varying) 2) (not (letrec ((any (subr rf-st (rf-vals) bool) (lambda (l) (and (pair? l) (or (rf-pair? (car l)) (any (cdr l)))))))
                                                     (any varying))))
           (k xs)
-          (let ((temps (map (lambda ((x rf-value)) (if (pb-literal? x) x (pb-fresh-temp))) xs)))
+          (let ((temps (the rf-vals (map (lambda ((x rf-value)) (if (pb-literal? x) x (pb-fresh-temp))) xs))))
             (L3 (q 'let*)
                 (rf-list (filter-map2-vals (lambda ((t rf-value) (x rf-value)) (if (pb-literal? x) rf-false (L2 t x))) temps xs))
                 (k temps)))))))
@@ -283,12 +286,12 @@ builds the form from the parts or their temporaries."
                      ;; In order, as for let: then each binding's formals are
                      ;; temporaries, bound to the names inside them all.
                      (let* ((bindings (rf-elements (rf-cadr x)))
-                            (varying (filter (lambda ((b rf-value)) (not (pb-literal? (rf-cadr b)))) bindings)))
+                            (varying (the rf-vals (filter (lambda ((b rf-value)) (not (pb-literal? (rf-cadr b)))) bindings))))
                        (if (or (< (list-length varying) 2) (not (letrec ((any (subr rf-st (rf-vals) bool) (lambda (l) (and (pair? l) (or (rf-pair? (rf-cadr (car l))) (any (cdr l)))))))
                                                                      (any varying))))
                            (rf-cons (q 'let-values) (rf-cons (rf-list (map (lambda ((b rf-value)) (L2 (rf-car b) (playback-form (rf-cadr b)))) bindings))
                                                              (body-of (rf-cddr x))))
-                           (let ((renamed (map rename-formals bindings)))
+                           (let ((renamed (the (listof (productof (formals rf-value) (alist (listof (productof (name rf-value) (temp rf-value)) acyclic))) acyclic) (map rename-formals bindings))))
                              (letrec ((nest (subr rf-eff (rf-vals (listof renamed-formals acyclic)) rf-value)
                                         (lambda (bs rs)
                                           (if (null? bs)
@@ -527,14 +530,14 @@ names of each library before."
     (vals-append
      (apply-append-vals
       (map (lambda ((form rf-value))
-             (map without-macros
-                  (filter (lambda ((set rf-value))
+             (the rf-vals (map without-macros
+                  (the rf-vals (filter (lambda ((set rf-value))
                             (let ((l (import-set-library set pb-error)))
                               (or (not (builtin-library? l)) (not (member-datum? l (standard-libraries))))))
-                          (rf-elements (rf-cdr form)))))
+                          (rf-elements (rf-cdr form)))))))
            import-forms))
      (map (lambda ((l pb-library)) (rf-cons (q 'only) (rf-cons (extract l name) (rf-list (map (lambda ((v rf-value)) (mangle (extract l name) v)) (extract l vars))))))
-          (filter (lambda ((l pb-library)) (pair? (extract l vars))) (the (listof pb-library acyclic) (reverse (get playback-libraries))))))))
+          (the (listof (productof (name rf-value) (vars rf-vals) (macros symbols)) acyclic) (filter (lambda ((l pb-library)) (pair? (extract l vars))) (the (listof pb-library acyclic) (reverse (get playback-libraries)))))))))
 
 "Make the macros the import forms import from playback libraries known by
 the names they are imported under, as well as their own."
@@ -562,7 +565,7 @@ the names they are imported under, as well as their own."
     (let ((head (if (and (rf-pair? iset) (rf-symbol? (rf-car iset))) (strip-name (rf-sym-of (rf-car iset))) '||)))
       (if (and (symbols-member? head (list 'only 'except 'prefix 'rename)) (rf-pair? (rf-cdr iset)) (rf-pair? (rf-cadr iset)))
           (let* ((inner (import-renames (rf-cadr iset) names))
-                 (args (map strip (rf-elements (rf-cddr iset)))))
+                 (args (the rf-vals (map strip (rf-elements (rf-cddr iset))))))
             (cond ((eq? head 'only) (filter (lambda ((p name-temp)) (memq-val? (extract p name) args)) inner))
                   ((eq? head 'except) (filter (lambda ((p name-temp)) (not (memq-val? (extract p name) args))) inner))
                   ((eq? head 'prefix)
@@ -601,7 +604,7 @@ the names they are imported under, as well as their own."
 
 (define prelude-names (subr rf-eff () rf-vals) (lambda () (map defined-name (prelude-forms))))
 (define runtime-names (subr rf-eff () rf-vals)
-  (lambda () (filter (lambda ((n rf-value)) (not (rf-eqv? n (q 'ratfink-values)))) (map defined-name (runtime)))))
+  (lambda () (filter (lambda ((n rf-value)) (not (rf-eqv? n (q 'ratfink-values)))) (the rf-vals (map defined-name (runtime))))))
 
 "The names set! somewhere in forms."
 (define assigned-names (subr rf-eff (rf-vals) rf-vals)
@@ -618,25 +621,25 @@ the names they are imported under, as well as their own."
   (lambda (form)
     (let* ((name (rf-cadr form))
            (decls (rf-elements (rf-cddr form)))
-           (of-kind (lambda ((kind symbol)) (filter (lambda ((d rf-value)) (keyword? (rf-car d) kind)) decls)))
+           (of-kind (lambda ((kind symbol)) (the rf-vals (filter (lambda ((d rf-value)) (keyword? (rf-car d) kind)) decls))))
            (bodies (apply-append-vals (map (lambda ((d rf-value)) (rf-elements (rf-cdr d))) (of-kind 'begin))))
            (defined (defined-names bodies pb-error))
-           (in-prelude (filter (lambda ((v symbol)) (memq-val? (rf-sym v) (prelude-names))) (extract defined vars)))
+           (in-prelude (the symbols (filter (lambda ((v symbol)) (memq-val? (rf-sym v) (prelude-names))) (extract defined vars))))
            (macros-before (get macros)))
       (begin
         (import-macros! (of-kind 'import))
         (set playback-library name)
         (let* ((rewritten (rename-aliases (body bodies)))
                ;; Larceny does not export a variable that is assigned.
-               (vars (let ((assigned (assigned-names rewritten)))
-                       (filter (lambda ((v rf-value)) (not (memq-val? v assigned))) (map rf-sym (extract (defined-names rewritten pb-error) vars)))))
+               (vars (the rf-vals (let ((assigned (assigned-names rewritten)))
+                       (filter (lambda ((v rf-value)) (not (memq-val? v assigned))) (the rf-vals (map rf-sym (extract (defined-names rewritten pb-error) vars)))))))
                ;; Its macros, with those that macro uses define.
                (library-macros (append (extract defined macros)
                                        (letrec ((loop (subr rf-st ((listof named-macro acyclic) symbols) symbols)
                                                   (lambda (ms acc) (if (eq? ms macros-before) acc (loop (cdr ms) (cons (extract (car ms) name) acc))))))
                                          (loop (get macros) nil))))
-               (exports (filter (lambda ((e binding-name)) (not (symbols-member? (extract e name) library-macros)))
-                                (parse-exports (apply-append-vals (map (lambda ((d rf-value)) (rf-elements (rf-cdr d))) (of-kind 'export))) pb-error))))
+               (exports (the binding-names (filter (lambda ((e binding-name)) (not (symbols-member? (extract e name) library-macros)))
+                                (parse-exports (apply-append-vals (map (lambda ((d rf-value)) (rf-elements (rf-cdr d))) (of-kind 'export))) pb-error)))))
           (begin
             (set playback-library rf-false)
             (let ((imports (user-imports (of-kind 'import))))
@@ -663,9 +666,9 @@ program) for it in its body."
   (lambda (form contracts-fors)
     (let* ((name (rf-cadr form))
            (forms (apply-append-vals (map (lambda ((c rf-value)) (rf-elements (rf-cddr c)))
-                                          (filter (lambda ((c rf-value)) (equal-datum? (strip (rf-cadr c)) name)) contracts-fors))))
-           (contracts (filter (lambda ((f rf-value)) (and (rf-pair? f) (keyword? (rf-car f) 'contract))) forms))
-           (helpers (filter (lambda ((f rf-value)) (not (and (rf-pair? f) (keyword? (rf-car f) 'contract)))) forms))
+                                          (the rf-vals (filter (lambda ((c rf-value)) (equal-datum? (strip (rf-cadr c)) name)) contracts-fors)))))
+           (contracts (the rf-vals (filter (lambda ((f rf-value)) (and (rf-pair? f) (keyword? (rf-car f) 'contract))) forms)))
+           (helpers (the rf-vals (filter (lambda ((f rf-value)) (not (and (rf-pair? f) (keyword? (rf-car f) 'contract)))) forms)))
            (contract-of (lambda ((f rf-value))
                           (letrec ((loop (subr rf-st (rf-vals) rf-value)
                                      (lambda (cs) (cond ((null? cs) rf-false)
@@ -729,8 +732,8 @@ proof-library, or #f) of the program forms, which loaded libraries."
       (set macros nil)
       (set playback-libraries nil)
       (let* ((forms (splice-included forms))
-             (contracts (filter (lambda ((f rf-value)) (and (rf-pair? f) (keyword? (rf-car f) 'contracts-for))) forms))
-             (libs (map (lambda ((l loaded-library)) (playback-define-library (with-contracts (extract l form) contracts))) libraries))
+             (contracts (the rf-vals (filter (lambda ((f rf-value)) (and (rf-pair? f) (keyword? (rf-car f) 'contracts-for))) forms)))
+             (libs (the rf-vals (map (lambda ((l loaded-library)) (playback-define-library (with-contracts (extract l form) contracts))) libraries)))
              (names (program-names forms))
              (prelude (letrec ((loop (subr rf-eff (rf-vals rf-vals) rf-vals)
                                  (lambda (ps acc)

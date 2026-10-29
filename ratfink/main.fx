@@ -28,6 +28,9 @@
                     (m-check (load-moduleof "check.fx" m-core m-term m-value m-print m-syntax m-numbers m-reader m-machine m-prims m-hashtables m-ports m-prelude m-library m-smt m-eval m-playback))
                     (m-fx26 (load-moduleof "fx26.fx" m-core m-print m-syntax m-numbers m-reader m-library))))
 
+(hide (define kit-lists (load-module "../kit/lists.fx"))
+      (import kit-lists map))
+
 (define say (subr rf-eff (string) unit) (lambda (s) (tagcase (write-out s) (done u #u) (failed e #u))))
 
 (define usage-text string

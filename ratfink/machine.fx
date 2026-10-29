@@ -33,6 +33,9 @@
 (module-parameters ((m-core (load-moduleof "core.fx")) (m-term (load-moduleof "term.fx" m-core))
                     (m-value (load-moduleof "value.fx" m-core m-term))))
 
+(hide (define kit-lists (load-module "../kit/lists.fx"))
+      (import kit-lists map for-each filter))
+
 ;;; ------------------------------------------------------------ sessions
 
 "A slot of the store, and a value: what a log keeps (the old value), what
@@ -445,7 +448,7 @@ wrote, or the old value if it did not write there."
                                       (some vs (let ((n (* n (list-length vs)))) (and (<= n max-tried) (count (cdr ks) n))))
                                       (none u #f)))))))
              (count ks 1))
-           (let ((cs (filter (lambda ((c rf-value)) (subset? (constants-of c) ks)) (few-valued-conjuncts pc))))
+           (let ((cs (the rf-vals (filter (lambda ((c rf-value)) (subset? (constants-of c) ks)) (few-valued-conjuncts pc)))))
              (not (letrec ((try (subr rf-eff (rf-vals (listof kv acyclic)) bool)
                              (lambda (left chosen)
                                (if (null? left)
@@ -496,7 +499,7 @@ looks only at what is new."
                (table-ref (get conjuncts-table) (tid pc) nil)
                ;; The longest list (that of the and before) last, so as not
                ;; to copy it.
-               (let* ((lists (map (lambda ((a rf-value)) (few-valued-conjuncts a)) (targs pc)))
+               (let* ((lists (the (listof rf-vals acyclic) (map (lambda ((a rf-value)) (few-valued-conjuncts a)) (targs pc))))
                       (longest (letrec ((loop (subr rf-st ((listof rf-vals acyclic) rf-vals) rf-vals)
                                           (lambda (ls best)
                                             (cond ((null? ls) best)

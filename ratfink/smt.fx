@@ -26,6 +26,9 @@
                     (m-numbers (load-moduleof "numbers.fx" m-core))
                     (m-reader (load-moduleof "reader.fx" m-core m-numbers))))
 
+(hide (define kit-lists (load-module "../kit/lists.fx"))
+      (import kit-lists map map2 for-each filter))
+
 "A solver: what check.fx asks of one. check answers 'sat, 'unsat or
 'unknown; values, after sat, the value of each term."
 (define-type solver
@@ -220,7 +223,7 @@ deeply."
                                     (smt-send s (string-append "(declare-const " (term-name t) " " (sort-name (term-sort (term-of t))) ")")))
                                 (loop (cdr stack))))
                              (else
-                              (let ((pending (filter (lambda ((a rf-value)) (and (rf-term? a) (not (defined? s a)))) (targs t))))
+                              (let ((pending (the rf-vals (filter (lambda ((a rf-value)) (and (rf-term? a) (not (defined? s a)))) (targs t)))))
                                 (if (pair? pending)
                                     (loop (vals-append pending stack))
                                     (begin
@@ -346,9 +349,9 @@ declare-index! declared it; else \"\"."
 (define z3-values (subr rf-eff (z3-state rf-vals) rf-vals)
   (lambda (s terms)
     (if (null? terms) nil
-        (let ((names (map (lambda ((t rf-value)) (reference! s t)) terms)))
+        (let ((names (the strings (map (lambda ((t rf-value)) (reference! s t)) terms))))
           (begin
-            (smt-send s (string-append "(get-value (" (strings-concat (map (lambda ((n string)) (string-append " " n)) names)) "))"))
+            (smt-send s (string-append "(get-value (" (strings-concat (map (lambda ((n string)) (string-append " " n)) (the strings names))) "))"))
             (map2 (lambda ((t rf-value) (entry rf-value)) (parse-value (rf-cadr entry))) terms (rf-elements (smt-receive s))))))))
 
 "Start the solver process. timeout: the limit on each check, in seconds,

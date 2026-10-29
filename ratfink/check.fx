@@ -30,6 +30,9 @@
                     (m-eval (load-moduleof "eval.fx" m-core m-term m-value m-print m-syntax m-numbers m-reader m-machine m-prims m-hashtables m-ports m-prelude m-library))
                     (m-playback (load-moduleof "playback.fx" m-core m-term m-value m-print m-syntax m-numbers m-reader m-machine m-prims m-hashtables m-ports m-prelude m-library m-eval))))
 
+(hide (define kit-lists (load-module "../kit/lists.fx"))
+      (import kit-lists map map2 for-each filter))
+
 "The options of check-forms, with shakedown's defaults: unwind 10,
 timeout 10 (-1: none), playback \"\" (none), library-path (\".\"), proofs
 none (all), split #f, max-calls 10000000, solver z3."
@@ -88,7 +91,7 @@ number of proofs that did not pass, or -1 if there were none."
     (tagcase (extract options proofs)
       (none u (all-proofs))
       (some only
-        (let ((ps (filter (lambda ((p proof)) (symbols-member? (extract p name) only)) (all-proofs))))
+        (let ((ps (the proofs (filter (lambda ((p proof)) (symbols-member? (extract p name) only)) (all-proofs)))))
           (begin
             (for-each (lambda ((name symbol))
                         (if (symbols-member? name (map (lambda ((p proof)) (extract p name)) ps)) #u
@@ -206,9 +209,9 @@ values of the constants."
           ((extract s push!))
           ((extract s assert!) formula)
           (let* ((answer ((extract s check)))
-                 (m (if (eq? answer 'sat)
+                 (m (the (listof kv acyclic) (if (eq? answer 'sat)
                         (map2 (lambda ((k rf-value) (v rf-value)) (product (k k) (v v))) constants ((extract s values) constants))
-                        nil)))
+                        nil))))
             (begin ((extract s pop!)) (product (answer answer) (model m))))))))
 
 (define no-result-model model nil)
@@ -322,7 +325,7 @@ library."
       ;; of its kind and label is.
       (let ((failed (the (ref int @rf) (new 0))) (quiet (the (ref int @rf) (new 0))) (played (the (ref int @rf) (new 0)))
             (shown (the (ref (listof check-key acyclic) @rf) (new nil)))
-            (reached (filter (lambda ((r result)) (not (or (eq? (extract r status) 'unreachable) (eq? (extract r status) 'unsatisfiable)))) results)))
+            (reached (the (listof (productof (ob obligation) (status symbol) (model (listof kv acyclic)) (values rf-vals) (trace (listof (productof (source rf-value) (value rf-value)) acyclic)) (has-trace bool) (inputs (listof (productof (name rf-value) (text string)) acyclic))) acyclic) (filter (lambda ((r result)) (not (or (eq? (extract r status) 'unreachable) (eq? (extract r status) 'unsatisfiable)))) results))))
         (begin
           (for-each
            (lambda ((r result))
@@ -351,7 +354,7 @@ library."
                                    (out (string-append "      " (let ((d (constant-description (extract e k)))) (if (has-description? (extract e k)) d "?"))
                                                        "  ->  " (show-value (extract e v)) "\n")))
                                  (if (null? (extract r inputs)) (extract r model)
-                                     (filter (lambda ((e model-entry)) (not (memq-val? (extract e k) (get input-constants)))) (extract r model))))
+                                     (the (listof kv acyclic) (filter (lambda ((e model-entry)) (not (memq-val? (extract e k) (get input-constants)))) (extract r model)))))
                        (if (extract r has-trace) (write-trace (extract r trace) out) #u)
                        (tagcase playback
                          (some pb (if (and (eq? status 'failure) (or (eq? kind 'assert) (eq? kind 'error) (eq? kind 'contract)))

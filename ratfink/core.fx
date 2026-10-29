@@ -22,6 +22,9 @@
 
 (module-parameters ())
 
+(hide (define kit-lists (load-module "../kit/lists.fx"))
+      (import kit-lists map for-each))
+
 "What ratfink does: its state at @rf, control on @rk (aborts, and the
 continuations splits capture), combo's state at @cb (`--solver combo`),
 and the I/O of a checker: the clock, the standard output and error, files,
@@ -328,35 +331,6 @@ hash-consed: one id, one term.)"
       (port x (tagcase b (port y (eq? (extract x cell) (extract y cell))) (else z #f)))
       (table x (tagcase b (table y (eq? (extract x cell) (extract y cell))) (else z #f))))))
 
-;;; ------------------------------------------------------------ map and for-each
-
-"(f x) of each element, in order (FX-26 has no map of its own)."
-(define* map
-  (poly ((a type) (b type) (e effect)) (subr (maxeff e spin) ((subr e (a) b) (listof a acyclic)) (listof b acyclic)))
-  (plambda ((a type) (b type) (e effect))
-    (lambda (f l) (if (null? l) nil (let* ((x (f (car l)))) (cons x ((proj map a b e) f (cdr l))))))))
-(define* for-each
-  (poly ((a type) (e effect)) (subr (maxeff e spin) ((subr e (a) unit) (listof a acyclic)) unit))
-  (plambda ((a type) (e effect))
-    (lambda (f l) (if (null? l) #u (begin (f (car l)) ((proj for-each a e) f (cdr l)))))))
-"(f x y) of each pair of elements, in order."
-(define* map2
-  (poly ((a type) (b type) (c type) (e effect)) (subr (maxeff e spin) ((subr e (a b) c) (listof a acyclic) (listof b acyclic)) (listof c acyclic)))
-  (plambda ((a type) (b type) (c type) (e effect))
-    (lambda (f l m) (if (or (null? l) (null? m)) nil
-                        (let* ((x (f (car l) (car m)))) (cons x ((proj map2 a b c e) f (cdr l) (cdr m))))))))
-(define* for-each2
-  (poly ((a type) (b type) (e effect)) (subr (maxeff e spin) ((subr e (a b) unit) (listof a acyclic) (listof b acyclic)) unit))
-  (plambda ((a type) (b type) (e effect))
-    (lambda (f l m) (if (or (null? l) (null? m)) #u (begin (f (car l) (car m)) ((proj for-each2 a b e) f (cdr l) (cdr m)))))))
-"The elements that keep? holds of."
-(define* filter
-  (poly ((a type) (e effect)) (subr (maxeff e spin) ((subr e (a) bool) (listof a acyclic)) (listof a acyclic)))
-  (plambda ((a type) (e effect))
-    (lambda (keep? l) (cond ((null? l) nil)
-                            ((keep? (car l)) (cons (car l) ((proj filter a e) keep? (cdr l))))
-                            (else ((proj filter a e) keep? (cdr l)))))))
-
 ;;; ------------------------------------------------------------ hash tables of any keys
 ;;;
 ;;; FX-26's tables (fx26:table.fx) need a pure hash and equality; a key
@@ -404,7 +378,7 @@ hash-consed: one id, one term.)"
              (i ((proj ht-index k v) t key))
              (l (array-ref bs i)))
         (if (tagcase ((proj ht-find k v) t key) (some e #t) (none u #f))
-            (array-set! bs i ((proj map (htentry k v) (htentry k v) rf-st)
+            (array-set! bs i (map
                               (lambda ((e (htentry k v))) (if ((extract t same) (extract e key) key) (product (key key) (val val)) e))
                               l))
             (begin
@@ -422,7 +396,7 @@ hash-consed: one id, one term.)"
                    (lambda (i)
                      (if (>= i (array-length old)) #u
                          (begin
-                           ((proj for-each (htentry k v) rf-st)
+                           (for-each
                             (lambda ((e (htentry k v)))
                               (let ((j (modulo ((extract t hash) (extract e key)) n)))
                                 (array-set! new-bs j (cons e (array-ref new-bs j)))))
