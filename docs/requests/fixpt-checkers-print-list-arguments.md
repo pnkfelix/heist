@@ -1,6 +1,7 @@
 # Request to Fixpt: the checkers print an argument's list type differently
 
-Status: drafted 2026-10-28 by Heist, for the user to take to the Fixpt
+Status: done in Fixpt 5b0d032a (pulled 2026-10-29): both print
+`(listof int @r.1)` and agree. Drafted 2026-10-28 by Heist, for the user to take to the Fixpt
 team. Against Fixpt ec7a02b0. Seen while porting lockpick to FX-26
 (`combo/`): a refused program, so it costs nothing but a message, but
 `fixpt check` ends "the checkers disagree" where both refuse it.

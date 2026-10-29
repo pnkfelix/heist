@@ -8,7 +8,24 @@ do it, and what it cost. Kayak will need the same changes later
 
 ## Base
 
-- Fixpt `main` at ec7a02b0 (2026-10-28), pulled from GitHub by Heist's
+- Fixpt `main` at 21f4b60e (2026-10-29), pulled from GitHub by Heist's
+  a3658e7d (squash 2b4f03ea): Heist's load-time request in part
+  (`docs/requests/fixpt-load-time.md`) -- an executable's image found by
+  its trailer alone, images this executable wrote loaded without a CRC or
+  `Heap::verify`, mapped and spliced in place, made for a fixed base;
+  the CRC eight bytes a step where it is kept; subtyping's trail looked
+  up by pair, module types proven below one another remembered; and an
+  inferred list printed alike by both checkers
+  (`docs/requests/fixpt-checkers-print-list-arguments.md`, Heist's).
+  Still open: `parse::takes_modules_at` reads a whole file for its first
+  form. `.fasl`s an older Fixpt made are stale; after `bin/heist-compile
+  all` all 131 tests pass. Heist has no edits of its own on it. From
+  clean: the editor 2.9 s, s7st 5.3 s, the CFA 7.7 s, combo 1.7 s; 23 MB
+  in all. Start-up from `.fasl`s, against ec7a02b0: an empty program
+  0.05 s (0.18 s); the editor through main.fx 0.55 s (0.79 s); s7st 0.90 s
+  (1.07 s); the CFA's server 1.38 s (1.56 s); combo's server 0.29 s
+  (0.48 s).
+- Before: Fixpt `main` at ec7a02b0 (2026-10-28), pulled from GitHub by Heist's
   d2879d07 (squash f47238d0): the checkers print an imported list type
   alike (`docs/requests/fixpt-checkers-print-lists.md`, Heist's request),
   so `fixpt check editor.fx` no longer says they disagree; built-in module

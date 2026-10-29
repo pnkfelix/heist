@@ -91,11 +91,11 @@ lockpick's libraries. All of combo's state is at region `@cb`, and `cb-eff`
 ## Measured (2026-10-28, shared 128-core machine)
 
 **Build and start-up**
-- `bin/heist-compile combo` takes 1.8 s from clean and makes 6.4 MB of
-  `.fasl`s. With them combo starts in 0.48 s (1.8 s from source); lockpick
-  starts in 0.05 s from its heap image, 0.32 s from its compiled libraries
-  (Larceny alone: 0.04 s; an empty FX-26 program: 0.18 s). Where combo's
-  load goes, and three changes that bring it to 0.29 s:
+- `bin/heist-compile combo` takes 1.7 s from clean and makes 6.4 MB of
+  `.fasl`s. With them combo starts in 0.29 s on Fixpt 21f4b60e (0.48 s on
+  ec7a02b0; 1.8 s from source); lockpick starts in 0.05 s from its heap
+  image, 0.32 s from its compiled libraries (Larceny alone: 0.04 s; an
+  empty FX-26 program: 0.05 s). Where combo's load went, and what is left:
   `docs/requests/fixpt-load-time.md`.
 
 **SAT instances**, start-up included:
@@ -138,14 +138,14 @@ written into `propagate!`.
   a name either of them does. Neither may the program that includes them
   all, so combo's names are distinct across its files (elim.fx's `el-`,
   blast.fx's `tt` and `ff`).
-- **A checker disagreement** in a refused program's message:
-  `docs/requests/fixpt-checkers-print-list-arguments.md`.
+- **A checker disagreement** in a refused program's message, fixed in
+  Fixpt 5b0d032a: `docs/requests/fixpt-checkers-print-list-arguments.md`.
 
 ## Next
 
 - Speed:
   - the blaster's string keys (`ite` gates, divisions) as ints;
   - the term store's operator strings as small ints;
-  - the 0.48 s start-up.
+  - the 0.29 s start-up.
 - lockpick's unit tests (`test/*-test.scm`) as FX-26 tests of the library.
 - An editor client, if one is wanted: `--serve` is ready for one.

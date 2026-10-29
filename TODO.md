@@ -112,16 +112,13 @@ commit that did it says so.
 lockpick, ported to FX-26 (2026-10-28): the same searches, and on 800 fuzz
 scripts byte for byte lockpick's answers. Left:
 - **Speed:** 1.0x lockpick on QF_LRA, 1.2x on QF_LIA, 1.5x on QF_BV; it
-  starts in 0.48 s against lockpick's 0.05 s. The blaster's string keys,
+  starts in 0.29 s against lockpick's 0.05 s. The blaster's string keys,
   the term store's operator strings, Fixpt's calls of small procedures.
 - lockpick's unit tests (`test/*-test.scm`) as tests of the library.
 - An editor client of `--serve`, if one is wanted.
 
 ## Fixpt
 
-- `docs/requests/fixpt-checkers-print-list-arguments.md`: the checkers
-  print an argument's list type differently in a refused program's message,
-  for the user to take to Fixpt.
-- `docs/requests/fixpt-load-time.md`: three costs of loading (a source file
-  read whole for its first form, the executable read whole on every run,
-  CRCs of 21 MB), 0.49 s to 0.29 s for combo; for the user to take to Fixpt.
+- `docs/requests/fixpt-load-time.md`: of three costs of loading, two are
+  done in Fixpt 21f4b60e; left, a source file read whole for its first
+  form (`takes_modules_at`).
