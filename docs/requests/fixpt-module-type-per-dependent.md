@@ -1,8 +1,10 @@
 # Request to Fixpt: what each maker given a module pays to load
 
-Status: drafted 2026-10-29 by Heist, and taken to the Fixpt team, who
-have reprioritized their work to address cost 1 (2026-10-29). Cost 2 is
-open. Against Fixpt 61a2e792 (Heist's subtree). Measured with
+Status: both costs done in Fixpt (pulled 2026-10-29 at e4af8997): cost 1
+in 8202075e, the first form read alone; cost 2 in 80f8b222, substitution
+leaving alone a type it cannot change (lib-80 3.03 to 1.91 ms a
+dependent, by Fixpt's measure). Combo now starts in 0.13 s, ratfink in
+0.25 s. Drafted 2026-10-29 by Heist, against Fixpt 61a2e792. Measured with
 `bench/module-dependents.sh` and on Heist's combo. The first fix was
 prototyped in a scratch build only, and Fixpt's own tests were not run
 on it; Heist's Fixpt is unchanged.

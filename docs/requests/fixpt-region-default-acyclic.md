@@ -1,9 +1,9 @@
 # Request to Fixpt: a region nothing chooses could be `acyclic`
 
-Status: drafted 2026-10-29 by Heist, for the user to take to the Fixpt
-team. Against Fixpt 61a2e792 (Heist's subtree). Prototyped in a scratch
-build only (`bench/region-default-acyclic.diff`); Heist's Fixpt is
-unchanged.
+Status: done in Fixpt e4af8997 (pulled 2026-10-29), the prototype taken
+as written; Fixpt's suite 962 of 962, with the five tests that asserted
+the old regions updated. Drafted 2026-10-29 by Heist, against Fixpt
+61a2e792, prototyped in a scratch build (`bench/region-default-acyclic.diff`).
 
 ## Summary
 

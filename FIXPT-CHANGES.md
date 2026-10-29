@@ -8,7 +8,25 @@ do it, and what it cost. Kayak will need the same changes later
 
 ## Base
 
-- Fixpt `main` at 61a2e792 (2026-10-29), pulled from GitHub by Heist's
+- Fixpt `main` at e4af8997 (2026-10-29), pulled from GitHub by Heist's
+  c7837be9 (squash d4be8147). Three of Heist's requests, done:
+  a maker's file is known by its first form, the rest not read
+  (8202075e; `fixpt-module-type-per-dependent.md` cost 1,
+  `fixpt-load-time.md` item 1); substitution leaves alone a type it
+  cannot change, so a module type given to a dependent is not copied
+  for it (80f8b222, cost 2); and a region binder a call leaves unsolved,
+  used only as a pair's region and only allocated and read, is
+  `acyclic` (e4af8997, `fixpt-region-default-acyclic.md`, as Heist
+  prototyped it). After `fixpt prewarm` and `bin/heist-compile all`
+  (19.1 s), all 135 tests pass. Heist has no edits of its own on it.
+  ratfink matches shakedown as before (corpus 123 of 124, playback 12
+  of 12, its FX-26 test reports unchanged), and the region request's
+  repros run.
+  Start-up from `.fasl`s, best of 5: an empty program 0.03 s (0.03 s);
+  the editor 0.44 s (0.53 s); s7st 0.85 s (0.86 s); the CFA's server
+  1.34 s (1.34 s); combo's server 0.13 s (0.28 s); ratfink on a
+  one-proof FX-26 file 0.25 s (0.75 s).
+- Before: Fixpt `main` at 61a2e792 (2026-10-29), pulled from GitHub by Heist's
   8ce93dbe (squash 79849167): masking keeps `read` and `write` on a region
   only the result's type mentions (Heist's request,
   `docs/requests/fixpt-mask-hides-acyclic-writes.md`), so a procedure that
