@@ -2828,3 +2828,52 @@ of `TODO.md` §141, working on my own.
 - **Measured**: stage 0 (kayak `d5840ee`) 46.07-46.11 G instructions to
   46.17-46.19 G (the decoding), cycles within noise, output the same; an
   empty program unchanged.
+
+### Images as a table of sections, mapped or packed (2026-10-29)
+
+- **Why** (the user's, `TODO.md` §165): what moves and may be written
+  apart from what never moves, each part where it may go to pages of its
+  own; and (the user's) planned for a heap of many parts.
+- **Chosen**: a table of sections, each of a kind (metadata, words) and a
+  space (old space, the code area's two parts; static and mutable static
+  named for §161), with what it is (moves, written, runs), its alignment,
+  its offset and length, where in the heap's memory it goes and how much
+  its space spans there. A heap of more spaces is more sections; a space
+  a reader has not is refused. Every place in an image is a place in the
+  heap's memory, so a fixup or a free block needs no section to be read.
+- **Mapped or packed** (the user's question, then the choice): only heap
+  images are made to be mapped (`dump_mappable`, 16 KiB pages, macOS on
+  arm64's and a whole number of 4 KiB ones): one a process, large, placed
+  where it was made. A `.fasl` is placed where it was never made for,
+  relocated and linked, so a mapping would be copied on write throughout,
+  and a small file is read as cheaply as it is mapped: packed
+  (`dump_packed`), its sections still apart for a loader that puts each
+  where it goes. A large program's mapping is a heap dumped after its
+  `.fasl`s load, as Larceny's are.
+- **Measured**: the native front end's image 21.5 MB, 27 KB of padding;
+  the suite passes (857 of 858, the one the intermittent §163).
+
+### What is immutable and static, and a barrier by generation (2026-10-29)
+
+- **Why** (TODO §161 step 4): the static area scanned whole at every
+  major collection cost more than not copying the front end saved.
+- **Immutable by the type** (the user's): mutability is the type's, so
+  each kind declares it (`Kind::settable`: may a field come to refer to
+  what moves), and an object's frozen fields say it for that object. Not
+  the frozen bits alone, the first idea: under 0.1% of the front end had
+  them. A field written only with immediates (a register word's entry,
+  a symbol's slot) or with what never moves (a cellular closure's word,
+  in the code area) is not mutable to the collector.
+- **The barrier by generation** (the user's, Larceny's `gen_no`): of
+  three ways to find an address's generation (a table, a layout whose
+  order is the generations', a header at each chunk's start), the table:
+  no area moves, no base is subtracted by machine code (it is biased, as
+  the card table is), it is 82 bytes always in L1, and it is easiest to
+  check. A header's single `and` needs the reservation aligned, which the
+  fallback's is not; a layout by generation ties every new partition to
+  an order. A combined card-and-generation table was weighed and left:
+  one pointer, but a value's card byte anywhere in 170 MB.
+- **Measured**, stage 0: majors 125 ms to 119 ms; the barrier tested the
+  place first, since most stores are into young objects (0.63 G more
+  instructions with a range check of my own, 0.36 G with the table both
+  bytes first, 0.18 G the place's first); cycles the same.

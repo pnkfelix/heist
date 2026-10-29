@@ -19,10 +19,9 @@ use std::collections::{HashMap, HashSet};
 /// `i >> CARD_SHIFT`.
 pub(super) const CARD_SHIFT: usize = 6;
 const CARD_WORDS: usize = 1 << CARD_SHIFT;
-/// Cards over the whole of the heap's memory (the table's bytes), and over
-/// the semispaces (the crossing map's).
+/// Cards over the whole of the heap's memory (the table's bytes, and the
+/// crossing map's, which knows the semispaces' and the static area's).
 pub(super) const CARDS: usize = MEM_WORDS >> CARD_SHIFT;
-pub(super) const SEMI_CARDS: usize = (2 * MAX_SEMI_WORDS) >> CARD_SHIFT;
 
 /// Whether word `i` of the heap's memory is the nursery's.
 #[inline(always)]
@@ -42,6 +41,12 @@ fn set_byte(t: &mut fixpt_memmgmt::Words, i: usize, b: u8) {
     let w = &mut t.words_mut()[i >> 3];
     let shift = 8 * (i & 7);
     *w = (*w & !(0xff << shift)) | ((b as u64) << shift);
+}
+
+/// Whether word `rel`'s card is dirty: for tests.
+#[cfg(test)]
+pub(super) fn card_marked(h: &Heap, rel: usize) -> bool {
+    byte(&h.cards, rel >> CARD_SHIFT) != 0
 }
 
 impl Heap {
@@ -162,9 +167,11 @@ impl Heap {
         for part in &self.code.parts {
             scan_code_cards(&mut self.cards, mem, &mut c, part.base, &part.starts);
         }
-        // The old space's dirty cards, each cleaned as it is scanned; the
-        // table read a word (eight cards) at a time, a clean word skipped
-        // whole, so that a large old space with few dirty cards costs little.
+        // The old space's dirty cards, and the static area's, each cleaned as
+        // it is scanned; the table read a word (eight cards) at a time, a
+        // clean word skipped whole, so that a large space with few dirty
+        // cards costs little.
+        for (lo, old_top) in [(lo, old_top), (super::STATIC_MUTABLE_BASE, self.static_top)] {
         let (first, end) = (lo >> CARD_SHIFT, old_top.div_ceil(CARD_WORDS));
         let mut card = first;
         while card < end {
@@ -218,6 +225,7 @@ impl Heap {
                 at += n;
             }
         }
+        }
         // What was promoted, scanned until nothing more is.
         let mut scan = 0;
         while scan < c.free {
@@ -250,10 +258,12 @@ impl Heap {
     /// walks both whole; for tests.
     pub fn verify_remembered(&self) -> Result<(), String> {
         let code = self.code.parts.each_ref().map(|p| (p.base, p.top));
-        for (lo, hi) in [(self.active, self.top), code[0], code[1]] {
+        for (lo, hi) in [(self.active, self.top), (super::STATIC_MUTABLE_BASE, self.static_top), code[0], code[1]] {
             self.verify_remembered_in(lo, hi)?;
         }
-        Ok(())
+        // And what native code stored, marking cards only, in the static
+        // area's immutable half: nothing that may move.
+        self.verify_immutable()
     }
 
     fn verify_remembered_in(&self, lo: usize, hi: usize) -> Result<(), String> {
@@ -335,7 +345,7 @@ impl Copier<'_> {
 /// the object's length in steps.
 #[inline(always)]
 fn cross(map: &mut fixpt_memmgmt::Words, last: &mut usize, at: usize, n: usize) {
-    if at >= 2 * MAX_SEMI_WORDS {
+    if at >= 2 * MAX_SEMI_WORDS && !super::in_static(at) {
         return;
     }
     let card = at >> CARD_SHIFT;
