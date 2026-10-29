@@ -16,6 +16,8 @@
       (import kit-numbers expt))
 (hide (define kit-strings (load-module "../kit/strings.fx"))
       (import kit-strings string-index-from))
+(hide (define kit-chars (load-module "../kit/chars.fx"))
+      (import kit-chars hex-value))
 
 ;;; ------------------------------------------------------------ places
 
@@ -39,13 +41,7 @@
 ;;; ------------------------------------------------------------ atoms
 
 (define digit-value (subr rf-st (char int) int)
-  (lambda (c radix)
-    (let* ((n (char->integer c))
-           (d (cond ((and (>= n 48) (<= n 57)) (- n 48))
-                    ((and (>= n 97) (<= n 102)) (- n 87))
-                    ((and (>= n 65) (<= n 70)) (- n 55))
-                    (else 99))))
-      (if (< d radix) d -1))))
+  (lambda (c radix) (let ((d (hex-value c))) (if (< d radix) d -1))))
 (define exact->flonum (subr rf-st (rf-value) f64) (lambda (v) (->flonum v)))
 
 "The integer of digits s[i..j) in radix, or none."

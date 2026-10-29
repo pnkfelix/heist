@@ -16,18 +16,16 @@
 
 (module-parameters ((m-core (load-moduleof "core.fx"))))
 (hide (define kit-strings (load-module "../kit/strings.fx"))
-      (import kit-strings string-concatenate string-index))
+      (import kit-strings string-concatenate string-index make-chars))
+(hide (define kit-chars (load-module "../kit/chars.fx"))
+      (import kit-chars char-name hex-string))
 
 (define hex-digit (subr rf-st (int) string)
   (lambda (d) (char->string (string-ref "0123456789abcdef" d))))
-(define hex (subr rf-st (int) string)
-  (lambda (n) (if (< n 16) (hex-digit n) (string-append (hex (quotient n 16)) (hex-digit (remainder n 16))))))
 
 "n copies of c."
 (define repeat-char (subr rf-st (int char) string)
-  (lambda (n c)
-    (letrec ((go (subr rf-st (int (listof char acyclic)) (listof char acyclic)) (lambda (i acc) (if (<= i 0) acc (go (- i 1) (cons c acc))))))
-      (list->string (go n nil)))))
+  (lambda (n c) (list->string (make-chars n c))))
 
 ;;; ------------------------------------------------------------ numbers
 
@@ -91,21 +89,22 @@
 
 ;;; ------------------------------------------------------------ characters, strings, symbols
 
-(define char-name (subr rf-st (char) string)
+"What follows #\\ as Larceny writes `c`: its R7RS name, x and hex for
+another control or space character, else itself."
+(define char-text (subr rf-st (char) string)
   (lambda (c)
-    (let ((n (char->integer c)))
-      (cond ((= n 0) "null") ((= n 7) "alarm") ((= n 8) "backspace") ((= n 9) "tab") ((= n 10) "newline")
-            ((= n 13) "return") ((= n 27) "escape") ((= n 32) "space") ((= n 127) "delete")
-            ((or (< n 32) (and (>= n 128) (<= n 160)) (and (> n 160) (char-whitespace? c))) (string-append "x" (hex n)))
+    (let ((name (char-name c)) (n (char->integer c)))
+      (cond ((not (bool? name)) name)
+            ((or (< n 32) (and (>= n 128) (<= n 160)) (and (> n 160) (char-whitespace? c))) (string-append "x" (hex-string n)))
             (else (char->string c))))))
-(define write-char-string (subr rf-st (char) string) (lambda (c) (string-append "#\\" (char-name c))))
+(define write-char-string (subr rf-st (char) string) (lambda (c) (string-append "#\\" (char-text c))))
 
 (define string-escape (subr rf-st (char) string)
   (lambda (c)
     (let ((n (char->integer c)))
       (cond ((= n 7) "\\a") ((= n 8) "\\b") ((= n 9) "\\t") ((= n 10) "\\n") ((= n 13) "\\r")
             ((char=? c #\") "\\\"") ((char=? c #\\) "\\\\")
-            ((or (< n 32) (and (>= n 127) (<= n 160)) (and (> n 160) (char-whitespace? c))) (string-append "\\x" (hex n) ";"))
+            ((or (< n 32) (and (>= n 127) (<= n 160)) (and (> n 160) (char-whitespace? c))) (string-append "\\x" (hex-string n) ";"))
             (else (char->string c))))))
 (define write-string-literal (subr rf-st (string) string)
   (lambda (s)
