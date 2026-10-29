@@ -3560,6 +3560,42 @@ as `--heap` files are (§159).
 
 ## 161. A static area for mapped images (the user's, 2026-10-28)
 
+Steps 1 and 2 done (2026-10-29): the heap has a static area (`STATIC_BASE`,
+past the nursery, before the code area: a closure whose code field is at
+or past the code area's native part is taken for native code), whose
+objects the copier leaves where they are; a major collection scans it whole
+as roots, a minor one its dirty cards (the crossing map knows it; the Rust
+barrier covers it, native code marks every store's card already); `verify`
+and images know it (a `STATIC_MUTABLE` section). The front end's cache is
+dumped with its old space as the image's static area (`dump_static`), and
+spliced into the session's: a major collection no longer copies it (stage
+0: majors copy 16.3 M words, not 17.8 M; slower for now, 125 ms against
+113, since all of it is scanned). Next, in order:
+3. ~~The front end's image read into the heap before the runtime and the
+   prelude intern anything~~ (done, 2026-10-29, the user's): their
+   symbols are the image's, and the splice in place writes nothing of the
+   image (27,174 fixups, none written; each symbol's slot the same). An
+   empty program 50.6 ms to 49.1 ms.
+4. ~~What has no mutable fields in a half of its own, never scanned~~
+   (done, 2026-10-29, the user's): by kind (`Kind::settable`, from the
+   type: whether a field may come to refer to what moves), or by an
+   object's frozen fields. Immutable: strings and what has no fields,
+   symbols, sums, products, register code, cellular and native closures.
+   The front end: 7.9 MB of its 8.5 MB in the immutable half. Its code is
+   never swept (`Part::fixed`): that half, unscanned, may be all that
+   refers to it. The write barrier is now by generation (the user's,
+   Larceny's `gen_no`): a byte for each 2^27-word chunk (`GEN`; 0 the
+   nursery, 1 the old space, 127 what never moves, a flag for the
+   immutable half), the place's tested first; an immutable place refusing
+   what may move, in every build. Stage 0: majors 125 ms to 119 ms,
+   instructions 0.4% more, cycles the same.
+5. The remembered set for the mutable part, seeded by the image (below),
+   in place of scanning it whole: what the barrier's "something of the
+   old space into what never moves" case is for (`older_to_younger`); and
+   native code's barrier by the table too (`gen_table_address`, biased as
+   the card table's), which marks every store's card meanwhile.
+6. Global cells in the static area.
+
 What the collector does with what §160 maps, the user's design:
 - **Before §160 item 4** (2026-10-28): code mapped privately from a file
   must refer only to what never moves, or the collector's rewrites of its
@@ -3592,6 +3628,13 @@ What the collector does with what §160 maps, the user's design:
   remembered set of its objects that refer to what moves, kept by the
   barrier (the user's). Static objects are immortal, garbage and all, and
   a weak reference to one is never cleared; a new image is what reclaims.
+- **The remembered set at a load** (2026-10-29): it is the collector's,
+  in memory, never in an image. What an image carries is a list to seed
+  it with (in its metadata, as the fixups are): the places of its mutable
+  static objects that refer to what moves, found as it is made, so that a
+  load adds them without touching their pages, as a scan of the mutable
+  static section would. The dumper keeps them few where it can, by putting
+  what they refer to in a static space too.
 - **Later** (the user's): the remembered set pruned of static objects
   that are no longer reached, by a trace through the static area now and
   then (side marks), since what nothing reaches is reached never again;
@@ -3635,6 +3678,29 @@ part page-aligned in the file: so that they can be mapped deliberately to
 pages of their own (§160 items 2 and 4, §161's sections), and perhaps
 address-space tricks played with them later (the user is less sure of
 those). One revision for both formats, not one each.
+
+Step 1 done (2026-10-29), image format 11: a table of sections, each of a
+kind (metadata, or a space's words) and a space (the old space, the code
+area's two parts; static and mutable static named, not yet made), with
+what it is (moves, written, runs), its alignment, its offset and length,
+where in the heap's memory it goes and how much its space spans there,
+so that a heap of more spaces (static areas, regions, more generations;
+the user's: plan for a heap in many parts) is more sections. Every place
+in it (a fixup, a free block) is a place in the heap's memory, whatever
+section. Heap images (`dump_mappable`: the front end's cache, a session's
+image) have their word sections on 16 KiB pages, and start on one in
+their file (the cache's key, then the next page; `embed_into` pads the
+executable); `.fasl`s are packed (`dump_packed`), since one is placed
+where it was never made for, relocated and linked, so a mapping would be
+copied on write throughout, and a small file reads as cheaply as it maps
+(the user's: map heap images only). The front end's: 21.5 MB, 27 KB of
+padding. `fixpt image info` lists the sections. Left:
+- a `.fasl` read section by section into the heap it is loaded in, its
+  code into the code area and its words into the heap, without a heap of
+  its own and a copy of its graph;
+- the static spaces' sections written and read, once §161 gives the
+  runtime heap those spaces (the format names them already);
+- the padding written as holes, not zeros, where the file system has them.
 
 ## 166. nextest runs `fixpt prewarm` before the tests (the user's, 2026-10-29)
 
