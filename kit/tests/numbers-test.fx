@@ -1,0 +1,75 @@
+;;; kit/numbers.fx: each procedure's answers; ratio->f64 rounded to the
+;;; nearest float, ties to even, where the quotient needs more than 53 bits.
+
+(define numbers (load-module "../numbers.fx"))
+(import numbers abs gcd lcm floor-quotient floor-remainder truncate-quotient truncate-remainder expt
+        integer-length exact-integer-sqrt number->string radix-digit string->integer ratio->f64)
+
+(define is (subr pure ((union false int) int) bool)
+  (lambda (x n) (if (bool? x) #f (= x n))))
+
+(define* check (subr pure () unit)
+  (lambda ()
+    (begin
+      (assert (= (abs -5) 5))
+      (assert (= (gcd 12 18) 6))
+      (assert (= (gcd -12 18) 6))
+      (assert (= (gcd 0 0) 0))
+      (assert (= (gcd 0 7) 7))
+      ;; Consecutive Fibonacci numbers: Euclid's worst case.
+      (assert (= (gcd 354224848179261915075 573147844013817084101) 1))
+      (assert (= (lcm 4 6) 12))
+      (assert (= (lcm -4 6) 12))
+      (assert (= (lcm 0 6) 0))
+      (assert (= (floor-quotient 7 2) 3))
+      (assert (= (floor-quotient -7 2) -4))
+      (assert (= (floor-quotient 7 -2) -4))
+      (assert (= (floor-quotient -8 2) -4))
+      (assert (= (floor-remainder -7 2) 1))
+      (assert (= (truncate-quotient -7 2) -3))
+      (assert (= (truncate-remainder -7 2) -1))
+      (assert (= (expt 2 10) 1024))
+      (assert (= (expt -3 3) -27))
+      (assert (= (expt 7 0) 1))
+      (assert (= (expt 2 100) 1267650600228229401496703205376))
+      (assert (= (integer-length 0) 0))
+      (assert (= (integer-length -1) 0))
+      (assert (= (integer-length 7) 3))
+      (assert (= (integer-length 8) 4))
+      (assert (= (integer-length -8) 3))
+      (assert (= (integer-length (expt 2 100)) 101))
+      (assert (let ((r (exact-integer-sqrt 17))) (and (= (extract r s) 4) (= (extract r rest) 1))))
+      (assert (let ((r (exact-integer-sqrt 0))) (= (extract r s) 0)))
+      (assert (let ((r (exact-integer-sqrt (expt 10 40)))) (and (= (extract r s) (expt 10 20)) (= (extract r rest) 0))))
+      (assert (let ((r (exact-integer-sqrt (- (expt 10 40) 1)))) (= (extract r s) (- (expt 10 20) 1))))
+      (assert (string=? (number->string 255 16) "ff"))
+      (assert (string=? (number->string -255 2) "-11111111"))
+      (assert (string=? (number->string 0 7) "0"))
+      (assert (string=? (number->string 35 36) "z"))
+      (assert (is (radix-digit #\7 10) 7))
+      (assert (is (radix-digit #\F 16) 15))
+      (assert (bool? (radix-digit #\8 8)))
+      (assert (is (string->integer "-ff" 16) -255))
+      (assert (is (string->integer "+42" 10) 42))
+      (assert (is (string->integer "123456789012345678901234567890" 10) 123456789012345678901234567890))
+      (assert (bool? (string->integer "" 10)))
+      (assert (bool? (string->integer "-" 10)))
+      (assert (bool? (string->integer "12x" 10)))
+      ;; Small: one exact division.
+      (assert (f64= (ratio->f64 1 3) (f64/ 1.0 3.0)))
+      (assert (f64= (ratio->f64 -1 3) (f64-neg (f64/ 1.0 3.0))))
+      (assert (f64= (ratio->f64 1 -3) (f64-neg (f64/ 1.0 3.0))))
+      (assert (f64= (ratio->f64 0 5) 0.0))
+      ;; Large: a power of two scales 1/3 exactly.
+      (assert (f64= (ratio->f64 1 (* 3 (expt 2 100))) (f64/ (f64/ 1.0 3.0) (f64-expt 2.0 100.0))))
+      (assert (f64= (ratio->f64 (expt 2 100) 3) (f64* (f64/ 1.0 3.0) (f64-expt 2.0 100.0))))
+      ;; Ties to even: 2^53+1 is halfway between 2^53 and 2^53+2.
+      (assert (f64= (ratio->f64 (+ (expt 2 53) 1) 1) (f64-expt 2.0 53.0)))
+      (assert (f64= (ratio->f64 (+ (expt 2 53) 3) 1) (f64+ (f64-expt 2.0 53.0) 4.0)))
+      ;; Just above halfway: the remainder rounds it up.
+      (assert (f64= (ratio->f64 (+ (* 2 (expt 2 53)) 3) 2) (f64+ (f64-expt 2.0 53.0) 2.0)))
+      ;; 3 + 2^-60: 3.0.
+      (assert (f64= (ratio->f64 (+ (* 3 (expt 2 60)) 1) (expt 2 60)) 3.0)))))
+
+(check)
+(write-out "numbers: ok\n")
