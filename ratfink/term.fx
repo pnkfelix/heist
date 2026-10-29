@@ -120,7 +120,7 @@ find where ratfink's terms part from shakedown's."
 (define trace-term! (subr rf-st (int string rf-vals) unit)
   (lambda (id op args)
     (if (get trace-terms?)
-        (tagcase (write-err (string-append "T " (int->string id) " " op (string-concatenate (the strings (map (lambda ((a rf-value)) (string-append " " (arg-trace a))) args))) "\n"))
+        (tagcase (write-err (string-append "T " (int->string id) " " op (string-concatenate (map (lambda ((a rf-value)) (string-append " " (arg-trace a))) args)) "\n"))
           (done u #u) (failed e #u))
         #u)))
 
@@ -471,8 +471,8 @@ among few integers and b. Memoized: c is a DAG."
                      (none u (sum none #u))
                      (some ns
                        ;; add-cases's arguments, left to right.
-                       (let* ((a (the (listof (productof (value int) (cond rf-value)) acyclic) (map (lambda ((k a-case)) (product (value (extract k value)) (cond (t-and c (extract k cond))))) ys)))
-                              (b (the (listof (productof (value int) (cond rf-value)) acyclic) (map (lambda ((k a-case)) (product (value (extract k value)) (cond (t-and (t-not c) (extract k cond))))) ns))))
+                       (let* ((a (map (lambda ((k a-case)) (product (value (extract k value)) (cond (t-and c (extract k cond))))) ys))
+                              (b (map (lambda ((k a-case)) (product (value (extract k value)) (cond (t-and (t-not c) (extract k cond))))) ns)))
                          (add-cases a b))))))))
       (begin (table-set! (get cases-table) (tid t) cs) cs))))
 
@@ -524,10 +524,10 @@ for true or false."
                   (let ((pairs (the cases
                                  (apply-append
                                   (map (lambda ((x a-case))
-                                         (the (listof (productof (value int) (cond rf-value)) acyclic) (map (lambda ((y a-case))
+                                         (map (lambda ((y a-case))
                                                 (product (value (op (extract x value) (extract y value)))
                                                          (cond (t-and (extract x cond) (extract y cond)))))
-                                              ys)))
+                                              ys))
                                        xs)))))
                     (letrec ((loop (subr rf-st (cases maybe-cases) (sumof (none unit) (some rf-value)))
                                (lambda (pairs acc)

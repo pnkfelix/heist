@@ -67,7 +67,7 @@ it has none."
         (let* ((a (strip (array-ref p 0)))
                (d (strip (array-ref p 1))))
           (if (and (rf-eqv? a (array-ref p 0)) (rf-eqv? d (array-ref p 1))) x (rf-cons a d))))
-      (vec v (sum vec (list->array (map (lambda ((e rf-value)) (strip e)) (the rf-vals (array->list v))))))
+      (vec v (sum vec (list->array (map (lambda ((e rf-value)) (strip e)) (array->list v)))))
       (else y x))))
 
 "Whether x is the keyword name, perhaps renamed. Keywords like else and =>
@@ -164,10 +164,9 @@ one binding for each match."
                                            (the mbindings
                                              (append (map (lambda ((v symbol))
                                                             (product (var v)
-                                                                     (b (sum many (the (listof mbind acyclic)
-                                                                       (map (lambda ((mb mbindings))
+                                                                     (b (sum many (map (lambda ((mb mbindings))
                                                                               (tagcase (mb-assq v mb) (some x x) (none u (sum one rf-nil))))
-                                                                            (the (listof mbindings acyclic) (reverse matches))))))))
+                                                                            (reverse matches))))))
                                                           (pattern-vars m (rf-car p)))
                                                      b2)))))
                                   (tagcase (match m (rf-car p) (rf-car f) nil)
@@ -241,9 +240,9 @@ one binding for each match."
              ;; The forms of sub-template sub under depth ellipses, as a list.
              (repeat (subr rf-eff (rf-value mbindings int) rf-value)
                (lambda (sub b depth)
-                 (let* ((vars (the symbols (filter (lambda ((v symbol)) (tagcase (mb-assq v b) (some mb (tagcase mb (many i #t) (one x #f))) (none u #f)))
-                                      (pattern-vars m sub))))
-                        (lengths (the ints (map (lambda ((v symbol)) (list-length (items-of (mb-assq v b)))) (the symbols vars)))))
+                 (let* ((vars (filter (lambda ((v symbol)) (tagcase (mb-assq v b) (some mb (tagcase mb (many i #t) (one x #f))) (none u #f)))
+                                      (pattern-vars m sub)))
+                        (lengths (map (lambda ((v symbol)) (list-length (items-of (mb-assq v b)))) vars)))
                    (begin
                      (if (null? vars) (error "ellipsis after a template with no pattern variable under one" (strip t)) #u)
                      (if (not (all-equal? lengths)) (error "pattern variables under one ellipsis matched different numbers of forms" (strip t)) #u)

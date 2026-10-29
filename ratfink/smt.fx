@@ -216,7 +216,7 @@ deeply."
                                     (smt-send s (string-append "(declare-const " (term-name t) " " (sort-name (term-sort (term-of t))) ")")))
                                 (loop (cdr stack))))
                              (else
-                              (let ((pending (the rf-vals (filter (lambda ((a rf-value)) (and (rf-term? a) (not (defined? s a)))) (targs t)))))
+                              (let ((pending (filter (lambda ((a rf-value)) (and (rf-term? a) (not (defined? s a)))) (targs t))))
                                 (if (pair? pending)
                                     (loop (vals-append pending stack))
                                     (begin
@@ -226,7 +226,7 @@ deeply."
                                                (let ((atom (index-atom s t)))
                                                  (if (string=? atom "")
                                                      (string-append "(" (op-name (term-op (term-of t)))
-                                                                    (string-concatenate (the strings (map (lambda ((a rf-value)) (string-append " " (reference! s a))) (targs t))))
+                                                                    (string-concatenate (map (lambda ((a rf-value)) (string-append " " (reference! s a))) (targs t)))
                                                                     ")")
                                                      atom))
                                                ")"))
@@ -244,8 +244,8 @@ one is true, and k defined from them."
                    (loop (- n 1) nil))))
       (begin
         (for-each (lambda ((b string)) (smt-send s (string-append "(declare-const " b " Bool)"))) names)
-        (smt-send s (string-append "(assert ((_ pbeq 1" (string-concatenate (the strings (map (lambda ((b string)) " 1") names))) ")"
-                               (string-concatenate (the strings (map (lambda ((b string)) (string-append " " b)) names))) "))"))
+        (smt-send s (string-append "(assert ((_ pbeq 1" (string-concatenate (map (lambda ((b string)) " 1") names)) ")"
+                               (string-concatenate (map (lambda ((b string)) (string-append " " b)) names)) "))"))
         (smt-send s (string-append "(define-fun " (term-name k) " () Int "
                                (letrec ((loop (subr rf-st (int string) string)
                                           (lambda (i acc) (if (< i 0) acc
@@ -342,9 +342,9 @@ declare-index! declared it; else \"\"."
 (define z3-values (subr rf-eff (z3-state rf-vals) rf-vals)
   (lambda (s terms)
     (if (null? terms) nil
-        (let ((names (the strings (map (lambda ((t rf-value)) (reference! s t)) terms))))
+        (let ((names (map (lambda ((t rf-value)) (reference! s t)) terms)))
           (begin
-            (smt-send s (string-append "(get-value (" (string-concatenate (the strings (map (lambda ((n string)) (string-append " " n)) (the strings names)))) "))"))
+            (smt-send s (string-append "(get-value (" (string-concatenate (map (lambda ((n string)) (string-append " " n)) names)) "))"))
             (map2 (lambda ((t rf-value) (entry rf-value)) (parse-value (rf-cadr entry))) terms (rf-elements (smt-receive s))))))))
 
 "Start the solver process. timeout: the limit on each check, in seconds,

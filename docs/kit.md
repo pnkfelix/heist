@@ -122,21 +122,13 @@ is kit's for completeness beside one that was.
   cheap: every load of a path is one module, made once
   (`docs/requests/fixpt-module-type-per-dependent.md`).
 
-- **A list literal must be said acyclic.** `(map f (list 1 2 3))` is
-  refused, "`p` cannot be inferred": `list` makes its list at a fresh
-  region, which inference does not solve to `(acyclic p)`. A caller writes
-  `(the (listof int acyclic) (list 1 2 3))`, or binds the list with that
-  type.
-- **So must a result that nothing at the call types.** Where the call's
-  context expects a type (an argument, a typed `define`, a declared
-  `lambda`'s body), the result's region is solved from it. Elsewhere it
-  is fresh, and must be said `acyclic`: a result bound by `let`, an `if`'s
-  branch in one, a `lambda`'s body given to `map`, a kit result given
-  straight to kit (`(string-concatenate (the strings (map f l)))`).
-  ratfink needed 101 such annotations at 366 calls of `map` and `filter`,
-  about 70 of them `let` bindings. Both cases are the request
-  `docs/requests/fixpt-region-default-acyclic.md`; prototyped, ratfink
-  needs none.
+- **A list made is `acyclic` where nothing says otherwise.** Since Fixpt
+  e4af8997 (`docs/requests/fixpt-region-default-acyclic.md`), a region
+  a call leaves unsolved, that the procedure only allocates and reads as a
+  list's, is `acyclic`: a kit result bound by `let`, a list literal or a
+  kit result given straight to kit, needs no `(the (listof T acyclic)
+  …)`. Before it, ratfink needed 112 such annotations; it has none now. A
+  caller that writes a list kit made says the list's region.
 - **Imported procedures are the program's globals**, so a caller's effect
   has `(read (globals map …))`, and a caller declared `pure` is refused.
   Within a module the reads are none. Exports read as constants are
@@ -155,4 +147,3 @@ list built in an arena.
 - Programs adopt kit, one at a time, each kept if its tests pass and its
   start-up does not grow: s7st and the CFA have the most to drop.
 - A `spin` variant of a list procedure, if a program needs one.
-- Drop the annotations if Fixpt takes `fixpt-region-default-acyclic.md`.

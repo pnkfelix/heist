@@ -43,7 +43,7 @@ condition."
 (define describe-signal (subr rf-eff (rf-signal) string)
   (lambda (s)
     (tagcase s
-      (err e (string-append (extract e message) (string-concatenate (the strings (map (lambda ((i rf-value)) (string-append " " (datum->string i))) (extract e irritants))))))
+      (err e (string-append (extract e message) (string-concatenate (map (lambda ((i rf-value)) (string-append " " (datum->string i))) (extract e irritants)))))
       (else x "path aborted"))))
 
 (define parse-count (subr rf-st (string) int)

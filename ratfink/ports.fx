@@ -225,7 +225,7 @@
                                  (lambda ((ctx rf-ctx) (strings rf-vals))
                                    (lift ctx strings
                                          (lambda ((ctx rf-ctx) (ss rf-vals))
-                                           (rf-str (string-concatenate (the strings (map (lambda ((s rf-value)) (rf-str-of s)) (vals-reverse ss)))))))))))))))
+                                           (rf-str (string-concatenate (map (lambda ((s rf-value)) (rf-str-of s)) (vals-reverse ss))))))))))))))
           (define! 'current-output-port (exactly 0) (lambda ((ctx rf-ctx) (src rf-value) (args rf-vals)) (array-ref current-output 0)))
           (define! 'current-error-port (exactly 0) (lambda ((ctx rf-ctx) (src rf-value) (args rf-vals)) console))
           (writer 'display #t #f)

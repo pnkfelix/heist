@@ -233,7 +233,7 @@ define-syntax, in begin and include too (not through macro uses)."
         (let ((ctor (rf-caddr form)))
           (append (cond ((rf-pair? ctor) (list (rf-sym-of (rf-car ctor)))) ((rf-symbol? ctor) (list (rf-sym-of ctor))) (else nil))
                   (list (rf-sym-of (rf-cadddr form)))
-                  (apply-append-symbols (map (lambda ((spec rf-value)) (the symbols (if (rf-pair? spec) (map (lambda ((s rf-value)) (rf-sym-of s)) (rf-elements (rf-cdr spec))) nil)))
+                  (apply-append-symbols (map (lambda ((spec rf-value)) (if (rf-pair? spec) (map (lambda ((s rf-value)) (rf-sym-of s)) (rf-elements (rf-cdr spec))) nil))
                                              (rf-elements (rf-cddddr form)))))))))
 (define apply-append-symbols (subr rf-st ((listof symbols acyclic)) symbols)
   (lambda (ls) (if (null? ls) nil (append (car ls) (apply-append-symbols (cdr ls))))))

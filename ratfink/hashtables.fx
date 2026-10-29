@@ -199,5 +199,5 @@
                                   (if (rf-term? (car args))
                                       (begin (fail! ctx 'unsupported (describe-call src "a hash of a symbolic value")) rf-unspecified)
                                       (rf-int (modulo (string-hash (datum->string (car args))) 536870912))))))))
-                    (the symbols (list 'equal-hash 'string-hash 'symbol-hash)))
+                    (list 'equal-hash 'string-hash 'symbol-hash))
           (get prims))))))
