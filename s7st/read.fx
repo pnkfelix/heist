@@ -122,7 +122,7 @@ least one digit, then perhaps an exponent."
 
 "Number `s`, in `radix`, or #f: an integer, a ratio, a decimal, or an
 infinity or NaN; each signed, and perhaps prefixed (`#x`, `#e`, …)."
-(define* s7-parse-number (subr (maxeff spin (alloc @sc)) (string int) (union false s7-value))
+(define* s7-parse-number (subr (maxeff spin (alloc @sc) (read @sc)) (string int) (union false s7-value))
   (lambda (s radix)
     (let ((n (string-length s)))
       (cond ((= n 0) #f)

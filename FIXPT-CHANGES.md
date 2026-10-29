@@ -8,7 +8,24 @@ do it, and what it cost. Kayak will need the same changes later
 
 ## Base
 
-- Fixpt `main` at 6505d8bb (2026-10-29), pulled from GitHub by Heist's
+- Fixpt `main` at 61a2e792 (2026-10-29), pulled from GitHub by Heist's
+  8ce93dbe (squash 79849167): masking keeps `read` and `write` on a region
+  only the result's type mentions (Heist's request,
+  `docs/requests/fixpt-mask-hides-acyclic-writes.md`), so a procedure that
+  writes what it returns says so, and is refused where instantiated at
+  `acyclic`; the front end native on every machine that runs native code,
+  and its caches mapped, not copied. Heist had to say two reads it made:
+  `s7-parse-number` (`s7st/read.fx`) and its caller `s7-bar-symbol?`
+  (`s7st/print.fx`) now declare `(read @sc)`, the region of the value
+  they build and look at (s7st and the CFA, which shares the files, were
+  refused without them). After `fixpt prewarm` and `bin/heist-compile all`
+  (14.5 s), all 131 tests pass, and the request's repro is refused, both
+  checkers agreeing. Heist has no edits of its own on it. Start-up from
+  `.fasl`s, best of 5: an empty program 0.03 s (0.05 s); the editor
+  0.53 s (0.56 s); s7st 0.86 s (0.90 s); the CFA's server 1.34 s
+  (1.40 s); combo's server 0.28 s (0.30 s); ratfink on a one-proof FX-26
+  file 0.75 s (0.73 s). The same within noise, but for the empty program.
+- Before: Fixpt `main` at 6505d8bb (2026-10-29), pulled from GitHub by Heist's
   cc42544a (squash 8488d79f): images as tables of sections, a static
   area in the heap that the front end's image is read into first, and a
   write barrier by generation. After `fixpt prewarm` and

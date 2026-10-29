@@ -24,7 +24,7 @@
 
 "Whether symbol name `s` must be written between bars: it is empty, would
 read as a number, or has a character a symbol read cannot."
-(define* s7-bar-symbol? (subr (maxeff spin (alloc @sc)) (string) bool)
+(define* s7-bar-symbol? (subr (maxeff spin (alloc @sc) (read @sc)) (string) bool)
   (lambda (s)
     (let ((n (string-length s)))
       (letrec ((odd (subr spin (int) bool)

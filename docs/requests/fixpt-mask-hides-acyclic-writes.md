@@ -1,6 +1,8 @@
 # Request to Fixpt: masking hides a write that makes `acyclic` data cyclic
 
-Status: open. Drafted 2026-10-29 by Heist, for the user to take to the
+Status: done in Fixpt 61a2e792 (pulled 2026-10-29): masking keeps `read`
+and `write` on the result's regions, in both checkers, as proposed; Heist's
+s7st declares the two reads that this made visible. Drafted 2026-10-29 by Heist, for the user to take to the
 Fixpt team. Against Fixpt 6505d8bb. Found while designing `kit`, Heist's
 library of FX-26 procedures, whose `map` relies on a procedure that does
 not write a region being safe to instantiate at `acyclic`.
