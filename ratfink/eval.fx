@@ -171,7 +171,24 @@ the hint (what the value will be bound to, or #f)."
 (define-type special (subr rf-eff (rf-value rf-cenv rf-value) rf-proc))
 (define special-forms (ref (table symbol special @rf) @rf) (new (the (table symbol special @rf) (make-table symbol-hash symbol=?))))
 (define special-form (subr rf-st (symbol) (sumof (none unit) (some special)))
-  (lambda (name) (if (table-has? (get special-forms) name) (sum some (table-ref (get special-forms) name (lambda ((x rf-value) (c rf-cenv) (h rf-value)) (constant x)))) (sum none #u))))
+  (lambda (name)
+    (cond ((and (get fx26?) (table-has? (get fx26-forms) name))
+           (sum some (table-ref (get fx26-forms) name (lambda ((x rf-value) (c rf-cenv) (h rf-value)) (constant x)))))
+          ((table-has? (get special-forms) name)
+           (sum some (table-ref (get special-forms) name (lambda ((x rf-value) (c rf-cenv) (h rf-value)) (constant x)))))
+          (else (sum none #u)))))
+"Whether an FX-26 program is being compiled (fx26.fx): then FX-26's own
+forms are special forms too (fx26-forms), and a Scheme program's names
+like product and sum are left alone."
+(define fx26? (ref bool @rf) (new #f))
+(define set-fx26! (subr rf-st (bool) unit) (lambda (b) (set fx26? b)))
+(define fx26-forms (ref (table symbol special @rf) @rf) (new (the (table symbol special @rf) (make-table symbol-hash symbol=?))))
+(define define-fx26-form! (subr rf-st (symbol special) unit) (lambda (name proc) (table-set! (get fx26-forms) name proc)))
+(define define-fx26-rewrite! (subr rf-st (symbol (subr rf-eff (rf-value) rf-value)) unit)
+  (lambda (name rewrite)
+    (define-fx26-form! name (lambda ((x rf-value) (cenv rf-cenv) (hint rf-value))
+                              (let ((tail (get form-tail)))
+                                (compile (rewrite x) cenv hint tail))))))
 (define define-special! (subr rf-st (symbol special) unit)
   (lambda (name proc) (table-set! (get special-forms) name proc)))
 "The tail of the special form being compiled."
@@ -1408,6 +1425,8 @@ closures to (depth . count)."
              (modifies (listof modifies-clause acyclic)) (shape rf-value) (decreases (sumof (none unit) (some labelled)))
              (raises rf-value) (signals (listof labelled acyclic)) (body rf-value) (pins (listof pin acyclic))))
 (define contracts (ref (listof contract acyclic) @rf) (new nil))
+"Contracts whose shape is their result's type's (returns-typed)."
+(define typed-returns (ref symbols @rf) (new nil))
 (define contract-defined? (subr rf-st (symbol) bool)
   (lambda (name) (letrec ((f (subr rf-st ((listof contract acyclic)) bool) (lambda (l) (and (pair? l) (or (eq? (extract (car l) name) name) (f (cdr l)))))))
                    (f (get contracts)))))
@@ -1425,7 +1444,7 @@ closures to (depth . count)."
     (begin
       (set mode-stubs (tagcase p (some pr (extract pr stubs)) (none u nil)))
       (set mode-for-contract (tagcase p (some pr (extract pr for-contract)) (none u (sum none #u))))
-      (set abstraction "")
+      (set abstraction (if (get fx26?) "the program is FX-26's, which playback does not run yet" ""))
       (set contract-measure rf-false)
       (set contract-calls 0))))
 (define proof-abstraction (subr rf-st () string) (lambda () (get abstraction)))
@@ -1493,6 +1512,15 @@ closure f already is, (contract (f . formals) clause …) in contracts-for."
                                       (syntax-error "bad modifies (expected (modifies e [shape]))" c))
                                   (set modifies (vals-append (get modifies) (list (rf-cons (rf-cadr c) (strip (rf-cddr c))))))
                                   (loop (rf-cdr forms)))))
+                             ;; (returns-typed shape), fx26.fx's: the shape a stub
+                             ;; gives, from the result's type, which the type
+                             ;; system answers for; so the result is not checked
+                             ;; against it.
+                             ((eq? clause 'returns-typed)
+                              (begin
+                                (set shape (strip (rf-cadr (rf-car forms))))
+                                (set typed-returns (cons name (get typed-returns)))
+                                (loop (rf-cdr forms))))
                              ((eq? clause 'returns)
                               (begin
                                 (if (and (= (rf-length (rf-car forms)) 2) (shape? (rf-cadr (rf-car forms)))) #u
@@ -1797,7 +1825,7 @@ giving a vector, a record or a list of them; m is (e . shape-list)."
                  (begin
                    (set contract-measure outer-measure)
                    (check-postconditions ctx c olds args r src)
-                   (if (rf-false? (extract c shape)) #u
+                   (if (or (rf-false? (extract c shape)) (symbols-member? name (get typed-returns))) #u
                        (check! ctx 'contract-frame
                                (string-append "the result of " (symbol->string name) " fits " (datum->string (L2 (q 'returns) (extract c shape))))
                                (fits (extract c shape) r)))
@@ -2012,6 +2040,79 @@ allows, meeting its signals conditions."
                      #u))))
            specs))))))
 
+;;; ------------------------------------------------------------ FX-26's forms
+;;;
+;;; An FX-26 program is checked as its types erased (fx26.fx turns its
+;;; top-level forms into definitions; these are its expressions'):
+;;;   - (lambda ((x T) …) …), (vlambda (x T) …), (rlambda r (…) …): the
+;;;     types dropped; letrec's (name T e) as (name e);
+;;;   - (the T e), (proj e d …), (convention c e): e; (plambda binders …),
+;;;     (letregion r …) and its kin, (with m …): their bodies;
+;;;   - a product is an alist of its labels, (label . value), in the
+;;;     order written; (extract e label) its value there;
+;;;   - a sum (sum label e) is a pair (label . e), and a datatype's value
+;;;     (made by fx26.fx's constructors) a sum whose payload is a product of
+;;;     labels 1, 2, …; tagcase dispatches on the label, an arm's names
+;;;     taking the payload's members in order.
+
+"A parameter's name: x, or (x T)."
+(define param-name (subr rf-st (rf-value) rf-value) (lambda (p) (if (rf-pair? p) (rf-car p) p)))
+(define strip-params (subr rf-st (rf-value) rf-value)
+  (lambda (ps) (if (rf-pair? ps) (rf-cons (param-name (rf-car ps)) (strip-params (rf-cdr ps))) ps)))
+(define body-of-form (subr rf-st (rf-value) rf-value) (lambda (forms) (rf-cons (q 'begin) forms)))
+
+(define install-fx26-forms! (subr rf-st () unit)
+  (lambda ()
+    (begin
+      (define-fx26-form! 'lambda
+        (lambda ((x rf-value) (cenv rf-cenv) (hint rf-value))
+          (compile-lambda (rf-cons (q 'lambda) (rf-cons (strip-params (rf-cadr x)) (rf-cddr x))) cenv hint)))
+      (define-fx26-rewrite! 'vlambda (lambda ((x rf-value)) (rf-cons (q 'lambda) (rf-cons (param-name (rf-cadr x)) (rf-cddr x)))))
+      (define-fx26-rewrite! 'rlambda (lambda ((x rf-value)) (rf-cons (q 'lambda) (rf-cons (strip-params (rf-caddr x)) (rf-cdddr x)))))
+      (define-fx26-form! 'letrec
+        (lambda ((x rf-value) (cenv rf-cenv) (hint rf-value))
+          (compile-letrec (rf-cons (q 'letrec)
+                                   (rf-cons (rf-list (map (lambda ((b rf-value)) (if (= (rf-length b) 3) (L2 (rf-car b) (rf-caddr b)) b)) (rf-elements (rf-cadr x))))
+                                            (rf-cddr x)))
+                          cenv hint)))
+      (define-fx26-rewrite! 'the (lambda ((x rf-value)) (rf-caddr x)))
+      (define-fx26-rewrite! 'proj (lambda ((x rf-value)) (rf-cadr x)))
+      (define-fx26-rewrite! 'convention (lambda ((x rf-value)) (rf-caddr x)))
+      (define-fx26-rewrite! 'plambda (lambda ((x rf-value)) (body-of-form (rf-cddr x))))
+      (for-each (lambda ((name symbol)) (define-fx26-rewrite! name (lambda ((x rf-value)) (body-of-form (rf-cddr x)))))
+                (list 'letregion 'letfreeze 'letrena 'letreap 'with))
+      (define-fx26-rewrite! 'product
+        (lambda ((x rf-value))
+          (rf-cons (primitive-named 'list)
+                   (rf-list (map (lambda ((f rf-value)) (L3 (primitive-named 'cons) (L2 (q 'quote) (rf-car f)) (rf-cadr f)))
+                                 (rf-elements (rf-cdr x)))))))
+      (define-fx26-rewrite! 'extract
+        (lambda ((x rf-value)) (L2 (primitive-named 'cdr) (L3 (q 'assq) (L2 (q 'quote) (rf-caddr x)) (rf-cadr x)))))
+      (define-fx26-rewrite! 'sum
+        (lambda ((x rf-value)) (L3 (primitive-named 'cons) (L2 (q 'quote) (rf-cadr x)) (rf-caddr x))))
+      ;; (tagcase e (label x body …) … [(else y body …)])
+      (define-fx26-rewrite! 'tagcase
+        (lambda ((x rf-value))
+          (let* ((t (fresh-temp)) (p (fresh-temp)))
+            (L3 (q 'let) (L1 (L2 t (rf-cadr x)))
+                (L3 (q 'let) (L1 (L2 p (L2 (primitive-named 'cdr) t)))
+                    (rf-cons (q 'cond)
+                             (rf-list (map (lambda ((arm rf-value))
+                                             (let ((label (rf-car arm)) (binder (rf-cadr arm)) (body (rf-cddr arm)))
+                                               (if (keyword? label 'else)
+                                                   (L2 (q 'else) (rf-cons (q 'let) (rf-cons (L1 (L2 binder t)) body)))
+                                                   (L2 (L3 (primitive-named 'eqv?) (L2 (primitive-named 'car) t) (L2 (q 'quote) label))
+                                                       (rf-cons (q 'let)
+                                                                (rf-cons (if (rf-symbol? binder) (L1 (L2 binder p))
+                                                                             (letrec ((loop (subr rf-st (rf-value int) rf-value)
+                                                                                        (lambda (ns i) (if (rf-pair? ns)
+                                                                                                           (rf-cons (L2 (rf-car ns) (L2 (primitive-named 'cdr) (L3 (primitive-named 'list-ref) p (rf-int i))))
+                                                                                                                    (loop (rf-cdr ns) (+ i 1)))
+                                                                                                           rf-nil))))
+                                                                               (loop binder 0)))
+                                                                         body))))))
+                                           (rf-elements (rf-cddr x)))))))))))))
+
 ;;; ------------------------------------------------------------ top-level forms
 
 (define extras (ref prim-entries @rf) (new nil))
@@ -2064,6 +2165,7 @@ allows, meeting its signals conditions."
           (install-control-forms!)
           (install-control-globals!)
           (install-check-forms!)
+          (install-fx26-forms!)
           (set-raise-hooks! apply-value show)
           ;; The globals defined in this file, kept when the globals are reset.
           (set extras (map (lambda ((name symbol)) (product (name name) (value (array-ref (global-cell name) 0))))

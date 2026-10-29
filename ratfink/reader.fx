@@ -188,6 +188,11 @@ all), then an exponent."
                            (go (+ k 1) (cons c acc))))))))
       (list->string (reverse (go i nil))))))
 
+"Whether FX-26 is being read: then #u is the unit value (as eval.fx has
+it, the unspecified value)."
+(define fx26-syntax? (ref bool @rf) (new #f))
+(define set-fx26-syntax! (subr rf-st (bool) unit) (lambda (b) (set fx26-syntax? b)))
+
 "An atom's text as a datum; none if it is no datum."
 (define parse-atom (subr rf-st (string bool) (sumof (none unit) (some rf-value)))
   (lambda (text fold?)
@@ -208,6 +213,7 @@ all), then an exponent."
                      ;; A character not ASCII: its UTF-8 text is one character.
                      ((= (list-length (string->list name)) 1) (sum some (sum char (string-ref name 0))))
                      (else (sum none #u)))))
+            ((and (string=? text "#u") (get fx26-syntax?)) (sum some rf-unspecified))
             ((or (string=? text "#t") (string=? text "#true")) (sum some rf-true))
             ((or (string=? text "#f") (string=? text "#false")) (sum some rf-false))
             (else

@@ -25,7 +25,8 @@
                     (m-smt (load-moduleof "smt.fx" m-core m-term m-print m-numbers m-reader))
                     (m-eval (load-moduleof "eval.fx" m-core m-term m-value m-print m-syntax m-numbers m-reader m-machine m-prims m-hashtables m-ports m-prelude m-library))
                     (m-playback (load-moduleof "playback.fx" m-core m-term m-value m-print m-syntax m-numbers m-reader m-machine m-prims m-hashtables m-ports m-prelude m-library m-eval))
-                    (m-check (load-moduleof "check.fx" m-core m-term m-value m-print m-syntax m-numbers m-reader m-machine m-prims m-hashtables m-ports m-prelude m-library m-smt m-eval m-playback))))
+                    (m-check (load-moduleof "check.fx" m-core m-term m-value m-print m-syntax m-numbers m-reader m-machine m-prims m-hashtables m-ports m-prelude m-library m-smt m-eval m-playback))
+                    (m-fx26 (load-moduleof "fx26.fx" m-core m-print m-syntax m-numbers m-reader m-library))))
 
 (define say (subr rf-eff (string) unit) (lambda (s) (tagcase (write-out s) (done u #u) (failed e #u))))
 
@@ -110,6 +111,15 @@ condition."
   (lambda (o dirs) (product (unwind (extract o unwind)) (timeout (extract o timeout)) (verbose (extract o verbose)) (playback (extract o playback)) (library-path dirs)
                             (proofs (extract o proofs)) (split (extract o split)) (max-calls (extract o max-calls)) (solver (extract o solver)))))
 
+"A file's forms: an FX-26 program's (.fx) through fx26.fx, which also
+makes FX-26's forms known to the compiler; a Scheme program's as read."
+(define fx26-file? (subr rf-st (string) bool)
+  (lambda (f) (and (>= (string-length f) 3) (string=? (substring f (- (string-length f) 3) (string-length f)) ".fx"))))
+(define program-forms (subr rf-eff (string) rf-vals)
+  (lambda (file)
+    (begin (set-fx26! (fx26-file? file))
+           (if (fx26-file? file) (fx26-program file) (read-file-data file #f)))))
+
 "Check the files; the exit status."
 (define check-files (subr rf-eff (strings check-options strings) int)
   (lambda (files options dirs)
@@ -123,7 +133,7 @@ condition."
                           (lambda ()
                             (begin
                               (if (pair? (cdr fs)) (say (string-append "== " file "\n")) #u)
-                              (let ((failed (check-forms (read-file-data file #f) say
+                              (let ((failed (check-forms (program-forms file) say
                                                          (with-library-path options (append dirs (list (directory-of file)))))))
                                 (begin (set code (if (> failed 0) 1 0)) rf-unspecified))))
                           (lambda ((s rf-signal))
