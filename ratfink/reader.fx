@@ -224,7 +224,7 @@ all), then an exponent."
 not yet read, the file (for places and messages), and fold-case."
 (define-type reader
   (productof (text string) (pos (ref int @rf)) (line (ref int @rf)) (pending-hash (ref bool @rf))
-             (file string) (fold (ref bool @rf))))
+             (file string) (fold (ref bool @rf)) (note? bool)))
 
 (define rd-peek (subr rf-st (reader) int)
   (lambda (r) (let ((i (get (extract r pos)))) (if (< i (string-length (extract r text))) (char->integer (string-ref (extract r text) i)) -1))))
@@ -241,7 +241,7 @@ not yet read, the file (for places and messages), and fold-case."
 (define note! (subr rf-st (rf-value int reader) rf-value)
   (lambda (x at r)
     (tagcase x
-      (pair p (begin (eqtable-set! (get locations) p (string-append (extract r file) ":" (int->string at))) x))
+      (pair p (begin (if (extract r note?) (eqtable-set! (get locations) p (string-append (extract r file) ":" (int->string at))) #u) x))
       (else y x))))
 (define is? (subr rf-st (int char) bool) (lambda (c ch) (= c (char->integer ch))))
 (define whitespace? (subr rf-st (int) bool) (lambda (c) (and (>= c 0) (char-whitespace? (integer->char c)))))
@@ -375,8 +375,11 @@ not yet read, the file (for places and messages), and fold-case."
 "The data of text, in order, its lists noted as read from file; with
 fold-case, its symbols and character names folded to lower case."
 (define read-text (subr rf-eff (string string bool) rf-vals)
-  (lambda (text file fold?)
-    (let ((r (the reader (product (text text) (pos (new 0)) (line (new 1)) (pending-hash (new #f)) (file file) (fold (new fold?))))))
+  (lambda (text file fold?) (read-text* text file fold? #t)))
+"The data of text, its lists noted as read from file if note?."
+(define read-text* (subr rf-eff (string string bool bool) rf-vals)
+  (lambda (text file fold? note?)
+    (let ((r (the reader (product (text text) (pos (new 0)) (line (new 1)) (pending-hash (new #f)) (file file) (fold (new fold?)) (note? note?)))))
       (letrec ((loop (subr rf-eff (rf-vals) rf-vals)
                  (lambda (acc) (let ((x (datum r))) (if (rf-eof? x) (vals-reverse acc) (loop (cons x acc)))))))
         (loop nil)))))

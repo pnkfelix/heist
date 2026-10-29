@@ -1,0 +1,15 @@
+#!/bin/sh
+# ratfink: a bounded model checker (a port of shakedown) in FX-26, run on
+# Heist's own Fixpt. ratfink/main.fx says its options. What shakedown reads
+# from the environment is passed as options: RATFINK_SOLVER (a solver
+# command reading SMT-LIB2 on standard input), RATFINK_SMT_LOG (a file to
+# copy what is sent to it to), LARCENY (the Larceny playback programs run
+# under; by default accomplice's).
+heist=$(cd "$(dirname "$0")/.." && pwd)
+fixpt="$heist/fixpt/target/release/fixpt"
+[ -x "$fixpt" ] || { echo "build fixpt first: (cd $heist/fixpt && cargo build --release -p fixpt-cli)" >&2; exit 2; }
+larceny=${LARCENY:-$HOME/Dev/LangPlay/accomplice/larceny}
+set -- --larceny "$larceny" "$@"
+[ -n "$RATFINK_SOLVER" ] && set -- --solver-command "$RATFINK_SOLVER" "$@"
+[ -n "$RATFINK_SMT_LOG" ] && set -- --smt-log "$RATFINK_SMT_LOG" "$@"
+exec "$fixpt" run "$heist/ratfink/ratfink.fx" -- "$@"

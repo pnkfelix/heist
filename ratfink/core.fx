@@ -430,3 +430,7 @@ hash-consed: one id, one term.)"
 
 "An array's elements as a list."
 (define slots-list (subr rf-st (rf-slots) rf-vals) (lambda (a) (the rf-vals (array->list a))))
+
+"Whether x is eqv? to an element of l."
+(define memq-val? (subr rf-st (rf-value rf-vals) bool)
+  (lambda (x l) (cond ((null? l) #f) ((rf-eqv? x (car l)) #t) (else (memq-val? x (cdr l))))))

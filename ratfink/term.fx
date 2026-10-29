@@ -183,8 +183,6 @@ merge sort: stable either way)."
 (define many-args int 32)
 (define shorter? (subr rf-st (rf-vals int) bool)
   (lambda (l n) (or (null? l) (and (> n 0) (shorter? (cdr l) (- n 1))))))
-(define memq-val? (subr rf-st (rf-value rf-vals) bool)
-  (lambda (x l) (cond ((null? l) #f) ((rf-eqv? x (car l)) #t) (else (memq-val? x (cdr l))))))
 
 (define-type seen-set (by-id bool))
 (define new-seen (subr rf-st () seen-set) (lambda () (the seen-set (make-table id-hash id-same?))))
