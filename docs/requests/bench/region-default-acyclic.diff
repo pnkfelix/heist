@@ -1,0 +1,316 @@
+diff --git a/crates/fixpt-fx26/src/check-binders-types.fx b/crates/fixpt-fx26/src/check-binders-types.fx
+index 9541789..97405ae 100644
+--- a/crates/fixpt-fx26/src/check-binders-types.fx
++++ b/crates/fixpt-fx26/src/check-binders-types.fx
+@@ -22,8 +22,12 @@
+                        k-bound-body))
+             (val k-default-regions
+                  (subr (maxeff (alloc @t) (read @globals) (read @t) (write @t))
+-                       (k-binders k-solved)
++                       (k-binders k-solved k-ids)
+                        unit))
++            (val k-not-only-data
++                 (subr (maxeff (alloc @t) (read @globals) (read @t) (write @t) spin)
++                       (int)
++                       k-ids))
+             (val k-fin-region (subr (read @globals) (k-region) k-region))
+             (val k-finitized
+                  (subr (maxeff (alloc @t) (read @globals) (read @t) (write @t) spin)
+diff --git a/crates/fixpt-fx26/src/check-binders.fx b/crates/fixpt-fx26/src/check-binders.fx
+index 41eb539..0ee073c 100644
+--- a/crates/fixpt-fx26/src/check-binders.fx
++++ b/crates/fixpt-fx26/src/check-binders.fx
+@@ -107,8 +107,8 @@
+                   (else y (k-solve solved v (dr (car bd)))))
+                 #u)
+             (k-default-bounded all (cdr kinds) solved))))))
+-(define k-default-free (->* (k-binders k-binders k-solved) unit)
+-  (lambda (all kinds solved)
++(define k-default-free (->* (k-binders k-binders k-solved k-ids) unit)
++  (lambda (all kinds solved keep)
+     (if (null? kinds)
+         #u
+         (let* ((v (extract (car kinds) 1)) (bd (k-bound-of v))
+@@ -116,13 +116,79 @@
+                            (tagcase (car bd) (r-var (w) (k-unknown? all w)) (else y #f)))))
+           (begin
+             (if (and (k-unsolved-region? (extract (car kinds) 2) v solved) (not waits))
+-                (k-solve solved v (dr (k-fresh-region-for v)))
++                (k-solve solved v (dr (if (k-ids-has? keep v) (k-fresh-region-for v) (r-frozen -1 #t))))
+                 #u)
+-            (k-default-free all (cdr kinds) solved))))))
++            (k-default-free all (cdr kinds) solved keep))))))
+ 
+-(define k-default-regions (->* (k-binders k-solved) unit)
+-  (lambda (kinds solved)
+-    (begin (k-default-bounded kinds kinds solved) (k-default-free kinds kinds solved))))
++;; PROTOTYPE (Heist): a region binder nothing solves is `acyclic`, unless
++;; it is in `keep` (`k-not-only-data`), when it is fresh.
++(define k-default-regions (->* (k-binders k-solved k-ids) unit)
++  (lambda (kinds solved keep)
++    (begin (k-default-bounded kinds kinds solved) (k-default-free kinds kinds solved keep))))
++(define k-ids-has? (->* (k-ids int) bool)
++  (lambda (l v) (cond ((null? l) #f) ((= (car l) v) #t) (else (k-ids-has? (cdr l) v)))))
++;; PROTOTYPE (Heist): the region variables `t` uses other than as a pair's
++;; region, or in an effect other than `alloc` and `read`: a `ref`'s, an
++;; array's, a continuation's, one written.
++(define k-nd-reg (->* (k-region (ref k-ids @t)) unit)
++  (lambda (r out) (tagcase r (r-var (v) (set out (cons v (get out)))) (else y #u))))
++(define k-nd-eff (->* (k-eff (ref k-ids @t)) unit)
++  (lambda (e out)
++    (if (null? e)
++        #u
++        (begin
++          (tagcase (car e)
++            (a-write (r) (k-nd-reg r out)) (a-goto (r) (k-nd-reg r out)) (a-comefrom (r) (k-nd-reg r out))
++            (a-await (r) (k-nd-reg r out)) (a-init (r) (k-nd-reg r out)) (a-send (r) (k-nd-reg r out))
++            (a-receive (r) (k-nd-reg r out))
++            (else y #u))
++          (k-nd-eff (cdr e) out)))))
++(define-rec
++  (k-nd-walk (->* (int (ref k-ids @t) (ref k-ids @t)) unit)
++    (lambda (t0 seen out)
++      (let ((t (k-resolve t0)))
++        (if (k-ids-has? (get seen) t)
++            #u
++            (begin
++              (set seen (cons t (get seen)))
++              (tagcase (k-get t)
++                (ty-subr (e ps r cv spc) (begin (k-nd-eff e out) (k-nd-list ps seen out) (k-nd-walk r seen out)))
++                (ty-poly (bs body) (k-nd-walk body seen out))
++                (ty-ref (x r) (begin (k-nd-reg r out) (k-nd-walk x seen out)))
++                (ty-markkey (x r) (begin (k-nd-reg r out) (k-nd-walk x seen out)))
++                (ty-array (x z r) (begin (k-nd-reg r out) (k-nd-walk x seen out)))
++                (ty-icell (x r) (begin (k-nd-reg r out) (k-nd-walk x seen out)))
++                (ty-bloblet (fs z r) (begin (k-nd-reg r out) (k-nd-list fs seen out)))
++                (ty-pair (x y r nl) (begin (k-nd-walk x seen out) (k-nd-walk y seen out)))
++                (ty-tag (x y e r) (begin (k-nd-eff e out) (k-nd-reg r out) (k-nd-walk x seen out) (k-nd-walk y seen out)))
++                (ty-comp (x y e r once) (begin (k-nd-eff e out) (k-nd-reg r out) (k-nd-walk x seen out) (k-nd-walk y seen out)))
++                (ty-product (ps) (k-nd-parts ps seen out))
++                (ty-sum (ps) (k-nd-parts ps seen out))
++                (ty-union (ms) (k-nd-list ms seen out))
++                (ty-module (abs ds vs) (begin (k-nd-parts ds seen out) (k-nd-parts vs seen out)))
++                (ty-named (g ds) (k-nd-descs ds seen out))
++                (ty-app (f ds) (begin (k-nd-walk f seen out) (k-nd-descs ds seen out)))
++                (ty-lam (bs d) (k-nd-descs (cons d nil) seen out))
++                (ty-nlist (x z r) (k-nd-walk x seen out))
++                (else y #u)))))))
++  (k-nd-list (->* (k-ids (ref k-ids @t) (ref k-ids @t)) unit)
++    (lambda (ts seen out) (if (null? ts) #u (begin (k-nd-walk (car ts) seen out) (k-nd-list (cdr ts) seen out)))))
++  (k-nd-parts (->* (k-parts (ref k-ids @t) (ref k-ids @t)) unit)
++    (lambda (ps seen out) (if (null? ps) #u (begin (k-nd-walk (extract (car ps) 2) seen out) (k-nd-parts (cdr ps) seen out)))))
++  (k-nd-descs (->* (k-descs (ref k-ids @t) (ref k-ids @t)) unit)
++    (lambda (ds seen out)
++      (if (null? ds)
++          #u
++          (begin
++            (tagcase (car ds)
++              (dr (r) (k-nd-reg r out)) (de (e) (k-nd-eff e out))
++              (dt (x) (k-nd-walk x seen out)) (df (x) (k-nd-walk x seen out))
++              (else y #u))
++            (k-nd-descs (cdr ds) seen out))))))
++(define k-not-only-data (->* (int) k-ids)
++  (lambda (t)
++    (let ((seen (the (ref k-ids @t) (new nil))) (out (the (ref k-ids @t) (new nil))))
++      (begin (k-nd-walk t seen out) (get out)))))
+ 
+ ;; `t` with its frozen regions made acyclic: what data `acyclic?` has found
+ ;; acyclic is.
+diff --git a/crates/fixpt-fx26/src/check-infer.fx b/crates/fixpt-fx26/src/check-infer.fx
+index cd2cafa..d7b13b8 100644
+--- a/crates/fixpt-fx26/src/check-infer.fx
++++ b/crates/fixpt-fx26/src/check-infer.fx
+@@ -646,7 +646,7 @@
+            (solved (k-new-bounded-solved)))
+       (begin
+         (k-from-above (lambda () (k-unify inner expected kinds solved (the k-trail (new nil)))))
+-        (k-default-regions kinds solved)
++        (k-default-regions kinds solved (k-not-only-data inner))
+         (let ((m (k-finish kinds solved a b t)))
+           (begin (k-check-bounds kinds m a b)
+                  (k-check-distinct kinds m inner a b)
+diff --git a/crates/fixpt-fx26/src/check-rules.fx b/crates/fixpt-fx26/src/check-rules.fx
+index 975ca87..9bf764a 100644
+--- a/crates/fixpt-fx26/src/check-rules.fx
++++ b/crates/fixpt-fx26/src/check-rules.fx
+@@ -469,9 +469,9 @@
+                     ;; binder is found unsolved (`DONE.md` §20).
+                     (k-result-shape expected result kinds solved a b)
+                     (k-inst-shapes args params 0 kinds solved (extract done 1))
+-                    (k-inst-told args params 0 kinds solved done)
++                    (k-inst-told args params 0 kinds solved done (k-not-only-data inner))
+                     (k-inst-shapes args params 0 kinds solved (extract done 1))
+-                    (k-default-regions kinds solved)
++                    (k-default-regions kinds solved (k-not-only-data inner))
+                     (if (< expected 0) (k-widen-nil-tail result kinds solved) #u)
+                     (k-solved-instance kinds solved a b ft inner))))))))
+   ;; What the arguments are, except the ones that need to be told.
+@@ -492,15 +492,15 @@
+             (k-inst-asked (cdr args) (cdr params) (+ i 1) kinds solved done)))))
+   ;; The arguments that needed telling: each is checked against its parameter
+   ;; as solved so far, and what it turns out to be solves more.
+-  (k-inst-told (->* (kxs k-ids int k-binders k-solved k-done) unit)
+-    (lambda (args params i kinds solved done)
++  (k-inst-told (->* (kxs k-ids int k-binders k-solved k-done k-ids) unit)
++    (lambda (args params i kinds solved done keep)
+       (if (null? args)
+           #u
+           (begin
+             (if (>= (array-ref (extract done 1) i) 0)
+                 #u
+                 (let* ((arg (car args))
+-                       (defaulted (k-default-regions kinds solved))
++                       (defaulted (k-default-regions kinds solved keep))
+                        (p (k-subst (car params) (get solved))))
+                   (cond
+                     ;; A thunk has no parameters to be told: told nothing, it
+@@ -526,7 +526,7 @@
+                        (if (null? pv)
+                            (k-arg-found done i p (k-check arg p))
+                            (k-arg-unified (car params) kinds solved done i (car pv))))))))
+-            (k-inst-told (cdr args) (cdr params) (+ i 1) kinds solved done)))))
++            (k-inst-told (cdr args) (cdr params) (+ i 1) kinds solved done keep)))))
+   ;;; ------------------------------------------------------------ check mode
+   (k-check (->* (kx int) k-eff)
+     (lambda (x expected)
+diff --git a/crates/fixpt-fx26/src/infer.rs b/crates/fixpt-fx26/src/infer.rs
+index a7950b6..470efc7 100644
+--- a/crates/fixpt-fx26/src/infer.rs
++++ b/crates/fixpt-fx26/src/infer.rs
+@@ -49,11 +49,14 @@ struct Unknowns {
+     kinds: Vec<(DVar, Kind)>,
+     solved: HashMap<DVar, D>,
+     bounds: HashMap<DVar, Bounds>,
++    /// PROTOTYPE (Heist): region binders that are more than a pair's region
++    /// written by no one, so not defaulted to `acyclic`.
++    keep_fresh: HashSet<DVar>,
+ }
+ 
+ impl Unknowns {
+     fn new(kinds: Vec<(DVar, Kind)>) -> Unknowns {
+-        Unknowns { kinds, solved: HashMap::new(), bounds: HashMap::new() }
++        Unknowns { kinds, solved: HashMap::new(), bounds: HashMap::new(), keep_fresh: HashSet::new() }
+     }
+ 
+     fn is_unknown(&self, v: DVar) -> bool {
+@@ -1060,6 +1063,7 @@ impl Checker {
+             return Err(FxError::at(span, format!("expected {} argument(s), got {}", params.len(), args.len())));
+         }
+         let mut u = Unknowns::new(kinds);
++        u.keep_fresh = self.not_only_data_regions(inner);
+         let mut done: Vec<Synthesised> = vec![None; args.len()];
+         // What the whole is expected to be, first: it often fixes enough that
+         // an argument can be told its type rather than asked — which is what
+@@ -1242,6 +1246,7 @@ impl Checker {
+         }
+         let (kinds, inner) = self.binders_of(t);
+         let mut u = Unknowns::new(kinds);
++        u.keep_fresh = self.not_only_data_regions(inner);
+         let outer = std::mem::replace(&mut self.unify_upper, true);
+         self.unify(inner, expected, &mut u, &mut HashSet::new());
+         self.unify_upper = outer;
+@@ -1357,7 +1362,10 @@ impl Checker {
+             // A bounded binder waits for its bound to be solved.
+             let waits = matches!(self.arena.bound(v), Some(Region::Var(w)) if u.is_unknown(w));
+             if k == Kind::Region && !u.solved.contains_key(&v) && !waits {
+-                let r = self.fresh_region(v);
++                // PROTOTYPE (Heist): an unsolved region binder is `acyclic`.
++                let fresh = std::env::var_os("FIXPT_FRESH_REGIONS").is_some()
++                    || (std::env::var_os("FIXPT_ACYCLIC_ALWAYS").is_none() && u.keep_fresh.contains(&v));
++                let r = if fresh { self.fresh_region(v) } else { Region::Frozen(None, true) };
+                 u.solved.insert(v, D::Region(r));
+             }
+         }
+@@ -1780,6 +1788,92 @@ impl Checker {
+         Ok((t, eff))
+     }
+ 
++    /// PROTOTYPE (Heist): the region variables `t` uses other than as a
++    /// pair's region, or in an effect other than `alloc` and `read`: a `ref`'s,
++    /// an array's, a continuation's, one written.
++    fn not_only_data_regions(&self, t: TyId) -> HashSet<DVar> {
++        fn eff(e: &Effect, out: &mut HashSet<DVar>) {
++            for a in &e.0 {
++                match a {
++                    Atom::Alloc(_) | Atom::Read(_) => {}
++                    Atom::Write(Region::Var(v)) | Atom::Goto(Region::Var(v)) | Atom::Comefrom(Region::Var(v))
++                    | Atom::Await(Region::Var(v)) | Atom::Init(Region::Var(v)) | Atom::Send(Region::Var(v))
++                    | Atom::Receive(Region::Var(v)) => {
++                        out.insert(*v);
++                    }
++                    _ => {}
++                }
++            }
++        }
++        fn reg(r: Region, out: &mut HashSet<DVar>) {
++            if let Region::Var(v) = r {
++                out.insert(v);
++            }
++        }
++        fn ds(c: &Checker, args: &[D], seen: &mut crate::ast::TySet, out: &mut HashSet<DVar>) {
++            for d in args {
++                match d {
++                    D::Type(x) | D::Fun(x) => walk(c, *x, seen, out),
++                    D::Effect(e) => eff(e, out),
++                    D::Region(r) => reg(*r, out),
++                    _ => {}
++                }
++            }
++        }
++        fn walk(c: &Checker, t: TyId, seen: &mut crate::ast::TySet, out: &mut HashSet<DVar>) {
++            let t = c.arena.resolve(t);
++            if !seen.insert(t) {
++                return;
++            }
++            match c.arena.get(t).clone() {
++                Ty::Subr { effect, params, result, .. } => {
++                    eff(&effect, out);
++                    params.iter().for_each(|p| walk(c, *p, seen, out));
++                    walk(c, result, seen, out)
++                }
++                Ty::Poly { body, .. } => walk(c, body, seen, out),
++                Ty::Ref(a, r) | Ty::MarkKey(a, r) | Ty::Array(a, _, r) | Ty::ICell(a, r) => {
++                    reg(r, out);
++                    walk(c, a, seen, out)
++                }
++                Ty::Bloblet { fields, region, .. } => {
++                    reg(region, out);
++                    fields.iter().for_each(|f| walk(c, *f, seen, out))
++                }
++                Ty::Product(parts) | Ty::Sum(parts) => parts.iter().for_each(|(_, t)| walk(c, *t, seen, out)),
++                Ty::Union(ms) => ms.iter().for_each(|t| walk(c, *t, seen, out)),
++                Ty::Pair(a, b, _, _) => {
++                    walk(c, a, seen, out);
++                    walk(c, b, seen, out)
++                }
++                Ty::PromptTag { answer, payload, effect, region } => {
++                    eff(&effect, out);
++                    reg(region, out);
++                    walk(c, answer, seen, out);
++                    walk(c, payload, seen, out)
++                }
++                Ty::Composable { arg, answer, effect, region, .. } => {
++                    eff(&effect, out);
++                    reg(region, out);
++                    walk(c, arg, seen, out);
++                    walk(c, answer, seen, out)
++                }
++                Ty::Module { descs, vals, .. } => descs.iter().chain(&vals).for_each(|(_, t)| walk(c, *t, seen, out)),
++                Ty::Named { args, .. } => ds(c, &args, seen, out),
++                Ty::App { fun, args } => {
++                    walk(c, fun, seen, out);
++                    ds(c, &args, seen, out)
++                }
++                Ty::Lam { body, .. } => ds(c, std::slice::from_ref(&body), seen, out),
++                Ty::NList { elem, .. } => walk(c, elem, seen, out),
++                _ => {}
++            }
++        }
++        let mut out = HashSet::new();
++        walk(self, t, &mut Default::default(), &mut out);
++        out
++    }
++
+     fn mentions_unknown_type(&self, t: TyId, u: &Unknowns) -> bool {
+         let mut seen = crate::ast::TySet::default();
+         self.walk_vars(t, &mut seen, &mut |v| u.is_unknown(v) && !u.solved.contains_key(&v))
