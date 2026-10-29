@@ -8,7 +8,17 @@ do it, and what it cost. Kayak will need the same changes later
 
 ## Base
 
-- Fixpt `main` at 21f4b60e (2026-10-29), pulled from GitHub by Heist's
+- Fixpt `main` at b2609b6a (2026-10-29), pulled from GitHub by Heist's
+  c2d66a71 (squash 769f4412): `fixpt prewarm`, which makes an
+  executable's front-end caches before they are wanted (2.6 s and 3.1 s
+  cold, after a build); a call-out's field is the call-out itself; a
+  foreign call roots its caller's code. `.fasl`s an older Fixpt made are
+  stale; after `fixpt prewarm` and `bin/heist-compile all` all 131 tests
+  pass. Heist has no edits of its own on it. From clean: the editor
+  3.0 s, s7st 5.2 s, the CFA 7.5 s, combo 1.7 s. Start-up from `.fasl`s
+  as on 21f4b60e, within noise: an empty program 0.05 s, the editor
+  0.53 s, s7st 0.87 s, the CFA's server 1.35 s, combo's server 0.29 s.
+- Before: Fixpt `main` at 21f4b60e (2026-10-29), pulled from GitHub by Heist's
   a3658e7d (squash 2b4f03ea): Heist's load-time request in part
   (`docs/requests/fixpt-load-time.md`) -- an executable's image found by
   its trailer alone, images this executable wrote loaded without a CRC or
