@@ -3547,7 +3547,28 @@ Left, in order:
      name (its global slot given to that one), and the nursery collected,
      which the forwarding moves every reference to; the symbol table's
      entries the image's.
-4. **The sections mapped**, after §161 (above): the code's twice from the file, privately,
+4. **The sections mapped**, after §161 (above). The static area's two
+   halves done (2026-10-29): spliced in place, from the cache's file
+   (`Heap::splice_image_from`, `Words::map_from`), privately, the mutable
+   half writable (a page a collection writes is the process's own), the
+   immutable half read-only once the splice is done, `dump_static` padding
+   it to a page's end. `FIXPT_IMAGE_NO_MAP=1` copies as before. An empty
+   program 48.0 ms to 47.6 ms, release: the copy was little of it, and the
+   pages are read anyway as the crossing map and the symbol index are made.
+   The splice's 13 ms now: the code copied, 12.6 MB, 9 ms; the symbol
+   index, 3 ms; the crossing map, 0.6 ms. The code's done too
+   (2026-10-29, Linux): each of the code area's two views mapped from the
+   file, privately, read+execute where it runs and read-only where the
+   heap reads it (`ExecView::map_from`), each code part padded to a page's
+   end; a collection writes a field only if what it refers to moved, so
+   nothing writes the image's code (none of what it refers to moves), and
+   the views agree. An empty program 48.4 ms to 36.2 ms, release; page
+   faults 5,045 to 2,282, kernel instructions 48.6 M to 16.7 M. Kayak's
+   stage 0 the same (cycles; 0.15% more instructions, the collector's
+   compare). macOS copies the code still: an executable mapping of a file
+   may want it signed there; to try on the Mac, and the static area's
+   mapping with it, which nothing has run there yet. Left of the original
+   item: the code's twice from the file, privately,
    read+execute where it runs and read-only where the heap reads it (the
    two never written, so they agree); the immutable data read-only; the
    mutable data copied on write. Then the call-out pass goes too, where
@@ -3714,3 +3735,149 @@ makes both caches; a setup script in `.config/nextest.toml` should run it
 that: the test binaries' own caches, which `prewarm` cannot reach (each
 binary is an executable of its own), and a lock so that one process makes
 a missing cache while the others wait for it.
+
+## 167. The suite's cycle time (the user's, 2026-10-29)
+
+The suite took 10 minutes and 239 CPU-minutes. Most sessions a test made
+directly (`Fx26Session::with_backend`, not `common::session`) loaded the
+front end lowered, on the bytecode VM, in a debug build: one `icells` test,
+a three-line program run three ways, took 97 s alone. (The user: not
+optimized test builds, which slow the build.)
+
+1. Done: a session's front end is register code by default
+   (`front_end_compiled`), on the hand register machine, read back from the
+   test binary's cache (`fixpt-native` a dependency of `fixpt-fx26` now, not
+   only a test's). The `icells` test: 8 s. Lowered where a test says so
+   (`the_front_end_compiled_checks_alike`).
+2. Done: the cache keyed by the sources and the build, not by the
+   executable (`FIXPT_BUILD_HASH`, from `fixpt-fx26`'s `build.rs`: the
+   sources of the eight crates that make or run the front end's image,
+   `Cargo.lock`, the profile, target and features), so that every test
+   binary and the CLI share one, which `fixpt prewarm` makes for all of
+   them. Each test binary made its own the first time it ran before, about
+   25 s, several of its tests at once.
+
+The suite after both: 9 min 2 s (10 min 16 s), 172 CPU-minutes (239), the
+tests' times summed 8,816 s (13,100), 36 tests over a minute (80); 865 of
+865. Left: the long tail, which the wall time now waits on (`preempt`'s
+each-machine tests, 290 s and 195 s; `process_programs_do_as_they_say_every_way`,
+250 s; `register_code_runs_as_lowered_while_collecting`, 230 s;
+`every_program_on_every_machine`, 205 s), each of which might be split by
+machine so that nextest runs the parts at once.
+
+3. Done (2026-10-29): the long tests split, so that nextest runs their
+   parts at once: `preempt`'s by machine (a module for each); the
+   compiler's every program by machine; the process programs by way, the
+   native way, `attempt`'s and the monitors' by shards of their programs
+   (`common::sharded!`, `common::shard`, 8, dealt round-robin); register
+   code collecting at every allocation by directory, `run` and `modules`
+   by shards, `run/tail-marks.fx` 3,000 rounds there, not 300,000
+   (`SHORTER_WHILE_COLLECTING`: what collecting so checks a short run
+   checks too; the constant space the long run is for the other tests
+   check). The five tests of the native compilers share one compile of the
+   bootstrap program for each kind (`common::bootstrap_compiled`: an image
+   in the build's temporary directory, keyed by the sources, made by one
+   test while the others wait on its lock): 98 s cold, 11 s warm, where
+   each was 95 s. The suite: 3 min 0 s (7 min 18 s), 117 CPU-minutes, 958
+   of 958. Longest now: `bootstrap::the_compiler_compiles_the_front_end`
+   (103 s, the compile it tests), `direct`'s `control_on_native_frames`
+   (97 s) and `deep_recursion_through_the_stack_cache` (85 s), the
+   `fasl` and `every_program_on_*` tests (70 to 80 s);
+   `modules/convention-read.fx` collecting at every allocation 63 s, all
+   but 1 s its run.
+4. Left: the bootstrap program's shared compile (`common::bootstrap_compiled`)
+   is made by the first test that wants it after each change to the
+   sources, and the five tests of the native compilers wait on it: 107 to
+   110 s each then, 6 to 11 s warm. Made before the tests start (`fixpt
+   prewarm`, or the setup script of §166), it would leave the long tail.
+
+## 168. The front end native on every machine that runs native code (the user's, 2026-10-29)
+
+A cellular-convention machine's process took some 4 s to start in a debug
+build, for a program that runs in a fraction of one: the cellular front
+end's cache is of the front end before its run, so each process copied
+it as a graph, ran the front end's top level again, and the hand register
+machine assembled its register words to machine code again (in its own
+code space, outside the heap, where no image reaches). The `preempt` and
+`attempt` tests run each of their programs as a process on each machine:
+72 of them in one test. Now the CLI's front end is native wherever native
+code runs (`NATIVE_CONVENTION_AVAILABLE`), whatever the program's
+convention: its cache, as its first run left it, preloaded (§161). The
+program's own code is compiled natively only in the native convention
+(`native_compiler`, which, set for a cellular-convention program,
+crashed `fx-regs-rsjit-cellcc`: worth knowing why, some day). Not where
+the compiler written in FX-26 makes each procedure's code
+(`fx-regs-fxjit-nativecc`, still 4 s), nor preloaded where the program is
+lowered (`rs-scheme-vm`, 0.1 s, which may never load the front end).
+`FIXPT_FRONT_END_CELLULAR=1` for the cellular front end, as before.
+Trivial programs, debug: 4.0–4.6 s to 0.65–1.15 s on the cellular machines.
+Left: library sessions (`Fx26Session::with_backend`, the tests') still
+take the cellular front end (§167).
+
+## 169. The caches' life a day, not a month (the user's, 2026-10-29)
+
+Done: caches unused for a day are removed (`CACHE_LIFE`), and the
+front-end caches past the eight most recently used (`CACHE_MOST`), by
+whatever writes a front-end cache (`sweep_cache`): a process of the CLI, a
+test's session, `fixpt prewarm`, so when a build is new. A month had kept
+229 front-end caches, 4.4 GB, each test binary's of each build; 173 MB
+after.
+
+## 170. `scripts/image-check`, the checks of images for each step (the user's, 2026-10-29)
+
+For each step to images mapped (§160 item 4 on), in place of the suite,
+which waits for the series' end (then `git bisect run
+scripts/image-check` if it fails): the heap crate's tests, the caches'
+tests, and each program of `tests/programs/run` evaluated on
+`fx-regs-rsjit-nativecc` and `fx-cells-rsjit-cellcc` with the front end's
+image in place, moved and copied, and checked lowered (`rs-scheme-vm
+check`, the image read after the runtime's symbols), each against the
+cellular front end's run. 1.5 minutes warm. Writing it found:
+- `FIXPT_IMAGE_RELOCATE=1` moved nothing: the front end's image is its
+  static area's, which a fresh heap's empty static area takes where it was
+  made for, so the walk mapped every reference to itself. It puts each part
+  a card further now.
+- `fixpt run` of a program whose `.fasl` is cached runs no front end; the
+  script turns `.fasl`s off.
+- A bug since §161's step 4, met since §168 (`rs-scheme-vm check`
+  panicked): a splice was in place, its fixups alone written, where the
+  immutable half went aside into the mutable half (the heap's own symbols
+  made already, its old space empty), so the words moved kept the image's
+  references. In place now only where every part lands where it was made
+  for (`static_area::an_immutable_half_moved_aside_is_walked`).
+Checked to fail on a walk that skips fields, and on references misdirected
+in the immutable half; not on a few non-reference words flipped there,
+which no program reads (raw bytes, mostly).
+
+## 171. The embedded FX-26 sources minified at build time (the user's, 2026-10-29)
+
+A procedural macro (an `include_str!` that minifies) for the FX-26 sources
+built into the executable (`FRONT_END_MODULES`, `STANDARD_MODULES`,
+`FRONT_END_FILES`, `BOOTSTRAP`, `convention.fx`'s 559 lines, ...): less to
+read, check and keep in the binary at each use.
+- Drop comments first.
+- Then look for other things to drop: top-level expressions that are pure
+  and define nothing (their values unused), and whatever else the reader
+  and checker do work for that the result does not need.
+- Keep what errors are placed by: an error in the front end is said at its
+  file and line (`bootstrap::an_error_in_the_front_end_is_placed_in_its_files`),
+  so a comment replaced by as many newlines, or a map of lines kept.
+- Not for a `load-input` file's one expression, which is the value.
+- Measure first: for `modules/convention-read.fx`, checking (the module
+  with it) was 0.1 s of the 63 s it takes collecting at every allocation,
+  60.3 s the run; where reading and checking the embedded sources is the
+  cost is the front end's own build and `fasl`-less loads.
+
+## 172. URGENT: `convention.fx` compares characters, not one-character strings (the user's, 2026-10-29)
+
+`cv-ch` (`src/convention.fx:27`) is `(substring t i (+ i 1))`: each test
+of a character allocates a string of it to compare with `" "`, `"("` or
+`")"` by `string=?`, several to a character (`cv-atom-end` up to three,
+`cv-read-items` two, `cv-read-at` more). Reading a convention's clauses is
+all allocation, and `modules/convention-read.fx`, collecting at every
+allocation, takes 60 s of its 63 s in that run. To do: `cv-ch` a
+character, `(string-ref t i)`, and its callers `char=?` against `#\space`,
+`#\(` and `#\)`, as the rest of the front end does (`char=?` 38 times in
+`src/*.fx`). `convention.fx` is a module of the front end's: its caches are
+made again once. Then measure that test again; and `why` in the test reads
+the clauses afresh at each of its four calls, which may want a look too.
