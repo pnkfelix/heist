@@ -4,10 +4,8 @@
 
 (define-type rat (productof (n int) (d int)))
 
-(define* gcd (subr spin (int int) int)
-  (lambda (a b) (let ((a (if (< a 0) (- 0 a) a)) (b (if (< b 0) (- 0 b) b))) (if (= b 0) a (gcd b (remainder a b))))))
-(define* lcm (subr spin (int int) int)
-  (lambda (a b) (if (or (= a 0) (= b 0)) 0 (let ((p (quotient (* a b) (gcd a b)))) (if (< p 0) (- 0 p) p)))))
+(define kit-numbers (load-module "../kit/numbers.fx"))
+(import kit-numbers gcd lcm)
 
 "n/d, made canonical (d not 0)."
 (define* make-rat (subr spin (int int) rat)
