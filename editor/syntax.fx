@@ -16,6 +16,8 @@
 (module-parameters ((m-base (load-moduleof "base.fx"))
                     (m-buffer (load-moduleof "buffer.fx" m-base))
                     (m-resolve (load-moduleof "resolve.fx" m-base m-buffer))))
+(hide (define kit-lists (load-module "../kit/lists.fx"))
+      (import kit-lists member?))
 
 (define keywords strings
   (list "define" "define*" "define-rec" "define-type" "define-datatype" "define-effect"
@@ -31,9 +33,6 @@
         "select" "nlist" "dlambda"))
 (define definers strings
   (list "define" "define*" "define-type" "define-datatype" "define-effect" "define-generative"))
-
-(define* member? (subr spin (string strings) bool)
-  (lambda (s l) (and (pair? l) (or (string=? s (car l)) (member? s (cdr l))))))
 
 (define* reverse-faces (subr pure (text-faces) text-faces)
   (lambda (l)
@@ -118,12 +117,12 @@ with parameters, Scheme's procedure form), or nothing (\"\")."
                             (else y (product (name "") (start 0) (end 0))))
                           (product (name "") (start 0) (end 0)))))
             (let* ((name (extract head name))
-                   (acc (cond ((member? name keywords)
+                   (acc (cond ((member? name keywords string=?)
                                (add-face acc (extract head start) (extract head end) 'keyword))
-                              ((member? name type-words)
+                              ((member? name type-words string=?)
                                (add-face acc (extract head start) (extract head end) 'type))
                               (else acc)))
-                   (acc (if (and (member? name definers) (pair? items) (pair? (cdr items)))
+                   (acc (if (and (member? name definers string=?) (pair? items) (pair? (cdr items)))
                             (let ((defined (defined-name (car (cdr items)))))
                               (if (string=? (extract defined name) "")
                                   acc

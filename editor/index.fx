@@ -10,6 +10,8 @@
                     (m-resolve (load-moduleof "resolve.fx" m-base m-buffer))
                     (m-syntax (load-moduleof "syntax.fx" m-base m-buffer m-resolve))
                     (m-sexp (load-moduleof "sexp.fx" m-base m-buffer m-resolve m-syntax))))
+(hide (define kit-lists (load-module "../kit/lists.fx"))
+      (import kit-lists member?))
 
 (define-type indexed (productof (file string) (definitions definitions) (links links)))
 (define-type index-state
@@ -63,7 +65,7 @@ cannot be in a union."
 (define* index-directory (subr pure ((actor index-state) string) (msg index-state))
   (lambda (ix dir)
     (lambda ((st index-state))
-      (if (member? dir (extract st directories))
+      (if (member? dir (extract st directories) string=?)
           (same st)
           (reply-with (index-of st (cons dir (extract st directories)) (extract st pending) (extract st files))
                       (list (lambda ()

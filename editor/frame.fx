@@ -15,6 +15,8 @@
                     (m-sexp (load-moduleof "sexp.fx" m-base m-buffer m-resolve m-syntax))
                     (m-index (load-moduleof "index.fx" m-base m-buffer m-resolve m-syntax m-sexp))
                     (m-view (load-moduleof "view.fx" m-base m-buffer m-resolve m-syntax m-sexp m-index))))
+(hide (define kit-lists (load-module "../kit/lists.fx"))
+      (import kit-lists member?))
 
 (define-type window
   (productof (id int) (buffer (actor buffer)) (view (actor view)) (height int)
@@ -770,9 +772,9 @@ their types) has it. Read in a command."
 (define* say-standard (subr pure ((actor frame) string) cmd)
   (lambda (fr name)
     (lambda ()
-      (cond ((member? name special-forms)
+      (cond ((member? name special-forms string=?)
              (tell! fr (echo (string-append name " is a special form of FX-26, so has no definition here"))))
-            ((member? name type-syntax)
+            ((member? name type-syntax string=?)
              (tell! fr (echo (string-append name " is type syntax of FX-26, so has no definition here"))))
             (else
              (let* ((got (file-text (string-append fixpt-sources "standard.rs")))
@@ -1147,7 +1149,7 @@ in a command; a sole completion that is a directory gets a `/`."
                       (failed e nil)))
              (c (complete-among base names))
              (text (string-append dir (extract c text)))
-             (dir? (and (member? (extract c text) names)
+             (dir? (and (member? (extract c text) names string=?)
                         (tagcase (the (sumof (names (listof string @pf)) (failed io-error)) (list-dir text))
                           (names ns #t) (failed e #f)))))
         (tell! fr (mini-completed typed (if dir? (string-append text "/") text)

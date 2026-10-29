@@ -11,6 +11,8 @@
                     (m-index (load-moduleof "index.fx" m-base m-buffer m-resolve m-syntax m-sexp))
                     (m-view (load-moduleof "view.fx" m-base m-buffer m-resolve m-syntax m-sexp m-index))
                     (m-frame (load-moduleof "frame.fx" m-base m-buffer m-resolve m-syntax m-sexp m-index m-view))))
+(hide (define kit-lists (load-module "../kit/lists.fx"))
+      (import kit-lists member?))
 
 "Each visited buffer's file and text, for the analysis."
 (define* buffer-texts (subr turn-eff (buffer-infos) (listof (productof (file string) (text string)) acyclic))
@@ -114,7 +116,7 @@ among them; else `file` alone."
                                       (lines (+ i 1) (+ i 1) (if (> i start) (cons (string-append dir (substring listing start i)) acc) acc)))
                                      (else (lines (+ i 1) start acc))))))
                     (lines 0 0 nil))))
-      (if (member? file names) names (list file)))))
+      (if (member? file names string=?) names (list file)))))
 
 "Message for a buffer: `a`..`e` marked, in face `face`, alone."
 (define* mark-span (subr pure (int int face) command)

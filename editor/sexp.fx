@@ -13,6 +13,8 @@
                     (m-buffer (load-moduleof "buffer.fx" m-base))
                     (m-resolve (load-moduleof "resolve.fx" m-base m-buffer))
                     (m-syntax (load-moduleof "syntax.fx" m-base m-buffer m-resolve))))
+(hide (define kit-lists (load-module "../kit/lists.fx"))
+      (import kit-lists member?))
 
 
 "Where the top-level form `pos` is in starts: the last `(` at the start of a
@@ -395,9 +397,6 @@ argument: definitions, binders, and the forms with clauses."
         "receive" "delay" "delay-force" "dynamic-wind" "call-with-current-continuation" "call/cc"
         "with-exception-handler" "call-with-values"))
 
-(define* member-string? (subr spin (string strings) bool)
-  (lambda (s l) (and (pair? l) (or (string=? s (car l)) (member-string? s (cdr l))))))
-
 "The column of position `p` in `t` (characters since its line's start)."
 (define* column-at (subr spin (rope int) int)
   (lambda (t p) (- p (rope-line-start t (rope-line-of t p)))))
@@ -415,15 +414,14 @@ leave it (in a string)."
                     (cs (children t (+ o 1) ls))
                     (head (if (pair? cs) (rope-substring t (extract (car cs) start) (extract (car cs) end)) "")))
                (cond ((null? cs) (+ col 1))
-                     ((member-string? head body-forms) (+ col 2))
+                     ((member? head body-forms string=?) (+ col 2))
                      ;; An arm of a `tagcase` or `typecase`, `(tag x body …)`:
                      ;; its body by two.
                      ((and (pair? (cdr (extract st opens)))
                            (let* ((po (car (cdr (extract st opens))))
                                   (pcs (children t (+ po 1) o)))
                              (and (pair? pcs) (pair? (cdr pcs))
-                                  (member-string? (rope-substring t (extract (car pcs) start) (extract (car pcs) end))
-                                                  (list "tagcase" "typecase")))))
+                                  (member? (rope-substring t (extract (car pcs) start) (extract (car pcs) end)) (list "tagcase" "typecase") string=?))))
                       (+ col 2))
                      ;; A binding with a type, `(go (subr …)` and its value
                      ;; below: by two, as a definition's.

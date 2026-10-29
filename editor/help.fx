@@ -25,6 +25,8 @@
                     (m-calls (load-moduleof "calls.fx" m-base m-buffer m-resolve m-syntax m-sexp m-index m-view m-frame))
                     (m-process (load-moduleof "process.fx" m-base m-buffer m-resolve m-syntax m-sexp m-index m-view m-frame m-calls))
                     (m-files (load-moduleof "files.fx" m-base m-buffer m-resolve m-syntax m-sexp m-index m-view m-frame m-calls m-process))))
+(hide (define kit-lists (load-module "../kit/lists.fx"))
+      (import kit-lists every list-sort))
 
 (define-type command-doc (productof (name string) (doc string)))
 "What each command does, in a line or two, by its name."
@@ -48,13 +50,6 @@
     (letrec ((go (subr spin ((listof named acyclic)) strings)
                (lambda (cs) (if (null? cs) nil (cons (extract (car cs) name) (go (cdr cs)))))))
       (go (append (commands) (get more-commands))))))
-
-"`ss` sorted, as `string<?` orders them."
-(define* sorted (subr spin (strings) strings)
-  (lambda (ss)
-    (letrec ((insert (subr spin (string strings) strings)
-               (lambda (s ss) (if (or (null? ss) (string<? s (car ss))) (cons s ss) (cons (car ss) (insert s (cdr ss)))))))
-      (if (null? ss) nil (insert (car ss) (sorted (cdr ss)))))))
 
 "The words of `s`, split at its spaces."
 (define* words (subr spin (string) strings)
@@ -114,11 +109,6 @@ what it does."
                            (else (string-append "It is on " (joined ks ", ") ".\n")))
                      "\n" (if (string=? doc "") "Not documented." doc) "\n"))))
 
-"Whether `name` has each of `ws` in it."
-(define* has-each? (subr spin (string strings) bool)
-  (lambda (name ws)
-    (or (null? ws) (and (>= (string-search name (car ws) 0) 0) (has-each? name (cdr ws))))))
-
 "What *Apropos* says of commands `ns`: each name, its keys, and what it does."
 (define* apropos-text (subr (maxeff (read @ed) spin) (strings) string)
   (lambda (ns)
@@ -140,9 +130,9 @@ them, sorted, each with its keys and what it does, in *Apropos*."
                             (found (letrec ((go (subr spin (strings) strings)
                                                   (lambda (ns)
                                                     (cond ((null? ns) nil)
-                                                          ((has-each? (car ns) ws) (cons (car ns) (go (cdr ns))))
+                                                          ((every (lambda ((w string)) (>= (string-search (car ns) w 0) 0)) ws) (cons (car ns) (go (cdr ns))))
                                                           (else (go (cdr ns)))))))
-                                     (go (sorted (command-names))))))
+                                     (go (list-sort string<? (command-names))))))
                        (cond ((null? ws) (draw (with-echo f "No words to search for")))
                              ((null? found) (draw (with-echo f (string-append "No command matches " typed))))
                              (else (show-help fr f "*Apropos*" (apropos-text found))))))))))

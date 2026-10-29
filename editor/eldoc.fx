@@ -29,6 +29,8 @@
                     (m-process (load-moduleof "process.fx" m-base m-buffer m-resolve m-syntax m-sexp m-index m-view m-frame m-calls))
                     (m-files (load-moduleof "files.fx" m-base m-buffer m-resolve m-syntax m-sexp m-index m-view m-frame m-calls m-process))
                     (m-help (load-moduleof "help.fx" m-base m-buffer m-resolve m-syntax m-sexp m-index m-view m-frame m-calls m-process m-files))))
+(hide (define kit-lists (load-module "../kit/lists.fx"))
+      (import kit-lists member?))
 
 (define eldoc-on (ref bool @ed) (new #t))
 "A key was handled since eldoc last looked (main.fx's loop asks)."
@@ -79,7 +81,7 @@ else \"\"."
                       (let ((j (skip-space t next-end)))
                         (and (< j (rope-length t)) (not (char-in? (rope-ref t j) ")]")))))))
       (cond ((or (< name-end 0) (null? opens)) "")
-            ((member? (head (car opens)) (list "define" "define*")) (if more (typed ": ") ""))
+            ((member? (head (car opens)) (list "define" "define*") string=?) (if more (typed ": ") ""))
             ((string=? (head (car opens)) "define-type") (typed " = "))
             ;; First in its list: a binding, or a parameter -- in the list
             ;; of them that is the form's item `k` (0 its head).
@@ -94,7 +96,7 @@ else \"\"."
                      ((and (pair? up) (string=? (head (car up)) "vlambda") (item? (car up) 1 (car opens))) (typed ": "))
                      ((and (pair? up) (pair? (cdr up))
                            (let ((form (car (cdr up))))
-                             (or (and (member? (head form) (list "lambda" "plambda" "letrec")) (item? form 1 (car up)))
+                             (or (and (member? (head form) (list "lambda" "plambda" "letrec") string=?) (item? form 1 (car up)))
                                  (and (string=? (head form) "rlambda") (item? form 2 (car up))))))
                       (typed ": "))
                      (else ""))))
@@ -120,7 +122,7 @@ a standard name's type."
   (lambda (f current st at)
     (let* ((t (extract st text))
            (name (symbol-at t at)))
-      (if (or (string=? name "") (member? name special-forms) (member? name type-syntax)
+      (if (or (string=? name "") (member? name special-forms string=?) (member? name type-syntax string=?)
               (char-numeric? (string-ref name 0)))
           (sum none #u)
           (let* ((here (declared-type t at))

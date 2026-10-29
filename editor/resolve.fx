@@ -12,6 +12,8 @@
 ;;; binder is what M-. wants either way.
 (module-parameters ((m-base (load-moduleof "base.fx"))
                     (m-buffer (load-moduleof "buffer.fx" m-base))))
+(hide (define kit-lists (load-module "../kit/lists.fx"))
+      (import kit-lists member?))
 
 
 (define-type syns-a (listof syn acyclic))
@@ -57,9 +59,6 @@
           ((string=? (extract (car env) name) n) (sum found (car env)))
           (else (lookup n (cdr env))))))
 
-(define* member-name? (subr spin (string strings) bool)
-  (lambda (s l) (and (pair? l) (or (string=? s (car l)) (member-name? s (cdr l))))))
-
 "The names a definition-like form defines, onto `acc`: `(define x …)`,
 `(define* x …)`, `(define-type t …)` or `(define-type (t p …) …)`,
 `(define-effect e …)`, `(define-generative t …)`, a `define-datatype`'s type
@@ -69,7 +68,7 @@ and each variant's constructor, `define-rec`'s names, and `import`'s."
     (let* ((items (items-of form))
            (head (if (pair? items) (atom-symbol (car items)) ""))
            (rest (if (pair? items) (cdr items) nil)))
-      (cond ((member-name? head (list "define" "define*" "define-type" "define-effect" "define-generative"))
+      (cond ((member? head (list "define" "define*" "define-type" "define-effect" "define-generative") string=?)
              (if (pair? rest)
                  (tagcase (car rest)
                    (lst (is d a b) (if (pair? is) (binder-of (car is) acc) acc))
@@ -144,7 +143,7 @@ and each variant's constructor, `define-rec`'s names, and `import`'s."
     (lambda (head rest items env acc)
       (cond
         ;; Quoted data refers to nothing.
-        ((member-name? head (list "quote" "quasiquote")) acc)
+        ((member? head (list "quote" "quasiquote") string=?) acc)
         ;; `(lambda (p …) body …)`, `(rlambda r (p …) body …)`: the
         ;; parameters' types in `env`, the body in it and the parameters.
         ((string=? head "lambda")
@@ -181,7 +180,7 @@ and each variant's constructor, `define-rec`'s names, and `import`'s."
                (resolve-all (cdr rest) inner (resolve-binding-values bs inner acc)))
              acc))
         ;; `(letregion r body …)` and its kin: the region named.
-        ((member-name? head (list "letregion" "letrena" "letreap" "letfreeze"))
+        ((member? head (list "letregion" "letrena" "letreap" "letfreeze") string=?)
          (if (pair? rest) (resolve-all (cdr rest) (param-binder (car rest) env) acc) acc))
         ;; `(tagcase e (tag x body) (tag (x y) body) (else y body))`.
         ((string=? head "tagcase")
@@ -234,7 +233,7 @@ and each variant's constructor, `define-rec`'s names, and `import`'s."
         ((string=? head "extract") (if (pair? rest) (resolve-syn (car rest) env acc) acc))
         ((string=? head "sum") (resolve-all (second rest) env acc))
         ;; A definition: its name is a binder, not a use; the rest is walked.
-        ((member-name? head (list "define" "define*" "define-type" "define-effect" "define-generative"))
+        ((member? head (list "define" "define*" "define-type" "define-effect" "define-generative") string=?)
          (resolve-all (second rest) env acc))
         ((string=? head "define-datatype") acc)
         ((string=? head "define-rec")
@@ -279,7 +278,7 @@ everywhere in it."
 (define* loaded-file (subr spin (syn) string)
   (lambda (x)
     (let ((is (items-of x)))
-      (if (and (pair? is) (member-name? (atom-symbol (car is)) (list "load-module" "load-input"))
+      (if (and (pair? is) (member? (atom-symbol (car is)) (list "load-module" "load-input") string=?)
                (pair? (cdr is)))
           (tagcase (car (cdr is))
             (atom (d a b) (typecase d (string s s) (else y "")))
