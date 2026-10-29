@@ -9,9 +9,9 @@
 
 (module-parameters ((m-core (load-moduleof "core.fx"))))
 
-(define iabs-n (subr rf-st (int) int) (lambda (i) (if (< i 0) (- 0 i) i)))
-(define gcd (subr rf-st (int int) int)
-  (lambda (a b) (let ((a (iabs-n a)) (b (iabs-n b))) (if (= b 0) a (gcd b (remainder a b))))))
+(hide (define kit-numbers (load-module "../kit/numbers.fx"))
+      (import kit-numbers abs gcd integer-length exact-integer-sqrt))
+
 "n/d in lowest terms, an integer if d divides n (d is not 0)."
 (define make-ratio (subr rf-st (int int) rf-value)
   (lambda (n d)
@@ -29,13 +29,11 @@
   (lambda (n d)
     ;; Scale so that the quotient has 64 bits or more, divide exactly in
     ;; integers, and let int->f64 round; then scale back by powers of 2.
-    (let* ((neg (< n 0)) (n (iabs-n n))
-           (shift (- (+ 64 (bit-length d)) (bit-length n)))
+    (let* ((neg (< n 0)) (n (abs n))
+           (shift (- (+ 64 (integer-length d)) (integer-length n)))
            (q (if (> shift 0) (quotient (arithmetic-shift n shift) d) (quotient n (arithmetic-shift d (- 0 shift)))))
            (f (f64* (int->f64 q) (f64-expt 2.0 (int->f64 (- 0 shift))))))
       (if neg (f64-neg f) f))))
-(define bit-length (subr rf-st (int) int)
-  (lambda (n) (if (<= n 0) 0 (+ 1 (bit-length (arithmetic-shift n -1))))))
 
 "A flonum's exact value (it is finite)."
 (define f64->exact (subr rf-st (f64) rf-value)
@@ -136,13 +134,9 @@
       (int k (if (and (num-zero? base) (< k 0)) (sum real (f64/ 1.0 0.0)) (num-expt-int base k)))
       (else x (sum real (f64-expt (->flonum base) (->flonum n)))))))
 
-"The exact integer square root of n >= 0."
+"The exact integer square root of n >= 0; n itself, below 2."
 (define isqrt (subr rf-st (int) int)
-  (lambda (n)
-    (if (< n 2) n
-        (letrec ((go (subr rf-st (int) int)
-                   (lambda (x) (let ((y (quotient (+ x (quotient n x)) 2))) (if (>= y x) x (go y))))))
-          (go n)))))
+  (lambda (n) (if (< n 2) n (extract (exact-integer-sqrt n) s))))
 "sqrt of a non-negative number: exact where the root is."
 (define num-sqrt (subr rf-st (rf-value) rf-value)
   (lambda (v)

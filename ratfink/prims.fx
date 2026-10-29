@@ -22,6 +22,9 @@
                     (m-reader (load-moduleof "reader.fx" m-core m-numbers))
                     (m-machine (load-moduleof "machine.fx" m-core m-term m-value))))
 
+(hide (define kit-numbers (load-module "../kit/numbers.fx"))
+      (import kit-numbers gcd abs))
+
 ;;; ------------------------------------------------------------ the table
 
 "A primitive's procedure as defined: of the context, the call's source and
@@ -611,7 +614,7 @@ integers is taken one value at a time, in a join."
       (define-concrete! 'lcm (at-least 0)
         (lambda ((a rf-vals)) (ok (rf-int (letrec ((go (subr rf-st (rf-vals int) int)
                                                      (lambda (l acc) (if (null? l) acc
-                                                                         (let ((x (iabs-n (rf-int-of (car l)))))
+                                                                         (let ((x (abs (rf-int-of (car l)))))
                                                                            (go (cdr l) (if (or (= x 0) (= acc 0)) 0 (quotient (* acc x) (gcd acc x)))))))))
                                              (go a 1))))))
       (define-concrete! 'exact-integer-sqrt (exactly 1)

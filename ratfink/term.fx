@@ -16,7 +16,8 @@
 
 ;;; ------------------------------------------------------------ operators and sorts
 
-(define iabs (subr rf-st (int) int) (lambda (i) (if (< i 0) (- 0 i) i)))
+(hide (define kit-numbers (load-module "../kit/numbers.fx"))
+      (import kit-numbers abs))
 
 (define op-const int 0)
 (define op-not int 1)
@@ -544,8 +545,8 @@ for true or false."
 
 "SMT-LIB's div and mod: a = b*q + r with 0 <= r < |b|. Of choices of
 integers, the choice of each case's."
-(define int-mod (subr rf-st (int int) int) (lambda (a b) (modulo a (iabs b))))
-(define int-div (subr rf-st (int int) int) (lambda (a b) (quotient (- a (modulo a (iabs b))) b)))
+(define int-mod (subr rf-st (int int) int) (lambda (a b) (modulo a (abs b))))
+(define int-div (subr rf-st (int int) int) (lambda (a b) (quotient (- a (modulo a (abs b))) b)))
 "Whether a choice of integers has 0 among its cases."
 (define contains-zero? (subr rf-st (rf-value) bool)
   (lambda (b) (tagcase (integer-cases b) (some cs (tagcase (find-case 0 cs) (some k #t) (none u #f))) (none u #f))))
@@ -564,9 +565,9 @@ integers, the choice of each case's."
                   (none u (mk op-mod sort-int (list a b))))))))
 (define t-abs (subr rf-st (rf-value) rf-value)
   (lambda (a)
-    (cond ((rf-exact-integer? a) (rf-int (iabs (rf-int-of a))))
+    (cond ((rf-exact-integer? a) (rf-int (abs (rf-int-of a))))
           ((op? op-abs a) a)
-          (else (tagcase (combine-cases (lambda ((x int) (y int)) (iabs x)) #f a (rf-int 0))
+          (else (tagcase (combine-cases (lambda ((x int) (y int)) (abs x)) #f a (rf-int 0))
                   (some v v)
                   (none u (mk op-abs sort-int (list a))))))))
 
@@ -634,7 +635,7 @@ value (value-of k); memo, a table of the values of terms found so far."
             ;; SMT-LIB leaves a divisor of 0 to the model: any value will do.
             ((= op op-div) (if (= (rf-int-of b) 0) (rf-int 0) (t-div a b)))
             ((= op op-mod) (if (= (rf-int-of b) 0) (rf-int 0) (t-mod a b)))
-            (else (rf-int (iabs (rf-int-of a))))))))
+            (else (rf-int (abs (rf-int-of a))))))))
 
 "A term as a datum, for people: constants as (name-of k), ite as if."
 (define term->datum (subr rf-st (rf-value (subr rf-st (rf-value) rf-value)) rf-value)

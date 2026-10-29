@@ -12,6 +12,9 @@
 
 (module-parameters ((m-core (load-moduleof "core.fx")) (m-numbers (load-moduleof "numbers.fx" m-core))))
 
+(hide (define kit-numbers (load-module "../kit/numbers.fx"))
+      (import kit-numbers expt))
+
 ;;; ------------------------------------------------------------ places
 
 "Pairs to \"file:line\"."
@@ -76,15 +79,14 @@ all), then an exponent."
     (letrec ((go (subr rf-st (int int int bool) rf-value)
                ;; mantissa so far, digits after the point, in the fraction?
                (lambda (k m scale frac?)
-                 (if (>= k j) (make-ratio m (expt10 scale))
+                 (if (>= k j) (make-ratio m (expt 10 scale))
                      (let ((c (string-ref s k)))
                        (cond ((char=? c #\.) (go (+ k 1) m scale #t))
                              ((or (char=? c #\e) (char=? c #\E))
                               (let ((e (tagcase (parse-signed s (+ k 1) j) (some e e) (none u 0))))
-                                (if (>= e scale) (make-ratio (* m (expt10 (- e scale))) 1) (make-ratio m (expt10 (- scale e))))))
+                                (if (>= e scale) (make-ratio (* m (expt 10 (- e scale))) 1) (make-ratio m (expt 10 (- scale e))))))
                              (else (go (+ k 1) (+ (* m 10) (digit-value c 10)) (if frac? (+ scale 1) scale) frac?))))))))
       (go i 0 0 #f))))
-(define expt10 (subr rf-st (int) int) (lambda (k) (if (<= k 0) 1 (* 10 (expt10 (- k 1))))))
 (define parse-signed (subr rf-st (string int int) (sumof (none unit) (some int)))
   (lambda (s i j)
     (cond ((>= i j) (sum none #u))
