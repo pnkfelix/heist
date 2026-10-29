@@ -2920,3 +2920,41 @@ of `TODO.md` §141, working on my own.
   result's region `@sc` without saying `(read @sc)`: Heist's to add.
 - Heist's two cases are `tests/programs/regions/result-write-is-kept.fx`
   and `result-write-at-acyclic.fx` (`regions::masking_keeps_writes_to_the_results_regions`).
+
+### jitdebug's names: what costs, measured (2026-10-29)
+
+- Of an empty program's start (release, 29.9 ms), making no names at all
+  for the front end's 5,186 cached procedures saved 1.8 ms: 13.4 M
+  instructions and 84 page faults.
+- `string_into` finding a string's body at each character was half the
+  instructions (fixed: `fb87c52c`, about 0.4 ms).
+- Writing the names into one buffer shared by a flush's pieces, not a
+  `String` each (the user's question: could it borrow, and from what?),
+  saved nothing measurable (1.3 M instructions, 5 page faults, inside the
+  noise), so it was not kept. Heap strings are code points, not UTF-8,
+  so nothing can be borrowed as a `&str`; and the registry is the
+  process's, outliving any heap, so it cannot borrow from one either.
+- What is left is the pages: each name is read from the symbol and its
+  string in the mapped image, which nothing else at the start reads. Only
+  names made ahead of time and kept in the cache (option B: the code's
+  execute view at a fixed address, the debugger's objects in the cache)
+  would not read them.
+
+### A list nothing places is `acyclic` (2026-10-29, TODO §174)
+
+- **Heist's prototype, taken as written** (the user's), after a
+  measurement: the 892 test programs, Heist's, Kayak's stage 0.
+- **The cost, said plainly**: `(let ((p (cons 1 nil))) (set-cdr! p …))`
+  is refused; the list must say its region, `(the (pairof int (listof int
+  @heap) @heap) (cons 1 nil))`. The rule decides at the call, from the
+  `poly`'s type, which cannot see what the caller does next; none of the
+  code measured does it.
+- **Not done**: `(acyclic ?p)`, an open place. The user's idea, dropped
+  by the user once it was seen that the checkers have no region
+  variables past a call, and that covariance in lifetimes already lets
+  `(acyclic heap)` stand where `(acyclic p)` is wanted.
+- **Kept fresh**, as Heist's narrowing: continuations' regions (to be
+  masked), `ref`s' (the compilers' `no-escape`), bloblets', and any the
+  `poly` writes (the masking rule of the same day).
+- **Asked, not done yet**: the refusal of a write to such a list could
+  say why the list is frozen, and how to name its region.

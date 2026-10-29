@@ -3567,13 +3567,29 @@ Left, in order:
    stage 0 the same (cycles; 0.15% more instructions, the collector's
    compare). macOS copies the code still: an executable mapping of a file
    may want it signed there; to try on the Mac, and the static area's
-   mapping with it, which nothing has run there yet. Left of the original
-   item: the code's twice from the file, privately,
-   read+execute where it runs and read-only where the heap reads it (the
-   two never written, so they agree); the immutable data read-only; the
-   mutable data copied on write. Then the call-out pass goes too, where
-   the image's call-out map is this machine's (a hash of it in the
-   header), and `cross_all` and the symbol index are kept or made lazily.
+   mapping with it, which nothing has run there yet. The symbol index
+   made lazily too (2026-10-29): an image spliced into a heap of no
+   symbols has its symbols' names neither read nor hashed at the load,
+   but kept by their hashes (`image_symbols`, the symbol's own field) and
+   looked up when first asked for (`intern`, `interned`), compared in
+   place (`string_is`); and the immutable half given no crossing map,
+   which only a dirty card's scan reads. An empty program 36.0 ms to
+   33.5 ms, release; 8% fewer instructions. And no fixup visited where
+   nothing of the heap's stands for the image's (each is then where it was
+   made for): 32.5 ms. The splice is 3 ms now, of 13 when this item began.
+   Left: the code parts' starts, walked at the load (0.6 ms, every code
+   page's headers), which the image could carry, or a sweep and a minor
+   collection find lazily in the part's fixed start; but jitdebug's
+   registration of each cached code object (`note_cached_code`, 7 ms of
+   the start, the user's to decide) touches those pages anyway.
+   The interned symbols and their names laid out first in the immutable
+   half (`image_split_static`, the user's, 2026-10-29): the front end's
+   6,011 were on 1,604 of its 1,924 pages, and are on about 153. Measured,
+   51 page faults fewer and about 0.2 ms, not the 1,400 hoped: Linux maps
+   a file's pages around a fault (up to 16), so the scattered ones cost
+   some hundred faults, not one each. Not done yet (the user's: not yet):
+   the image carrying its sorted table of symbols by hash, so that the
+   splice reads none of the symbols at the load.
 5. **`.fasl`s** as segments of the same kind (§141 item 9), and
    `fixpt build`'s executables.
 `FIXPT_IMAGE_VERIFY=1` (to add) to check an image this executable wrote
@@ -3868,16 +3884,201 @@ read, check and keep in the binary at each use.
   60.3 s the run; where reading and checking the embedded sources is the
   cost is the front end's own build and `fasl`-less loads.
 
-## 172. URGENT: `convention.fx` compares characters, not one-character strings (the user's, 2026-10-29)
+## 173. `(nstring N)`, and a lint for a one-character string where a character would do (the user's, 2026-10-29)
 
-`cv-ch` (`src/convention.fx:27`) is `(substring t i (+ i 1))`: each test
-of a character allocates a string of it to compare with `" "`, `"("` or
-`")"` by `string=?`, several to a character (`cv-atom-end` up to three,
-`cv-read-items` two, `cv-read-at` more). Reading a convention's clauses is
-all allocation, and `modules/convention-read.fx`, collecting at every
-allocation, takes 60 s of its 63 s in that run. To do: `cv-ch` a
-character, `(string-ref t i)`, and its callers `char=?` against `#\space`,
-`#\(` and `#\)`, as the rest of the front end does (`char=?` 38 times in
-`src/*.fx`). `convention.fx` is a module of the front end's: its caches are
-made again once. Then measure that test again; and `why` in the test reads
-the clauses afresh at each of its four calls, which may want a look too.
+1. `(nstring N)`: a string whose length is known, as `(nlist T size)` is
+   a list's (`docs/fx26.md`, "Sizes"; the user wrote it `(nlistof T R
+   N)`): a natural or `finite`, a subtype of `string` that forgets its
+   size, `(string-length s)` of one its size, `substring` with sizes known
+   giving one, and `string-ref` of a `(nstring 1)` at 0 needing no check.
+   To settle: how it sits beside the strings at a region (`stringof`,
+   `regions/stringof-escapes.fx`, `regions/write-a-string.fx`), as
+   `nlist` is only of frozen lists.
+2. Explore, briefly, a lint for the anti-pattern §172 fixed: a string of
+   one character made only to be compared or tested (`(substring t i (+ i
+   1))` given to `string=?` against a one-character literal), where
+   `string-ref` and `char=?` would allocate nothing. With 1., the lint
+   would see `(nstring 1)` where it is made and where it is consumed.
+   Perhaps a fool's errand: it is worth it only where the making and the
+   consuming are near each other, within a module, as in `convention.fx`
+   (a module-local helper, `cv-ch`, and its callers), and how often that
+   is so in practice is not known; a survey of the FX-26 sources (the
+   front end, Kayak, Heist's) for `substring` of length one and
+   `string=?` with a one-character literal would say, before building it.
+
+## 175. `jit_lines::gdb_shows_the_frames_values` is sometimes early (found 2026-10-29)
+
+Run beside other tests, it once found the program in Rust code (a hash
+table's lookup, at the start) rather than in its native `spin`, and so
+"no line for `spin`"; alone it passed six times of six, with the change
+then made and without it. It attaches gdb after a fixed wait: waiting for
+the program to say it is spinning (a line it prints first), or retrying
+the attach until the native frame is there, would end it.
+
+## 176. Allocation as a cost the tools say, before it is slow (the user's, 2026-10-29)
+
+Many of the costs found lately were bad allocation patterns, each found
+only by measuring after the fact:
+- FX-26: `convention.fx` making a one-character string at each test of a
+  character (§172); `why` reading the clauses afresh at each call.
+- Rust: jitdebug comparing each piece with every other (n squared), and,
+  fixed, holding all 5,186 pieces at once and copying the rest of a list
+  off at each chunk (a thousand page faults); the splice making every
+  image symbol's name a `String` to hash it (§160 item 4); the collector
+  writing every field it scanned, moved or not.
+The root causes differ, but each is an allocation, or a write, out of
+proportion to the work. Wanted: feedback on that before it shows as time.
+
+(The user asked if "cyclomatic complexity" is the term. It counts paths
+through the control flow; what is meant here is a cost or resource-bound
+analysis, with allocation as the resource.)
+
+1. **FX-26: allocation as a parametric effect**, as Gifford's group
+   modelled time: Dornic, Jouvelot and Gifford, "Polymorphic time systems
+   for estimating program complexity" (LOPLAS 1992), time as an effect
+   with polymorphic time variables; Reistad and Gifford, "Static dependent
+   costs for estimating execution time" (LFP 1994), costs that depend on
+   the sizes of the arguments. FX-26 has the pieces: `(alloc r)` effects
+   per region already, and sizes (`nlist`'s, `(nat size)`, `confirm-length`;
+   `docs/research/sizes.md`). An effect that carries a count, in calls or
+   words (`(alloc r n)`, `n` a size expression such as `(length xs)` or
+   `(* 3 (length t))`), would say of `cv-read-items` that it allocates in
+   proportion to its text times the characters' tests, and of a
+   character test that it allocates at all. To find: what a size
+   expression over a recursion is (a sum, a bound), where it must be
+   given and where it can be inferred, and whether a coarse form (O(1),
+   O(n), more) is what helps, shown by `fixpt check` or the REPL.
+2. **FX-26, without types: a lint** for the shapes seen (a fresh
+   allocation consumed at once and dropped, inside a loop; `substring`
+   of one character compared; §173's `nstring`).
+3. **Rust: proactive feedback** in the tests rather than profiles after:
+   the allocator already counts (`fixpt_memmgmt::alloc_profile`,
+   `FIXPT_ALLOC_PROFILE=N` samples stacks); a test of the start of an
+   empty program could bound its allocations and page faults (as counts,
+   which are steady, not times, which are not), so that a change that
+   multiplies them fails where it is made; and the same for the per-step
+   checks (`scripts/image-check`).
+
+## 177. An empty program's start, by phase: to discuss with the user (2026-10-29)
+
+The user's: to talk over, as a whole, after Heist's requests (§178). An
+empty program (`fixpt --fx26-machine fx-regs-rsjit-nativecc eval FILE`
+of `0`), release, 29 ms; marks put at each phase's end (temporary, not
+kept), two runs within 0.5 ms of each other:
+
+| phase | ms | what might take it away |
+| --- | ---: | --- |
+| exec, the process's start and exit | ~1.5 | nothing |
+| the front end's image spliced | 2.7 | mapped already (§160); what is left walks it |
+| jitdebug, the cached code's names | 4.0 | option B: the debugger's objects in the cache, the execute view at a fixed address |
+| the Scheme prelude, evaluated | 3.0 | an image of it, as the front end's |
+| the FX-26 runtime | 0.5 | |
+| the rest of the CLI's `start()` | 3.5 | not yet split |
+| the front end's entries defined | 0.7 | |
+| the front end told the program's conventions (`check-conv-native!` and the like) | 1.5 | |
+| **the standard environment read by the FX-26 reader** (`standard26`, `read_standard`) | **7.6** | its syntax made once, with the front end's cache, kept there as a root |
+| the standard environment checked, with the form | 2.1 | the checker's state after it, kept: harder |
+| `0` parsed, compiled and run | 0.3 | |
+| the session dropped | 0.5 | |
+
+Page faults are no longer the lever (§160 item 4: Linux maps a file's
+pages around a fault, so the image costs some hundred, laid out as it
+is). What is left is work, most of it the same at every start.
+
+## 178. What each maker given a module pays to load (Heist's request, 2026-10-29)
+
+`heist/docs/requests/fixpt-module-type-per-dependent.md`. A maker given
+another, `(a (load-moduleof "a.fx" z))`, paid two costs at each load,
+again for every dependent:
+1. Done (2026-10-29): `parse::takes_modules_at` read a file whole to see
+   its first form (Heist's `fixpt-load-time.md`, item 1): it reads the
+   first form now. Heist's `bench/module-dependents.sh`, release: `src-80`
+   (a maker of 80 procedures) 6.47 ms a dependent to 3.00, the other cases
+   the same; Heist measured its combo 282 ms to 163 ms
+   (`parse::takes_modules_tests`).
+2. Open: the checker written in FX-26 (`check-more`) checks `a`'s module
+   type again for each dependent, on its `(%loaded …)` definition and at
+   each use: some 26 µs a distinct `poly` signature in it, a dependent
+   (`lib-80`, 3.0 ms a dependent). Identical signatures are shared
+   already, not one module's type across its dependents. Heist suggests
+   the type `(load-moduleof "a.fx" z)` stands for made and checked once a
+   file key and arguments; Heist hides such libraries meanwhile.
+   Measured (2026-10-29; counters on branch `measure-item2`,
+   `FIXPT_REGION_STATS=1`), 20 dependents against none:
+   - Of the added time, about half is the front end's FX-26 code (`perf`
+     with `FIXPT_PERF_MAP` and `FIXPT_IMAGE_NO_MAP`, §179).
+   - `k-type-made-by` (`check-read-made.fx`), making the type of a
+     `(load-moduleof …)`, runs twice a dependent, and each run makes
+     `a`'s module type afresh: `lib-80`, 402 types a call, 90% of all
+     the types the dependents add (16,080 of 17,800); `mono-80` 93%;
+     `same-80`, its signatures interned alike, 6 a call.
+   - The region walks (`k-regions-in`, for masking) miss the memo 3 times
+     a dependent in every case alike; what each costs is the fresh copy
+     it walks (`lib-80`: 1,135 nodes a dependent; `same-80`, 27). The walk
+     consults the memo only at its top, not for a type's parts, and adds
+     regions to a list by a linear search (quadratic in a type's regions).
+   So Heist's suggestion addresses the cause: the type a
+   `(load-moduleof "a.fx" args)` stands for made once a file key and
+   arguments, its type id reused, which the regions' memo then finds.
+   To settle first: whether a made type may be shared at all (what
+   `k-made-walk` makes fresh, binders or variables a use must not share),
+   and what the key is (the file, and the arguments as types or names).
+   Found (2026-10-29): nothing in `k-made-walk` must be fresh; it
+   substitutes the descriptions given for `poly` binders and the modules
+   named for parameters (`k-made-params`, `k-subst`). The copies are
+   substitution's: `k-subst-memo` (and the Rust checker's `subst_memo`)
+   copies every compound node it meets, a slot and a node each, keeping
+   only variables not in the map, selects and parameters not remapped, and
+   closed named data (`k-closed-named`, for names shown). `a`'s signatures
+   mention nothing given, and are copied whole. A prototype (branch
+   `subst-share`) keeping a node whose substituted parts are its own
+   shared 3,520 nodes and still copied 7,102: every list type is a cycle
+   (`ty-pair`), which comparison after the copy cannot see unchanged, and
+   the procedures, `poly`s and module around them change with it. No
+   faster. The user's suggestion is the way: each type's free
+   substitutables (variables by binder, and whether it holds a parameter,
+   a select or an application), kept by type id, and a substitution
+   returning a type at once whose free ones its map and parameter map do
+   not touch, cycle or not, unwalked. To settle: the summary kept only of
+   a type with no unbound unification variable (a bound one is a link,
+   so a summary may only shrink: "may change" is safe, "nothing free" of
+   an unbound variable is not); both checkers alike, though sharing
+   changes nothing either shows; and the region walk's linear-search set
+   (quadratic) while there.
+   Done (2026-10-29), in both checkers: a substitution gives back a type
+   none of whose free substitutables its maps touch, unwalked
+   (`k-subst-leaves?`, `Checker::subst_leaves`; the summaries `k-fv-walk`,
+   `Checker::fv_walk`, kept by type id only when nothing in them is
+   flagged: a select, a parameter's, an application or an unbound link,
+   which are made links in place to what they resolve to; forgotten with
+   the arena, at `k-reset` and `scratch`); the FX-26 region walk finds a
+   part's regions in the memo, and its set in a table. Types a dependent
+   makes, `lib-80`: 890 to 6. Heist's benchmark, a dependent: `lib-80`
+   3.03 ms to 1.91, `src-80` 3.00 to 1.96, `mono-80` 1.62 to 1.23
+   (`hidden-80`, the floor, 0.89). Kayak's stage 0 the same, 0.9% fewer
+   instructions. A type now shown by the name in scope it is, where the
+   copy was not (`bloblet/width-variable.fx`: "a one is expected here",
+   by the rule of `docs/fx26.md`'s abbreviations). Left: about 1 ms a
+   dependent over the floor, in the front end's anonymous procedures;
+   to attribute (§179 for names, and a map from a profile's source
+   numbers to files).
+
+## 179. `perf` names the front end's code again, mapped from the cache (the user's, 2026-10-29)
+
+Since the front end's code is mapped from the cache's file (§160 item 4,
+`ce9454f5`), `perf report` charges its samples to the file
+(`front-end-….img`) and names none of them: perf reads `/tmp/perf-PID.map`
+only for anonymous executable memory, and for a file-backed mapping looks
+for symbols in the file, which is no ELF. The map has the names
+(`FIXPT_PERF_MAP`, 5,197 of them); perf does not ask it. Found profiling
+Heist's §178; `FIXPT_IMAGE_NO_MAP=1` gives the names back, the code
+copied. Ways, to choose:
+1. Under `FIXPT_PERF_MAP`, copy the code rather than map it (anonymous,
+   so the map is read): trivial; a profile then measures some 12 ms more
+   of the start.
+2. perf's jitdump (`/tmp/jit-PID.dump`, `perf inject --jit`), each code
+   load with its address, name and bytes, made an ELF object a function:
+   to try whether it takes addresses within a file's mapping.
+3. The cache's code made findable by perf as a file of symbols: an ELF
+   object of the names at those addresses, where perf looks for that
+   mapping's file.
