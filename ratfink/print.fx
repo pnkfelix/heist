@@ -89,12 +89,14 @@
 
 ;;; ------------------------------------------------------------ characters, strings, symbols
 
-"What follows #\\ as Larceny writes `c`: its R7RS name, x and hex for
-another control or space character, else itself."
+"What follows #\\ as Larceny writes `c`: its R7RS name, or Larceny's
+(vtab, page), x and hex for another control or space character, else
+itself."
 (define char-text (subr rf-st (char) string)
   (lambda (c)
     (let ((name (char-name c)) (n (char->integer c)))
       (cond ((not (bool? name)) name)
+            ((= n 11) "vtab") ((= n 12) "page")
             ((or (< n 32) (and (>= n 128) (<= n 160)) (and (> n 160) (char-whitespace? c))) (string-append "x" (hex-string n)))
             (else (char->string c))))))
 (define write-char-string (subr rf-st (char) string) (lambda (c) (string-append "#\\" (char-text c))))

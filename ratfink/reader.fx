@@ -149,8 +149,8 @@ all), then an exponent."
   (lambda (n)
     (cond ((string=? n "space") 32) ((string=? n "newline") 10) ((string=? n "tab") 9)
           ((or (string=? n "nul") (string=? n "null")) 0) ((string=? n "alarm") 7)
-          ((string=? n "backspace") 8) ((or (string=? n "delete") (string=? n "rubout")) 127)
-          ((or (string=? n "escape") (string=? n "altmode")) 27) ((string=? n "linefeed") 10)
+          ((string=? n "backspace") 8) ((string=? n "delete") 127) ((string=? n "vtab") 11)
+          ((string=? n "escape") 27) ((string=? n "linefeed") 10)
           ((string=? n "page") 12) ((string=? n "return") 13)
           (else -1))))
 
