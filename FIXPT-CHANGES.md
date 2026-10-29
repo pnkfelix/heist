@@ -8,7 +8,20 @@ do it, and what it cost. Kayak will need the same changes later
 
 ## Base
 
-- Fixpt `main` at b2609b6a (2026-10-29), pulled from GitHub by Heist's
+- Fixpt `main` at 6505d8bb (2026-10-29), pulled from GitHub by Heist's
+  cc42544a (squash 8488d79f): images as tables of sections, a static
+  area in the heap that the front end's image is read into first, and a
+  write barrier by generation. After `fixpt prewarm` and
+  `bin/heist-compile all` (20.9 s, the .fasls an older Fixpt made
+  stale), all 131 tests pass. Heist has no edits of its own on it.
+  Start-up from `.fasl`s, best of 5, against b2609b6a measured the same
+  hour: an empty program 0.05 s (0.05 s); the editor 0.56 s (0.53 s);
+  s7st 0.90 s (0.88 s); the CFA's server 1.40 s (1.37 s); combo's server
+  0.30 s (0.29 s); ratfink on a one-proof FX-26 file 0.73 s (0.71 s).
+  The same, within noise, or a little slower: these commits are for
+  collections, and their own measure of start-up (an empty program,
+  50.6 ms to 49.1 ms) is below what these runs resolve.
+- Before: Fixpt `main` at b2609b6a (2026-10-29), pulled from GitHub by Heist's
   c2d66a71 (squash 769f4412): `fixpt prewarm`, which makes an
   executable's front-end caches before they are wanted (2.6 s and 3.1 s
   cold, after a build); a call-out's field is the call-out itself; a
