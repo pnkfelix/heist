@@ -7,7 +7,7 @@ snapshot, so it will go stale as either editor changes.
 - **Yank:** `~/Dev/Emacs/yank`, branch `main` at `98132c0`, read from
   that commit (`git archive`). heist-edit was ported from Yank's
   `cahoots` branch, so `main` may have commands `cahoots` never had.
-- **heist-edit:** Heist at `7e703634`.
+- **heist-edit:** Heist at `ec3505bf` (first written against `7e703634`; see "Since the first survey").
 
 ## How the lists were made
 
@@ -49,12 +49,37 @@ Of Yank's 197 commands:
 
 | Status | Count |
 | --- | --- |
-| same | 51 |
-| renamed | 11 |
-| partial | 24 |
-| missing | 111 |
+| same | 76 |
+| renamed | 30 |
+| partial | 13 |
+| missing | 78 |
 
-The keys differ for 18 of the 86 that heist-edit has in some form.
+The keys differ for 21 of the 119 that heist-edit has in some form.
+
+### Since the first survey
+
+The first survey (at `7e703634`) found 51 the same, 11 renamed, 24 partial
+and 111 missing. Since then heist-edit has gained:
+
+- **isearch as Yank's:** `DEL` takes back the last key, `C-g` takes back
+  only the failing part, a failed search wraps around, `C-s C-s` repeats
+  the last search, and case is ignored unless the text has an upper-case
+  letter. Also `C-w`, and regexps (`C-M-s`, `C-M-r`, `M-r`), from a port
+  of Yank's regexp engine (`editor/regexp.fx`).
+- **The kill ring:** kills in a row make one entry, and `M-y` cycles
+  through the ring.
+- **Indentation:** a line that starts with `(` is indented, and
+  distinguished arguments by four. The first survey said Scheme buffers
+  were not indented; they were, and that was wrong.
+- **The buffer menu**, Yank's whole: flags, `x`, `o`, `g`, `q`.
+- **dired**, Yank's whole: modes, sizes and times; marks and flags;
+  delete, rename, copy, make a directory. This needed Fixpt's new file
+  primitives (`FIXPT-CHANGES.md` F5).
+- **Lists:** `n`, `p`, `q` in *xref* and listings, and `quit-window`.
+  The first survey said `RET` in *xref* left the list open; it replaces
+  it in its window, so that was wrong too.
+- **`M-?`** lists a name's uses in *xref*, in another window.
+- **`C-c C-c`** in a Scheme buffer runs it in a fresh s7st.
 
 ### Missing: whole areas
 
@@ -67,16 +92,12 @@ The keys differ for 18 of the 86 that heist-edit has in some form.
   name.
 - **Keyboard macros:** `C-x (`, `C-x )`, `C-x e`.
 - **Replacing:** `query-replace`, `query-replace-regexp`,
-  `replace-string`, `replace-regexp`.
-- **Regular expressions anywhere.** That covers the regexp isearches and
-  `occur`.
-- **The kill ring beyond its newest entry:** `yank-pop`.
+  `replace-string`, `replace-regexp`. heist-edit now has a regexp
+  engine for them.
+- **`occur`.**
 - **Version control:** `vc-*`, `git-status` and its keys, `log-edit-*`,
   and diff mode.
 - **Recent files:** `recentf-open-files`.
-- **dired's file operations:** marks, deleting, renaming, copying,
-  making directories.
-- **The buffer menu's operations:** flags, saving, killing.
 - **Evaluation in the editor itself.** Yank evaluates Scheme in its own
   running image (`eval-expression`, `M-:`, `editor-repl`). heist-edit
   is compiled FX-26 and has no evaluator of its own; Scheme runs in s7st,
@@ -88,30 +109,20 @@ The keys differ for 18 of the 86 that heist-edit has in some form.
   heist-edit's CFA commands are a different set; see "Only in
   heist-edit" below.
 - **Smaller single commands:** `recenter` (`C-l`), `split-window-right`
-  (`C-x 3`), `quit-window`, `mark-sexp`, `indent-region`,
-  `async-shell-command`, `comint-bol`, `comint-send-eof`, and *shell*'s
-  input history.
+  (`C-x 3`), `mark-sexp`, `indent-region`, `async-shell-command`,
+  `comint-bol`, `comint-send-eof`, and *shell*'s input history.
 
 ### Present, but less
 
-- **isearch** has no case folding and doesn't wrap after a failure.
-  `C-s C-s` doesn't repeat the last search, and there is no `C-w` or
-  `M-r`.
-- **Kills in a row** each make their own kill-ring entry. Yank joins
-  them, so that `C-k C-k` yanks back as one piece.
-- **Indentation** covers FX-26 buffers only (`TAB`, `RET`). Yank's
-  covers Scheme.
-- **Listings and lists:**
-  - *Buffer List* has only `RET`;
-  - a dired listing has only `RET` and `g`;
-  - *xref*, the counterpart of Yank's *Definitions* and *Uses*
-    lists, has only `RET`, with no `n`, `p` or `q`.
+- **No counts**, as above.
 - **Scheme evaluation** (`C-x C-e`, `C-M-x`, `C-c C-r`, `C-c C-l`) runs
-  in s7st rather than in a Larceny inferior. There is no "run this file
-  fresh" (`scheme-run`).
-- **`M-?`** marks the name's uses in the buffer. Yank lists the
-  procedure's possible calls in *Uses*. heist-edit's `C-c r`
-  (`cfa-callers`) is closer to Yank's.
+  in s7st rather than in a Larceny inferior; `C-c C-l` runs the buffer's
+  forms, not the file, and imports no library.
+- **Completion** of names is s7st's, in Scheme buffers only; none in
+  FX-26 buffers.
+- ***shell*** has only `RET` and `C-c C-c`.
+- **`C-j`** finishes nothing in the minibuffer, and inserts nothing in a
+  buffer.
 
 ### Keys that differ
 
@@ -124,8 +135,7 @@ The keys differ for 18 of the 86 that heist-edit has in some form.
   - `M-<right>`, `M-<left>` (word motion);
   - `C-M-h` (`backward-kill-word`);
   - `C-c C-e` (send definition);
-  - `C-M-i` (complete);
-  - `f` and `e` in listings.
+  - `C-M-i` (complete).
 - **Keys heist-edit adds where Yank has none:**
   - `C-c c` for `compile`;
   - `q` in *Help* and *Apropos*;
@@ -133,8 +143,8 @@ The keys differ for 18 of the 86 that heist-edit has in some form.
 - **Global in heist-edit, Scheme mode only in Yank:**
   - `M-.`, `M-,` and `M-?` work in FX-26 and Scheme buffers alike. A
     Scheme buffer's names are resolved by s7st's analysis.
-  - `TAB` and `RET` are bound everywhere, but indent only in FX-26
-    buffers.
+  - `TAB` and `RET` are bound everywhere, and indent in FX-26 and
+    Scheme buffers.
 
 ## Command by command
 
@@ -145,14 +155,14 @@ The tables below go by area, in each Yank file's order.
 | Yank command | Yank keys | In heist-edit | heist-edit command | heist-edit keys | Notes |
 | --- | --- | --- | --- | --- | --- |
 | `self-insert-command` | — | partial | `self-insert-command` | — | Typing a character inserts it, but it is not an M-x command, and takes no count. |
-| `insert-newline` | `RET`, `C-j` | renamed (keys differ) | `newline` | `RET` | `newline` also indents the new line in FX-26 buffers. `C-j` is unbound. |
+| `insert-newline` | `RET`, `C-j` | renamed (keys differ) | `newline` | `RET` | `newline` also indents the new line in FX-26 and Scheme buffers. `C-j` is unbound. |
 | `open-line` | `C-o` | same | `open-line` | `C-o` |  |
 | `forward-char` | `C-f`, `<right>` | same | `forward-char` | `C-f`, `<right>` |  |
 | `backward-char` | `C-b`, `<left>` | same | `backward-char` | `C-b`, `<left>` |  |
 | `forward-word` | `M-f`, `C-right`, `M-right` | same (keys differ) | `forward-word` | `M-f` | `C-<right>` is `paredit-forward-slurp-sexp` in heist-edit; `M-<right>` is unbound. |
 | `backward-word` | `M-b`, `C-left`, `M-left` | same (keys differ) | `backward-word` | `M-b` | `C-<left>` is `paredit-forward-barf-sexp` in heist-edit; `M-<left>` is unbound. |
-| `next-line` | `C-n`, `<down>`, `n` (recent files), `n` (vc log), `n` (vc annotate) | same (keys differ) | `next-line` | `C-n`, `<down>` | The `n` keys are in Yank's list buffers, which heist-edit lacks. |
-| `previous-line` | `C-p`, `<up>`, `p` (recent files), `p` (vc log), `p` (vc annotate) | same (keys differ) | `previous-line` | `C-p`, `<up>` | The `p` keys are in Yank's list buffers, which heist-edit lacks. |
+| `next-line` | `C-n`, `<down>`, `n` (recent files), `n` (vc log), `n` (vc annotate) | same (keys differ) | `next-line` | `n` (*xref*), `n` (<listing>), `SPC` (<listing>), `n` (*Buffer List*), `SPC` (*Buffer List*), `C-n`, `<down>` | Also `n` in *Buffer List*, listings and *xref*. |
+| `previous-line` | `C-p`, `<up>`, `p` (recent files), `p` (vc log), `p` (vc annotate) | same | `previous-line` | `p` (*xref*), `p` (<listing>), `p` (*Buffer List*), `C-p`, `<up>` | Also `p` in *Buffer List*, listings and *xref*. |
 | `move-beginning-of-line` | `C-a`, `<home>` | same | `move-beginning-of-line` | `C-a`, `<home>` |  |
 | `move-end-of-line` | `C-e`, `<end>` | same | `move-end-of-line` | `C-e`, `<end>` |  |
 | `beginning-of-buffer` | `M-<` | same | `beginning-of-buffer` | `M-<` |  |
@@ -171,16 +181,16 @@ The tables below go by area, in each Yank file's order.
 | `negative-argument` | `M--` | missing | — | — |  |
 | `set-variable` | — | missing | — | — | heist-edit has no editor variables. |
 | `keyboard-quit` | `C-g` | same | `keyboard-quit` | `C-g` |  |
-| `indent-for-tab-command` | `TAB` (Scheme mode) | partial | `indent-for-tab-command` | `TAB` | Indents FX-26 buffers only; Yank's indents Scheme. Global in heist-edit. |
-| `newline-and-indent` | `RET` (Scheme mode) | partial | `newline` | `RET` | `RET` indents in FX-26 buffers, not in Scheme ones. |
+| `indent-for-tab-command` | `TAB` (Scheme mode) | same | `indent-for-tab-command` | `TAB` | Global in heist-edit: FX-26 and Scheme buffers, and *s7st*. |
+| `newline-and-indent` | `RET` (Scheme mode) | renamed | `newline` | `RET` | `RET` in every buffer; it indents in FX-26 and Scheme ones. |
 | `indent-region` | `C-M-\` (Scheme mode) | missing | — | — | `C-M-\` is unbound. |
 | `kill-region` | `C-w` | same | `kill-region` | `C-w` |  |
 | `kill-ring-save` | `M-w` | same | `kill-ring-save` | `M-w` |  |
-| `kill-line` | `C-k` | partial | `kill-line` | `C-k` | Consecutive kills are not joined into one kill-ring entry. |
-| `kill-word` | `M-d` | partial | `kill-word` | `M-d` | Consecutive kills are not joined; no count. |
-| `backward-kill-word` | `M-DEL`, `C-M-h` | partial (keys differ) | `backward-kill-word` | `M-DEL` | Consecutive kills are not joined. `C-M-h` is unbound. |
+| `kill-line` | `C-k` | same | `kill-line` | `C-k` |  |
+| `kill-word` | `M-d` | same | `kill-word` | `M-d` |  |
+| `backward-kill-word` | `M-DEL`, `C-M-h` | same (keys differ) | `backward-kill-word` | `M-DEL` | `C-M-h` is unbound. |
 | `yank` | `C-y` | same | `yank` | `C-y` |  |
-| `yank-pop` | `M-y` | missing | — | — | `M-y` is unbound: only the newest kill can be yanked. |
+| `yank-pop` | `M-y` | same | `yank-pop` | `M-y` |  |
 | `forward-sexp` | `C-M-f` | same | `forward-sexp` | `C-M-f` |  |
 | `backward-sexp` | `C-M-b` | same | `backward-sexp` | `C-M-b` |  |
 | `backward-up-list` | `C-M-u` | same | `backward-up-list` | `C-M-u` |  |
@@ -195,10 +205,10 @@ The tables below go by area, in each Yank file's order.
 
 | Yank command | Yank keys | In heist-edit | heist-edit command | heist-edit keys | Notes |
 | --- | --- | --- | --- | --- | --- |
-| `isearch-forward` | `C-s` | partial | `isearch-forward` | `C-s` | Case-sensitive, does not wrap after a failure, and `C-s C-s` does not repeat the last search. No `C-w` (add the next word) or `M-r` (regexp). |
-| `isearch-backward` | `C-r` | partial | `isearch-backward` | `C-r` | As for `isearch-forward`. |
-| `isearch-forward-regexp` | `C-M-s` | missing | — | — |  |
-| `isearch-backward-regexp` | `C-M-r` | missing | — | — |  |
+| `isearch-forward` | `C-s` | same | `isearch-forward` | `C-s` |  |
+| `isearch-backward` | `C-r` | same | `isearch-backward` | `C-r` |  |
+| `isearch-forward-regexp` | `C-M-s` | same | `isearch-forward-regexp` | `C-M-s` |  |
+| `isearch-backward-regexp` | `C-M-r` | same | `isearch-backward-regexp` | `C-M-r` |  |
 | `query-replace` | `M-%` | missing | — | — |  |
 | `replace-string` | — | missing | — | — |  |
 | `query-replace-regexp` | `C-M-%` | missing | — | — |  |
@@ -214,45 +224,45 @@ The tables below go by area, in each Yank file's order.
 | `switch-to-buffer` | `C-x b` | same | `switch-to-buffer` | `C-x b` |  |
 | `kill-buffer` | `C-x k` | same | `kill-buffer` | `C-x k` |  |
 | `save-buffers-kill-editor` | `C-x C-c` | renamed | `save-buffers-kill-terminal` | `C-x C-c` |  |
-| `list-buffers` | `C-x C-b` | partial | `list-buffers` | `C-x C-b` | *Buffer List* has only `RET`; none of Yank's buffer-menu keys. |
-| `buffer-menu-visit` | `RET` (buffer menu), `f` (buffer menu) | partial (keys differ) | `Buffer-menu-this-window` | `RET` (*Buffer List*) | Only `RET`, not `f`. |
-| `buffer-menu-visit-other-window` | `o` (buffer menu) | missing | — | — |  |
-| `buffer-menu-delete` | `d` (buffer menu), `k` (buffer menu) | missing | — | — |  |
-| `buffer-menu-delete-backward` | `C-d` (buffer menu) | missing | — | — |  |
-| `buffer-menu-save` | `s` (buffer menu) | missing | — | — |  |
-| `buffer-menu-unmark` | `u` (buffer menu) | missing | — | — |  |
-| `buffer-menu-unmark-backward` | `DEL` (buffer menu) | missing | — | — |  |
-| `buffer-menu-execute` | `x` (buffer menu) | missing | — | — |  |
-| `buffer-menu-next` | `n` (buffer menu), `SPC` (buffer menu), `<down>` (buffer menu) | missing | — | — |  |
-| `buffer-menu-previous` | `p` (buffer menu), `<up>` (buffer menu) | missing | — | — |  |
-| `buffer-menu-refresh` | `g` (buffer menu) | missing | — | — |  |
-| `buffer-menu-quit` | `q` (buffer menu) | missing | — | — |  |
+| `list-buffers` | `C-x C-b` | same | `list-buffers` | `C-x C-b` |  |
+| `buffer-menu-visit` | `RET` (buffer menu), `f` (buffer menu) | renamed | `Buffer-menu-this-window` | `RET` (*Buffer List*), `f` (*Buffer List*) |  |
+| `buffer-menu-visit-other-window` | `o` (buffer menu) | renamed | `Buffer-menu-other-window` | `o` (*Buffer List*) |  |
+| `buffer-menu-delete` | `d` (buffer menu), `k` (buffer menu) | renamed | `Buffer-menu-delete` | `d` (*Buffer List*), `k` (*Buffer List*) |  |
+| `buffer-menu-delete-backward` | `C-d` (buffer menu) | renamed | `Buffer-menu-delete-backwards` | `C-d` (*Buffer List*) |  |
+| `buffer-menu-save` | `s` (buffer menu) | renamed | `Buffer-menu-save` | `s` (*Buffer List*) |  |
+| `buffer-menu-unmark` | `u` (buffer menu) | renamed | `Buffer-menu-unmark` | `u` (*Buffer List*) |  |
+| `buffer-menu-unmark-backward` | `DEL` (buffer menu) | renamed | `Buffer-menu-backup-unmark` | `DEL` (*Buffer List*) |  |
+| `buffer-menu-execute` | `x` (buffer menu) | renamed | `Buffer-menu-execute` | `x` (*Buffer List*) |  |
+| `buffer-menu-next` | `n` (buffer menu), `SPC` (buffer menu), `<down>` (buffer menu) | renamed (keys differ) | `next-line` | `n` (*xref*), `n` (<listing>), `SPC` (<listing>), `n` (*Buffer List*), `SPC` (*Buffer List*), `C-n`, `<down>` | `<down>` is `next-line` everywhere. |
+| `buffer-menu-previous` | `p` (buffer menu), `<up>` (buffer menu) | renamed (keys differ) | `previous-line` | `p` (*xref*), `p` (<listing>), `p` (*Buffer List*), `C-p`, `<up>` | `<up>` is `previous-line` everywhere. |
+| `buffer-menu-refresh` | `g` (buffer menu) | renamed | `Buffer-menu-refresh` | `g` (*Buffer List*) |  |
+| `buffer-menu-quit` | `q` (buffer menu) | renamed | `quit-window` | `q` (*xref*), `q` (<listing>), `q` (*Buffer List*) |  |
 | `split-window-below` | `C-x 2` | same | `split-window-below` | `C-x 2` |  |
 | `split-window-right` | `C-x 3` | missing | — | — |  |
 | `other-window` | `C-x o` | same | `other-window` | `C-x o` |  |
-| `quit-window` | `q` (listings), `q` (dired), `q` (git status), `q` (recent files), `q` (vc log), `q` (vc annotate), `q` (diff view) | missing | — | — | *Help* and *Apropos* bind `q` to `delete-window`, which removes the window but does not bury the buffer. |
+| `quit-window` | `q` (listings), `q` (dired), `q` (git status), `q` (recent files), `q` (vc log), `q` (vc annotate), `q` (diff view) | same | `quit-window` | `q` (*xref*), `q` (<listing>), `q` (*Buffer List*) | Bound in *Buffer List*, listings and *xref*; *Help* and *Apropos* bind `q` to `delete-window`. |
 | `delete-window` | `C-x 0` | same (keys differ) | `delete-window` | `C-x 0`, `q` (*Help*), `q` (*Apropos*) | heist-edit also binds `q` in *Help* and *Apropos* to it. |
 | `delete-other-windows` | `C-x 1` | same | `delete-other-windows` | `C-x 1` |  |
 | `recentf-open-files` | `C-x C-r` | missing | — | — |  |
 | `recent-files-visit` | `RET` (recent files), `f` (recent files) | missing | — | — |  |
 | `recent-files-visit-other-window` | `o` (recent files) | missing | — | — |  |
-| `dired` | `C-x d` | partial | `dired` | `C-x d` | A listing with only `RET` and `g`: no marks, no deleting, renaming, copying or making directories. |
-| `dired-find-file` | `RET` (dired), `f` (dired), `e` (dired) | partial (keys differ) | `dired-find-file` | `RET` (<listing>) | Only `RET`, not `f` or `e`. |
-| `dired-find-file-other-window` | `o` (dired) | missing | — | — |  |
-| `dired-up-directory` | `^` (dired) | missing | — | — |  |
-| `dired-mark` | `m` (dired) | missing | — | — |  |
-| `dired-unmark` | `u` (dired) | missing | — | — |  |
-| `dired-unmark-backward` | `DEL` (dired) | missing | — | — |  |
-| `dired-flag-file-deletion` | `d` (dired) | missing | — | — |  |
-| `dired-unmark-all-marks` | `U` (dired) | missing | — | — |  |
-| `dired-do-delete` | `D` (dired) | missing | — | — |  |
-| `dired-do-flagged-delete` | `x` (dired) | missing | — | — |  |
-| `dired-do-rename` | `R` (dired) | missing | — | — |  |
-| `dired-do-copy` | `C` (dired) | missing | — | — |  |
-| `dired-create-directory` | `+` (dired) | missing | — | — |  |
-| `dired-next-line` | `n` (dired), `SPC` (dired), `<down>` (dired) | missing | — | — |  |
-| `dired-previous-line` | `p` (dired), `<up>` (dired) | missing | — | — |  |
-| `dired-revert` | `g` (dired) | renamed | `revert-buffer` | `g` (<listing>) | `g` in a listing. |
+| `dired` | `C-x d` | same | `dired` | `C-x d` | Its listing shows times in UTC: FX-26 has no time zone. |
+| `dired-find-file` | `RET` (dired), `f` (dired), `e` (dired) | same | `dired-find-file` | `RET` (<listing>), `f` (<listing>), `e` (<listing>) |  |
+| `dired-find-file-other-window` | `o` (dired) | same | `dired-find-file-other-window` | `o` (<listing>) |  |
+| `dired-up-directory` | `^` (dired) | same | `dired-up-directory` | `^` (<listing>) |  |
+| `dired-mark` | `m` (dired) | same | `dired-mark` | `m` (<listing>) |  |
+| `dired-unmark` | `u` (dired) | same | `dired-unmark` | `u` (<listing>) |  |
+| `dired-unmark-backward` | `DEL` (dired) | same | `dired-unmark-backward` | `DEL` (<listing>) |  |
+| `dired-flag-file-deletion` | `d` (dired) | same | `dired-flag-file-deletion` | `d` (<listing>) |  |
+| `dired-unmark-all-marks` | `U` (dired) | same | `dired-unmark-all-marks` | `U` (<listing>) |  |
+| `dired-do-delete` | `D` (dired) | same | `dired-do-delete` | `D` (<listing>) |  |
+| `dired-do-flagged-delete` | `x` (dired) | same | `dired-do-flagged-delete` | `x` (<listing>) |  |
+| `dired-do-rename` | `R` (dired) | same | `dired-do-rename` | `R` (<listing>) |  |
+| `dired-do-copy` | `C` (dired) | same | `dired-do-copy` | `C` (<listing>) |  |
+| `dired-create-directory` | `+` (dired) | same | `dired-create-directory` | `+` (<listing>) |  |
+| `dired-next-line` | `n` (dired), `SPC` (dired), `<down>` (dired) | renamed (keys differ) | `next-line` | `n` (*xref*), `n` (<listing>), `SPC` (<listing>), `n` (*Buffer List*), `SPC` (*Buffer List*), `C-n`, `<down>` | `<down>` is `next-line` everywhere. |
+| `dired-previous-line` | `p` (dired), `<up>` (dired) | renamed (keys differ) | `previous-line` | `p` (*xref*), `p` (<listing>), `p` (*Buffer List*), `C-p`, `<up>` | `<up>` is `previous-line` everywhere. |
+| `dired-revert` | `g` (dired) | same | `dired-revert` | `g` (<listing>) |  |
 
 ### Minibuffer and help
 
@@ -280,7 +290,7 @@ The tables below go by area, in each Yank file's order.
 | `comint-bol` | `C-a` (comint) | missing | — | — |  |
 | `comint-interrupt-subjob` | `C-c C-c` (comint) | same | `comint-interrupt-subjob` | `C-c C-c` (*shell*) | Bound in *shell* only. |
 | `comint-send-eof` | `C-c C-d` (comint) | missing | — | — |  |
-| `shell` | — | same | `shell` | — | Has `RET` and `C-c C-c` only: no history, `comint-bol` or `C-c C-d`. |
+| `shell` | — | partial | `shell` | — | Has `RET` and `C-c C-c` only: no history, `comint-bol` or `C-c C-d`. |
 | `compile` | — | same (keys differ) | `compile` | `C-c c` | heist-edit adds `C-c c`; Yank has no key. |
 | `grep` | — | same | `grep` | — |  |
 | `recompile` | — | same (keys differ) | `recompile` | `g` (*compilation*), `g` (*grep*) | `g` in *compilation* and *grep*; Yank's `g` there is `listing-again`. |
@@ -292,10 +302,10 @@ The tables below go by area, in each Yank file's order.
 | `compilation-previous-error` | `p` (listings) | missing | — | — |  |
 | `occur` | — | missing | — | — |  |
 | `listing-again` | `g` (listings) | partial | `recompile` | `g` (*compilation*), `g` (*grep*) | `g` reruns the command in *compilation* and *grep*. There is no *Occur* to search again. |
-| `places-visit` | `RET` (places) | renamed | `xref-visit` | `RET` (*xref*) | *xref* lists places as Yank's *Definitions* and *Uses* do; `RET` visits but does not close the list. |
-| `places-next` | `n` (places), `<down>` (places) | missing | — | — | No `n` in *xref*. |
-| `places-previous` | `p` (places), `<up>` (places) | missing | — | — | No `p` in *xref*. |
-| `places-quit` | `q` (places) | missing | — | — | No `q` in *xref*. |
+| `places-visit` | `RET` (places) | renamed | `xref-visit` | `RET` (*xref*) | heist-edit's *Definitions* and *Uses* are one list, *xref*. |
+| `places-next` | `n` (places), `<down>` (places) | renamed (keys differ) | `next-line` | `n` (*xref*), `n` (<listing>), `SPC` (<listing>), `n` (*Buffer List*), `SPC` (*Buffer List*), `C-n`, `<down>` | `n` in *xref*. |
+| `places-previous` | `p` (places), `<up>` (places) | renamed (keys differ) | `previous-line` | `p` (*xref*), `p` (<listing>), `p` (*Buffer List*), `C-p`, `<up>` | `p` in *xref*. |
+| `places-quit` | `q` (places) | renamed | `quit-window` | `q` (*xref*), `q` (<listing>), `q` (*Buffer List*) | `q` in *xref*. |
 
 ### Version control
 
@@ -333,7 +343,7 @@ The tables below go by area, in each Yank file's order.
 | `scheme-interaction-mode` | — | missing | — | — | heist-edit has no mode commands; a buffer's mode comes from its file or buffer name. |
 | `eval-print-last-sexp` | `C-j` (Scheme Interaction) | missing | — | — |  |
 | `find-definition` | `M-.` (Scheme mode) | renamed | `xref-find-definitions` | `M-.` | Global in heist-edit, in FX-26 and Scheme buffers. A name with several definitions is not listed: heist-edit goes to one. |
-| `find-uses` | `M-?` (Scheme mode) | partial | `xref-find-references` | `M-?` | Yank lists the calls of a procedure in *Uses*; heist-edit marks the name's uses in the buffer (`M-n`/`M-p` visit them). `cfa-callers` (`C-c r`) lists callers in *xref*, as Yank does. |
+| `find-uses` | `M-?` (Scheme mode) | renamed | `xref-find-references` | `M-?` | Lists a name's uses in *xref*, and marks them for `M-n`/`M-p`. Yank lists where a procedure may be called, by its flow analysis; heist-edit's `C-c r` (`cfa-callers`) does that. |
 | `pop-definition-stack` | `M-,` (Scheme mode) | renamed | `xref-go-back` | `M-,` |  |
 | `complete-symbol` | `C-M-i` (Scheme mode), `M-TAB` (Scheme mode) | partial (keys differ) | `s7st-complete` | `TAB` (*s7st*), `M-TAB` (*s7st*), `M-TAB` (<scheme>) | In Scheme buffers on `M-TAB`, from s7st's top level. No completion in FX-26 buffers, and `C-M-i` is unbound. |
 | `eval-input-mode` | — | missing | — | — | heist-edit has no mode commands; a buffer's mode comes from its file or buffer name. |
@@ -352,7 +362,7 @@ The tables below go by area, in each Yank file's order.
 | Yank command | Yank keys | In heist-edit | heist-edit command | heist-edit keys | Notes |
 | --- | --- | --- | --- | --- | --- |
 | `run-scheme` | — | partial | `run-scheme` | — | Shows *s7st*, heist-edit's s7st REPL, rather than starting a Larceny. |
-| `scheme-run` | `C-c C-c` (Scheme mode) | missing | — | — | Nothing runs a file in a fresh inferior. `s7st-eval-buffer` loads it into the running one. |
+| `scheme-run` | `C-c C-c` (Scheme mode) | renamed | `s7st-run` | `C-c C-c` (<scheme>) | In s7st, started afresh. |
 | `scheme-send-definition` | `C-M-x` (Scheme mode), `C-c C-e` (Scheme mode) | renamed (keys differ) | `s7st-eval-defun` | `C-M-x` (<scheme>) | Only `C-M-x`, not `C-c C-e`. Shows the value in the echo area. |
 | `scheme-send-region` | `C-c C-r` (Scheme mode) | renamed | `s7st-eval-region` | `C-c C-r` (<scheme>) |  |
 | `scheme-load-file` | `C-c C-l` (Scheme mode) | partial (keys differ) | `s7st-eval-buffer` | `C-c C-b` (<scheme>), `C-c C-l` (<scheme>) | Runs the buffer's forms, not the file, and imports no library. Also on `C-c C-b`, which is Yank's `scheme-toggle-breakpoint`. |
@@ -401,14 +411,14 @@ These commands have no Yank counterpart:
 - **FX-26's checker:** `type-at-point` `C-c t`, and `eldoc-mode`, which
   shows types as point moves.
 - **Uses of a name:** `next-use` `M-n` and `previous-use` `M-p`, which
-  visit the uses `M-?` marked.
+  visit the uses `M-?` marked; `xref-mark-references`, the marking alone.
 - **Help:**
   - `apropos` and `apropos-command` `C-h a`;
   - `where-is` `C-h w`;
   - `help` and `help-for-help` `C-h ?`, `C-h C-h`;
   - `describe-function` `C-h f`.
-- **Files:** `save-some-buffers` `C-x s`, and `list-directory`
-  `C-x C-d`.
+- **Files:** `save-some-buffers` `C-x s`, `list-directory` `C-x C-d`,
+  and `revert-buffer`.
 - **s7st's REPL:**
   - `s7st` and `run-s7st`;
   - `s7st-send-input`, `s7st-interrupt`;
