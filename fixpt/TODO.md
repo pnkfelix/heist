@@ -3263,6 +3263,13 @@ with `#f` instead of lacking a primitive. For the user to decide.
 
 ## 132. A `pselect` arm for a process (Heist's request, 2026-10-26)
 
+**Done in Heist's copy** (its `FIXPT-CHANGES.md` F6, 2026-10-30): arms
+`((process-output p) text …)` and `((process-exit p) how …)`, events 46-51
+in `sched.rs`, a wake pipe the reader threads and a thread per process
+(`waitid` with `WNOWAIT`) write to, which the scheduler polls with the
+standard input; and `process-exit`, how a process ended. What follows is
+the request as it was.
+
 `(io process)` landed (`DONE.md` §132), but a program cannot wait for a
 process's output or exit: Heist's editor polls every 50 ms while one
 runs. An arm, as for `(read-byte)`, needs a waker list per process in

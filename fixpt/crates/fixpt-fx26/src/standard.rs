@@ -265,6 +265,10 @@ pub const ENTRIES: &[(&str, &str)] = &[
     ("process-write", "(subr (io process) (int string) (sumof (done unit) (failed io-error)))"),
     ("process-close-input", "(subr (io process) (int) unit)"),
     ("process-signal", "(subr (io process) (int int) unit)"),
+    // Heist's (`FIXPT-CHANGES.md` F6): how a process ended, waiting until it
+    // has; a `pselect` arm `((process-exit p) how …)` waits for that and its
+    // output all taken, one `((process-output p) text …)` for its output.
+    ("process-exit", "(subr (io process) (int) (sumof (exited int) (signalled int) (unknown unit)))"),
     // Heist's (`FIXPT-CHANGES.md` F5): files and directories, as SRFI 170
     // and R7RS name them. What a path is, a symbolic link not followed: its
     // kind, its size in bytes, when last modified (seconds since the epoch),
@@ -658,6 +662,9 @@ pub const ENTRIES: &[(&str, &str)] = &[
     ("%processes:mailbox-event", "(poly ((m type) (r place)) (subr pure ((inbox m r)) (event (receive r))))"),
     ("%processes:clock-event", "(subr pure (i64) (event (io clock)))"),
     ("%processes:stdin-event", "(subr pure (unit) (event (io stdin)))"),
+    // Heist's F6: a process's output, and its end.
+    ("%processes:process-output-event", "(subr pure (int) (event (io process)))"),
+    ("%processes:process-exit-event", "(subr pure (int) (event (io process)))"),
     (
         "%processes:or-event",
         "(poly ((e1 effect) (e2 effect)) (subr pure ((event e1) (event e2)) (event (maxeff e1 e2))))",

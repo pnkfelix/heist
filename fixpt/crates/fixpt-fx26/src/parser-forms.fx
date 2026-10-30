@@ -234,11 +234,14 @@
 ;; What `pselect` is short of, said.
 (define select-usage string
   (string-append "`(pselect ((icell-get i-cell) name body …) ((receive mailbox) name body …) "
-                 "((sleep-until time) name body …) ((read-byte) name body …) …)`"))
+                 "((sleep-until time) name body …) ((read-byte) name body …) "
+                 "((process-output process) name body …) "
+                 "((process-exit process) name body …) …)`"))
 (define select-arm-usage string
   (string-append "a `pselect` arm is `((icell-get i-cell) name body …)`, "
-                 "`((receive mailbox) name body …)`, `((sleep-until time) name body …)` "
-                 "or `((read-byte) name body …)`"))
+                 "`((receive mailbox) name body …)`, `((sleep-until time) name body …)`, "
+                 "`((read-byte) name body …)`, `((process-output process) name body …)` "
+                 "or `((process-exit process) name body …)`"))
 ;; The event of a `pselect` arm whose wait is named `w`, or "" if none.
 (define wait-event (->* (symbol) string)
   (lambda (w)
@@ -246,6 +249,8 @@
           ((symbol=? w 'receive) "mailbox-event")
           ((symbol=? w 'sleep-until) "clock-event")
           ((symbol=? w 'read-byte) "stdin-event")
+          ((symbol=? w 'process-output) "process-output-event")
+          ((symbol=? w 'process-exit) "process-exit-event")
           (else ""))))
 ;; How many items a `pselect` arm's wait named `w` has: `(read-byte)` one.
 (define wait-length (->* (symbol) int) (lambda (w) (if (symbol=? w 'read-byte) 1 2)))

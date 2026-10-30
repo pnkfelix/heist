@@ -2950,6 +2950,17 @@ prims! {
         let r = std::fs::copy(&from, &to).map(|_| ());
         Ok(fx26_io_result(rt, r))
     });
+    // How a process ended (Heist's F6), waiting until it has, as `read-byte`
+    // waits: in a `pselect`'s arm `((process-exit p) how …)`, at once.
+    "%fx26-process-exit", 1, Some(1), simple!(|rt, a| {
+        use crate::world::ProcessStatus as S;
+        let p = int(rt, a[0])?;
+        Ok(match rt.world.process_exit(p) {
+            S::Exited(c) => fx26_sum(rt, "exited", Value::fixnum(c as i64)),
+            S::Signalled(c) => fx26_sum(rt, "signalled", Value::fixnum(c as i64)),
+            S::Running | S::Unknown => fx26_sum(rt, "unknown", Value::UNIT),
+        })
+    });
 }
 
 /// Promise states. `[state, payload]`.

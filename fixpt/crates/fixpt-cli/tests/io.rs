@@ -111,6 +111,25 @@ fn files_inspected_copied_renamed_deleted() {
     }
 }
 
+/// A process waited for (Heist's `FIXPT-CHANGES.md` F6): a `pselect` with
+/// arms for its output and its end, which comes after all its output; and
+/// `process-exit` alone, the output taken after.
+#[test]
+fn a_process_waited_for() {
+    for (m, (status, out, err)) in on_every_machine("process-wait.fx") {
+        assert_eq!((status, out.as_str()), (Some(0), "one|two|exited 3; exited 4, then late|\n"), "{m}: {err}");
+    }
+}
+
+/// A task waits for a process while another ticks on the clock: neither
+/// keeps the other from running.
+#[test]
+fn a_task_waits_for_a_process_while_another_runs() {
+    for (m, (status, out, err)) in on_every_machine("process-tasks.fx") {
+        assert_eq!((status, out.as_str()), (Some(0), "out\nend 5\n"), "{m}: {err}");
+    }
+}
+
 /// The program's own arguments after `--`, an empty one too; and a sleep
 /// on the clock, which the clock then shows has passed.
 #[test]

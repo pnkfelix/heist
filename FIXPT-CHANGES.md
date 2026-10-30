@@ -474,6 +474,61 @@ Still open in Fixpt's `TODO.md`:
   deleted with what is in it (a program does that by walking it).
 - **Kayak will need:** the seven primitives over its own runtime.
 
+### F6. A task waits for a process: `pselect` arms for its output and its end (language, primitive)
+
+- **Needed for:** the editor's processes (M-x compile, grep, shell, s7st
+  and the CFA's servers), which it polled every 50 ms while one ran; and
+  running a command and waiting for it without stopping the other tasks.
+  Fixpt's `TODO.md` §132, Heist's own request after F4.
+- **What changed:**
+  - **Two `pselect` arms:** `((process-output p) text body …)`, ready
+    once process `p` has output to take, `text` what `process-output`
+    gives; `((process-exit p) how body …)`, ready once it has ended and
+    all its output has been taken, so that an arm for the output sees all
+    of it before the end, `how` what `process-exit` gives. Both parsers
+    (`processes.rs`, `parser-forms.fx`), and both checkers' types for the
+    events, `(event (io process))` (`standard.rs`, `check-env.fx`).
+  - **A primitive:** `process-exit : (subr (io process) (int) (sumof
+    (exited int) (signalled int) (unknown unit)))`, how a process ended,
+    waiting until it has (as `read-byte` waits, no task running
+    meanwhile); its output need not have been taken. In an arm, at once.
+  - **The scheduler** (`sched.rs`): events 46–48 (output ready, a waker
+    given, taken back) and 49–51 (ended); two lists of `(p . waker)` in
+    its state; `timers_wait` sleeps on the processes too, and runs the
+    wakers of those that are ready.
+  - **The runtime** (`world.rs`, `tty.rs`): a wake pipe, made with the
+    first process, neither end blocking; each process's reader thread
+    writes a byte to it after each read and at the end, and a thread of
+    its own waits for its exit without reaping it (`waitid`, `WNOWAIT`)
+    and writes one too. The scheduler `poll`s the pipe beside the
+    standard input, with the earliest deadline, then empties it; who is
+    ready it asks the processes, not the pipe.
+  - **The library** (`processes.fx`): `process-output-event`,
+    `process-exit-event`.
+  - **Names elsewhere:** `lower.rs`, `debts.rs`, `eval-prims.fx`,
+    `docs/fx26.md` (`pselect`, the table), `TODO.md` §132.
+  - **Regenerated:** `standard.fx`, `native-direct-x64-layout.fx`
+    (`process-exit` is primitive 529, after F5's).
+- **Why not a library:** a task can wait only for what the scheduler can
+  be woken by; nothing woke it for a process.
+- **Machines covered:** one of each kind, `fixpt-cli/tests/io.rs`:
+  `a_process_waited_for` (`process-wait.fx`: output, then the end, a
+  deadline beside; `process-exit` alone) and
+  `a_task_waits_for_a_process_while_another_runs` (`process-tasks.fx`).
+  Both checkers agree on both. A second's wait for a process costs 0.01 s
+  of CPU: it sleeps. Also run: `fixpt-runtime`, `fixpt-tidy`, all of
+  `fixpt-cli`, and `fixpt-fx26`'s `processes`, `checker`, `evaluator`,
+  `compiler` and `layout`. Not Fixpt's whole suite.
+- **Found, not ours:** `fixpt-fx26`'s `processes` tests fail on this
+  128-core machine with "no native slots left" (`fixpt-native`,
+  `NATIVE_SLOTS`), with or without F6: run with the default 128 test
+  threads, their sessions together take more slots than there are. With
+  `--test-threads=1` all 34 pass.
+- **Not done:** a process's standard error apart from its output; an arm
+  for its input being writable.
+- **Kayak will need:** the two arms, and an event for each in its
+  scheduler.
+
 Each entry takes this form:
 
 ### Fn. Title (library | primitive | language)

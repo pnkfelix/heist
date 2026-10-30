@@ -531,6 +531,12 @@
       (prim! 'process-signal
              (lambda (xs)
                (begin (process-signal (as-int (ev-arg xs 0)) (as-int (ev-arg xs 1))) the-unit)))
+      (prim! 'process-exit
+             (lambda (xs)
+               (tagcase (process-exit (as-int (ev-arg xs 0)))
+                 (exited c (the val (o-sum 'exited (the val c))))
+                 (signalled c (the val (o-sum 'signalled (the val c))))
+                 (unknown u (the val (o-sum 'unknown the-unit))))))
       ;; Heist's (`FIXPT-CHANGES.md` F5).
       (prim! 'file-info
              (lambda (xs)

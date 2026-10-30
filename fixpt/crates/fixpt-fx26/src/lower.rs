@@ -228,6 +228,7 @@ pub const STANDARD: &[(&str, &str, bool)] = &[
     ("process-write", "%fx26-process-write", true),
     ("process-close-input", "%fx26-process-close-input", true),
     ("process-signal", "%fx26-process-signal", true),
+    ("process-exit", "%fx26-process-exit", true),
     ("file-info", "%fx26-file-info", true),
     ("read-symlink", "%fx26-read-symlink", true),
     ("delete-file", "%fx26-delete-file", true),
