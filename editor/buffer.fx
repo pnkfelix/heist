@@ -7,6 +7,8 @@
 ;;; run in a turn of the buffer's: a procedure from the buffer to the
 ;;; buffer after it, what to do, and a message for the echo area.
 (module-parameters ((m-base (load-moduleof "base.fx"))))
+(hide (define kit-lists (load-module "../kit/lists.fx"))
+      (import kit-lists list-ref))
 
 "What a party outside the text (the syntax actor) knows of a revision of
 it: faces for stretches of the text, the definitions it makes, and a
@@ -144,7 +146,39 @@ the echo area (\"\" for none)."
 read it in theirs."
 (define kill-ring (ref strings @ed) (new nil))
 
-(define* kill-push (subr pure (string) cmd)
+"Where the last kill (or yank) left its buffer: its name, revision and
+point. A kill that finds its buffer as the last one left it -- nothing
+changed, point not moved -- adds to that kill's entry, as Yank's kills in
+a row do; M-y finds it as the last yank left it."
+(define-type left (productof (name string) (revision int) (point int)))
+(define last-kill (ref left @ed) (new (product (name "") (revision -1) (point -1))))
+"The last yank: where it left its buffer, where its text starts, and how
+far back in the ring that text was."
+(define last-yank (ref (productof (left left) (start int) (index int)) @ed)
+  (new (product (left (product (name "") (revision -1) (point -1))) (start 0) (index 0))))
+
+(define* left-as? (subr pure (left buffer) bool)
+  (lambda (l b) (and (string=? (extract l name) (extract b name)) (= (extract l revision) (extract b revision))
+                     (= (extract l point) (extract b point)))))
+(define* left-by (subr pure (buffer) left)
+  (lambda (b) (product (name (extract b name)) (revision (extract b revision)) (point (extract b point)))))
+
+"Text `s` killed from `b`, leaving `b2`: a new entry on the kill ring, or,
+right after another kill, added to its entry (before it, if `before`: a
+kill backward)."
+(define* kill-push (subr turn-eff (buffer buffer string bool) cmd)
+  (lambda (b b2 s before)
+    (let ((join (left-as? (get last-kill) b)))
+      (lambda ()
+        (let ((ring (get kill-ring)))
+          (begin
+            (set kill-ring (if (and join (pair? ring))
+                               (cons (if before (string-append s (car ring)) (string-append (car ring) s)) (cdr ring))
+                               (cons s ring)))
+            (set last-kill (left-by b2))))))))
+
+"Text `s` put on the kill ring as a new entry, not a kill (M-w)."
+(define* kill-new (subr pure (string) cmd)
   (lambda (s) (lambda () (set kill-ring (cons s (get kill-ring))))))
 
 ;;; ------------------------------------------------------------ commands
@@ -265,9 +299,8 @@ long enough."
              (from (min p q)) (to (max p q)))
         (if (= from to)
             (say b (if (> dir 0) "End of buffer" "Beginning of buffer"))
-            (product (buffer (with-text b (rope-delete t from to) from))
-                     (cmds (list (kill-push (rope-substring t from to))))
-                     (message "")))))))
+            (let ((b2 (with-text b (rope-delete t from to) from)))
+              (product (buffer b2) (cmds (list (kill-push b b2 (rope-substring t from to) (< dir 0)))) (message ""))))))))
 
 "C-o: a newline after point, point staying."
 (define* open-line (subr pure () command)
@@ -313,9 +346,8 @@ long enough."
         (if (< m 0)
             (say b "The mark is not set now, so there is no region")
             (let ((from (min m p)) (to (max m p)))
-              (product (buffer (with-mark (with-text b (rope-delete (extract b text) from to) from) from))
-                       (cmds (list (kill-push (rope-substring (extract b text) from to))))
-                       (message ""))))))))
+              (let ((b2 (with-mark (with-text b (rope-delete (extract b text) from to) from) from)))
+                (product (buffer b2) (cmds (list (kill-push b b2 (rope-substring (extract b text) from to) #f))) (message "")))))))))
 
 "The region's text copied to the kill ring."
 (define* copy-region (subr pure () command)
@@ -325,7 +357,7 @@ long enough."
         (if (< m 0)
             (say b "The mark is not set now, so there is no region")
             (product (buffer b)
-                     (cmds (list (kill-push (rope-substring (extract b text) (min m p) (max m p)))))
+                     (cmds (list (kill-new (rope-substring (extract b text) (min m p) (max m p)))))
                      (message "Copied")))))))
 
 "The rest of the line killed, or the newline if at its end."
@@ -338,9 +370,8 @@ long enough."
              (to (if (= p end) (min (rope-length t) (+ p 1)) end)))
         (if (= p to)
             (say b "End of buffer")
-            (product (buffer (with-text b (rope-delete t p to) p))
-                     (cmds (list (kill-push (rope-substring t p to))))
-                     (message "")))))))
+            (let ((b2 (with-text b (rope-delete t p to) p)))
+              (product (buffer b2) (cmds (list (kill-push b b2 (rope-substring t p to) #f))) (message ""))))))))
 
 "The newest kill inserted at point, the mark left before it."
 (define* yank (subr pure () command)
@@ -349,8 +380,28 @@ long enough."
       (let ((ring (get kill-ring)))
         (if (null? ring)
             (say b "Kill ring is empty")
-            (let ((p (extract b point)) (s (car ring)))
-              (done (with-mark (with-text b (rope-insert (extract b text) p s) (+ p (string-length s))) p))))))))
+            (let* ((p (extract b point)) (s (car ring))
+                   (b2 (with-mark (with-text b (rope-insert (extract b text) p s) (+ p (string-length s))) p)))
+              (product (buffer b2)
+                       (cmds (list (lambda () (set last-yank (product (left (left-by b2)) (start p) (index 0))))))
+                       (message ""))))))))
+
+"M-y, right after a yank (C-y or M-y): what it inserted replaced by the
+kill before it in the ring, round to the newest after the oldest."
+(define* yank-pop (subr pure () command)
+  (lambda ()
+    (lambda ((b buffer))
+      (let ((ring (get kill-ring)) (ly (get last-yank)))
+        (if (not (left-as? (extract ly left) b))
+            (say b "Previous command was not a yank")
+            (let* ((index (remainder (+ (extract ly index) 1) (length ring)))
+                   (s (list-ref ring index))
+                   (start (extract ly start))
+                   (t (rope-delete (extract b text) start (extract b point)))
+                   (b2 (with-mark (with-text b (rope-insert t start s) (+ start (string-length s))) start)))
+              (product (buffer b2)
+                       (cmds (list (lambda () (set last-yank (product (left (left-by b2)) (start start) (index index))))))
+                       (message ""))))))))
 
 "The text as it was before the last change."
 (define* undo (subr pure () command)

@@ -190,9 +190,8 @@ list open there, or the top-level form's start."
       (let* ((t (extract b text)) (p (extract b point)) (e (forward-sexp t p)))
         (if (< e 0)
             (say b "No sexp after point")
-            (product (buffer (with-text b (rope-delete t p e) p))
-                     (cmds (list (kill-push (rope-substring t p e))))
-                     (message "")))))))
+            (let ((b2 (with-text b (rope-delete t p e) p)))
+              (product (buffer b2) (cmds (list (kill-push b b2 (rope-substring t p e) #f))) (message ""))))))))
 
 "Whether `pos` is in a string or a comment."
 (define in-text? (->* (rope int) bool)
@@ -318,9 +317,8 @@ in if it closes first."
                    (if (= p eol) (min (rope-length t) (+ eol 1)) (go p)))))
         (if (<= to p)
             (say b "Nothing to kill here")
-            (product (buffer (with-text b (rope-delete t p to) p))
-                     (cmds (list (kill-push (rope-substring t p to))))
-                     (message "")))))))
+            (let ((b2 (with-text b (rope-delete t p to) p)))
+              (product (buffer b2) (cmds (list (kill-push b b2 (rope-substring t p to) #f))) (message ""))))))))
 
 ;;; ------------------------------------------------------------ structural edits
 

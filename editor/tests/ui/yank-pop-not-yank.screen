@@ -1,0 +1,13 @@
+one                                     |
+two                                     |
+three                                   |
+four                                    |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+---- a.txt   L1                         |
+Previous command was not a yank         |
+cursor 0,0
