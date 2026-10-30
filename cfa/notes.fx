@@ -6,13 +6,6 @@
 (define-type cf-note (productof (start int) (end int) (text string)))
 (define-type cf-notes (listof cf-note acyclic))
 
-"Strings `l` joined, `sep` between each two: pairwise, as s7st's
-`s7-concat` (print.fx), so that a long list costs its length, not its square."
-(define* cf-concat (subr spin (strings string) string)
-  (lambda (l sep)
-    (string-concatenate (letrec ((go (subr spin (strings) strings)
-                          (lambda (l) (cond ((null? l) nil) ((null? (cdr l)) l) (else (cons (car l) (cons sep (go (cdr l)))))))))
-                 (go l)))))
 
 "One abstract value, said."
 (define* cf-say-val (subr cf-eff (int) string)
@@ -33,8 +26,8 @@
   (lambda (s)
     (letrec ((go (subr cf-eff (vals strings) strings)
                (lambda (s acc) (if (null? s) (reverse acc)
-                                   (let ((t (cf-say-val (car s)))) (go (cdr s) (if (cf-member? t acc) acc (cons t acc))))))))
-      (cf-concat (go s nil) " | "))))
+                                   (let ((t (cf-say-val (car s)))) (go (cdr s) (if (member? t acc string=?) acc (cons t acc))))))))
+      (string-join (go s nil) " | "))))
 
 (define* note< (subr pure (cf-note cf-note) bool)
   (lambda (a b) (or (< (extract a start) (extract b start))
@@ -57,7 +50,7 @@ name if none reach it."
              (say (subr cf-eff ((listof cf-token acyclic)) strings)
                (lambda (ts) (if (null? ts) nil
                                 (cons (tagcase (car ts) (t-text (s) s) (t-var (v n) (cf-say-var v n))) (say (cdr ts)))))))
-      (cf-concat (say (find (get cf-effects))) ""))))
+      (string-join (say (find (get cf-effects))) ""))))
 "The effects of the lambdas in callees `s`, each once, said."
 (define* cf-say-effects (subr cf-eff (vals) string)
   (lambda (s)
@@ -65,9 +58,9 @@ name if none reach it."
                (lambda (s acc) (cond ((null? s) (reverse acc))
                                      ((closure-val? (car s))
                                       (let ((e (cf-say-effect (closure-lambda (quotient (car s) 4)))))
-                                        (go (cdr s) (if (or (string=? e "") (cf-member? e acc)) acc (cons e acc)))))
+                                        (go (cdr s) (if (or (string=? e "") (member? e acc string=?)) acc (cons e acc)))))
                                      (else (go (cdr s) acc))))))
-      (cf-concat (go s nil) " | "))))
+      (string-join (go s nil) " | "))))
 
 "Whether calls with callees `s` are worth a note: one may be a lambda, or
 code not known, or there is more than one."
@@ -80,7 +73,7 @@ another file's `file:N`); the empty one, `top`."
   (lambda (file c)
     (if (= c 0) "top"
         (let ((calls (get cf-calls)) (n (length (get cf-calls))))
-          (cf-concat (letrec ((go (subr cf-eff (ints) strings)
+          (string-join (letrec ((go (subr cf-eff (ints) strings)
                                   (lambda (l) (if (null? l) nil
                                                   (let* ((info (letrec ((nth (subr spin ((listof call-info acyclic) int) call-info)
                                                                                (lambda (cs k) (if (or (null? (cdr cs)) (= k 0)) (car cs) (nth (cdr cs) (- k 1))))))
@@ -94,8 +87,7 @@ another file's `file:N`); the empty one, `top`."
                                                                                                   ":"))
                                                                                (int->string (cf-line-of (extract sp file) (extract sp start))))))
                                                     (cons where (go (cdr l))))))))
-                       (go (table-ref (get cf-contour-calls) c nil)))
-                     " < ")))))
+                       (go (table-ref (get cf-contour-calls) c nil))) " < ")))))
 "The context notes of file `file`: at each reference and call evaluated in
 contours that see different things, what each sees, `in CONTOUR: VALUES`
 joined by ` ; `."
@@ -115,12 +107,11 @@ joined by ` ; `."
                          #u
                          (set acc (cons (product (start (extract sp start)) (end (extract sp end))
                                                  (text (string-append prefix
-                                                                      (cf-concat (letrec ((go (subr cf-eff (ints strings) strings)
+                                                                      (string-join (letrec ((go (subr cf-eff (ints strings) strings)
                                                                                                 (lambda (l ss) (if (null? l) nil
                                                                                                                    (cons (string-append "in " (cf-say-contour file (car l)) ": " (car ss))
                                                                                                                          (go (cdr l) (cdr ss)))))))
-                                                                                   (go cs says))
-                                                                                 " ; "))))
+                                                                                   (go cs says)) " ; "))))
                                         (get acc))))))))
         (begin
           (letrec ((go (subr cf-eff ((listof ref-info acyclic) int) unit)

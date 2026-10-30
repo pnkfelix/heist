@@ -35,8 +35,6 @@
   (lambda (l) (if (null? l) nil (vals-union (car l) (union-all (cdr l))))))
 (define* last-vals (subr spin ((listof vals acyclic)) vals)
   (lambda (l) (cond ((null? l) nil) ((null? (cdr l)) (car l)) (else (last-vals (cdr l))))))
-(define* append-ints (subr spin (ints ints) ints) (lambda (a b) (if (null? a) b (cons (car a) (append-ints (cdr a) b)))))
-(define* member-int? (subr spin (int ints) bool) (lambda (x l) (and (pair? l) (or (= (car l) x) (member-int? x (cdr l))))))
 (define* closure-val? (subr pure (int) bool) (lambda (x) (and (>= x 0) (= (remainder x 4) 0))))
 (define* site-val? (subr pure (int) bool) (lambda (x) (and (>= x 0) (= (remainder x 4) 1))))
 (define* kind-val? (subr pure (int) bool) (lambda (x) (and (>= x 0) (= (remainder x 4) 2))))
@@ -333,22 +331,16 @@ and lambdas bound to variables (`k-bind v (k-lam l)`), each with v."
 (define* widened-in? (subr cf-eff (int strings) bool)
   (lambda (k classes)
     (letrec ((go (subr cf-eff ((listof (productof (kind int) (to int)) acyclic)) bool)
-               (lambda (l) (and (pair? l) (or (and (= (extract (car l) to) k) (cf-member? (cf-kind-name (extract (car l) kind)) classes))
+               (lambda (l) (and (pair? l) (or (and (= (extract (car l) to) k) (member? (cf-kind-name (extract (car l) kind)) classes string=?))
                                               (go (cdr l)))))))
       (go (get cf-widen)))))
-(define* any-member? (subr spin (strings strings) bool)
-  (lambda (a b) (and (pair? a) (or (cf-member? (car a) b) (any-member? (cdr a) b)))))
-"Values `s` of variable `v`'s field `path` (nil: the variable's own), as
-the branches being evaluated narrow it."
-(define* same-path? (subr spin (strings strings) bool)
-  (lambda (a b) (cond ((null? a) (null? b)) ((null? b) #f) (else (and (string=? (car a) (car b)) (same-path? (cdr a) (cdr b)))))))
 (define* narrow (subr cf-eff (int strings vals) vals)
   (lambda (v path s)
     (letrec ((apply-one (subr cf-eff (cf-narrowing vals) vals)
                (lambda (n s)
                  (cond ((null? s) nil)
                        ((= (car s) cf-unknown) (cons (car s) (apply-one n (cdr s))))
-                       ((eq? (any-member? (val-classes (car s)) (extract n classes)) (extract n keep))
+                       ((eq? (any (lambda ((x string)) (member? x (extract n classes) string=?)) (val-classes (car s))) (extract n keep))
                         (cons (car s) (apply-one n (cdr s))))
                        ;; A widened kind (`symbol`) may be any it widened (`'add`):
                        ;; kept where one of those is.
@@ -357,10 +349,10 @@ the branches being evaluated narrow it."
                        (else (apply-one n (cdr s))))))
              (go (subr cf-eff ((listof cf-narrowing acyclic) vals) vals)
                (lambda (ns s) (cond ((null? ns) s)
-                                    ((and (= (extract (car ns) var) v) (same-path? (extract (car ns) path) path))
+                                    ((and (= (extract (car ns) var) v) (list=? string=? (extract (car ns) path) path))
                                      (go (cdr ns) (apply-one (car ns) s)))
                                     (else (go (cdr ns) s))))))
-      (if (or (null? (get cf-refine)) (member-int? v (get cf-assigned)) (any-member? path (get cf-stored))) s (go (get cf-refine) s)))))
+      (if (or (null? (get cf-refine)) (member? v (get cf-assigned) =) (any (lambda ((x string)) (member? x (get cf-stored) string=?)) path)) s (go (get cf-refine) s)))))
 "The variable and field path core `x` reads (`(car (cdr v))`: v, cdr car),
 if it reads one; var -1 if not."
 (define-type cf-path (productof (var int) (path strings)))
@@ -519,7 +511,7 @@ list may end before (one of `s` shorter than another, ending there)."
              ;; Everything reachable from `s` by `cdr`: all its elements.
              (all (subr cf-eff (vals vals vals) vals)
                (lambda (s seen acc)
-                 (let ((new (letrec ((go (subr spin (vals) vals) (lambda (l) (cond ((null? l) nil) ((member-int? (car l) seen) (go (cdr l))) (else (cons (car l) (go (cdr l))))))))
+                 (let ((new (letrec ((go (subr spin (vals) vals) (lambda (l) (cond ((null? l) nil) ((member? (car l) seen =) (go (cdr l))) (else (cons (car l) (go (cdr l))))))))
                               (go (sites s)))))
                    (if (null? new) (vals-union acc (if (vals-has? s cf-unknown) (list cf-unknown) nil))
                        (all (fields-of new "cdr") (append new seen)
@@ -529,7 +521,7 @@ list may end before (one of `s` shorter than another, ending there)."
                  (let ((ss (sites s)))
                    (cond ((and (null? ss) (not (vals-has? s cf-unknown))) (the cf-positions (product (elems nil) (open #f) (ends (list i)))))
                          ((or (vals-has? s cf-unknown) (>= i (- cf-max-spine 1))
-                              (letrec ((any (subr spin (vals) bool) (lambda (l) (and (pair? l) (or (member-int? (car l) seen) (any (cdr l)))))))
+                              (letrec ((any (subr spin (vals) bool) (lambda (l) (and (pair? l) (or (member? (car l) seen =) (any (cdr l)))))))
                                 (any ss))
                               (pair? (fields-of ss "elt")))
                           (product (elems (list (all s seen nil))) (open #t) (ends (list i))))
@@ -851,7 +843,7 @@ parameters included), onto `refs` and `binds`."
 (define-rec
   (refs-binds-of (subr cf-eff (core refs-binds) refs-binds)
     (lambda (x acc)
-      (let ((bind (lambda ((vs ints) (acc refs-binds)) (product (refs (extract acc refs)) (binds (append-ints vs (extract acc binds)))))))
+      (let ((bind (lambda ((vs ints) (acc refs-binds)) (product (refs (extract acc refs)) (binds (append vs (extract acc binds)))))))
         (tagcase x
           (k-none (xs) (refs-binds-all xs acc))
           (k-var (v r) (product (refs (cons v (extract acc refs))) (binds (extract acc binds))))
@@ -895,7 +887,7 @@ not global."
       (letrec ((go (subr cf-eff (ints ints) ints)
                  (lambda (rs acc)
                    (cond ((null? rs) acc)
-                         ((or (< (car rs) (get cf-global-count)) (member-int? (car rs) bound) (member-int? (car rs) acc))
+                         ((or (< (car rs) (get cf-global-count)) (member? (car rs) bound =) (member? (car rs) acc =))
                           (go (cdr rs) acc))
                          (else (go (cdr rs) (cons (car rs) acc)))))))
         (go (extract rb refs) nil)))))
@@ -938,7 +930,7 @@ by that name, its body of `cf-small-size` nodes or fewer."
            (not (and (>= n 2) (string=? (substring name (- n 2) n) "/λ")))
            (<= (node-count (extract info body) (+ cf-small-size 1)) cf-small-size)
            (let ((g (table-ref (get cf-globals) name -1)))
-             (or (< g 0) (not (member-int? g (extract (refs-binds-of (extract info body) (product (refs nil) (binds nil))) refs)))))))))
+             (or (< g 0) (not (member? g (extract (refs-binds-of (extract info body) (product (refs nil) (binds nil))) refs) =))))))))
 
 "The sites of recursive lambdas marked to be split: a lambda bound to a
 variable its body refers to (by its global name, or a loop's)."
@@ -956,7 +948,7 @@ variable its body refers to (by its global name, or a loop's)."
                      (if (null? bs) #u
                          (let* ((l (extract (car bs) lambda)) (body (extract (array-ref (get cf-lambda-array) l) body)))
                            (begin
-                             (if (member-int? (extract (car bs) var) (extract (refs-binds-of body (product (refs nil) (binds nil))) refs))
+                             (if (member? (extract (car bs) var) (extract (refs-binds-of body (product (refs nil) (binds nil))) refs) =)
                                  (letrec ((mark (subr cf-eff (ints) unit)
                                             (lambda (ss) (if (null? ss) #u (begin (array-set! (get cf-split-sites) (car ss) #t) (mark (cdr ss)))))))
                                    (mark (sites-in body nil)))

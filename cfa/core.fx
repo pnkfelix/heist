@@ -22,18 +22,15 @@
 (define cf-tables (load-module "fx26:table.fx"))
 (import cf-tables make-table table-ref table-set! (type table))
 
+"kit's (../kit/) further procedures, from the modules s7st loaded."
+(import s7-kit-lists filter list=?)
+(import s7-kit-strings string-join string-split)
+
 (define-type ints (listof int acyclic))
 (define-type strings (listof string acyclic))
-(define* cf-reverse-ints (subr spin (ints) ints)
-  (lambda (l) (letrec ((go (subr spin (ints ints) ints) (lambda (l acc) (if (null? l) acc (go (cdr l) (cons (car l) acc))))))
-                (go l nil))))
-(define* cf-member? (subr spin (string strings) bool)
-  (lambda (x l) (and (pair? l) (or (string=? (car l) x) (cf-member? x (cdr l))))))
 "The place of `x` in `l` (-1: not there)."
 (define* cf-index (subr spin (string strings) int)
-  (lambda (x l) (letrec ((go (subr spin (strings int) int)
-                           (lambda (l i) (cond ((null? l) -1) ((string=? (car l) x) i) (else (go (cdr l) (+ i 1)))))))
-                  (go l 0))))
+  (lambda (x l) (let ((i (list-index (lambda ((y string)) (string=? y x)) l))) (if (bool? i) -1 i))))
 
 ;;; ------------------------------------------------------------ the core
 

@@ -36,8 +36,8 @@ elements."
   (product (name "fx26")
            (model (lambda ((n string))
                     (cond ((string=? n "apply") (m-apply))
-                          ((cf-member? n fx-higher-order) (m-data #t (list "unknown")))
-                          ((cf-member? n fx-passing) (m-pass))
+                          ((member? n fx-higher-order string=?) (m-data #t (list "unknown")))
+                          ((member? n fx-passing string=?) (m-pass))
                           (else (m-data #f nil)))))))
 
 "Text `text` read: its forms (as far as they read)."
@@ -427,7 +427,7 @@ to a lambda making `(sum tag (product (1 p1) … (n pn)))`."
                                        (go params)))
                               (b (fx-body file body env)))
                          (k-lam (cf-add-lambda (product (span (fx-span file x)) (name (if (string=? name "") (cf-anonymous) name))
-                                                        (params (cf-reverse-ints vs)) (rest -1)
+                                                        (params (reverse vs)) (rest -1)
                                                         (body (if (null? types) b (k-seq (list (k-none types) b))))))))
                        (let ((v (cf-new-var)))
                          (bind (cdr ps) (cons (product (name (fx-param-name (car ps))) (var v)) env) (cons v vs)))))))

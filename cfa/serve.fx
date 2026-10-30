@@ -110,21 +110,11 @@ call, and whether it may call code not known."
                           (go (+ i 2) (cons (cond ((char=? c #\n) #\newline) ((char=? c #\t) #\tab) (else c)) acc))))
                        (else (go (+ i 1) (cons (string-ref s i) acc)))))))
       (list->string (reverse (go 0 nil))))))
-"Line `s` split at `sep`."
-(define* cf-split (subr spin (string char) strings)
-  (lambda (s sep)
-    (letrec ((go (subr spin (int int strings) strings)
-               (lambda (i start acc)
-                 (cond ((>= i (string-length s)) (reverse (the strings (cons (substring s start i) acc))))
-                       ((char=? (string-ref s i) sep) (go (+ i 1) (+ i 1) (cons (substring s start i) acc)))
-                       (else (go (+ i 1) start acc))))))
-      (go 0 0 nil))))
 (define* cf-answer (subr (maxeff spin (io stdout)) (string strings) unit)
   (lambda (word fields)
-    (begin (write-out (string-append word " " (cf-concat (letrec ((go (subr spin (strings) strings)
+    (begin (write-out (string-append word " " (string-join (letrec ((go (subr spin (strings) strings)
                                                                       (lambda (l) (if (null? l) nil (cons (cf-escape (car l)) (go (cdr l)))))))
-                                                             (go fields))
-                                                           "\t")
+                                                             (go fields)) "\t")
                                      "\n"))
       #u)))
 
@@ -133,8 +123,6 @@ call, and whether it may call code not known."
 "The world of `path`: its key."
 (define* cf-world-key (subr spin (string) string)
   (lambda (p) (if (cf-scheme-file? p) (string-append "scheme:" p) (string-append "fx26:" (cf-directory-of p)))))
-(define* insert-string (subr spin (string strings) strings)
-  (lambda (s l) (if (or (null? l) (string<? s (car l))) (cons s l) (cons (car l) (insert-string s (cdr l))))))
 "The files of world `key`, sorted."
 (define* cf-world-files (subr (maxeff (io fs-read) spin (alloc @cf)) (string) strings)
   (lambda (key)
@@ -145,9 +133,9 @@ call, and whether it may call code not known."
             (names ns (letrec ((go (subr (maxeff spin (read @cf) (read @globals)) ((listof string @cf) strings) strings)
                                      (lambda (l acc) (cond ((null? l) acc)
                                                            ((let ((n (string-length (car l)))) (and (> n 3) (string=? (substring (car l) (- n 3) n) ".fx")))
-                                                            (go (cdr l) (insert-string (string-append dir (car l)) acc)))
+                                                            (go (cdr l) (cons (string-append dir (car l)) acc)))
                                                            (else (go (cdr l) acc))))))
-                        (go ns nil)))
+                        (list-sort string<? (go ns nil))))
             (else y nil))))))
 (define* cf-dataset-text (subr (maxeff (io fs-read) spin (read @cf)) (string) string)
   (lambda (p) (letrec ((go (subr (maxeff (io fs-read) spin (read @cf)) ((listof cf-text acyclic)) string)
@@ -171,13 +159,12 @@ analysis, if it runs, stopped."
 
 "Notes `ns`, as an answer's field: a line each."
 (define* cf-notes-field (subr spin (cf-notes) string)
-  (lambda (ns) (cf-concat (letrec ((go (subr spin (cf-notes) strings)
+  (lambda (ns) (string-join (letrec ((go (subr spin (cf-notes) strings)
                                      (lambda (l) (if (null? l) nil
                                                      (cons (string-append (int->string (extract (car l) start)) " " (int->string (extract (car l) end)) " "
                                                                           (extract (car l) text))
                                                            (go (cdr l)))))))
-                            (go ns))
-                          "\n")))
+                            (go ns)) "\n")))
 
 "Every world file `path` is of (its own, and those importing it, a
 library) out of those analysed, and the analysis that runs, if it is of
@@ -192,7 +179,7 @@ one, stopped: `path`'s text changed."
                                                     (else (cons (car l) (go (cdr l))))))))
                          (go (get cf-analysed))))
       (tagcase (get cf-job-now)
-        (job j (if (cf-member? path (extract j paths)) (set cf-job-now (sum none #u)) #u))
+        (job j (if (member? path (extract j paths) string=?) (set cf-job-now (sum none #u)) #u))
         (else y #u))
       (cf-invalidate! (cf-world-key path)))))
 (define* cf-world-notes-of (subr (maxeff spin (read @cf)) (string) (sumof (none unit) (some cf-world-notes)))
@@ -272,7 +259,7 @@ one, stopped: `path`'s text changed."
                                         (cf-flag (extract (array-ref ls best) escaped)))
                                   (letrec ((go (subr spin ((listof cf-call-found acyclic)) strings)
                                              (lambda (l) (cond ((null? l) nil)
-                                                               ((member-int? best (extract (car l) callees))
+                                                               ((member? best (extract (car l) callees) =)
                                                                 (append (cf-place-fields (extract (car l) place)) (go (cdr l))))
                                                                (else (go (cdr l)))))))
                                     (go (extract w calls))))))))
@@ -345,7 +332,7 @@ one, stopped: `path`'s text changed."
                                               (lambda (vs acc) (cond ((null? vs) (reverse acc))
                                                                      ((closure-val? (car vs))
                                                                       (let ((l (closure-lambda (quotient (car vs) 4))))
-                                                                        (g (cdr vs) (if (member-int? l acc) acc (cons l acc)))))
+                                                                        (g (cdr vs) (if (member? l acc =) acc (cons l acc)))))
                                                                      (else (g (cdr vs) acc))))))
                                   (g ops nil))))
                        (go (cdr cs) (- i 1)
@@ -386,7 +373,7 @@ and the requests waiting on them answered."
            (word (substring line 0 sp))
            (fields (if (>= sp (string-length line)) nil
                        (letrec ((go (subr spin (strings) strings) (lambda (l) (if (null? l) nil (cons (cf-unescape (car l)) (go (cdr l)))))))
-                         (go (cf-split (substring line (+ sp 1) (string-length line)) #\tab)))))
+                         (go (string-split (substring line (+ sp 1) (string-length line)) #\tab)))))
            (field (lambda ((i int)) (letrec ((nth (subr spin (strings int) string) (lambda (l k) (cond ((null? l) "") ((= k 0) (car l)) (else (nth (cdr l) (- k 1)))))))
                                       (nth fields i)))))
       (cond

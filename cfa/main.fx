@@ -20,12 +20,6 @@
 
 (define* cf-say-line (subr (io stdout) (string) unit) (lambda (s) (begin (write-out (string-append s "\n")) #u)))
 
-(define* cf-filter (subr spin (strings bool) strings)
-  (lambda (l scheme) (cond ((null? l) nil)
-                           ((eq? (cf-scheme-file? (car l)) scheme) (cons (car l) (cf-filter (cdr l) scheme)))
-                           (else (cf-filter (cdr l) scheme)))))
-(define* cf-texts (subr (maxeff (io fs-read) spin) (strings) strings)
-  (lambda (l) (if (null? l) nil (cons (cf-text-of-file (car l)) (cf-texts (cdr l))))))
 
 "The world read (core.fx) analysed, of `lang`, at depth `m`, to the end;
 the notes of its files `paths` written."
@@ -51,8 +45,8 @@ contexts see different things (`--contexts`)."
           (run))
         (if (get cf-progress)
             (begin (write-err (string-append "cfa: " (cf-escape-report 12) "\n"))
-              (write-err (string-append "cfa: defined nowhere: " (cf-concat (reverse (get sc-undefined)) " ") "\n"))
-              (write-err (string-append "cfa: unknown first in: " (cf-concat (get cf-unknown-firsts) "; ") "\n"))
+              (write-err (string-append "cfa: defined nowhere: " (string-join (reverse (get sc-undefined)) " ") "\n"))
+              (write-err (string-append "cfa: unknown first in: " (string-join (get cf-unknown-firsts) "; ") "\n"))
               #u)
             #u)
       (letrec ((files (subr (maxeff cf-eff (io stdout)) (strings) unit)
@@ -97,18 +91,18 @@ contexts see different things (`--contexts`)."
            (m (if (and (pair? as) (string=? (car as) "-m") (pair? (cdr as))) (cf-decimal (car (cdr as))) 0))
            (files (begin (set cf-collapse collapse) (set cf-progress progress) (set cf-contexts contexts)
                     (if (and (pair? as) (string=? (car as) "-m") (pair? (cdr as))) (cdr (cdr as)) as)))
-           (fx (cf-filter files #f))
-           (sc (cf-filter files #t)))
+           (fx (filter (lambda ((f string)) (bool=? (cf-scheme-file? f) #f)) files))
+           (sc (filter (lambda ((f string)) (bool=? (cf-scheme-file? f) #t)) files)))
       (if (and (pair? as) (string=? (car as) "--serve"))
           (let ((why (s7-init!))) (begin (cf-answer "ready" (list why)) (cf-serve)))
       (begin
-        (if (null? fx) #u (cf-run-world cf-fx26 (fx-world fx (cf-texts fx)) fx m))
+        (if (null? fx) #u (cf-run-world cf-fx26 (fx-world fx (map cf-text-of-file fx)) fx m))
         (if (null? sc) #u
             (let ((why (s7-init!)))
               (if (string=? why "")
                   ;; The libraries the files import are of their world, but only
                   ;; the files' notes are said.
-                  (let* ((ws (sc-world-files sc (cf-texts sc)))
+                  (let* ((ws (sc-world-files sc (map cf-text-of-file sc)))
                          (ps (letrec ((go (subr spin ((listof sc-world-file acyclic)) strings)
                                             (lambda (l) (if (null? l) nil (cons (extract (car l) path) (go (cdr l)))))))
                                (go ws)))
