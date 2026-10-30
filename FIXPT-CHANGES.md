@@ -220,7 +220,8 @@ Still open in Fixpt's `TODO.md`:
   "fx26:type-at/1"`), so that the editor needs no `--syscalls`. A module
   file cannot hold a declaration yet (`fixpt/docs/research/syscalls.md`,
   "What Fixpt does", 4).
-- §132: a `pselect` arm for a process (F4, "What it does not do").
+- §132, a `pselect` arm for a process (F4, "What it does not do"), is
+  done: F6.
 
 ## Reading and moving the base
 
