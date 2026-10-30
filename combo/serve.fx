@@ -31,6 +31,8 @@
                     (m-sexp (load-moduleof "sexp.fx" m-sat m-rat))
                     (m-smt (load-moduleof "smt.fx" m-sat m-rat m-term m-bv m-arith m-eval m-simplex m-blast))
                     (m-smtlib (load-moduleof "smtlib.fx" m-sat m-rat m-term m-bv m-arith m-eval m-simplex m-blast m-sexp m-smt))))
+(hide (define kit-strings (load-module "../kit/strings.fx"))
+      (import kit-strings reverse-list->string))
 
 (define-effect serve-eff (maxeff cb-eff (io stdout) (io stdin)))
 
@@ -39,8 +41,7 @@
 "`s` with backslashes, newlines and tabs escaped."
 (define* escape (subr spin (string) string)
   (lambda (s)
-    (list->string
-     (letrec ((go (subr spin (int (listof char acyclic)) (listof char acyclic))
+    (list->string (letrec ((go (subr spin (int (listof char acyclic)) (listof char acyclic))
                 (lambda (i acc)
                   (if (< i 0) acc
                       (let ((c (string-ref s i)))
@@ -59,7 +60,7 @@
                           (let ((c (string-ref s (+ i 1))))
                             (go (+ i 2) (cons (cond ((char=? c #\n) #\newline) ((char=? c #\t) #\tab) (else c)) acc))))
                          (else (go (+ i 1) (cons (string-ref s i) acc)))))))
-        (list->string (reverse-chars (go 0 nil)))))))
+        (reverse-list->string (go 0 nil))))))
 
 "A request's word, and its fields, unescaped."
 (define-type request (productof (word string) (fields strings)))
@@ -72,7 +73,7 @@
            (rest (if (< sp 0) "" (substring line (+ sp 1) n))))
       (letrec ((split (subr spin (int int strings) strings)
                  (lambda (i start acc)
-                   (cond ((>= i (string-length rest)) (reverse-strings (cons (unescape (substring rest start i)) acc)))
+                   (cond ((>= i (string-length rest)) (reverse (cons (unescape (substring rest start i)) acc)))
                          ((char=? (string-ref rest i) #\tab) (split (+ i 1) (+ i 1) (cons (unescape (substring rest start i)) acc)))
                          (else (split (+ i 1) start acc))))))
         (product (word word) (fields (if (< sp 0) nil (split 0 0 nil))))))))

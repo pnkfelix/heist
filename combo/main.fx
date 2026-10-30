@@ -25,6 +25,8 @@
                     (m-smt (load-moduleof "smt.fx" m-sat m-rat m-term m-bv m-arith m-eval m-simplex m-blast))
                     (m-smtlib (load-moduleof "smtlib.fx" m-sat m-rat m-term m-bv m-arith m-eval m-simplex m-blast m-sexp m-smt))
                     (m-serve (load-moduleof "serve.fx" m-sat m-rat m-term m-bv m-arith m-eval m-simplex m-blast m-sexp m-smt m-smtlib))))
+(hide (define kit-strings (load-module "../kit/strings.fx"))
+      (import kit-strings string-concatenate))
 
 (define-effect main-eff (maxeff cb-eff (io stdout) (io stderr) (io stdin) (io fs-read) (io fs-write) (io args) (io exit) (alloc @a) (read @a)))
 
@@ -75,7 +77,7 @@
                   (begin
                     (if (= answer sat-sat) (extend-model! (extract el stack) (sat-model s)) #u)
                     (if proof?
-                        (tagcase (write-file proof-file (the (bytevectorof @cb) (string->utf8 (string-concat (append (reverse-strings (extract el proof)) (reverse-strings (sat-proof-lines s)))))))
+                        (tagcase (write-file proof-file (the (bytevectorof @cb) (string->utf8 (string-concatenate (append (reverse (extract el proof)) (reverse (sat-proof-lines s)))))))
                           (done u #u)
                           (failed e (say-err (string-append "combo: cannot write " (string-append proof-file "\n")))))
                         #u)

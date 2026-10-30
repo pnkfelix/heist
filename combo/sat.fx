@@ -18,6 +18,9 @@
 ;;;
 ;;; State: what a solver is, in region @cb. No state of the module's own.
 
+(hide (define kit-strings (load-module "../kit/strings.fx"))
+      (import kit-strings string-concatenate))
+
 "What the solver, and the rest of combo, does: its own state at @cb, and
 reading the clock for deadlines."
 (define-effect cb-eff (maxeff spin (read @globals) (read @cb) (write @cb) (alloc @cb) (io clock)))
@@ -74,9 +77,6 @@ reading the clock for deadlines."
     (letrec ((go (subr cb-eff (int ints) ints)
                (lambda (i acc) (if (< i from) acc (go (- i 1) (cons (array-ref v i) acc))))))
       (go (- to 1) nil))))
-(define* reverse-ints (subr spin (ints) ints)
-  (lambda (l) (letrec ((go (subr spin (ints ints) ints) (lambda (l acc) (if (null? l) acc (go (cdr l) (cons (car l) acc))))))
-                (go l nil))))
 (define* remv-once (subr spin (int ints) ints)
   (lambda (x l) (cond ((null? l) nil) ((= x (car l)) (cdr l)) (else (cons (car l) (remv-once x (cdr l)))))))
 (define* ints-max (subr spin (int ints) int)
@@ -779,15 +779,7 @@ assumption found false (MiniSat's analyzeFinal)."
         (letrec ((go (subr cb-eff (ints (listof string acyclic)) (listof string acyclic))
                    (lambda (l acc) (if (null? l) acc (go (cdr l) (cons " " (cons (int->string (lit->int (car l))) acc)))))))
           (set (extract s proof-lines)
-               (cons (string-concat (reverse-strings (cons "0\n" (go lits (list prefix))))) (get (extract s proof-lines))))))))
-(define* reverse-strings (subr spin (strings) strings)
-  (lambda (l) (letrec ((go (subr spin (strings strings) strings) (lambda (l acc) (if (null? l) acc (go (cdr l) (cons (car l) acc))))))
-                (go l nil))))
-"The strings of `l`, joined."
-(define* string-concat (subr spin (strings) string)
-  (lambda (l) (list->string (letrec ((chars (subr spin (strings) (listof char acyclic))
-                                        (lambda (l) (if (null? l) nil (append (string->list (car l)) (chars (cdr l)))))))
-                               (chars l)))))
+               (cons (string-concatenate (reverse (cons "0\n" (go lits (list prefix))))) (get (extract s proof-lines))))))))
 
 ;;; ------------------------------------------------------------ the clause database
 

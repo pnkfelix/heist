@@ -45,9 +45,6 @@
 (define-type monos (listof mono acyclic))
 (define-type form (productof (ms monos) (k rat)))
 
-(define* reverse-monos (subr spin (monos) monos)
-  (lambda (l) (letrec ((go (subr spin (monos monos) monos) (lambda (l acc) (if (null? l) acc (go (cdr l) (cons (car l) acc))))))
-                (go l nil))))
 
 (define* linear-form (subr cb-eff (int) form)
   (lambda (t)
@@ -57,7 +54,7 @@
             ((string=? op "+")
              (letrec ((go (subr cb-eff (ints monos rat) form)
                         (lambda (as ms k)
-                          (if (null? as) (product (ms (reverse-monos ms)) (k k))
+                          (if (null? as) (product (ms (reverse ms)) (k k))
                               (let ((a (car as)))
                                 (cond ((num? a) (go (cdr as) ms (rat+ k (num-value a))))
                                       ((term-op? a "scale") (go (cdr as) (cons (product (x (term-arg0 a)) (c (scale-coeff a))) ms) k))

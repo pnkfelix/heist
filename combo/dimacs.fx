@@ -7,6 +7,8 @@
 ;;; clauses and assumptions in order; answers are text.
 
 (module-parameters ((m-sat (load-moduleof "sat.fx"))))
+(hide (define kit-strings (load-module "../kit/strings.fx"))
+      (import kit-strings string-concatenate))
 
 "What a CNF says, in order: a clause, or (iCNF) a solve under assumptions."
 (define-datatype dimacs-item (d-clause ints) (d-assume ints))
@@ -52,7 +54,7 @@ some old benchmark files)."
                  (lambda (i nvars clause items)
                    (let* ((i (skip-space i)) (c (at i)))
                      (cond ((or (< c 0) (= c 37))         ; the end, or %
-                            (dimacs-ok nvars (reverse-items (if (null? clause) items (cons (d-clause (reverse-ints clause)) items)))))
+                            (dimacs-ok nvars (reverse (if (null? clause) items (cons (d-clause (reverse clause)) items)))))
                            ((= c 99) (go (skip-line i) nvars clause items))   ; c
                            ((= c 112)                                         ; p
                             (let* ((i (skip-space (+ i 1))) (e (word-end i)) (format (word i e)))
@@ -69,20 +71,17 @@ some old benchmark files)."
                                          (let* ((i (skip-space i)) (e (int-end i)))
                                            (if (< e 0) (bad-int i)
                                                (let ((n (int-at i e)))
-                                                 (if (= n 0) (go e nvars clause (cons (d-assume (reverse-ints acc)) items))
+                                                 (if (= n 0) (go e nvars clause (cons (d-assume (reverse acc)) items))
                                                      (lits e (cons (int->lit n) acc)))))))))
                               (lits (+ i 1) nil)))
                            (else
                             (let ((e (int-end i)))
                               (if (< e 0) (bad-int i)
                                   (let ((n (int-at i e)))
-                                    (if (= n 0) (go e nvars nil (cons (d-clause (reverse-ints clause)) items))
+                                    (if (= n 0) (go e nvars nil (cons (d-clause (reverse clause)) items))
                                         (go e nvars (cons (int->lit n) clause) items)))))))))))
         (go 0 0 nil nil)))))
 
-(define* reverse-items (subr spin (dimacs-items) dimacs-items)
-  (lambda (l) (letrec ((go (subr spin (dimacs-items dimacs-items) dimacs-items) (lambda (l acc) (if (null? l) acc (go (cdr l) (cons (car l) acc))))))
-                (go l nil))))
 
 "The answer as the SAT Competition asks: \"s SATISFIABLE\" and the model on
 \"v\" lines, or \"s UNSATISFIABLE\", or \"s UNKNOWN\"."
@@ -96,7 +95,7 @@ some old benchmark files)."
                             (if (> v n) (cons " 0\n" acc)
                                 (let ((acc (the strings (cons (int->string (if (sat-value s v) v (- 0 v))) (cons " " acc)))))
                                   (if (> col 15) (go (+ v 1) 0 (cons "\n" acc)) (go (+ v 1) (+ col 1) acc))))))))
-               (string-concat (cons "s SATISFIABLE\n" (reverse-strings (go 1 0 nil)))))))
+               (string-concatenate (cons "s SATISFIABLE\n" (reverse (go 1 0 nil)))))))
           ((= answer sat-unsat) "s UNSATISFIABLE\n")
           (else "s UNKNOWN\n"))))
 
@@ -106,4 +105,4 @@ some old benchmark files)."
   (lambda (s)
     (letrec ((go (subr cb-eff (ints strings) strings)
                (lambda (l acc) (if (null? l) acc (go (cdr l) (cons (int->string (lit->int (car l))) (cons " " acc)))))))
-      (string-concat (cons "f" (reverse-strings (cons " 0\n" (go (sat-final-conflict s) nil))))))))
+      (string-concatenate (cons "f" (reverse (cons " 0\n" (go (sat-final-conflict s) nil))))))))

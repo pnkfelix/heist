@@ -11,6 +11,8 @@
 ;;; a pipe waits for each answer. It does no I/O itself.
 
 (module-parameters ((m-sat (load-moduleof "sat.fx")) (m-rat (load-moduleof "rat.fx"))))
+(hide (define kit-strings (load-module "../kit/strings.fx"))
+      (import kit-strings reverse-list->string))
 
 (define-datatype sexp
   (sx-sym string)
@@ -105,7 +107,7 @@ whether all of the text has been fed."
                  (lambda (i line col acc)
                    (let* ((p (skip i line col)) (i (extract p i)) (line (extract p line)) (col (extract p col)))
                      (cond ((>= i n) (s-short))
-                           ((char=? (at i) #\)) (s-ok (sx-list (reverse-sexps acc)) (+ i 1) line (+ col 1)))
+                           ((char=? (at i) #\)) (s-ok (sx-list (reverse acc)) (+ i 1) line (+ col 1)))
                            (else (tagcase (datum i line col)
                                    (s-ok (x i2 l2 c2) (items i2 l2 c2 (cons x acc)))
                                    (s-short () (s-short))
@@ -143,9 +145,9 @@ whether all of the text has been fed."
                                   (lambda (k line col acc)
                                     (cond ((>= k n) (if closed (s-bad "unexpected end of file in a string" line col) (s-short)))
                                           ((char=? (at k) #\")
-                                           (cond ((>= (+ k 1) n) (if closed (s-ok (sx-str (list->string (reverse-chars acc))) (+ k 1) line (+ col 1)) (s-short)))
+                                           (cond ((>= (+ k 1) n) (if closed (s-ok (sx-str (reverse-list->string acc)) (+ k 1) line (+ col 1)) (s-short)))
                                                  ((char=? (at (+ k 1)) #\") (go (+ k 2) line (+ col 2) (cons #\" acc)))
-                                                 (else (s-ok (sx-str (list->string (reverse-chars acc))) (+ k 1) line (+ col 1)))))
+                                                 (else (s-ok (sx-str (reverse-list->string acc)) (+ k 1) line (+ col 1)))))
                                           ((char=? (at k) #\newline) (go (+ k 1) (+ line 1) 0 (cons #\newline acc)))
                                           (else (go (+ k 1) line (+ col 1) (cons (at k) acc)))))))
                          (go (+ i 1) line (+ col 1) nil)))
@@ -181,12 +183,6 @@ whether all of the text has been fed."
                                 (r-more)))
                 (s-bad (m line col) (begin (set (extract r pos) n) (set (extract r line) line) (set (extract r column) col) (r-error m line col))))))))))
 
-(define* reverse-sexps (subr spin (sexps) sexps)
-  (lambda (l) (letrec ((go (subr spin (sexps sexps) sexps) (lambda (l acc) (if (null? l) acc (go (cdr l) (cons (car l) acc))))))
-                (go l nil))))
-(define* reverse-chars (subr spin ((listof char acyclic)) (listof char acyclic))
-  (lambda (l) (letrec ((go (subr spin ((listof char acyclic) (listof char acyclic)) (listof char acyclic)) (lambda (l acc) (if (null? l) acc (go (cdr l) (cons (car l) acc))))))
-                (go l nil))))
 "The number the digits of `s` write in base `b`."
 (define* radix (subr spin (string int) int)
   (lambda (s b) (letrec ((go (subr spin (int int) int) (lambda (i acc) (if (>= i (string-length s)) acc (go (+ i 1) (+ (* acc b) (hex-value (string-ref s i))))))))

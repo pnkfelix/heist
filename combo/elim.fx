@@ -15,6 +15,8 @@
 ;;; it comes from, and is added before they are deleted.
 
 (module-parameters ((m-sat (load-moduleof "sat.fx"))))
+(hide (define kit-strings (load-module "../kit/strings.fx"))
+      (import kit-strings string-concatenate))
 
 ;; The limits: a resolvent of more literals stops the elimination of a
 ;; variable (as in MiniSat), as do more than max-pairs pairs of clauses to
@@ -61,7 +63,7 @@ clauses they subsume. stack: the latest elimination first."
     (if (not (extract st proof)) #u
         (letrec ((go (subr cb-eff (int strings) strings)
                    (lambda (k acc) (if (= k (array-length lits)) acc (go (+ k 1) (cons " " (cons (int->string (lit->int (array-ref lits k))) acc)))))))
-          (set (extract st proof-lines) (cons (string-concat (reverse-strings (cons "0\n" (go 0 (list prefix))))) (get (extract st proof-lines))))))))
+          (set (extract st proof-lines) (cons (string-concatenate (reverse (cons "0\n" (go 0 (list prefix))))) (get (extract st proof-lines))))))))
 
 "A clause's variables, as bits (v mod 32): if c subsumes d (but for a
 literal negated), c's bits are among d's."
@@ -392,7 +394,7 @@ tautology (a clause read is never empty: lockpick's #f)."
         (insertion-sort! v)
         (letrec ((go (subr cb-eff (int ints) normalized)
                    (lambda (i acc)
-                     (cond ((= i (array-length v)) (product (taut #f) (c (list->ivec (reverse-ints acc)))))
+                     (cond ((= i (array-length v)) (product (taut #f) (c (list->ivec (reverse acc)))))
                            ((and (pair? acc) (= (car acc) (array-ref v i))) (go (+ i 1) acc))
                            ((and (pair? acc) (= (car acc) (lit-neg (array-ref v i)))) (product (taut #t) (c (no-clause))))
                            (else (go (+ i 1) (cons (array-ref v i) acc)))))))

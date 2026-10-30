@@ -25,6 +25,8 @@
                     (m-blast (load-moduleof "blast.fx" m-sat m-rat m-term m-bv m-arith m-eval m-simplex))
                     (m-sexp (load-moduleof "sexp.fx" m-sat m-rat))
                     (m-smt (load-moduleof "smt.fx" m-sat m-rat m-term m-bv m-arith m-eval m-simplex m-blast))))
+(hide (define kit-strings (load-module "../kit/strings.fx"))
+      (import kit-strings string-concatenate))
 
 (hide (define kit-lists (load-module "../kit/lists.fx"))
       (import kit-lists map))
@@ -76,16 +78,16 @@ same name."
 (define* out! (subr cb-eff (session string) unit) (lambda (s x) (set (extract s out) (cons x (get (extract s out))))))
 "The output so far, which is then taken."
 (define* session-take-output! (subr cb-eff (session) string)
-  (lambda (s) (let ((o (get (extract s out)))) (begin (set (extract s out) nil) (string-concat (reverse-strings o))))))
+  (lambda (s) (let ((o (get (extract s out)))) (begin (set (extract s out) nil) (string-concatenate (reverse o))))))
 (define* session-take-errors! (subr cb-eff (session) string)
-  (lambda (s) (let ((o (get (extract s errout)))) (begin (set (extract s errout) nil) (string-concat (reverse-strings o))))))
+  (lambda (s) (let ((o (get (extract s errout)))) (begin (set (extract s errout) nil) (string-concatenate (reverse o))))))
 (define* session-errors? (subr (read @cb) (session) bool) (lambda (s) (get (extract s errors))))
 
 (define* bad? (subr (read @cb) (session) bool) (lambda (s) (not (string=? (get (extract s err)) ""))))
 "The command fails, with this message (the first failure is the one said)."
 (define* fail! (subr cb-eff (session string) int)
   (lambda (s m) (begin (if (bad? s) #u (set (extract s err) m)) 0)))
-(define* str* (subr cb-eff (strings) string) (lambda (l) (string-concat l)))
+(define* str* (subr cb-eff (strings) string) (lambda (l) (string-concatenate l)))
 
 (define* entry-serial (subr pure (entry) int)
   (lambda (e) (tagcase e (e-none () -1) (e-const (n t) n) (e-fun (n f) n))))
@@ -194,7 +196,7 @@ parameters."
                                            (let ((t (parse-term s (nth (items b) 1) locals)))
                                              (bind (cdr bs) (cons (product (name (sym-name (nth (items b) 0))) (term t)) acc)))))))))
                       (let ((bound (bind (items (nth l 1)) nil)))
-                        (if (bad? s) 0 (parse-term s (nth l 2) (append-locals (reverse-locals bound) locals)))))))
+                        (if (bad? s) 0 (parse-term s (nth l 2) (append-locals (reverse bound) locals)))))))
                ((is-sym? head "!")
                 (let ((t (parse-term s (nth l 1) locals)))
                   (if (bad? s) 0
@@ -226,9 +228,6 @@ parameters."
                            (e-none () (apply-builtin s name args)))))))
                (else (fail! s (string-append "invalid term " (sexp->string x)))))))))))
 
-(define* reverse-locals (subr spin (locals) locals)
-  (lambda (l) (letrec ((go (subr spin (locals locals) locals) (lambda (l acc) (if (null? l) acc (go (cdr l) (cons (car l) acc))))))
-                (go l nil))))
 (define* append-locals (subr spin (locals locals) locals)
   (lambda (a b) (if (null? a) b (cons (car a) (append-locals (cdr a) b)))))
 (define* ids-key (subr spin (ints) string)
@@ -294,7 +293,7 @@ for to_real)."
 (define* chain (subr cb-eff ((subr cb-eff (int int) int) ints) int)
   (lambda (mk args)
     (letrec ((go (subr cb-eff (ints ints) int)
-               (lambda (as acc) (if (or (null? as) (null? (cdr as))) (mk-and (reverse-ints acc)) (go (cdr as) (cons (mk (car as) (car (cdr as))) acc))))))
+               (lambda (as acc) (if (or (null? as) (null? (cdr as))) (mk-and (reverse acc)) (go (cdr as) (cons (mk (car as) (car (cdr as))) acc))))))
       (go args nil))))
 "Left-associative: (bvadd a b c) is (bvadd (bvadd a b) c)."
 (define* fold-left2 (subr cb-eff ((subr cb-eff (int int) int) int ints) int)
@@ -325,7 +324,7 @@ for to_real)."
                         ((null? args) (fail! s "invalid number of arguments to =>"))
                         (else (letrec ((go (subr cb-eff (ints) int)
                                          (lambda (as) (if (null? (cdr as)) (car as) (go (cons (mk-implies (car (cdr as)) (car as)) (cdr (cdr as))))))))
-                                (go (reverse-ints args))))))
+                                (go (reverse args))))))
        ((is "=") (cond ((< (list-length args) 2) (fail! s "invalid number of arguments to ="))
                        ((arith-args? args) (chain mk-arith-eq (coerce args)))
                        ((check-sorts s name args (term-sort (car args))) (chain mk-eq args))
@@ -705,7 +704,7 @@ copies times the bound."
                                                    #u))
                                              (e-none () #u))
                                            (go (cdr ds))))))))
-                        (go (reverse-defs (get (extract s defs)))))
+                        (go (reverse (get (extract s defs)))))
                       (out! s ")\n"))
                     #u)
                 cmd-go))
@@ -752,9 +751,6 @@ copies times the bound."
                      (set (extract s errout) (cons (str* (list "; " (sexp->string (car l)) "\n")) (get (extract s errout))))
                      cmd-go))))))))
 
-(define* reverse-defs (subr spin ((listof def acyclic)) (listof def acyclic))
-  (lambda (l) (letrec ((go (subr spin ((listof def acyclic) (listof def acyclic)) (listof def acyclic)) (lambda (l acc) (if (null? l) acc (go (cdr l) (cons (car l) acc))))))
-                (go l nil))))
 
 ;;; ------------------------------------------------------------ the loop
 

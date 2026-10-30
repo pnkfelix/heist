@@ -65,8 +65,8 @@
 (define* smt-assertions (subr cb-eff (smt) ints)
   (lambda (c)
     (letrec ((go (subr cb-eff ((listof smt-frame acyclic) ints) ints)
-               (lambda (fs acc) (if (null? fs) (the ints (append (reverse-ints (get (extract c base))) acc))
-                                    (go (cdr fs) (the ints (append (reverse-ints (get (extract (car fs) assertions))) acc)))))))
+               (lambda (fs acc) (if (null? fs) (the ints (append (reverse (get (extract c base))) acc))
+                                    (go (cdr fs) (the ints (append (reverse (get (extract (car fs) assertions))) acc)))))))
       (go (get (extract c frames)) nil))))
 
 "Assert a Boolean term."
@@ -122,7 +122,7 @@ fuzzed formula away from its small solutions."
   (lambda (c assumptions)
     (let* ((s (extract c solver)) (b (extract c blaster))
            (alits (blast-list! b assumptions))
-           (acts (reverse-ints (letrec ((go (subr cb-eff ((listof smt-frame acyclic)) ints)
+           (acts (reverse (letrec ((go (subr cb-eff ((listof smt-frame acyclic)) ints)
                                           (lambda (fs) (if (null? fs) nil (cons (extract (car fs) act) (go (cdr fs)))))))
                                  (go (get (extract c frames)))))))
       (begin
