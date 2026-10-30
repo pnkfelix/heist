@@ -533,23 +533,110 @@ or none."
       (string-append (if (and (> (string-length dir) 0) (char=? (string-ref dir 0) #\/)) "/" "")
                      (join (parts 0 0 nil) "")))))
 
-"The listing of directory `dir`: its path, then a line a name, a
-directory's with a `/`."
-(define* listing-text (subr (maxeff (io fs-read) spin) (string) string)
-  (lambda (dir)
+"A listing (dired's, Yank's): its directory's path; then a line a name,
+`../` first, each `M mode size time name`: a mark in column 0 (`*`
+marked, `D` flagged to delete), the kind and permissions as `ls -l`
+writes them, the size in bytes (none for a directory), when last
+modified, and the name, a directory's with a `/`, a link's with
+` -> target`. Where the name starts on its line."
+(define listing-name-column int 39)
+
+(define* two-digits (subr pure (int) string)
+  (lambda (n) (if (< n 10) (string-append "0" (int->string n)) (int->string n))))
+
+"`t`, seconds since the epoch, as `YYYY-MM-DD hh:mm` in UTC: FX-26 knows
+no time zone. (Howard Hinnant's `civil_from_days`.)"
+(define* utc-time-string (subr pure (int) string)
+  (lambda (t)
+    (let* ((days (if (< t 0) (- (quotient (+ t 1) 86400) 1) (quotient t 86400)))
+           (secs (- t (* days 86400)))
+           (z (+ days 719468))
+           (era (if (< z 0) (quotient (- z 146096) 146097) (quotient z 146097)))
+           (doe (- z (* era 146097)))
+           (yoe (quotient (- (+ (- doe (quotient doe 1460)) (quotient doe 36524)) (quotient doe 146096)) 365))
+           (doy (- doe (- (+ (* 365 yoe) (quotient yoe 4)) (quotient yoe 100))))
+           (mp (quotient (+ (* 5 doy) 2) 153))
+           (d (+ (- doy (quotient (+ (* 153 mp) 2) 5)) 1))
+           (m (if (< mp 10) (+ mp 3) (- mp 9)))
+           (y (+ (+ yoe (* era 400)) (if (<= m 2) 1 0))))
+      (string-append (int->string y) "-" (two-digits m) "-" (two-digits d) " "
+                     (two-digits (quotient secs 3600)) ":" (two-digits (quotient (remainder secs 3600) 60))))))
+
+(define-type file-kind (sumof (file unit) (directory unit) (symlink unit) (other unit)))
+(define-type file-facts (productof (kind file-kind) (size int) (modified int) (mode int)))
+
+"The kind and permission bits of a file, as `ls -l` writes them."
+(define* mode-string (subr pure (file-kind int) string)
+  (lambda (kind mode)
+    (let ((bit (lambda ((k int) (c string)) (if (= (bitwise-and mode k) 0) "-" c))))
+      (string-append (tagcase kind (file u "-") (directory u "d") (symlink u "l") (other u "?"))
+                     (bit 256 "r") (bit 128 "w") (bit 64 "x") (bit 32 "r") (bit 16 "w") (bit 8 "x")
+                     (bit 4 "r") (bit 2 "w") (bit 1 "x")))))
+
+"`s` right-aligned in `n` columns."
+(define* pad-left (subr spin (string int) string)
+  (lambda (s n) (if (>= (string-length s) n) s (pad-left (string-append " " s) n))))
+
+"The listing's line for `name` in `dir` (no newline), its mark `mark`."
+(define* listing-line (subr (maxeff (io fs-read) spin) (string string char) string)
+  (lambda (dir name mark)
+    (let ((path (string-append dir name)))
+      (tagcase (the (sumof (info file-facts) (failed io-error)) (file-info path))
+        (info i (let ((kind (extract i kind)))
+                  (string-append (char->string mark) " " (mode-string kind (extract i mode)) " "
+                                 (pad-left (tagcase kind (directory u "") (else y (int->string (extract i size)))) 8) " "
+                                 (utc-time-string (extract i modified)) " "
+                                 name
+                                 (tagcase kind
+                                   (directory u (if (string=? name "..") "" "/"))
+                                   (symlink u (tagcase (read-symlink path) (target t (string-append " -> " t)) (failed e "")))
+                                   (else y "")))))
+        (failed e (string-append (char->string mark) " " (pad-left "" (- listing-name-column 2)) name
+                                 "  (" (extract e detail) ")"))))))
+
+"The name on listing line `s`, if it has one: without a directory's `/`
+or a link's ` -> target`."
+(define* listing-name (subr spin (string) (sumof (none unit) (some string)))
+  (lambda (s)
+    (let ((n (string-length s)))
+      (if (<= n listing-name-column)
+          (sum none #u)
+          (let* ((rest (substring s listing-name-column n))
+                 (arrow (if (char=? (string-ref s 2) #\l) (string-search rest " -> " 0) -1))
+                 (name (if (>= arrow 0) (substring rest 0 arrow) rest))
+                 (m (string-length name)))
+            (cond ((string=? name "../") (sum some ".."))
+                  ((and (> m 1) (char=? (string-ref name (- m 1)) #\/)) (sum some (substring name 0 (- m 1))))
+                  (else (sum some name))))))))
+
+"The listing of directory `dir` (ending in `/`): marks kept on the names
+`marks` gives them; and the line `at` is on, its first file's if it is
+not there."
+(define* listing-of (subr (maxeff (io fs-read) (read @pf) (alloc @pf) spin) (string (listof (productof (name string) (mark char)) acyclic) string)
+                          (productof (text string) (line int)))
+  (lambda (dir marks at)
     (tagcase (the (sumof (names (listof string @pf)) (failed io-error)) (list-dir dir))
       (names ns
-        (letrec ((go (->* ((listof string @pf)) strings)
-                   (lambda (l)
-                     (if (null? l) nil
-                         (cons (string-append "  " (car l)
-                                              (tagcase (the (sumof (names (listof string @pf)) (failed io-error))
-                                                            (list-dir (string-append dir (car l))))
-                                                (names x "/") (failed e ""))
-                                              "\n")
-                               (go (cdr l)))))))
-          (apply string-append (the strings (cons (string-append "  " dir ":\n  ../\n") (go ns))))))
-      (failed e (string-append "  " dir ":\n  " (extract e detail) "\n")))))
+        (letrec ((mark-of (subr spin ((listof (productof (name string) (mark char)) acyclic) string) char)
+                   (lambda (ms n) (cond ((null? ms) #\space) ((string=? (extract (car ms) name) n) (extract (car ms) mark))
+                                        (else (mark-of (cdr ms) n)))))
+                 (go (subr (maxeff (io fs-read) (read @pf) spin) ((listof string @pf) int int) (productof (lines strings) (line int)))
+                   (lambda (l i found)
+                     (if (null? l) (product (lines nil) (line found))
+                         (let ((rest (go (cdr l) (+ i 1) (if (string=? (car l) at) i found))))
+                           (product (lines (cons (string-append (listing-line dir (car l) (mark-of marks (car l))) "\n")
+                                                 (extract rest lines)))
+                                    (line (extract rest line))))))))
+          (let ((files (go ns 2 (if (string=? at "..") 1 -1))))
+            (product (text (apply string-append
+                                  (the strings (cons (string-append "  " dir ":\n" (listing-line dir ".." #\space) "\n")
+                                                     (extract files lines)))))
+                     (line (if (< (extract files line) 0) (if (null? ns) 1 2) (extract files line)))))))
+      (failed e (product (text (string-append "  " dir ":\n  " (extract e detail) "\n")) (line 0))))))
+
+"The listing of directory `dir`, no marks."
+(define* listing-text (subr (maxeff (io fs-read) (read @pf) (alloc @pf) spin) (string) string)
+  (lambda (dir) (extract (listing-of dir nil "") text)))
 
 "Visit `file`: the buffer that visits it, shown; else, in a command, the
 file read into a new buffer -- or, if it is a directory, its listing."
@@ -569,7 +656,9 @@ file read into a new buffer -- or, if it is a directory, its listing."
                                            (name (string-append (base-name (substring dir 0 (- (string-length dir) 1))) "/"))
                                            (t (string->rope (listing-text dir)))
                                            ;; Point at the first name after `../`.
-                                           (b (spawn-actor name (with-point (new-buffer name dir t) (+ 2 (rope-line-start t 2))))))
+                                           (b (spawn-actor name (with-point (new-buffer name dir t)
+                                                                            (min (rope-line-end t (min 2 (- (rope-line-count t) 1)))
+                                                                                 (+ listing-name-column (rope-line-start t (min 2 (- (rope-line-count t) 1)))))))))
                                       (tell! fr (buffer-made fr name dir b)))
                                     (let* ((name (unique-name (extract f buffers) (base-name file)))
                                            (got (file-text file))

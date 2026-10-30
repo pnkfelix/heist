@@ -3,6 +3,9 @@
 # is a scenario -- its first line the file's text (\n for newlines), the
 # rest the keys, one argument of drive.py a line -- and ui/NAME.screen
 # what the screen must show at the end.
+# A scenario's second line may be `#cols N`: its screen N columns wide, not
+# 40. A listing's times and permission bits, which differ from run to run
+# (the clock, the umask), are shown as `YYYY-MM-DD hh:mm` and `.........`.
 #   ui.sh [NAME …]             those scenarios; all if none named
 #   ui.sh --update [NAME …]    their screens written instead (or UPDATE=1)
 here=$(cd "$(dirname "$0")" && pwd)
@@ -23,13 +26,17 @@ for k in "$@"; do
   printf 'second file\nhere\n' > "$tmp/$name/b.txt"
   # Keys: one drive.py argument per line (in a function, whose own
   # arguments they are, so the scenarios' list stays the script's).
+  cols=$(sed -n '2s/^#cols \([0-9]*\)$/\1/p' "$k"); skip=2
+  [ -n "$cols" ] && skip=3 || cols=40
   keys() { set --
     while IFS= read -r line; do set -- "$@" "$line"; done <<KEYS
-$(tail -n +2 "$k")
+$(tail -n +$skip "$k")
 KEYS
-    "$here/drive.py" --rows 12 --cols 40 $faces --file "$file" "$@"; }
+    "$here/drive.py" --rows 12 --cols $cols $faces --file "$file" "$@"; }
   # The scenario's directory, which listings show, as TMP.
-  got=$(cd "$tmp/$name" && keys | sed -e "s|$tmp/$name|TMP|g" -e "s|$tmp|TMP|g")
+  got=$(cd "$tmp/$name" && keys | sed -e "s|$tmp/$name|TMP|g" -e "s|$tmp|TMP|g" \
+         -e 's/[0-9]\{4\}-[0-9][0-9]-[0-9][0-9] [0-9][0-9]:[0-9][0-9]/YYYY-MM-DD hh:mm/g' \
+         -e 's/^\(. [-dl?]\)[-r][-w][-xsS][-r][-w][-xsS][-r][-w][-xtT] /\1......... /')
   if [ -n "$update" ]; then
     printf '%s\n' "$got" > "$here/ui/$name.screen"; echo "wrote $name.screen"
   elif [ "$got" = "$(cat "$here/ui/$name.screen")" ]; then

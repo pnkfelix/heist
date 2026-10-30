@@ -1,0 +1,13 @@
+  TMP/:                                   |
+  d.........          YYYY-MM-DD hh:mm ..                               |
+  -.........        6 YYYY-MM-DD hh:mm a.txt                            |
+  -.........       17 YYYY-MM-DD hh:mm d.txt                            |
+                                                                        |
+                                                                        |
+                                                                        |
+                                                                        |
+                                                                        |
+                                                                        |
+---- dired-rename/   L3                                                 |
+Moved b.txt                                                             |
+cursor 2,39

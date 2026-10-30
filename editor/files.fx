@@ -1,8 +1,16 @@
 ;;; files.fx: working across several files and buffers.
 ;;;
-;;;   RET in a listing     the file or directory on this line, visited
-;;;                        (C-x C-f on a directory makes a listing)
-;;;   g in a listing       the listing read again
+;;;   C-x d, C-x C-f DIR   a listing of a directory (Yank's dired): each
+;;;                        name's kind and permissions, size, time (UTC)
+;;;   RET, f, e, o, ^      in a listing: the file on this line visited (o:
+;;;                        in another window); ^ the directory above
+;;;   m, u, DEL, U, d      marked *, unmarked (DEL: up a line first), all
+;;;                        unmarked; flagged D
+;;;   x, D                 those flagged D deleted; D: those marked, or
+;;;                        this line's -- after asking; a directory whole
+;;;   R, C, +              those marked, or this line's, renamed (moved) or
+;;;                        copied; a directory made, and its parents
+;;;   g in a listing       the listing read again, marks and point kept
 ;;;   RET in *Buffer List* the buffer on this line, shown
 ;;;   C-x s                each file changed and not saved, saved if you say so
 ;;;   M-x revert-buffer    the buffer's file read again
@@ -21,7 +29,7 @@
 (hide (define kit-strings (load-module "../kit/strings.fx"))
       (import kit-strings string-prefix?)
       (define kit-lists (load-module "../kit/lists.fx"))
-      (import kit-lists map))
+      (import kit-lists map any))
 
 "The text of the line point is on in `st`, and its number."
 (define* point-line (subr spin (buffer) (productof (text string) (line int)))
@@ -38,14 +46,13 @@ directory the listing is of; o, in another window."
              (l (point-line st))
              (s (extract l text))
              (dir (extract st file)))
-        (if (or (= (extract l line) 0) (< (string-length s) 3))
-            (draw (with-echo f "No file on this line"))
-            (let* ((name (substring s 2 (string-length s)))
-                   (n (string-length name))
-                   (file (string-append dir (if (char=? (string-ref name (- n 1)) #\/) (substring name 0 (- n 1)) name))))
+        (tagcase (if (= (extract l line) 0) (sum none #u) (listing-name s))
+          (none u (draw (with-echo f "No file on this line")))
+          (some name
+            (let ((file (if (string=? name "..") (simplify-directory (string-append dir "../")) (string-append dir name))))
               (if other
                   (and-then fr ((other-window-or-split) fr f) (lambda ((fr (actor frame)) (f frame)) (visit-file fr f file)))
-                  (visit-file fr f file))))))))
+                  (visit-file fr f file)))))))))
 
 "^ in a listing: the directory above listed."
 (define* listing-up (subr pure () frame-action)
@@ -55,6 +62,248 @@ directory the listing is of; o, in another window."
         (if (string=? dir "/")
             (draw (with-echo f "No directory above /"))
             (visit-file fr f (simplify-directory (string-append dir "../"))))))))
+
+"A listing's names and their marks: those of its lines with a mark."
+(define* listing-marks (subr spin (rope) (listof (productof (name string) (mark char)) acyclic))
+  (lambda (t)
+    (letrec ((go (subr spin (int) (listof (productof (name string) (mark char)) acyclic))
+               (lambda (line)
+                 (if (>= line (- (rope-line-count t) 1)) nil
+                     (let ((s (rope-substring t (rope-line-start t line) (rope-line-end t line))))
+                       (tagcase (listing-name s)
+                         (some name (if (and (> (string-length s) 0) (not (char=? (string-ref s 0) #\space)) (not (string=? name "..")))
+                                        (cons (product (name name) (mark (string-ref s 0))) (go (+ line 1)))
+                                        (go (+ line 1))))
+                         (none u (go (+ line 1)))))))))
+      (go 2))))
+
+"Message for a listing: its text made `t`, point on line `line`, at its
+name. Not a change: not modified, not undone."
+(define* listing-refilled (subr pure (rope int) (msg buffer))
+  (lambda (t line)
+    (lambda ((b buffer))
+      (let* ((n (max 0 (min line (- (rope-line-count t) 1))))
+             (b2 (buffer-of b t (min (rope-line-end t n) (+ (rope-line-start t n) listing-name-column)) -1
+                            (+ 1 (extract b revision)) #f (extract b undo) (extract b subscribers))))
+        (reply-with b2 (notify b2))))))
+
+"In a command: listing buffer `b` (of `dir`) made again, its marks kept
+(`marks`), point at the file `at`, else at the first."
+(define* listing-refill! (subr cmd-eff ((actor buffer) string (listof (productof (name string) (mark char)) acyclic) string) unit)
+  (lambda (b dir marks at)
+    (let ((l (listing-of dir marks at)))
+      (tell! b (listing-refilled (string->rope (extract l text)) (extract l line))))))
+
+"g in a listing (Yank's dired-revert): the directory listed again, its
+marks kept on the files still there, point at the file it was at."
+(define* dired-revert (subr pure () frame-action)
+  (lambda ()
+    (lambda ((fr (actor frame)) (f frame))
+      (let* ((b (extract (selected-window f) buffer))
+             (st (actor-state b))
+             (here (tagcase (listing-name (extract (point-line st) text)) (some n n) (none u "")))
+             (marks (listing-marks (extract st text))))
+        (reply-with f (list (lambda () (listing-refill! b (extract st file) marks here))))))))
+
+"U in a listing: every mark and flag taken off."
+(define* dired-unmark-all (subr pure () command)
+  (lambda ()
+    (lambda ((b buffer))
+      (let* ((t (extract b text))
+             (t2 (letrec ((go (subr spin (rope int) rope)
+                            (lambda (t line)
+                              (if (>= line (- (rope-line-count t) 1)) t
+                                  (let ((ls (rope-line-start t line)))
+                                    (go (if (and (< ls (rope-length t)) (not (char=? (rope-ref t ls) #\space)))
+                                            (rope-insert (rope-delete t ls (+ ls 1)) ls " ")
+                                            t)
+                                        (+ line 1)))))))
+                   (go t 2))))
+        (done (buffer-of b t2 (extract b point) (extract b mark) (+ 1 (extract b revision)) (extract b modified)
+                         (extract b undo) (extract b subscribers)))))))
+
+"The names a listing's command acts on: those marked *, else the one on
+point's line."
+(define* listing-targets (subr spin (buffer) strings)
+  (lambda (st)
+    (let ((marked (letrec ((go (subr spin ((listof (productof (name string) (mark char)) acyclic)) strings)
+                             (lambda (ms) (cond ((null? ms) nil)
+                                                ((char=? (extract (car ms) mark) #\*) (cons (extract (car ms) name) (go (cdr ms))))
+                                                (else (go (cdr ms)))))))
+                    (go (listing-marks (extract st text))))))
+      (if (pair? marked) marked
+          (let ((l (point-line st)))
+            (tagcase (if (< (extract l line) 2) (sum none #u) (listing-name (extract l text)))
+              (some n (if (string=? n "..") nil (list n)))
+              (none u nil)))))))
+
+"Names `ns` said: the one, or how many."
+(define* describe-names (subr spin (strings) string)
+  (lambda (ns) (if (and (pair? ns) (null? (cdr ns))) (car ns) (string-append (int->string (length ns)) " files"))))
+
+"What the listings' file operations do: read and change the files, and
+read the names `list-dir` gives (at @pf)."
+(define-effect fs-eff (maxeff (io fs-read) (io fs-write) (read @pf) (alloc @pf) spin))
+"What a file operation gave: done, or why not."
+(define-type fs-outcome (sumof (done unit) (failed string)))
+(define* fs-outcome-of (subr pure (string (sumof (done unit) (failed io-error))) fs-outcome)
+  (lambda (path r) (tagcase r (done u (sum done #u)) (failed e (sum failed (string-append path ": " (extract e detail)))))))
+(define* directory? (subr (io fs-read) (string) bool)
+  (lambda (path) (tagcase (the (sumof (info file-facts) (failed io-error)) (file-info path))
+                   (info i (tagcase (extract i kind) (directory u #t) (else y #f)))
+                   (failed e #f))))
+
+"`path` deleted, and if it is a directory (not a link to one), what is in
+it first (rm -r)."
+(define* delete-tree (subr fs-eff (string) fs-outcome)
+  (lambda (path)
+    (if (directory? path)
+        (tagcase (the (sumof (names (listof string @pf)) (failed io-error)) (list-dir path))
+          (names ns (letrec ((go (subr fs-eff ((listof string @pf)) fs-outcome)
+                                   (lambda (l) (if (null? l) (fs-outcome-of path (delete-directory path))
+                                                   (tagcase (delete-tree (string-append path "/" (car l)))
+                                                     (done u (go (cdr l)))
+                                                     (failed m (sum failed m)))))))
+                      (go ns)))
+          (failed e (sum failed (string-append path ": " (extract e detail)))))
+        (fs-outcome-of path (delete-file path)))))
+
+"`from` copied to `to`, and if it is a directory, what is in it (cp -R)."
+(define* copy-tree (subr fs-eff (string string) fs-outcome)
+  (lambda (from to)
+    (if (directory? from)
+        (tagcase (create-directory to)
+          (done u (tagcase (the (sumof (names (listof string @pf)) (failed io-error)) (list-dir from))
+                    (names ns (letrec ((go (subr fs-eff ((listof string @pf)) fs-outcome)
+                                             (lambda (l) (if (null? l) (sum done #u)
+                                                             (tagcase (copy-tree (string-append from "/" (car l)) (string-append to "/" (car l)))
+                                                               (done u (go (cdr l)))
+                                                               (failed m (sum failed m)))))))
+                                (go ns)))
+                    (failed e (sum failed (string-append from ": " (extract e detail))))))
+          (failed e (sum failed (string-append to ": " (extract e detail)))))
+        (fs-outcome-of from (copy-file from to)))))
+
+"Directory `path` made, and its parents that are not (mkdir -p)."
+(define* make-directories (subr fs-eff (string) fs-outcome)
+  (lambda (path)
+    (let ((n (string-length path)))
+      (letrec ((go (subr fs-eff (int) fs-outcome)
+                 ;; Each prefix of `path` ending at a `/` (or its end), from `i`.
+                 (lambda (i)
+                   (cond ((> i n) (sum done #u))
+                         ((or (= i n) (char=? (string-ref path i) #\/))
+                          (let ((p (substring path 0 i)))
+                            (if (or (string=? p "") (directory? p))
+                                (go (+ i 1))
+                                (tagcase (fs-outcome-of p (create-directory p))
+                                  (done u (go (+ i 1)))
+                                  (failed m (sum failed m))))))
+                         (else (go (+ i 1)))))))
+        (go 1)))))
+
+"Each of `ns` done by `op`, in order; the first failure stops it."
+(define* each-file (subr fs-eff (strings (subr fs-eff (string) fs-outcome)) fs-outcome)
+  (lambda (ns op)
+    (if (null? ns) (sum done #u)
+        (tagcase (op (car ns)) (done u (each-file (cdr ns) op)) (failed m (sum failed m))))))
+
+"After a listing's operation: the listing of `dir` made again, marks
+`marks` kept, and `said` (or the failure) in the echo area."
+(define* after-listing-op! (subr cmd-eff ((actor frame) (actor buffer) string (listof (productof (name string) (mark char)) acyclic) string fs-outcome string) unit)
+  (lambda (fr b dir marks at outcome said)
+    (begin (listing-refill! b dir marks at)
+      (tell! fr (echo (tagcase outcome (done u said) (failed m m)))))))
+
+"A question answered y or n, then `yes` done."
+(define* if-yes (subr turn-eff (frame string frame-action) (reply frame))
+  (lambda (f question yes)
+    (read-string f (string-append question "(y or n) ") ""
+                 (lambda ((fr (actor frame)) (f frame) (answer string))
+                   (if (string=? answer "y") (yes fr f) (draw (with-echo f "")))))))
+
+"D in a listing: the files marked deleted, or the one on point's line,
+after asking; x, those flagged D. A directory with what is in it."
+(define* dired-delete (subr pure (bool) frame-action)
+  (lambda (flagged)
+    (lambda ((fr (actor frame)) (f frame))
+      (let* ((b (extract (selected-window f) buffer))
+             (st (actor-state b))
+             (dir (extract st file))
+             (marks (listing-marks (extract st text)))
+             (ns (if flagged
+                     (letrec ((go (subr spin ((listof (productof (name string) (mark char)) acyclic)) strings)
+                                (lambda (ms) (cond ((null? ms) nil)
+                                                   ((char=? (extract (car ms) mark) #\D) (cons (extract (car ms) name) (go (cdr ms))))
+                                                   (else (go (cdr ms)))))))
+                       (go marks))
+                     (listing-targets st))))
+        (cond ((and flagged (null? ns)) (draw (with-echo f "(No deletions requested)")))
+              ((null? ns) (draw (with-echo f "No file on this line")))
+              (else
+               (if-yes f (string-append "Delete " (describe-names ns) (if flagged " flagged? " "? "))
+                       (lambda ((fr (actor frame)) (f frame))
+                         (reply-with f (list (lambda ()
+                                               (after-listing-op! fr b dir marks ""
+                                                                  (each-file ns (lambda ((n string)) (delete-tree (string-append dir n))))
+                                                                  (string-append "Deleted " (describe-names ns))))))))))))))
+
+"R (`copy` #f) and C (#t) in a listing: the files marked, or the one on
+point's line, renamed (moved) or copied to a name read: one, to it (into
+it, if a directory); several, into the directory read."
+(define* dired-move-or-copy (subr pure (bool) frame-action)
+  (lambda (copy)
+    (lambda ((fr (actor frame)) (f frame))
+      (let* ((b (extract (selected-window f) buffer))
+             (st (actor-state b))
+             (dir (extract st file))
+             (marks (listing-marks (extract st text)))
+             (ns (listing-targets st)))
+        (if (null? ns)
+            (draw (with-echo f "No file on this line"))
+            (read-completing f (string-append (if copy "Copy " "Rename ") (describe-names ns) " to: ") dir (sum files #u)
+                             (lambda ((fr (actor frame)) (f frame) (typed string))
+                               (let ((to (if (and (> (string-length typed) 0) (char=? (string-ref typed 0) #\/)) typed (string-append dir typed))))
+                                 (reply-with f (list (lambda ()
+                                                       (let* ((into (directory? to))
+                                                              (target (lambda ((n string))
+                                                                        (if into (string-append to (if (char=? (string-ref to (- (string-length to) 1)) #\/) "" "/") n) to)))
+                                                              ;; A directory into itself, or below itself, would
+                                                              ;; never end (cp -R makes z/z/z/...).
+                                                              (inside (lambda ((n string))
+                                                                        (let ((src (simplify-directory (string-append dir n "/")))
+                                                                              (dst (simplify-directory (string-append (target n) "/"))))
+                                                                          (and (>= (string-length dst) (string-length src))
+                                                                               (string=? (substring dst 0 (string-length src)) src)))))
+                                                              (outcome (cond ((and (pair? (cdr ns)) (not into))
+                                                                              (sum failed (string-append to " is not a directory")))
+                                                                             ((any inside ns)
+                                                                              (sum failed (string-append "Cannot " (if copy "copy " "move ")
+                                                                                                         (describe-names ns)
+                                                                                                         " into itself")))
+                                                                             (else
+                                                                           (each-file ns (lambda ((n string))
+                                                                                           (if copy
+                                                                                               (copy-tree (string-append dir n) (target n))
+                                                                                               (fs-outcome-of (string-append dir n)
+                                                                                                              (rename-file (string-append dir n) (target n))))))))))
+                                                         (after-listing-op! fr b dir marks "" outcome
+                                                                            (string-append (if copy "Copied " "Moved ") (describe-names ns)))))))))))))))
+
+"+ in a listing: a directory made, and its parents if need be."
+(define* dired-create-directory (subr pure () frame-action)
+  (lambda ()
+    (lambda ((fr (actor frame)) (f frame))
+      (let* ((b (extract (selected-window f) buffer))
+             (st (actor-state b))
+             (dir (extract st file))
+             (marks (listing-marks (extract st text))))
+        (read-completing f "Create directory: " dir (sum files #u)
+                         (lambda ((fr (actor frame)) (f frame) (typed string))
+                           (let ((path (if (and (> (string-length typed) 0) (char=? (string-ref typed 0) #\/)) typed (string-append dir typed))))
+                             (reply-with f (list (lambda ()
+                                                   (after-listing-op! fr b dir marks (base-name path) (make-directories path)
+                                                                      (string-append "Created " path))))))))))))
 
 "The buffer *Buffer List* names on line `s` (line `line` of it) -- the
 longest name the line has after its flags -- if there is one."
@@ -84,24 +333,29 @@ window; o, in another."
           (found info (if other (show-other-window fr f (extract info actor)) (show-buffer fr f (extract info actor))))
           (none u (draw (with-echo f "No buffer on this line"))))))))
 
-"In *Buffer List*: this line's flag (column 0) made `c` -- D, to be
-killed by x; S, to be saved; a space, neither -- then point moved `move`
-lines; or, `move` -1 and `before`, moved up first (DEL). Not a change of
+"In a list whose items start on line `first` (*Buffer List*'s 1, a
+listing's 2): this line's flag (column 0) made `c` -- in *Buffer List*
+D, to be killed by x, S, to be saved; in a listing * marked, D flagged to
+delete; a space, neither -- then point moved `move` lines, to column
+`column`; or, if `before`, moved up a line first (DEL). Not a change of
 the buffer's: not modified, not undone."
-(define* buffer-list-flag (subr pure (char int bool) command)
-  (lambda (c move before)
+(define* line-flag (subr pure (int int char int bool) command)
+  (lambda (first column c move before)
     (lambda ((b buffer))
       (let* ((t (extract b text))
-             (last (- (rope-line-count t) 2))         ; the last buffer's line (the text ends with a newline)
+             (last (- (rope-line-count t) 2))         ; the last item's line (the text ends with a newline)
              (here (rope-line-of t (extract b point)))
-             (line (if before (max 1 (- here 1)) here)))
-        (if (or (< line 1) (> line last))
-            (done (with-point b (rope-line-start t (max 1 (min last line)))))
+             (line (if before (max first (- here 1)) here))
+             (at (lambda ((t2 rope) (n int)) (min (rope-line-end t2 n) (+ (rope-line-start t2 n) column)))))
+        (if (or (< line first) (> line last))
+            (done (with-point b (at t (max first (min last line)))))
             (let* ((ls (rope-line-start t line))
                    (t2 (rope-insert (rope-delete t ls (+ ls 1)) ls (char->string c)))
-                   (to (if before line (max 1 (min last (+ line move))))))
-              (done (buffer-of b t2 (rope-line-start t2 to) (extract b mark) (+ 1 (extract b revision)) (extract b modified)
+                   (to (if before line (max first (min last (+ line move))))))
+              (done (buffer-of b t2 (at t2 to) (extract b mark) (+ 1 (extract b revision)) (extract b modified)
                                (extract b undo) (extract b subscribers)))))))))
+(define* buffer-list-flag (subr pure (char int bool) command)
+  (lambda (c move before) (line-flag 1 0 c move before)))
 
 "x in *Buffer List*: each buffer flagged S saved, each flagged D killed;
 then the list made again."
@@ -244,6 +498,17 @@ the selected window staying selected."
 (define-command! "dired-find-file" (sum on-frame (listing-visit #f)))
 (define-command! "dired-find-file-other-window" (sum on-frame (listing-visit #t)))
 (define-command! "dired-up-directory" (sum on-frame (listing-up)))
+(define-command! "dired-mark" (sum on-buffer (line-flag 2 listing-name-column #\* 1 #f)))
+(define-command! "dired-unmark" (sum on-buffer (line-flag 2 listing-name-column #\space 1 #f)))
+(define-command! "dired-unmark-backward" (sum on-buffer (line-flag 2 listing-name-column #\space -1 #t)))
+(define-command! "dired-unmark-all-marks" (sum on-buffer (dired-unmark-all)))
+(define-command! "dired-flag-file-deletion" (sum on-buffer (line-flag 2 listing-name-column #\D 1 #f)))
+(define-command! "dired-do-flagged-delete" (sum on-frame (dired-delete #t)))
+(define-command! "dired-do-delete" (sum on-frame (dired-delete #f)))
+(define-command! "dired-do-rename" (sum on-frame (dired-move-or-copy #f)))
+(define-command! "dired-do-copy" (sum on-frame (dired-move-or-copy #t)))
+(define-command! "dired-create-directory" (sum on-frame (dired-create-directory)))
+(define-command! "dired-revert" (sum on-frame (dired-revert)))
 (define-command! "Buffer-menu-this-window" (sum on-frame (buffer-list-visit #f)))
 (define-command! "Buffer-menu-other-window" (sum on-frame (buffer-list-visit #t)))
 (define-command! "Buffer-menu-delete" (sum on-buffer (buffer-list-flag #\D 1 #f)))
@@ -256,7 +521,17 @@ the selected window staying selected."
 (define-command! "revert-buffer" (sum on-frame (revert-buffer)))
 (define-command! "save-some-buffers" (sum on-frame (save-some-buffers)))
 (define-buffer-key! "<listing>" "RET" "dired-find-file")
-(define-buffer-key! "<listing>" "g" "revert-buffer")
+(define-buffer-key! "<listing>" "g" "dired-revert")
+(define-buffer-key! "<listing>" "m" "dired-mark")
+(define-buffer-key! "<listing>" "u" "dired-unmark")
+(define-buffer-key! "<listing>" "DEL" "dired-unmark-backward")
+(define-buffer-key! "<listing>" "U" "dired-unmark-all-marks")
+(define-buffer-key! "<listing>" "d" "dired-flag-file-deletion")
+(define-buffer-key! "<listing>" "x" "dired-do-flagged-delete")
+(define-buffer-key! "<listing>" "D" "dired-do-delete")
+(define-buffer-key! "<listing>" "R" "dired-do-rename")
+(define-buffer-key! "<listing>" "C" "dired-do-copy")
+(define-buffer-key! "<listing>" "+" "dired-create-directory")
 (define-buffer-key! "<listing>" "f" "dired-find-file")
 (define-buffer-key! "<listing>" "e" "dired-find-file")
 (define-buffer-key! "<listing>" "o" "dired-find-file-other-window")

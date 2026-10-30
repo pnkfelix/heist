@@ -1,0 +1,13 @@
+  TMP/:                                   |
+  d.........          YYYY-MM-DD hh:mm ..                               |
+* -.........        6 YYYY-MM-DD hh:mm a.txt                            |
+  -.........       17 YYYY-MM-DD hh:mm b.txt                            |
+                                                                        |
+                                                                        |
+                                                                        |
+                                                                        |
+                                                                        |
+                                                                        |
+---- dired-revert/   L4                                                 |
+                                                                        |
+cursor 3,39
