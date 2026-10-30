@@ -58,9 +58,9 @@
   (lambda (x) (tagcase x (pair p (s7-an-tail (get (extract p cdr)))) (else y y))))
 (define* s7-an-lookup (subr spin (symbol s7-binders) (sumof (none unit) (found s7-span)))
   (lambda (s env)
-    (cond ((null? env) (sum none #u))
-          ((eq? (extract (car env) name) s) (sum found (extract (car env) span)))
-          (else (s7-an-lookup s (cdr env))))))
+    (tagcase (find (lambda ((b s7-binder)) (eq? (extract b name) s)) env)
+      (some b (sum found (extract b span)))
+      (none u (sum none #u)))))
 "Formals `x` (read at `span`): their binders, a dotted rest's too."
 (define* s7-an-formals (subr s7-eff (s7-value s7-span) s7-binders)
   (lambda (x span)

@@ -313,7 +313,7 @@ boolean, ()), not only its kind."
 "A body's last form (its value)."
 (define* sc-last-form (subr spin (s7-node) s7-node)
   (lambda (n) (tagcase (extract n form)
-                (n-seq ns (if (pair? ns) (sc-last-form (car (reverse ns))) n))
+                (n-seq ns (if (pair? ns) (sc-last-form (last ns)) n))
                 (else y n))))
 "Whether `(lambda (t) (if t t b))` applied to one argument: `or`'s shape."
 (define* sc-or-shape? (subr spin ((listof s7-lambda acyclic) s7-nodes) bool)
@@ -333,7 +333,7 @@ ending in one; an `if` neither branch of which can."
                   (n-global g (let ((name (s7-symbol-name (extract g name))))
                                 (and (member? name (list "error" "raise" "exit") string=?) (not (cf-global-defined? name)))))
                   (else y #f)))
-      (n-seq ns (and (pair? ns) (sc-noreturn? (car (reverse ns)))))
+      (n-seq ns (and (pair? ns) (sc-noreturn? (last ns))))
       (n-if x (and (sc-noreturn? (extract x then)) (sc-noreturn? (extract x else))))
       (else y #f))))
 

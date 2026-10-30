@@ -34,7 +34,7 @@
 (define* union-all (subr spin ((listof vals acyclic)) vals)
   (lambda (l) (if (null? l) nil (vals-union (car l) (union-all (cdr l))))))
 (define* last-vals (subr spin ((listof vals acyclic)) vals)
-  (lambda (l) (cond ((null? l) nil) ((null? (cdr l)) (car l)) (else (last-vals (cdr l))))))
+  (lambda (l) (if (null? l) nil (last l))))
 (define* closure-val? (subr pure (int) bool) (lambda (x) (and (>= x 0) (= (remainder x 4) 0))))
 (define* site-val? (subr pure (int) bool) (lambda (x) (and (>= x 0) (= (remainder x 4) 1))))
 (define* kind-val? (subr pure (int) bool) (lambda (x) (and (>= x 0) (= (remainder x 4) 2))))

@@ -99,7 +99,7 @@ ended well."
                           (let ((c (string-ref s (+ i 1))))
                             (go (+ i 2) (cons (cond ((char=? c #\n) #\newline) ((char=? c #\t) #\tab) (else c)) acc))))
                          (else (go (+ i 1) (cons (string-ref s i) acc)))))))
-        (list->string (reverse (go 0 nil)))))))
+        (reverse-list->string (go 0 nil))))))
 "A request's word, and its fields, unescaped."
 (define* s7-request (subr spin (string) (productof (word string) (fields s7-strings)))
   (lambda (line)

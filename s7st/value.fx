@@ -41,9 +41,9 @@ FX-26 has no primitive for it)."
 (define s7-kit-numbers (load-module "../kit/numbers.fx"))
 (import s7-kit-numbers gcd expt exact-integer-sqrt floor-quotient number->string ratio->f64)
 (define s7-kit-lists (load-module "../kit/lists.fx"))
-(import s7-kit-lists map every any list-index member? take list-tail list-sort)
+(import s7-kit-lists map every any find list-index member? take list-tail list-sort vector->list)
 (define s7-kit-strings (load-module "../kit/strings.fx"))
-(import s7-kit-strings string-concatenate)
+(import s7-kit-strings string-concatenate reverse-list->string)
 (define s7-kit-chars (load-module "../kit/chars.fx"))
 (import s7-kit-chars digit-value char-delimiter? hex-string written-char)
 

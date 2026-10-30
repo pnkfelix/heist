@@ -23,7 +23,7 @@
 (import cf-tables make-table table-ref table-set! (type table))
 
 "kit's (../kit/) further procedures, from the modules s7st loaded."
-(import s7-kit-lists filter list=?)
+(import s7-kit-lists filter remove list=? last delete-duplicates)
 (import s7-kit-strings string-join string-split)
 
 (define-type ints (listof int acyclic))
@@ -268,13 +268,13 @@ makes, if it makes one, so said."
     (tagcase x
       (k-lam (l) (set cf-poly-lambdas (cons (product (number l) (binders binders)) (get cf-poly-lambdas))))
       (k-alloc (s inits) (set cf-poly-sites (cons (product (number s) (binders binders)) (get cf-poly-sites))))
-      (k-seq (xs) (if (pair? xs) (cf-poly! (car (reverse xs)) binders) #u))
+      (k-seq (xs) (if (pair? xs) (cf-poly! (last xs) binders) #u))
       (else y #u))))
 "The lambda core `x` makes, if it makes one (-1: none)."
 (define* cf-lambda-of (subr spin (core) int)
   (lambda (x) (tagcase x
                 (k-lam (l) l)
-                (k-seq (xs) (if (pair? xs) (cf-lambda-of (car (reverse xs))) -1))
+                (k-seq (xs) (if (pair? xs) (cf-lambda-of (last xs)) -1))
                 (else y -1))))
 (define* cf-poly-binders (subr spin ((listof cf-poly acyclic) int) ints)
   (lambda (l n) (cond ((null? l) nil) ((= (extract (car l) number) n) (extract (car l) binders)) (else (cf-poly-binders (cdr l) n)))))

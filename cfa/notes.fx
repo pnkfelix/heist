@@ -24,10 +24,7 @@
 "Values `s`, said: each once (a lambda made in several contours is one)."
 (define* cf-say (subr cf-eff (vals) string)
   (lambda (s)
-    (letrec ((go (subr cf-eff (vals strings) strings)
-               (lambda (s acc) (if (null? s) (reverse acc)
-                                   (let ((t (cf-say-val (car s)))) (go (cdr s) (if (member? t acc string=?) acc (cons t acc))))))))
-      (string-join (go s nil) " | "))))
+    (string-join (delete-duplicates (map cf-say-val s) string=?) " | ")))
 
 (define* note< (subr pure (cf-note cf-note) bool)
   (lambda (a b) (or (< (extract a start) (extract b start))
@@ -54,13 +51,8 @@ name if none reach it."
 "The effects of the lambdas in callees `s`, each once, said."
 (define* cf-say-effects (subr cf-eff (vals) string)
   (lambda (s)
-    (letrec ((go (subr cf-eff (vals strings) strings)
-               (lambda (s acc) (cond ((null? s) (reverse acc))
-                                     ((closure-val? (car s))
-                                      (let ((e (cf-say-effect (closure-lambda (quotient (car s) 4)))))
-                                        (go (cdr s) (if (or (string=? e "") (member? e acc string=?)) acc (cons e acc)))))
-                                     (else (go (cdr s) acc))))))
-      (string-join (go s nil) " | "))))
+    (let ((es (map (lambda ((v int)) (cf-say-effect (closure-lambda (quotient v 4)))) (filter closure-val? s))))
+      (string-join (delete-duplicates (remove (lambda ((e string)) (string=? e "")) es) string=?) " | "))))
 
 "Whether calls with callees `s` are worth a note: one may be a lambda, or
 code not known, or there is more than one."

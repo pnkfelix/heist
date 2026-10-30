@@ -293,11 +293,11 @@ may make `...` with `(... ...)`, for a macro it defines)."
 
 (define* s7-lookup-match (subr spin (symbol s7-matches) s7-match)
   (lambda (name b)
-    (cond ((null? b) (sum many nil))
-          ((eq? (extract (car b) name) name) (extract (car b) value))
-          (else (s7-lookup-match name (cdr b))))))
+    (tagcase (find (lambda ((m (productof (name symbol) (value s7-match)))) (eq? (extract m name) name)) b)
+      (some m (extract m value))
+      (none u (sum many nil)))))
 (define* s7-bound-match? (subr spin (symbol s7-matches) bool)
-  (lambda (name b) (and (pair? b) (or (eq? (extract (car b) name) name) (s7-bound-match? name (cdr b))))))
+  (lambda (name b) (any (lambda ((m (productof (name symbol) (value s7-match)))) (eq? (extract m name) name)) b)))
 
 "Each variable of `vars` bound to the sequence of what it matched in each
 of `all`."
