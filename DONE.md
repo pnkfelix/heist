@@ -4105,3 +4105,71 @@ the answer or the `io-error`. Primitives 525 and 526, `world.rs`'s
 `file_info` and `read_symlink`. Test: `fixpt-cli/tests/io.rs`'s
 `files_inspected` (`programs/io/fs.fx`: a file, a directory, a link and
 its target, a missing path), on each kind of machine.
+
+## 186. `stage`, step 1: code a program gives, checked and made a procedure (the user's, 2026-10-30)
+
+`docs/research/eval.md`'s `stage`, all three steps in one form, `(stage m
+E R code (p body …) (why else …))`: `code` a `datum` (the user's, an
+s-expression, not a string), checked as the program runs as `(with m
+code)` of type `R` whose evaluation's effect is within `E`, in the standard
+environment and `m`'s names alone; `p` a `(subr E () R)` that runs it, or
+`why` a `stage-failure`, `(productof (kind (sumof (unread unit) (malformed
+unit) (refused unit) (stale unit))) (message string) (start int) (end
+int))`, placed in `code` as written. The form is `(tagcase ((proj %stage E
+R) m code) (ok p …) (failed why …))`, in both parsers; `%stage`'s effect
+is `(maxeff stage spin)`, `stage` a new effect atom, in both checkers.
+- **The types at run time**: the checker written in FX-26 notes, at the
+  code, `m`'s type, `E` and `R`, printed with no `define-type` named
+  (`k-show-ty-whole`), a fact `n-staged`; both compilers written in FX-26
+  give them to `%fx26-stage` with the code, in a product.
+- **The checking**: a front end of its own, the conductor's modules made
+  again (`make-front-end`, which `lib.rs`'s `conductor` makes of the
+  conductor's `let*`, written once; `make-stage-check`; why not the plain
+  way, §187), made at the first `stage` and kept, so that the program's own checker keeps its state. It reads
+  the code alone (one datum, so it cannot reach past what wraps it),
+  wraps it as `(the (subr pure (M) (subr E () R)) (lambda ((stage-module
+  M)) (lambda () (with stage-module code))))`, parses, checks and
+  compiles it as the program's forms are (its convention, register
+  code); `stage.rs` runs the word on the program's machine and gives it
+  `m`.
+- **Native code and collections**: `%fx26-stage` runs code, which
+  collects; native code calls it as it calls what is not native code
+  (`call_foreign_with`), and the cellular machines keep their stacks as
+  roots meanwhile (`prim::reenters`).
+- **Not yet**: `rs-scheme-vm` and `fx-ast-eval` refuse every `stage`;
+  checking is not interruptible; `certify`, `install` and sessions (§186's
+  list).
+
+Test: `fixpt-cli/tests/stage.rs` (`programs/stage/stage.fx`: accepted, a
+type refused, a name unbound, an effect beyond `E`, a definition, I/O
+within `E`, a procedure made, and thirty made while values wait on the
+stack, so that collections come as the checker runs), on every machine.
+
+## 187. The front end ran the program's tasks (found 2026-10-30, fixed the same day)
+
+Found making `stage` (§186): with the conductor's `let*` made by a
+procedure, `(define front-end-entries (make-front-end))`,
+`programs/preempt/allocating-short.fx` on `fx-regs-rsjit-cellcc` at
+`FIXPT_SLICE` 13 or less failed, `cellular word: no routine is numbered
+-87`, when a form came after one that left a process preempted.
+- **Why**: the program and the front end share a runtime, and so the
+  scheduler's state. Compiling the next form, the front end (native code,
+  `direct.rs`) polled; the program's task waited, the front end's run was
+  taken for the first task, and the scheduler's `preempt` was a procedure
+  that machine could call (`own`). So it switched to the program's task
+  inside the front end's run: native code calling a closure whose word is
+  register code, which `call_value` runs on the Rust cellular machine,
+  which reads register cells as cellular ones. With the `let*` at top
+  level, `preempt` was not one native code calls, by chance.
+- **The fix**: a call of the front end is quiet (`Heap::quiet_enter`), in
+  `%run-front-end` and `prim::call_front_end`: no poll in it preempts, for
+  any scheduler's task. The front end is not the program.
+- **The conductor's `let*` stays at top level** all the same, with
+  `make-front-end` made of its text (`lib.rs`'s `conductor`): modules bound
+  at top level are known to the compiler; made in a procedure, `fixpt
+  check` of a large program took 3.58 s for 3.30 s.
+
+Test: `fixpt-cli/tests/stage.rs`'s `a_process_stages_while_another_runs`
+(`programs/stage/in-a-process.fx`: one process stages five times while
+another loops, slices of 7 polls), on every machine that stages; without
+the fix, the native one fails, `no such task`.

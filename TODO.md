@@ -4241,3 +4241,34 @@ far:
   today; module scoping is the answer, not keywords.
 - `match` (nested patterns, literals, guards) later, as a typed macro: its
   patterns are binders, Herman's binding signatures' case.
+
+## 186. `stage`: `eval` for programs (the user's, 2026-10-28)
+
+A program reading, checking and running code it is given, against a module
+it chooses, at a result type and an effect written at the form, giving a
+procedure of no parameters of that effect and result; refusals as values;
+sessions for definitions that last. Designed in `docs/research/eval.md`,
+which answers §105 with (b)'s meaning on (a)'s machinery, and replaces
+`PLAN.md`'s item 5 (`any`): the caller names the effect bound. Decided with
+the user: the name `stage`, as `expand` (may `spin`: macros), `certify`
+(every analysis that accepts; checked against a module's type, giving a
+transmissible certificate) and `install` (compiling and linking against a
+module's value); checking assumed to end; a `stage` effect atom on
+`install` alone, to try how viral it is;
+checking interruptible and cancellable, so the checker written in FX-26 is
+the one to run; macros by `syntax-rules` with syntax classes. Kayak's
+boundary class is deferred until kayak builds it. (Filed as §158 on the
+branch the note was written on, a number `main` had used since.)
+
+**Step 1 done (2026-10-30, `DONE.md` §186)**: `(stage m E R code (p body)
+(why else))` on the machines that compile with the compilers written in
+FX-26; `code` a datum. Left, in order:
+1. `certify` and `install` apart, and `(certificate M E R)`; `expand`
+   (no macros yet: a datum given as a string, read).
+2. Interruptible and cancellable checking: the front end's call made from
+   the program's task, not inside a primitive.
+3. Types `M`, `E` or `R` that name the program's own: generative types,
+   `(select m t)`, regions it declares; the refusal of an effect beyond
+   `E` said of the code, not of the wrapping `(subr E () R)`.
+4. `rs-scheme-vm` and `fx-ast-eval`, which refuse every `stage` now.
+5. Sessions (`docs/research/eval.md`, "Sessions").
