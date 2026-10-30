@@ -35,8 +35,8 @@ from, and what the last TAB said (shown after the text)."
 (define-type minibuffer
   (productof (prompt string) (text string) (point int) (then frame-action-of-string)
              (complete completion) (hint string)))
-"An incremental search: its direction, its text, and whether it fails."
-(define-type isearch (productof (forward bool) (text string) (failing bool)))
+"An incremental search: its prompt, as the buffer searching last said it."
+(define-type isearch (productof (prompt string)))
 "What the bottom line is doing: showing the echo area, reading in the
 minibuffer, or searching."
 (define-type mini-state (sumof (none unit) (reading minibuffer) (searching isearch)))
@@ -195,10 +195,7 @@ or minibuffer; and the command that has the painter show it."
                                        ;; Its start left off, if point would be past the right edge.
                                        (skip (max 0 (- column (- w 2)))))
                                   (product (text (substring all skip (string-length all))) (column (- column skip)))))
-                     (searching i (product (text (string-append (if (extract i failing) "Failing " "")
-                                                                (if (extract i forward) "I-search: " "I-search backward: ")
-                                                                (extract i text)))
-                                           (column -1)))
+                     (searching i (product (text (extract i prompt)) (column -1)))
                      (none u (product (text (extract f echo)) (column -1)))))
            (s (make-screen (extract f height) w
                            (append (extract body rows) (list (make-row w (extract bottom text) nil)))
@@ -854,26 +851,27 @@ the name comes from."
 
 ;;; ------------------------------------------------------------ searching
 
-"Message for the frame: the search's latest step failed, or did not."
-(define* isearch-status (subr pure (bool) (msg frame))
-  (lambda (failing)
+"Message for the frame: the search's prompt, or that it is over."
+(define* isearch-status (subr pure ((sumof (prompt string) (over unit))) (msg frame))
+  (lambda (st)
     (lambda ((f frame))
       (tagcase (extract f mini)
-        (searching i (draw (with-mini f (sum searching (product (forward (extract i forward)) (text (extract i text))
-                                                                (failing failing))))))
+        (searching i (tagcase st
+                       (prompt p (draw (with-mini f (sum searching (product (prompt p))))))
+                       (over u (draw (with-mini f no-mini)))))
         (else y (same f))))))
 
 (define* search-reporter (subr pure ((actor frame)) search-report)
-  (lambda (fr) (lambda ((failing bool)) (tell fr (isearch-status failing)))))
+  (lambda (fr) (lambda ((st (sumof (prompt string) (over unit)))) (tell fr (isearch-status st)))))
 
 "C-s, C-r: a search begun, in the selected window's buffer."
 (define* isearch (subr pure (bool) frame-action)
   (lambda (forward)
     (lambda ((fr (actor frame)) (f frame))
       (let ((r (draw (with-mini (with-echo f "")
-                                (sum searching (product (forward forward) (text "") (failing #f)))))))
+                                (sum searching (product (prompt (if forward "I-search: " "I-search backward: "))))))))
         (reply-with (extract r state)
-                    (cons (tell (extract (selected-window f) buffer) (in-buffer fr (isearch-begin)))
+                    (cons (tell (extract (selected-window f) buffer) (in-buffer fr (isearch-begin forward (search-reporter fr))))
                           (extract r cmds)))))))
 
 ;;; ------------------------------------------------------------ commands by name, and keys
@@ -1220,37 +1218,30 @@ After C-h k, the keys are described (`key-describer`), not run."
           (undefined u (draw (with-echo (with-prefix f nil)
                                         (string-append (keys->string ks) " is undefined")))))))))
 
-"A key typed while searching."
+"A key typed while searching: one the search takes, told to the buffer;
+RET, the search ended; any other, the search ended, and then the key does
+what it does."
 (define* isearch-key (subr turn-eff ((actor frame) frame isearch key) (reply frame))
   (lambda (fr f i k)
     (let* ((b (extract (selected-window f) buffer))
            (report (search-reporter fr))
-           (fwd (extract i forward))
-           (text (extract i text))
-           (step (lambda ((t string) (forward bool) (again bool) (reset bool))
-                   (let ((r (draw (with-mini f (sum searching (product (forward forward) (text t)
-                                                                       (failing (extract i failing))))))))
-                     (reply-with (extract r state)
-                                 (append (if reset (list (tell b (in-buffer fr (isearch-abort-quietly)))) nil)
-                                         (cons (tell b (in-buffer fr (isearch-step t forward again report)))
-                                               (extract r cmds)))))))
-           (leave (lambda ((c command))
+           (take (lambda ((sk search-key)) (reply-with f (list (tell b (in-buffer fr (isearch-key-in sk report)))))))
+           (leave (lambda ()
                     (let ((r (draw (with-mini f no-mini))))
-                      (reply-with (extract r state) (cons (tell b (in-buffer fr c)) (extract r cmds)))))))
+                      (reply-with (extract r state) (cons (tell b (in-buffer fr (isearch-exit report))) (extract r cmds)))))))
       (typecase k
-        (char c (step (string-append text (char->string c)) fwd #f #f))
+        (char c (take (sum add (char->string c))))
         (else y
           (case (key->string k)
-            (("C-s") (step text #t #t #f))
-            (("C-r") (step text #f #t #f))
-            (("DEL") (if (= (string-length text) 0)
-                         (same f)
-                         (step (substring text 0 (- (string-length text) 1)) fwd #f #t)))
-            (("RET") (leave (isearch-exit)))
-            (("C-g") (leave (isearch-abort)))
+            (("TAB") (take (sum add "\t")))
+            (("C-s") (take (sum again #t)))
+            (("C-r") (take (sum again #f)))
+            (("DEL") (take (sum back #u)))
+            (("C-w") (take (sum word #u)))
+            (("C-g") (take (sum quit #u)))
+            (("RET") (leave))
             (else
-             ;; Any other key ends the search, and then does what it does.
-             (let* ((ended (leave (isearch-exit)))
+             (let* ((ended (leave))
                     (r (dispatch-key fr (extract ended state) k)))
                (reply-with (extract r state) (append (extract ended cmds) (extract r cmds)))))))))))
 
