@@ -15,7 +15,7 @@
 (hide (define kit-numbers (load-module "../kit/numbers.fx"))
       (import kit-numbers expt))
 (hide (define kit-strings (load-module "../kit/strings.fx"))
-      (import kit-strings string-index-from))
+      (import kit-strings string-index-from reverse-list->string))
 (hide (define kit-chars (load-module "../kit/chars.fx"))
       (import kit-chars hex-value))
 
@@ -186,7 +186,7 @@ all), then an exponent."
                                       (go (skip (+ k 1) #f) acc)))
                                    (else (go (+ k 2) (cons d acc)))))
                            (go (+ k 1) (cons c acc))))))))
-      (list->string (reverse (go i nil))))))
+      (reverse-list->string (go i nil)))))
 
 "Whether FX-26 is being read: then #u is the unit value (as eval.fx has
 it, the unspecified value)."
@@ -286,7 +286,7 @@ not yet read, the file (for places and messages), and fold-case."
   (lambda (r prefix)
     (letrec ((loop (subr rf-st ((listof char acyclic)) (listof char acyclic))
                (lambda (acc) (if (delimiter? (rd-peek r)) acc (loop (cons (integer->char (rd-next! r)) acc))))))
-      (string-append prefix (list->string (reverse (loop nil)))))))
+      (string-append prefix (reverse-list->string (loop nil))))))
 (define atom (subr rf-eff (reader string) rf-value)
   (lambda (r text)
     (tagcase (parse-atom text (get (extract r fold)))
@@ -364,7 +364,7 @@ not yet read, the file (for places and messages), and fold-case."
                    (let ((c (rd-next! r)))
                      (cond ((< c 0) (rd-fail r "end of file in a string"))
                            ((is? c #\\) (let ((d (rd-next! r))) (loop (cons (integer->char (if (< d 0) 32 d)) (cons #\\ acc)))))
-                           ((is? c #\") (list->string (reverse (the (listof char acyclic) (cons #\" acc)))))
+                           ((is? c #\") (reverse-list->string (the (listof char acyclic) (cons #\" acc))))
                            (else (loop (cons (integer->char c) acc))))))))
         (loop (list #\"))))))
 (define read-bar-text (subr rf-eff (reader) string)
@@ -374,7 +374,7 @@ not yet read, the file (for places and messages), and fold-case."
                  (let ((c (rd-next! r)))
                    (cond ((< c 0) (rd-fail r "end of file in a |symbol|"))
                          ((is? c #\\) (let ((d (rd-next! r))) (loop (cons (integer->char (if (< d 0) 32 d)) (cons #\\ acc)))))
-                         ((is? c #\|) (list->string (reverse (the (listof char acyclic) (cons #\| acc)))))
+                         ((is? c #\|) (reverse-list->string (the (listof char acyclic) (cons #\| acc))))
                          (else (loop (cons (integer->char c) acc))))))))
       (loop nil))))
 
@@ -387,7 +387,7 @@ fold-case, its symbols and character names folded to lower case."
   (lambda (text file fold? note?)
     (let ((r (the reader (product (text text) (pos (new 0)) (line (new 1)) (pending-hash (new #f)) (file file) (fold (new fold?)) (note? note?)))))
       (letrec ((loop (subr rf-eff (rf-vals) rf-vals)
-                 (lambda (acc) (let ((x (datum r))) (if (rf-eof? x) (vals-reverse acc) (loop (cons x acc)))))))
+                 (lambda (acc) (let ((x (datum r))) (if (rf-eof? x) (reverse acc) (loop (cons x acc)))))))
         (loop nil)))))
 
 "The text of a file, or none if it cannot be read."

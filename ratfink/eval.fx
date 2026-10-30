@@ -37,7 +37,7 @@
                     (m-library (load-moduleof "library.fx" m-core m-print m-syntax m-numbers m-reader))))
 
 (hide (define kit-lists (load-module "../kit/lists.fx"))
-      (import kit-lists map map2 for-each for-each2 filter))
+      (import kit-lists map map2 for-each for-each2 filter find))
 
 ;;; ------------------------------------------------------------ small things
 
@@ -402,8 +402,8 @@ definitions, assigned in order, as letrec* does."
     (letrec ((loop (subr rf-eff (rf-value symbols) formals)
                (lambda (f req)
                  (tagcase f
-                   (null u (product (req (symbols-reverse req)) (rest '||)))
-                   (sym s (product (req (symbols-reverse req)) (rest s)))
+                   (null u (product (req (reverse req)) (rest '||)))
+                   (sym s (product (req (reverse req)) (rest s)))
                    (pair p (if (rf-symbol? (array-ref p 0)) (loop (array-ref p 1) (cons (rf-sym-of (array-ref p 0)) req))
                                (begin (syntax-error "bad formals" fs) (product (req nil) (rest '||)))))
                    (else x (begin (syntax-error "bad formals" fs) (product (req nil) (rest '||))))))))
@@ -751,10 +751,10 @@ puts the old value back after the body, or when its path ends."
                                    (let ((frame (new-frame size env)))
                                      (letrec ((fill (subr rf-eff (int rf-vals) unit)
                                                 (lambda (i vs) (if (null? vs) #u (begin (array-set! frame i (car vs)) (fill (+ i 1) (cdr vs)))))))
-                                       (begin (fill 1 (vals-reverse acc)) (proc frame ctx))))
+                                       (begin (fill 1 (reverse acc)) (proc frame ctx))))
                                    (spread ctx ((car inits) env ctx)
                                            (lambda ((ctx rf-ctx) (vs rf-vals))
-                                             (next (cdr inits) (cdr fs) (vals-append (vals-reverse (bind-values ctx (car fs) vs x)) acc) ctx)))))))
+                                             (next (cdr inits) (cdr fs) (vals-append (reverse (bind-values ctx (car fs) vs x)) acc) ctx)))))))
                     (next inits fs nil ctx))))))))
       (define-rewrite! 'case-lambda
         (lambda ((x rf-value))
@@ -877,7 +877,7 @@ puts the old value back after the body, or when its path ends."
                  (if (and (rf-pair? forms) (rf-pair? (rf-car forms)) (rf-symbol? (rf-caar forms))
                           (symbols-member? (strip-name (rf-sym-of (rf-caar forms))) loop-clause-names))
                      (loop (rf-cdr forms) (cons (rf-car forms) clauses))
-                     (product (clauses (vals-reverse clauses)) (body (rf-elements forms)))))))
+                     (product (clauses (reverse clauses)) (body (rf-elements forms)))))))
       (loop body nil))))
 
 "A modifies clause: its label, its target (a global's cell, a closure of
@@ -946,7 +946,7 @@ the part of the target it names."
               (run-loop ctx lp frame vars vals shapes modifies (extract sb size) (extract sb proc)))))))))
 
 (define shape-assq (subr rf-st (symbol (listof shape-of acyclic)) rf-value)
-  (lambda (v l) (cond ((null? l) rf-false) ((eq? (extract (car l) var) v) (extract (car l) shape)) (else (shape-assq v (cdr l))))))
+  (lambda (v l) (tagcase (find (lambda ((s shape-of)) (eq? (extract s var) v)) l) (some s (extract s shape)) (none u rf-false))))
 
 (define run-loop (subr rf-eff (rf-ctx rf-loop rf-slots symbols rf-vals (listof shape-of acyclic) (listof modifies-clause acyclic) int rf-proc) rf-value)
   (lambda (ctx lp frame vars vals shapes modifies size body)
@@ -1187,7 +1187,7 @@ makes them."
                               (letrec ((loop (subr rf-eff (rf-vals rf-vals) rf-value)
                                          (lambda (rest before)
                                            (if (null? (cdr rest))
-                                               (spine ctx src (car rest) (lambda ((ctx rf-ctx) (xs rf-vals)) (apply-value ctx (car args) (vals-append (vals-reverse before) xs) src)))
+                                               (spine ctx src (car rest) (lambda ((ctx rf-ctx) (xs rf-vals)) (apply-value ctx (car args) (vals-append (reverse before) xs) src)))
                                                (loop (cdr rest) (cons (car rest) before))))))
                                 (loop (cdr args) nil)))))))))
 
@@ -1218,7 +1218,7 @@ makes them."
   (lambda (ctx args k)
     (letrec ((loop (subr rf-eff (rf-vals rf-vals rf-ctx) rf-value)
                (lambda (before after ctx)
-                 (cond ((null? after) (k ctx (vals-reverse before)))
+                 (cond ((null? after) (k ctx (reverse before)))
                        ((rf-union? (car after)) (join-union ctx (car after) (lambda ((ctx rf-ctx) (v rf-value)) (loop (cons v before) (cdr after) ctx))))
                        (else (loop (cons (car after) before) (cdr after) ctx))))))
       (loop nil args ctx))))

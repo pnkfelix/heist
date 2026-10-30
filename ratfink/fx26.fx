@@ -511,7 +511,7 @@ caller's."
                   (body (rewrite-local-specs (rf-cddr x)))
                   (checks (the (ref rf-vals @rf) (new nil)))
                   (new-bindings (map (lambda ((b rf-value)) (local-spec-binding b checks)) bindings)))
-             (rf-cons (q 'letrec) (rf-cons (rf-list new-bindings) (rf-append2 (rf-list (vals-reverse (get checks))) body)))))
+             (rf-cons (q 'letrec) (rf-cons (rf-list new-bindings) (rf-append2 (rf-list (reverse (get checks))) body)))))
           (else (rf-cons (rewrite-local-specs (rf-car x)) (rewrite-local-specs (rf-cdr x)))))))
 
 "A letrec binding, its stub if it has a specification (whose verification

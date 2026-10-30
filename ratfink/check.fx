@@ -31,7 +31,7 @@
                     (m-playback (load-moduleof "playback.fx" m-core m-term m-value m-print m-syntax m-numbers m-reader m-machine m-prims m-hashtables m-ports m-prelude m-library m-eval))))
 
 (hide (define kit-lists (load-module "../kit/lists.fx"))
-      (import kit-lists map map2 for-each filter))
+      (import kit-lists map map2 for-each filter filter-map))
 (hide (define kit-strings (load-module "../kit/strings.fx"))
       (import kit-strings string-pad-right))
 
@@ -283,10 +283,7 @@ values of the constants."
 (define playback-values (subr rf-eff (rf-vals model) rf-vals)
   (lambda (constants m)
     (let ((value-of (model-value m)))
-      (filter-map-vals (lambda ((k rf-value)) (if (rf-true? (term-value (constant-pc k) value-of (new-term-memo))) (sum some (value-of k)) (sum none #u)))
-                       constants))))
-(define filter-map-vals (subr rf-eff ((subr rf-eff (rf-value) (sumof (none unit) (some rf-value))) rf-vals) rf-vals)
-  (lambda (f l) (if (null? l) nil (tagcase (f (car l)) (some v (cons v (filter-map-vals f (cdr l)))) (none u (filter-map-vals f (cdr l)))))))
+      (filter-map (lambda ((k rf-value)) (the (sumof (none unit) (some rf-value)) (if (rf-true? (term-value (constant-pc k) value-of (new-term-memo))) (sum some (value-of k)) (sum none #u)))) constants))))
 
 (define status-name (subr rf-st (symbol) string)
   (lambda (s)

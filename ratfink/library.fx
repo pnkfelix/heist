@@ -8,7 +8,7 @@
                     (m-reader (load-moduleof "reader.fx" m-core m-numbers))))
 
 (hide (define kit-lists (load-module "../kit/lists.fx"))
-      (import kit-lists map for-each filter))
+      (import kit-lists map for-each filter any))
 
 "The directories to look for libraries in."
 (define the-library-path (ref strings @rf) (new (list ".")))
@@ -79,7 +79,7 @@ chosen: a list of export, import and begin forms."
   (lambda (decls dir known? error)
     (letrec ((loop (subr rf-eff (rf-vals rf-vals) rf-vals)
                (lambda (decls acc)
-                 (if (null? decls) (vals-reverse acc)
+                 (if (null? decls) (reverse acc)
                      (let ((d (car decls)))
                        (begin
                          (if (and (rf-pair? d) (rf-symbol? (rf-car d)) (rf-list? d)) #u (error "bad library declaration" d))
@@ -144,7 +144,7 @@ library exports."
 (define-type binding-name (productof (local symbol) (name symbol)))
 (define-type binding-names (listof binding-name acyclic))
 (define bn-assq (subr rf-st (symbol binding-names) bool)
-  (lambda (n l) (and (pair? l) (or (eq? (extract (car l) local) n) (bn-assq n (cdr l))))))
+  (lambda (n l) (any (lambda ((b binding-name)) (eq? (extract b local) n)) l)))
 (define import-set-names (subr rf-eff (rf-value symbols syntax-error-proc) binding-names)
   (lambda (set exported error)
     (if (import-modifier? set)
@@ -194,7 +194,7 @@ define-syntax, in begin and include too (not through macro uses)."
     (letrec ((loop (subr rf-eff (rf-vals symbols symbols) defined)
                (lambda (forms vars macros)
                  (if (null? forms)
-                     (product (vars (symbols-reverse vars)) (macros (symbols-reverse macros)))
+                     (product (vars (reverse vars)) (macros (reverse macros)))
                      (let* ((f (car forms))
                             (head (if (and (rf-pair? f) (rf-symbol? (rf-car f))) (strip-name (rf-sym-of (rf-car f))) '||)))
                        (cond ((eq? head 'begin) (loop (vals-append (rf-elements (rf-cdr f)) (cdr forms)) vars macros))
@@ -221,7 +221,7 @@ define-syntax, in begin and include too (not through macro uses)."
                              ((eq? head 'define-syntax)
                               (loop (cdr forms) vars (if (and (rf-pair? (rf-cdr f)) (rf-symbol? (rf-cadr f))) (cons (strip-name (rf-sym-of (rf-cadr f))) macros) macros)))
                              ((eq? head 'define-record-type)
-                              (loop (cdr forms) (append (symbols-reverse (record-type-names (strip f))) vars) macros))
+                              (loop (cdr forms) (append (reverse (record-type-names (strip f))) vars) macros))
                              (else (loop (cdr forms) vars macros))))))))
       (loop forms nil nil))))
 

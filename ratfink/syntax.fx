@@ -14,7 +14,7 @@
 (module-parameters ((m-core (load-moduleof "core.fx")) (m-print (load-moduleof "print.fx" m-core))))
 
 (hide (define kit-lists (load-module "../kit/lists.fx"))
-      (import kit-lists map for-each filter))
+      (import kit-lists map for-each filter find))
 
 ;;; ------------------------------------------------------------ aliases
 
@@ -119,7 +119,7 @@ one binding for each match."
 (define-type mbindings (listof mbinding acyclic))
 (define-type maybe-mbindings (sumof (none unit) (some mbindings)))
 (define mb-assq (subr rf-st (symbol mbindings) (sumof (none unit) (some mbind)))
-  (lambda (v l) (cond ((null? l) (sum none #u)) ((eq? v (extract (car l) var)) (sum some (extract (car l) b))) (else (mb-assq v (cdr l))))))
+  (lambda (v l) (tagcase (find (lambda ((m mbinding)) (eq? v (extract m var))) l) (some m (sum some (extract m b))) (none u (sum none #u)))))
 
 "The expansion of form x, a use of macro m."
 (define expand-macro (subr rf-eff (rf-macro rf-value syntax-error-proc) rf-value)

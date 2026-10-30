@@ -34,7 +34,7 @@
                     (m-value (load-moduleof "value.fx" m-core m-term))))
 
 (hide (define kit-lists (load-module "../kit/lists.fx"))
-      (import kit-lists map for-each filter))
+      (import kit-lists map for-each filter every find))
 
 ;;; ------------------------------------------------------------ sessions
 
@@ -66,7 +66,7 @@ when it is satisfied)."
 
 (define session-assumptions (subr rf-st () rf-vals) (lambda () (get (extract (get current) assumptions))))
 (define session-obligations (subr rf-st () obligations) (lambda () (the obligations (reverse (get (extract (get current) obligations))))))
-(define session-constants (subr rf-st () rf-vals) (lambda () (vals-reverse (get (extract (get current) constants)))))
+(define session-constants (subr rf-st () rf-vals) (lambda () (reverse (get (extract (get current) constants)))))
 (define session-unwind-bound (subr rf-st () int) (lambda () (extract (get current) unwind-bound)))
 (define session-log (subr rf-st () maybe-log) (lambda () (get (extract (get current) log))))
 (define set-session-log! (subr rf-st (maybe-log) unit) (lambda (l) (set (extract (get current) log) l)))
@@ -464,9 +464,9 @@ wrote, or the old value if it did not write there."
                                      (next (tagcase (values-of (car left)) (some vs vs) (none u nil))))))))
                     (try ks nil))))))))
 (define kv-lookup (subr rf-st (rf-value (listof kv acyclic)) rf-value)
-  (lambda (k l) (cond ((null? l) rf-false) ((rf-eqv? (extract (car l) k) k) (extract (car l) v)) (else (kv-lookup k (cdr l))))))
+  (lambda (k l) (tagcase (find (lambda ((e kv)) (rf-eqv? (extract e k) k)) l) (some e (extract e v)) (none u rf-false))))
 (define every-term? (subr rf-eff ((subr rf-eff (rf-value) bool) rf-vals) bool)
-  (lambda (ok? l) (or (null? l) (and (ok? (car l)) (every-term? ok? (cdr l))))))
+  (lambda (ok? l) (every ok? l)))
 (define subset? (subr rf-st (rf-vals rf-vals) bool)
   (lambda (xs ys) (or (null? xs) (and (memq-val? (car xs) ys) (subset? (cdr xs) ys)))))
 
