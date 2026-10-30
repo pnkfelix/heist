@@ -52,7 +52,7 @@ pub(crate) fn fixed_range(name: &str) -> Option<(i128, i128)> {
 /// A datum, what a reader reads: an atom, or a pair of datums, frozen and
 /// acyclic, or a vector or bytevector (TODO §51). The same text defines it
 /// in the checker written in FX-26 (`standard::standard_text`).
-pub const DATUM: &str = "(union int f64 char bool string symbol nil (pairof datum datum acyclic) vector bytevector)";
+pub const DATUM: &str = "(union int f64 char bool string symbol keyword nil (pairof datum datum acyclic) vector bytevector)";
 /// What an I/O primitive gives when it fails (`TODO.md` §84): its kind, one
 /// of a fixed few as `tagcase` can check, and the system's description. A
 /// value the program sees, not a failure of the run.
@@ -109,6 +109,9 @@ pub const SHAPES: &[(&str, &str)] = &[
     ("product", "product?"),
     ("vector", "vector?"),
     ("bytevector", "bytevector?"),
+    // A keyword, `#:name` (`docs/fx26.md`, "Keywords"): last, so that no
+    // shape's number before it moved.
+    ("keyword", "keyword?"),
 ];
 /// A kind of key that has identity (Q5), generative type 3: `k`, a mutable
 /// object at `r`, which only the standard dictionaries (`pair-identity` and
@@ -892,6 +895,10 @@ impl Checker {
             let sym = interner.intern(name);
             base.insert(sym, arena.ty(Ty::Base(sym)));
         }
+        // A keyword, `#:name`: interned, compared by identity, immutable.
+        // Last, so no type made before it moved.
+        let sym = interner.intern("keyword");
+        base.insert(sym, arena.ty(Ty::Base(sym)));
         let mut c = Checker {
             arena,
             interner,
@@ -1183,6 +1190,7 @@ impl Checker {
                 "symbol" | "unit" => bit("symbol"),
                 "vector" => bit("vector"),
                 "bytevector" => bit("bytevector"),
+                "keyword" => bit("keyword"),
                 _ => None,
             },
             Ty::Nat(_) => bit("int"),
@@ -2148,13 +2156,7 @@ impl Checker {
                 // one (`TODO.md` §48); beside `nil`, the type `nil`; beside
                 // a pair, the pair that may be `nil`.
                 let [a, b] = self.join_with_nil(&[a, b])[..] else { unreachable!() };
-                let t = if self.subtype(a, b) {
-                    b
-                } else if self.subtype(b, a) {
-                    a
-                } else if let Some(t) = self.nat_join(a, b) {
-                    t
-                } else {
+                let Some(t) = self.branch_join(a, b, 0) else {
                     return Err(FxError::at(span, format!("the branches are a {} and a {}", self.show_ty(a), self.show_ty(b))));
                 };
                 let eff = self.mask(e, &te.union(&ae).union(&be), t);
@@ -4548,7 +4550,10 @@ impl Checker {
             None => {
                 // `nil` is what the other arms are, as in an `if`.
                 let types = self.join_with_nil(&types);
-                let Some(t) = types.iter().copied().find(|t| types.clone().iter().all(|u| self.subtype(*u, *t))) else {
+                // One the others are within; else, of sums, their join.
+                let found = types.iter().copied().find(|t| types.clone().iter().all(|u| self.subtype(*u, *t)));
+                let found = found.or_else(|| types[1..].iter().try_fold(types[0], |t, u| self.branch_join(t, *u, 0)));
+                let Some(t) = found else {
                     let shown: Vec<String> = types.iter().map(|t| self.show_ty(*t)).collect();
                     return Err(FxError::at(span, format!("the arms are {}", shown.join(", "))));
                 };
@@ -4557,6 +4562,38 @@ impl Checker {
         };
         let eff = self.mask(e, &eff, t);
         Ok((t, eff))
+    }
+
+    /// The least type above two branches' `a` and `b`, if there is one: the
+    /// wider, if one is within the other; a `nat`, of two naturals; or, of
+    /// two sums, the sum of each's variants, a tag both have carrying its
+    /// payloads' join: `a`'s variants in order, then `b`'s that `a` has not
+    /// (as `check-synth.fx`'s `k-branch-join`). `depth` bounds the descent
+    /// through recursive sums.
+    pub(crate) fn branch_join(&mut self, a: TyId, b: TyId, depth: usize) -> Option<TyId> {
+        if self.subtype(a, b) {
+            return Some(b);
+        }
+        if self.subtype(b, a) {
+            return Some(a);
+        }
+        if let Some(t) = self.nat_join(a, b) {
+            return Some(t);
+        }
+        if depth > 32 {
+            return None;
+        }
+        let (Ty::Sum(xs), Ty::Sum(ys)) = (self.arena.get(self.arena.resolve(a)).clone(), self.arena.get(self.arena.resolve(b)).clone()) else {
+            return None;
+        };
+        let mut parts = xs;
+        for (l, u) in ys {
+            match parts.iter().position(|(m, _)| *m == l) {
+                Some(i) => parts[i].1 = self.branch_join(parts[i].1, u, depth + 1)?,
+                None => parts.push((l, u)),
+            }
+        }
+        Some(self.arena.ty(Ty::Sum(parts)))
     }
 
     /// `env` cut back to `n` bindings, and the known procedures among those

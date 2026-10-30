@@ -22,7 +22,8 @@
 (import parser-types k-array-length k-array-size)
 ;; What it uses of the modules it is given.
 (import values apply-val apply1 as-array as-bool as-bytes ev-preempt-set! as-char as-cont as-f32
-        as-f64 as-int as-key as-other as-pair as-ref as-str as-sym as-tag efail efail-expected
+        as-f64 as-int as-key as-keyword as-other as-pair as-ref as-str as-sym as-tag efail
+        efail-expected
         ev-arg as-mstr ev-eq? ev-intern list->val the-unit val->vals vals->val)
 ;; What it uses of the modules it is given: all of each, hidden.
 (hide (include tables) (include check-types))
@@ -184,6 +185,8 @@
       (prim! 'string->symbol (lambda (xs) (string->symbol (as-str (ev-arg xs 0)))))
       (prim! 'symbol->string (lambda (xs) (symbol->string (as-sym (ev-arg xs 0)))))
       (prim! 'symbol=? (lambda (xs) (symbol=? (as-sym (ev-arg xs 0)) (as-sym (ev-arg xs 1)))))
+      (prim! 'symbol->keyword (lambda (xs) (symbol->keyword (as-sym (ev-arg xs 0)))))
+      (prim! 'keyword->symbol (lambda (xs) (keyword->symbol (as-keyword (ev-arg xs 0)))))
       (prim! 'symbol-name-hash (lambda (xs) (symbol-name-hash (as-sym (ev-arg xs 0)))))
       (prim! 'eq? (lambda (xs) (ev-eq? (ev-arg xs 0) (ev-arg xs 1))))
       (prim! 'error (lambda (xs) (efail (as-str (ev-arg xs 0)))))
@@ -224,6 +227,7 @@
       (prim! 'pair? (lambda (xs) (pair? (ev-arg xs 0))))
       (prim! 'string? (lambda (xs) (ev-string? (ev-arg xs 0))))
       (prim! 'symbol? (lambda (xs) (ev-symbol? (ev-arg xs 0))))
+      (prim! 'keyword? (lambda (xs) (keyword? (ev-arg xs 0))))
       (prim! 'procedure? (lambda (xs) (ev-procedure? (ev-arg xs 0))))
       (prim! 'array? (lambda (xs) (ev-array? (ev-arg xs 0))))
       (prim! 'ref? (lambda (xs) (ref? (ev-arg xs 0))))
@@ -377,6 +381,17 @@
 (define ev-size (->* (int int) val)
   (lambda (rows columns)
     (the val (o-product (list (cons 'rows (the val rows)) (cons 'columns (the val columns)))))))
+;; What `file-info` gave (Heist's F5), as the evaluator's value.
+(define-type ev-file-kind (sumof (file unit) (directory unit) (symlink unit) (other unit)))
+(define ev-file-info
+  (->* ((productof (kind ev-file-kind) (size int) (modified int) (mode int))) val)
+  (lambda (i)
+    (let ((kind (tagcase (extract i kind)
+                  (file u 'file) (directory u 'directory) (symlink u 'symlink) (other u 'other))))
+      (the val (o-product (list (cons 'kind (the val (o-sum kind the-unit)))
+                                (cons 'size (the val (extract i size)))
+                                (cons 'modified (the val (extract i modified)))
+                                (cons 'mode (the val (extract i mode)))))))))
 ;; Strings `ns`, as the evaluator's list of them.
 (define ev-strings (->* ((listof string @v)) val)
   (lambda (ns) (if (null? ns) nil (cons (car ns) (ev-strings (cdr ns))))))
@@ -519,7 +534,25 @@
              (lambda (xs) (begin (process-close-input (as-int (ev-arg xs 0))) the-unit)))
       (prim! 'process-signal
              (lambda (xs)
-               (begin (process-signal (as-int (ev-arg xs 0)) (as-int (ev-arg xs 1))) the-unit))))))
+               (begin (process-signal (as-int (ev-arg xs 0)) (as-int (ev-arg xs 1))) the-unit)))
+      (prim! 'process-news (lambda (xs) (process-news)))
+      (prim! 'process-exit
+             (lambda (xs)
+               (tagcase (process-exit (as-int (ev-arg xs 0)))
+                 (exited c (the val (o-sum 'exited (the val c))))
+                 (signalled c (the val (o-sum 'signalled (the val c))))
+                 (unknown u (the val (o-sum 'unknown the-unit))))))
+      ;; Heist's (`FIXPT-CHANGES.md` F5).
+      (prim! 'file-info
+             (lambda (xs)
+               (tagcase (file-info (as-str (ev-arg xs 0)))
+                 (info i (the val (o-sum 'info (ev-file-info i))))
+                 (failed e (ev-io-failed e)))))
+      (prim! 'read-symlink
+             (lambda (xs)
+               (tagcase (read-symlink (as-str (ev-arg xs 0)))
+                 (target t (the val (o-sum 'target (the val t))))
+                 (failed e (ev-io-failed e))))))))
 
 ;; `append`: the lists `xs`, all but the last copied, in front of it.
 (define ev-append (->* (vals) val)

@@ -79,6 +79,7 @@ pub const ENTRIES: &[(&str, &str)] = &[
     ("vector?", "(poly ((t type)) (subr pure (t) (bool (then (shape 0 vector)) (else (not (shape 0 vector))))))"),
     ("bytevector?", "(poly ((t type)) (subr pure (t) (bool (then (shape 0 bytevector)) (else (not (shape 0 bytevector))))))"),
     ("symbol?", "(poly ((t type)) (subr pure (t) (bool (then (shape 0 symbol)) (else (not (shape 0 symbol))))))"),
+    ("keyword?", "(poly ((t type)) (subr pure (t) (bool (then (shape 0 keyword)) (else (not (shape 0 keyword))))))"),
     ("procedure?", "(poly ((t type)) (subr pure (t) (bool (then (shape 0 procedure)) (else (not (shape 0 procedure))))))"),
     ("array?", "(poly ((t type)) (subr pure (t) (bool (then (shape 0 bloblet)) (else (not (shape 0 bloblet))))))"),
     ("f32?", "(poly ((t type)) (subr pure (t) (bool (then (shape 0 f32)) (else (not (shape 0 f32))))))"),
@@ -265,6 +266,20 @@ pub const ENTRIES: &[(&str, &str)] = &[
     ("process-write", "(subr (io process) (int string) (sumof (done unit) (failed io-error)))"),
     ("process-close-input", "(subr (io process) (int) unit)"),
     ("process-signal", "(subr (io process) (int int) unit)"),
+    // Heist's (`FIXPT-CHANGES.md` F6): how a process ended, waiting until it
+    // has; a `pselect` arm `((process-exit p) how …)` waits for that and its
+    // output all taken, one `((process-output p) text …)` for its output.
+    ("process-exit", "(subr (io process) (int) (sumof (exited int) (signalled int) (unknown unit)))"),
+    // The first process with news: output to take, or an end not yet seen
+    // (`process-status` or `process-exit`); -1 if none. An arm
+    // `((process-news) p …)` waits for one, whichever.
+    ("process-news", "(subr (io process) () int)"),
+    // Heist's (`FIXPT-CHANGES.md` F5): files, as SRFI 170 names them. What
+    // a path is, a symbolic link not followed: its kind, its size in bytes,
+    // when last modified (seconds since the epoch), its permission bits;
+    // and a link's target.
+    ("file-info", "(subr (io fs-read) (string) (sumof (info (productof (kind (sumof (file unit) (directory unit) (symlink unit) (other unit))) (size int) (modified int) (mode int))) (failed io-error)))"),
+    ("read-symlink", "(subr (io fs-read) (string) (sumof (target string) (failed io-error)))"),
     ("write-file", "(poly ((r region)) (subr (maxeff (io fs-write) (read r)) (string (bytevectorof r)) (sumof (done unit) (failed io-error))))"),
     // Bytevectors (`TODO.md` §84): made, read and written at a region, as
     // arrays are; R7RS's names. `bytevector-copy` takes a start and an end,
@@ -471,6 +486,10 @@ pub const ENTRIES: &[(&str, &str)] = &[
     ("string->symbol", "(subr pure (string) symbol)"),
     ("symbol->string", "(subr pure (symbol) string)"),
     ("symbol=?", "(subr pure (symbol symbol) bool)"),
+    // Keywords, `#:name` (`docs/fx26.md`, "Keywords"): the keyword of a
+    // symbol's name, which `#:name` is of `'name`; a keyword's name.
+    ("symbol->keyword", "(subr pure (symbol) keyword)"),
+    ("keyword->symbol", "(subr pure (keyword) symbol)"),
     // A hash of a string's characters: the same string, the same hash.
     ("string-hash", "(subr pure (string) int)"),
     // A symbol's hash, kept with it when it was interned.
@@ -645,6 +664,10 @@ pub const ENTRIES: &[(&str, &str)] = &[
     ("%processes:mailbox-event", "(poly ((m type) (r place)) (subr pure ((inbox m r)) (event (receive r))))"),
     ("%processes:clock-event", "(subr pure (i64) (event (io clock)))"),
     ("%processes:stdin-event", "(subr pure (unit) (event (io stdin)))"),
+    // Heist's F6: a process's output, and its end.
+    ("%processes:process-output-event", "(subr pure (int) (event (io process)))"),
+    ("%processes:process-exit-event", "(subr pure (int) (event (io process)))"),
+    ("%processes:process-news-event", "(subr pure (unit) (event (io process)))"),
     (
         "%processes:or-event",
         "(poly ((e1 effect) (e2 effect)) (subr pure ((event e1) (event e2)) (event (maxeff e1 e2))))",

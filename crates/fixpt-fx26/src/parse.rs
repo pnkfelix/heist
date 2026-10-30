@@ -1506,6 +1506,14 @@ impl Checker {
             Datum::Bool(b) => return Ok(self.arena.exp(span, Exp::Bool(*b))),
             Datum::Char(c) => return Ok(self.arena.exp(span, Exp::Char(*c))),
             Datum::Number(fixpt_read::Num::Real(x)) => return Ok(self.arena.exp(span, Exp::Float(*x))),
+            // `#:name`, a keyword, evaluates to itself: the standard
+            // `symbol->keyword` of the name, interned, so one object each
+            // time (as the parser written in FX-26 rewrites it).
+            Datum::Keyword(sym) => {
+                let fun = self.standard_ref_at(span, "symbol->keyword");
+                let name = self.arena.exp(span, Exp::Symbol(*sym));
+                return Ok(self.arena.exp(span, Exp::App { fun, args: vec![name] }));
+            }
             Datum::Symbol(sym) => {
                 // `#u` reads as a symbol; `#t` and `#f` did too in FX-87's
                 // profile, which FX-26 used to be read with.
@@ -2442,8 +2450,6 @@ const CASE_TREE_SYMBOLS_INDEXED: usize = 64;
         Ok((kind, eq, self.parse_exp(d)?, text))
     }
 
-    /// A label or tag: a symbol, or a positive integer, as FX-91's
-    /// `define-datatype` numbers a variant's members.
     /// A procedure type's parameter written `(name type)`: its name and
     /// type, where `name` names no type or type form.
     pub(crate) fn named_param(&self, p: &Syntax) -> Option<(Sym, Syntax)> {
@@ -3411,13 +3417,19 @@ const CASE_TREE_SYMBOLS_INDEXED: usize = 64;
         }
     }
 
+    /// A label or tag: a keyword, `#:name` (`docs/fx26.md`, "Keywords"), or
+    /// the name bare, the same label; or a natural number, as a
+    /// `define-datatype` numbers a variant's members.
     pub(crate) fn label(&mut self, s: &Syntax) -> R<Sym> {
+        if let Datum::Keyword(x) = s.datum {
+            return Ok(x);
+        }
         if let Some(x) = s.as_symbol() {
             return Ok(x);
         }
         match self.literal_int(s) {
             Some(n) if n >= 0 => Ok(self.interner.intern(&n.to_string())),
-            _ => Err(FxError::at(s.span, "a label is a name or a natural number")),
+            _ => Err(FxError::at(s.span, "a label is a keyword, a name or a natural number")),
         }
     }
 
@@ -3721,7 +3733,7 @@ impl Checker {
                 }
             },
             Datum::Nil => self.named(span, "nil"),
-            Datum::Bool(_) | Datum::Number(_) | Datum::Char(_) | Datum::Str(_) => x.clone(),
+            Datum::Bool(_) | Datum::Number(_) | Datum::Char(_) | Datum::Str(_) | Datum::Keyword(_) => x.clone(),
             Datum::List { items, tail } => {
                 let inner = self.quasi_inner(items, depth);
                 // Under a quasiquote, the items after the last that an
@@ -3792,6 +3804,7 @@ const TYPECASE_SHAPES: &[(&str, &str)] = &[
     ("product", "product?"),
     ("vector", "vector?"),
     ("bytevector", "bytevector?"),
+    ("keyword", "keyword?"),
 ];
 
 fn typecase_predicate(shape: &str) -> Option<&'static str> {

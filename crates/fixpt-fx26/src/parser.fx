@@ -89,12 +89,18 @@
 (define drop (->* (syns-a int) syns-a)
   (lambda (xs i) (if (= i 0) xs (drop (cdr xs) (- i 1)))))
 
-;; A label or tag: a name, or a natural number, which is its digits.
+;; A label or tag: a keyword, `#:name`, or the name bare, the same label;
+;; or a natural number, which is its digits (as `parse.rs`'s `label`).
 (define label (->* (syn) symbol)
   (lambda (s)
     (cond ((syn-symbol? s) (syn-head s))
           ((>= (syn-int s) 0) (string->symbol (int->string (syn-int s))))
-          (else (pfail "a label is a name or a natural number" s)))))
+          (else
+           (tagcase s
+             (atom (d a b)
+               (if (keyword? d) (keyword->symbol d) (pfail label-usage s)))
+             (else x (pfail label-usage s)))))))
+(define label-usage string "a label is a keyword, a name or a natural number")
 
 (define keep (->* (syns-a) syns-a)
   (lambda (xs) (if (null? xs) nil (cons (car xs) (keep (cdr xs))))))
@@ -485,16 +491,23 @@
         (let* ((pair (mk-list (list (mk-int i a b) (car ms)) a b))
                (rest (dt-labelled (cdr ms) (+ i 1) a b)))
           (cons pair rest)))))
+;; A variant's tag: a name, or a keyword, `#:circle`, which is its name (the
+;; same label, and the constructor `circle`, as `top.rs` reads it).
+(define dt-tag (->* (syn) syn)
+  (lambda (t)
+    (tagcase t
+      (atom (d a b) (if (keyword? d) (atom (keyword->symbol d) a b) t))
+      (else x t))))
 ;; Each variant's arm of the sum, `(tag (productof (1 T) …))`.
 (define dt-arms (->* (syns-a int int) syns-a)
   (lambda (vs a b)
     (if (null? vs)
         nil
         (let* ((v (car vs)) (parts (syn-items v "a variant")))
-          (if (or (null? parts) (not (syn-symbol? (car parts))))
-              (pfail "a variant is `(tag type …)`" v)
+          (if (or (null? parts) (not (syn-symbol? (dt-tag (car parts)))))
+              (pfail "a variant is `(tag type …)` or `(#:tag type …)`" v)
               (let* ((prod (mk-form "productof" (dt-labelled (cdr parts) 1 a b) a b))
-                     (arm (mk-list (list (car parts) prod) a b))
+                     (arm (mk-list (list (dt-tag (car parts)) prod) a b))
                      (rest (dt-arms (cdr vs) a b)))
                 (cons arm rest)))))))
 ;; Each constructor: of type `(subr pure (member …) used)`, where `used` is
@@ -505,7 +518,7 @@
     (if (null? vs)
         nil
         (let* ((parts (syn-items (car vs) "a variant"))
-               (tag (car parts))
+               (tag (dt-tag (car parts)))
                (members (cdr parts))
                (mono (mk-pure-subr members used a b))
                (ty (if family? (mk-poly params mono a b) mono))

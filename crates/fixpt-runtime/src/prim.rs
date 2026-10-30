@@ -522,7 +522,10 @@ pub fn never_collects(name: &str) -> bool {
                 | "%fx26-box?"
                 | "%fx26-sum?"
                 | "%fx26-product?"
+                | "%fx26-keyword?"
         )
+        // A keyword's name: a field read.
+        || name == "%fx26-keyword->symbol"
         || ["%fx26-i8", "%fx26-u8", "%fx26-i32", "%fx26-u32", "%fx26-i64", "%fx26-u64", "%fx26-f64", "%fx26-f32", "%fx26-int->"].iter().any(|p| name.starts_with(p))
 }
 
@@ -2892,6 +2895,60 @@ prims! {
         let sig = int(rt, a[1])?;
         rt.world.process_signal(p, sig as i32);
         Ok(Value::UNIT)
+    });
+    // FX-26's keywords (`#:name`, `Heap::make_keyword`): the keyword of a
+    // symbol's name, interned; a keyword's name; whether a value is one.
+    "%fx26-symbol->keyword", 1, Some(1), simple!(|rt, a| {
+        if !rt.heap.is_a(a[0], ObjType::Symbol) { return rt.type_error("a symbol", a[0]); }
+        Ok(rt.heap.make_keyword(a[0]))
+    });
+    "%fx26-keyword->symbol", 1, Some(1), simple!(|rt, a| {
+        if !rt.heap.is_keyword(a[0]) { return rt.type_error("a keyword", a[0]); }
+        Ok(rt.heap.keyword_symbol(a[0]))
+    });
+    "%fx26-keyword?", 1, Some(1), simple!(|rt, a| Ok(Value::boolean(rt.heap.is_keyword(a[0]))));
+    // Files (Heist's, `FIXPT-CHANGES.md` F5), as SRFI 170 names them: what
+    // a path is (a link not followed), and a link's target. A path as the
+    // working directory resolves it; a failure an `io-error`. Changing
+    // files is a program's to do (`rm`, `mv`, `cp`, `mkdir`), which a
+    // `pselect` arm for a process waits for (F6).
+    "%fx26-file-info", 1, Some(1), simple!(|rt, a| {
+        let path = get_string(rt, a[0])?;
+        Ok(match crate::world::file_info(&path) {
+            Ok(i) => {
+                let kind = fx26_sum(rt, i.kind, Value::UNIT);
+                let info = rt.heap.make_frozen(
+                    PRODUCT_KIND,
+                    &[kind, Value::fixnum(i.size), Value::fixnum(i.modified), Value::fixnum(i.mode)],
+                );
+                fx26_sum(rt, "info", info)
+            }
+            Err(e) => fx26_io_result(rt, Err(e)),
+        })
+    });
+    "%fx26-read-symlink", 1, Some(1), simple!(|rt, a| {
+        let path = get_string(rt, a[0])?;
+        Ok(match crate::world::read_symlink(&path) {
+            Ok(t) => {
+                let t = rt.heap.make_string(&t);
+                fx26_sum(rt, "target", t)
+            }
+            Err(e) => fx26_io_result(rt, Err(e)),
+        })
+    });
+    // The first process with news (Heist's F6): output to take, or an
+    // end the program has not seen; -1 if none. In an arm `((process-news) p …)`.
+    "%fx26-process-news", 0, Some(0), simple!(|rt, _a| Ok(Value::fixnum(rt.world.process_news())));
+    // How a process ended (Heist's F6), waiting until it has, as `read-byte`
+    // waits: in a `pselect`'s arm `((process-exit p) how …)`, at once.
+    "%fx26-process-exit", 1, Some(1), simple!(|rt, a| {
+        use crate::world::ProcessStatus as S;
+        let p = int(rt, a[0])?;
+        Ok(match rt.world.process_exit(p) {
+            S::Exited(c) => fx26_sum(rt, "exited", Value::fixnum(c as i64)),
+            S::Signalled(c) => fx26_sum(rt, "signalled", Value::fixnum(c as i64)),
+            S::Running | S::Unknown => fx26_sum(rt, "unknown", Value::UNIT),
+        })
     });
 }
 

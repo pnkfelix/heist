@@ -3261,14 +3261,6 @@ program imports. The editor would need no `--syscalls`, and a runtime
 without a checker (kayak's, until it has one) answers `syscall-available?`
 with `#f` instead of lacking a primitive. For the user to decide.
 
-## 132. A `pselect` arm for a process (Heist's request, 2026-10-26)
-
-`(io process)` landed (`DONE.md` §132), but a program cannot wait for a
-process's output or exit: Heist's editor polls every 50 ms while one
-runs. An arm, as for `(read-byte)`, needs a waker list per process in
-`sched.rs`, the reader threads waking `wait_stdin`'s `poll` (a pipe it
-polls too), and the arm in both parsers.
-
 ## 133. A module file's item using an included value compiles apart (found 2026-10-27)
 
 Found while fixing Heist's problem D (`DONE.md` §135): in a module *file*
@@ -4169,3 +4161,83 @@ code area is (the collector's view and the read+execute one), and
 flushed; and freed code unregistered from what refers to it untyped (the
 code area's `starts`, gdb's and perf's JIT registrations, inlining
 notes).
+
+## 182. Typed hygienic macros (the user's, 2026-10-30)
+Design: `docs/research/typed-macros.md` (Herman's syntax types as FX-26
+`data` types over generative `expr` and `bvar`, his binding signatures as
+annotations the value checker erases; Bawden's macro types for modules,
+later). Next: the
+prototype of its "The prototype" section, in the Rust front end; the
+note's table "What FX-26's type system would need" says what the type
+system needs, and when. Waiting on the user's answers to its questions
+(the signatures' concrete syntax; what a template's reference to a
+redefined global means; ellipsis in the prototype or not).
+
+## 183. Keywords, `#:tag`, for tags and labels (the user's, 2026-10-30)
+Keywords as values done (2026-10-30, `docs/fx26.md`, "Keywords"): `#:name`
+self-quoting, type and shape `keyword`, interned, `symbol->keyword` and
+`keyword->symbol`, kept by name through a `.fasl`. Tags and labels may be
+written with them (2026-10-30): the same label as the name bare, both
+taken; types print them as keywords (a number bare), and a
+`define-datatype` variant may be `(#:circle int)`, its constructor still
+`circle`. Left: a sum's run-time tag a keyword; the lint that offers the
+rewrite; bare tags no longer taken. Not done either: `#:name` folded to a constant
+by the compilers (it is a call of `symbol->keyword` each time), and
+`keyword?` made in line by the native compilers, as `symbol?` is.
+Reading code heavy with sums, the user took too long to see that `sorted`
+was a variant's name, not a variable: FX-26 writes tags bare, as variable
+references are written. Keywords: a reader token and a `datum` atom of
+type `keyword`, interned and self-quoting; product and sum labels,
+`tagcase` arms and macros' syntactic literals written with them;
+`symbol->keyword` and `keyword->symbol`. Bare-symbol tags accepted
+through a transition, with a lint offering the rewrite. Design in
+`docs/research/typed-macros.md`, "Keywords: names that are not
+variables"; open there: a sum's run-time tag a keyword or a symbol, and
+flat products. Recorded there as a hypothetical extension, not decided:
+a keyword as a sum's constructor, `(#:tag e …)` (arguments by arity, a
+datatype's one-member variant carrying its member, flat products), and
+after it singleton keyword types, so that a keyword applied constructs.
+
+## 184. `define-datatype` with keyword tags (the user's, 2026-10-30)
+**Decided** (2026-10-30): uniform variants (each a product of its
+members), constructors first-class procedures named bare, returning the
+datatype's type; tags in its type the same labels written as keywords or
+bare. That is what `define-datatype` already made, so nothing changed in
+it. Why not one-variant returns, though the sums' join made `if` and
+`tagcase` take them: elsewhere a one-variant sum still refuses ordinary
+code. `(list (circle 1) (rect 2 3))` (a polymorphic parameter, its
+arguments not joined); `(new (circle 1))` then set to a `rect` (a
+reference is invariant); a `tagcase` over a value bound to `(circle 1)`
+with an arm for `rect` (an arm for a tag the type has not is an error, and
+taking it as dead would hide a misspelt tag). Precision stays to be had
+from `sum`. Arguments instantiating one polymorphic parameter now join
+too, as branches do (2026-10-30): `(list (sum #:a 1) (sum #:b "x"))`.
+The findings before:
+Today `(define-datatype shape (circle int) (rect int int))` makes a
+structural `define-type` of a sum whose variants are products labelled
+from 1 (a one-member variant too: `(productof (1 int))`), and a
+constructor procedure per tag, named by it, returning `shape`. Found so
+far:
+- **Keep it uniform** (the user's): every variant a product of its
+  members, the unused `mu` harmless. Adding a member to a variant then
+  never changes its payload from a value to a product, which would break
+  every `tagcase` arm on it. The cost, a bloblet a one-member value, is
+  today's.
+- **Tags keywords, constructors first-class procedures named bare**: the
+  type `(sumof (#:circle (productof (1 int))) …)`, `circle` a procedure.
+  Every bare name is then a variable and every tag looks like one; `(map
+  circle xs)` works; keyword constructors (`docs/research/typed-macros.md`)
+  become a convenience for anonymous sums, not needed here.
+- **Open: what a constructor returns.** `shape` (today's; easy to infer),
+  or the one-variant sum `(sumof (#:circle …))` (precise, fits any sum with
+  that variant). The second needs a join of sums at conditionals: without
+  an expected type, `(if c (sum #:a 1) (sum #:b "x"))` is refused today
+  ("the branches are a (sumof (a int)) and a (sumof (b string))"). Done
+  (2026-10-30): the join of sums, at `if` and among `tagcase` arms, in both
+  checkers, only where neither branch is the other's (so no type inferred
+  before changed); the suite, all of it, the same. So the one-variant
+  return type is open to choose.
+- Constructor names are globals, so two datatypes' `none`s clash, as
+  today; module scoping is the answer, not keywords.
+- `match` (nested patterns, literals, guards) later, as a typed macro: its
+  patterns are binders, Herman's binding signatures' case.
