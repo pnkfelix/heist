@@ -454,8 +454,11 @@ impl World {
     }
 
     /// How process `p` ended, waiting until it has, no task running
-    /// meanwhile (as `read-byte` waits). Its output need not have been read:
-    /// what is left is still there to take.
+    /// meanwhile (as `read-byte` waits), and until its reader has read all
+    /// it wrote: so that what is left of its output is there to take,
+    /// though it need not have been taken. Not at its exit alone: its
+    /// reader may still be behind, and a `process-output` just after would
+    /// miss the rest (found under load).
     pub fn process_exit(&mut self, p: i64) -> ProcessStatus {
         use std::os::unix::process::ExitStatusExt as _;
         loop {
@@ -464,7 +467,7 @@ impl World {
                 proc.status = proc.child.try_wait().ok().flatten();
             }
             match proc.status {
-                Some(s) => {
+                Some(s) if proc.output.lock().unwrap().ended => {
                     proc.seen_end = true;
                     return match (s.code(), s.signal()) {
                         (Some(c), _) => ProcessStatus::Exited(c),
@@ -472,7 +475,7 @@ impl World {
                         (None, None) => ProcessStatus::Unknown,
                     };
                 }
-                None => self.wait_processes(None, false),
+                _ => self.wait_processes(None, false),
             }
         }
     }
