@@ -3591,7 +3591,55 @@ Left, in order:
    the image carrying its sorted table of symbols by hash, so that the
    splice reads none of the symbols at the load.
 5. **`.fasl`s** as segments of the same kind (§141 item 9), and
-   `fixpt build`'s executables.
+   `fixpt build`'s executables. A module's (and a `load-input` file's)
+   done (2026-10-29): spliced into the session's heap
+   (`Heap::splice_image`), not read into a heap of its own and copied in
+   as a graph; `FIXPT_IMAGE_COPY=1` copies as before. Its links known
+   before the splice: the globals it names are in its header now
+   (`global NAME`, the image's placeholder `(0 . i)` the `i`th), not
+   strings in its image, which the splice could not read first (format
+   `fixpt-fasl 2`). Not mapped: a session's heap holds something by
+   then, so the image is copied and walked, not put where it was made
+   for. Heist's combo (19 `.fasl`s, 6.7 MB of images, which took 8.8 ms
+   to read and 7.6 ms to copy), release: 121.5 ms to 107 ms. It found a
+   bug of the splice's: what stands for an image's object was found by
+   its address alone, and a symbol of no suffix is pointed at one past its
+   fields, where the next object is; a pair just after a symbol this heap
+   had was taken for it (`a_pair_just_after_a_symbol_stays_a_pair`). The
+   front end's cache, its symbols laid out first, never met it. Left: a
+   program's `.fasl` (`program_fasl`, `run_program_def`), read whole and
+   copied a group of definitions at a time, each linked to the globals
+   made before it as it runs; and making `.fasl`s mappable, which wants
+   them made for where they will go.
+   A program's `.fasl` measured (2026-10-29), Kayak's compiler (`kfx.fx`,
+   888 definitions, 19 MB), release, on a one-file unit: 3.27 s from
+   source, 0.58 s from the `.fasl`, of which its definitions 350 ms:
+   stamps 107 (printing each type, `show_ty`), the FX-26 checker 134 (60
+   reading the definition's text, 75 checking), the Rust checker 29,
+   `fasl_defined` 19 (a linear search a definition), linking and copying
+   55, and reading the image 18 before. Done: the stamp digests the type
+   by structure (`Checker::ty_digest`), 582 to 496 ms; a definition
+   checked as `(define name T %fasl-value)`, `T` once, 496 to 461 ms.
+   `fasl_defined` (2026-10-30): no search (the definition just recorded
+   is the last), but its form copied for each name of a group; copied
+   once, 19 ms to 9, the copy its run from source makes too (to share
+   the program's forms, `run_forms` would hold them in `Rc`s). The splice
+   (2026-10-30): the image spliced once, before the program runs, linked
+   already (`splice_program`): each global named that is here, that one;
+   each the file defines, made ahead by the compiler written in FX-26
+   (`compile-adopt-globals!`), and taken by the next global made for its
+   name (`c-push-global`), whichever definition makes it, so that a
+   definition run from its source fills it too. A global made after for
+   one of those names (defined again at another type) is said
+   (`compile-adopt-broken?`, asked after a form from the source ran), and
+   the definitions from there run from their source. A definition in
+   the native convention the native compiler declines keeps the global it
+   made for its cellular code now, not a second (`native_define`): one
+   global a definition. 460 ms to 370 ms, release; 759 majors, one
+   before each group, give the same. Left: the checks themselves, which
+   a `.fasl` of types already resolved, or bindings taken without
+   checking (its build, source and uses' types verified already), would
+   leave: the user's to decide.
 `FIXPT_IMAGE_VERIFY=1` (to add) to check an image this executable wrote
 as `--heap` files are (§159).
 
@@ -3971,12 +4019,12 @@ kept), two runs within 0.5 ms of each other:
 | exec, the process's start and exit | ~1.5 | nothing |
 | the front end's image spliced | 2.7 | mapped already (§160); what is left walks it |
 | jitdebug, the cached code's names | 4.0 | option B: the debugger's objects in the cache, the execute view at a fixed address |
-| the Scheme prelude, evaluated | 3.0 | an image of it, as the front end's |
+| the Scheme prelude, evaluated | 3.0 | done in part (2026-10-29): a session not lowering reads only its control (`PRELUDE_CONTROL`, `prelude-control.scm` and the `c[ad]r` family), which FX-26's runtime calls; the rest (`prelude-data.scm`) once it lowers a form (`whole_prelude`): 19.2 to 17.4 ms, instructions 99M to 86M. What is left could be an image of it, as the front end's |
 | the FX-26 runtime | 0.5 | |
-| the rest of the CLI's `start()` | 3.5 | not yet split |
+| the rest of the CLI's `start()` | 3.5 | split (2026-10-29): the Rust checker made twice, cellular and then native, 1.8 ms each; now made once, of the convention asked (`with_backend_preloaded_in`): 28.7 to 27.4 ms |
 | the front end's entries defined | 0.7 | |
-| the front end told the program's conventions (`check-conv-native!` and the like) | 1.5 | |
-| **the standard environment read by the FX-26 reader** (`standard26`, `read_standard`) | **7.6** | its syntax made once, with the front end's cache, kept there as a root |
+| the front end told the program's conventions (`check-conv-native!` and the like) | 1.5 | split (2026-10-29): the first call into the front end made the hand register machine (1.06 ms) to run one `call` of a native closure; `%run-front-end` calls a native closure as native code now: 28.0 to 26.7 ms |
+| the standard environment read by the FX-26 reader (`standard26`, `read_standard`) | 7.6 | done (2026-10-29): its syntax read once, when the native front end's cache is made, kept in it as a fourth element (`save_native_front_end`), taken as `standard26` when the cache is loaded: 26.6 to 18.9 ms, instructions 171M to 99M |
 | the standard environment checked, with the form | 2.1 | the checker's state after it, kept: harder |
 | `0` parsed, compiled and run | 0.3 | |
 | the session dropped | 0.5 | |
@@ -4073,12 +4121,51 @@ for symbols in the file, which is no ELF. The map has the names
 (`FIXPT_PERF_MAP`, 5,197 of them); perf does not ask it. Found profiling
 Heist's §178; `FIXPT_IMAGE_NO_MAP=1` gives the names back, the code
 copied. Ways, to choose:
-1. Under `FIXPT_PERF_MAP`, copy the code rather than map it (anonymous,
-   so the map is read): trivial; a profile then measures some 12 ms more
-   of the start.
+1. Done (2026-10-29): under `FIXPT_PERF_MAP` the front end's code is
+   copied rather than mapped (`Heap::splice_image_from`'s `map_code`), its
+   static area mapped still: `perf report` names it again (`[JIT]`,
+   `native lambda/…`). A profile then measures a start whose code is
+   copied, some 9 ms of a release build's; 2 or 3 would keep it mapped.
 2. perf's jitdump (`/tmp/jit-PID.dump`, `perf inject --jit`), each code
    load with its address, name and bytes, made an ELF object a function:
    to try whether it takes addresses within a file's mapping.
 3. The cache's code made findable by perf as a file of symbols: an ELF
    object of the names at those addresses, where perf looks for that
    mapping's file.
+
+## 180. A place's limit, set (the user's, 2026-10-30; to think about)
+Arenas and reaps no longer fall back to the heap (`9372bbce`): a large
+object is the region's, and an area used up is an error, as a full heap
+is. The limit is the area's today, for all arenas together (and all reaps
+together): `ARENA_WORDS` and `REAP_WORDS`, 2^31 words each, fixed in the
+address layout. The user wants a way to set it, and is not sure of the
+interface; not imperatively on a place `p`, they think, but maybe that is
+right for now. What to settle:
+- **Whose limit**: the session's, for every place (as `FIXPT_NURSERY`
+  sets the nursery: a flag, or an environment variable); or each
+  place's, given where it is bound (`(letrena (r (words n)) body …)`);
+  or set on a place after (`(place-limit! r n)`), which an effect would
+  have to say (`(write r)`?).
+- **What going past it is**: fatal, as the heap's full is now; or a
+  condition the program can handle, which every allocation into a place
+  would then have in its effect (or a `spin`-like atom of its own).
+- **What it counts**: words in use (a reap's after a collection), or
+  words taken from the area, chunks and runs whole.
+- Nested places: does an inner one's use count against the outer's?
+- **The heap's too**: its semispaces have the same kind of limit, fixed
+  in the layout (`MAX_SEMI_WORDS`, 2^31 words, "the heap is full"), and
+  no way to set it either; so do the nursery, the static area and the
+  code area (2^27). A setting may be the heap's and the places' together;
+  the heap's counts what is live after a collection (a copying one, so
+  up to twice that in memory), a place's what it took.
+
+## 181. Code in a place (the user's, 2026-10-30; not yet)
+Code made while a place's body runs, given back with it: not yet. What it
+would take (the conversation of 2026-10-30): the code area's
+native/stubbed test is one comparison with the native half's start, so
+each place's code would need sub-parts of both kinds laid out to keep it
+(or a different test at every call); each sub-part mapped twice, as the
+code area is (the collector's view and the read+execute one), and
+flushed; and freed code unregistered from what refers to it untyped (the
+code area's `starts`, gdb's and perf's JIT registrations, inlining
+notes).

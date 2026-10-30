@@ -106,11 +106,12 @@ fn start(backend: Backend) -> Result<Fx26Session, i32> {
     // all (read in when it does).
     let lowered = crate::FX26_RUN.get().copied().unwrap_or_default() == fixpt_fx26::session::Strategy::Lower;
     let keeping = (native_front_end && !lowered).then_some(NATIVE_KEEPING);
-    let mut s = Fx26Session::with_backend_preloaded(backend, keeping).map_err(|e| {
+    let native = crate::NATIVE_CONVENTION.get().copied().unwrap_or(false);
+    let strategy = crate::FX26_RUN.get().copied().unwrap_or_default();
+    let mut s = Fx26Session::with_backend_preloaded_in(backend, keeping, native, strategy).map_err(|e| {
         eprintln!("fixpt: {e}");
         1
     })?;
-    s.strategy = crate::FX26_RUN.get().copied().unwrap_or_default();
     if let Some(m) = crate::CELLULAR_MACHINE.get() {
         s.scheme.runtime_unrooted().run_word = Some(*m);
     }

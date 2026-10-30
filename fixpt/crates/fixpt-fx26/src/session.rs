@@ -32,6 +32,9 @@ pub struct Fx26Session {
     pub globals: Globals,
     /// How checked forms run.
     pub strategy: Strategy,
+    /// Whether the prelude's data is still to be read
+    /// (`with_backend_preloaded_in`, `whole_prelude`).
+    prelude_data_pending: bool,
     /// Under `Strategy::Cellular`: whether the compiler written in FX-26
     /// makes each lambda's register code too, for a machine that runs it.
     pub register_code: bool,
@@ -138,22 +141,41 @@ pub struct Fx26Session {
 }
 
 /// A program's `.fasl` read for its forms (`Fx26Session::program_fasl`):
-/// each definition kept, by its form's place, with its value's; the image
-/// they are copied from, its values, and what stands in it for what it
-/// links to.
+/// each definition kept, by its form's place, with its value's; and its
+/// image.
 struct ProgramFasl {
     defs: std::collections::HashMap<usize, Vec<(crate::fasl::Def, usize)>>,
-    heap: fixpt_heap::Heap,
-    values: Vec<fixpt_heap::Value>,
-    links: std::collections::HashMap<u64, crate::fasl::Link>,
-    /// The closures that were native, of cellular words alone (`compile-file
-    /// --cellular`): compiled natively where they are defined.
-    natives: Vec<fixpt_heap::Value>,
+    image: ProgramImage,
+    /// Spliced: whether a form has run since the compiler written in FX-26
+    /// was last asked whether the globals its code links to are still
+    /// those (`compile-adopt-broken?`); and whether they are not, so that
+    /// the forms after run from their source.
+    unsure: std::cell::Cell<bool>,
+    broken: std::cell::Cell<bool>,
     /// The file's own abbreviations to check as they are named, each with
     /// what it was (`program_fasl`).
     later: std::cell::RefCell<std::collections::HashMap<String, String>>,
     /// The names of all it keeps, what each is printed with to compare.
     alias_names: Vec<Sym>,
+}
+
+/// A program's `.fasl`'s image, as its definitions are given their values.
+enum ProgramImage {
+    /// Spliced into the session's heap (`TODO.md` §160 item 5), linked
+    /// already (`Fx26Session::splice_program`): a vector of the values.
+    Spliced(fixpt_scheme::Handle),
+    /// Read into a heap of its own, each group of definitions copied in as
+    /// it runs, linked to the globals made before it (`FIXPT_IMAGE_COPY`,
+    /// or links not known ahead): its heap, its values, what stands in it
+    /// for what it links to, and the closures that were native, of
+    /// cellular words alone (`compile-file --cellular`), compiled natively
+    /// where they are defined.
+    Read {
+        heap: fixpt_heap::Heap,
+        values: Vec<fixpt_heap::Value>,
+        links: std::collections::HashMap<u64, crate::fasl::Link>,
+        natives: Vec<fixpt_heap::Value>,
+    },
 }
 
 /// The budget for one speculative run: enough for a REPL-sized
@@ -408,7 +430,7 @@ fn save_front_end(heap: &fixpt_heap::Heap, w: fixpt_heap::Value, path: &std::pat
 /// they reach it (shared, not copied, when read back). The call-outs the
 /// code makes are in its fields, each the call-out itself, encoded, the
 /// same in every machine.
-fn save_native_front_end(heap: &fixpt_heap::Heap, pieces: fixpt_heap::Value, path: &std::path::Path, key: u64) {
+fn save_native_front_end(heap: &fixpt_heap::Heap, pieces: fixpt_heap::Value, standard: fixpt_heap::Value, path: &std::path::Path, key: u64) {
     use fixpt_heap::Value;
     let mut alone = fixpt_heap::Heap::new();
     // The shared stub first, where a session's heap has it when the image
@@ -424,7 +446,11 @@ fn save_native_front_end(heap: &fixpt_heap::Heap, pieces: fixpt_heap::Value, pat
         }
     }
     let adapter = adapter.map_or(Value::FALSE, |a| made[&a.raw()]);
-    let rest = alone.cons(adapter, Value::NULL);
+    // The standard environment as the reader written in FX-26 reads it
+    // (`standard26`): the same at every start, read once (`TODO.md` §177).
+    let standard = alone.copy_graph_from(heap, standard);
+    let rest = alone.cons(standard, Value::NULL);
+    let rest = alone.cons(adapter, rest);
     let rest = alone.cons(codes, rest);
     let root = alone.cons(copy, rest);
     alone.push_root(root);
@@ -445,7 +471,13 @@ fn load_native_front_end(k: &NativeKeeping, heap: &mut fixpt_heap::Heap, file: &
     let adapter = img.car(img.cdr(img.cdr(root)));
     // Spliced in, unless `FIXPT_IMAGE_COPY` asks for the copy of a graph
     // that the splice replaced (`TODO.md` §160): for debugging.
-    let (pieces, made_code) = if std::env::var_os("FIXPT_IMAGE_COPY").is_some() {
+    // The standard environment read, kept with it, if it is (an older
+    // cache has none).
+    let standard_of = |h: &fixpt_heap::Heap, root: Value| {
+        let rest = h.cdr(h.cdr(h.cdr(root)));
+        if rest.is_pair() { h.car(rest) } else { Value::FALSE }
+    };
+    let (pieces, standard, made_code) = if std::env::var_os("FIXPT_IMAGE_COPY").is_some() {
         let from = fixpt_heap::image::load_trusted(bytes).ok()?;
         let root = *from.roots_slice().first()?;
         let code: std::collections::HashSet<u64> = list(&from, from.car(from.cdr(root))).iter().map(|c| c.raw()).collect();
@@ -454,7 +486,9 @@ fn load_native_front_end(k: &NativeKeeping, heap: &mut fixpt_heap::Heap, file: &
             given.insert(from.car(from.cdr(from.cdr(root))).raw(), (k.adapter_code)(heap).ok()?);
         }
         let (copy, made) = heap.copy_graph_with(&from, from.car(root), |v| code.contains(&v.raw()), &given);
-        (copy, code.iter().filter_map(|k| made.get(k).copied()).collect())
+        let standard = standard_of(&from, root);
+        let standard = if standard == Value::FALSE { standard } else { heap.copy_graph_from(&from, standard) };
+        (copy, standard, code.iter().filter_map(|k| made.get(k).copied()).collect())
     } else {
         // This heap's adapter stands for the image's; if it has none yet,
         // the image's is its own, so that the image goes where it was made.
@@ -467,15 +501,20 @@ fn load_native_front_end(k: &NativeKeeping, heap: &mut fixpt_heap::Heap, file: &
         // (`TODO.md` §160 item 4), unless `FIXPT_IMAGE_NO_MAP` asks for it
         // copied.
         let map = std::env::var_os("FIXPT_IMAGE_NO_MAP").is_none().then_some(file);
-        let spliced = heap.splice_image_from(&img, &given, map).inspect_err(|e| eprintln!("fixpt: the front end's cache could not be read ({e}); it is made again"));
+        // Its code copied, not mapped, where `perf` is to name it by the
+        // perf map (`FIXPT_PERF_MAP`): it names none of a file's
+        // (`TODO.md` §179).
+        let map_code = std::env::var_os("FIXPT_PERF_MAP").is_none();
+        let spliced = heap.splice_image_from(&img, &given, map, map_code).inspect_err(|e| eprintln!("fixpt: the front end's cache could not be read ({e}); it is made again"));
         let root = *spliced.ok()?.first()?;
         let theirs = heap.car(heap.cdr(heap.cdr(root)));
         if mine.is_none() && theirs != Value::FALSE {
             heap.set_adapter_code(theirs);
         }
-        (heap.car(root), list(heap, heap.car(heap.cdr(root))))
+        (heap.car(root), standard_of(heap, root), list(heap, heap.car(heap.cdr(root))))
     };
     (k.note_code)(heap, &made_code);
+    let pieces = heap.cons(pieces, standard);
     Some(pieces)
 }
 
@@ -694,6 +733,23 @@ impl Fx26Session {
     /// (`as_register_code`), with `front_end_native` and `native_keeping`
     /// set as the cache was made.
     pub fn with_backend_preloaded(backend: fixpt_engine::Backend, keeping: Option<NativeKeeping>) -> R<Fx26Session> {
+        Fx26Session::with_backend_preloaded_in(backend, keeping, false, Strategy::Lower)
+    }
+
+    /// [`with_backend_preloaded`](Fx26Session::with_backend_preloaded), its
+    /// checker of the native convention if `native`, made so at once: not
+    /// made cellular and then again native
+    /// ([`set_native_convention`](Fx26Session::set_native_convention)), each
+    /// some 2 ms of a start (`TODO.md` §177); and its strategy `strategy`.
+    /// Its forms not lowered, the prelude's data (`PRELUDE_DATA`) is left
+    /// out, some 2 ms more, until the session lowers one
+    /// (`whole_prelude`).
+    pub fn with_backend_preloaded_in(
+        backend: fixpt_engine::Backend,
+        keeping: Option<NativeKeeping>,
+        native: bool,
+        strategy: Strategy,
+    ) -> R<Fx26Session> {
         let preload = |heap: &mut fixpt_heap::Heap| -> Option<fixpt_heap::Value> {
             let k = keeping?;
             let text = register_text(&crate::front_end(), &Self::FRONT_ENTRIES);
@@ -704,7 +760,9 @@ impl Fx26Session {
             }
             load_native_front_end(&k, heap, &b)
         };
-        let mut scheme = Session::with_backend_preloaded(backend, preload);
+        let lowered = strategy == Strategy::Lower;
+        let prelude = if lowered { fixpt_scheme::PRELUDE } else { fixpt_scheme::PRELUDE_CONTROL };
+        let mut scheme = Session::with_prelude_preloaded(backend, prelude, preload);
         scheme
             .eval_str("<fx26-runtime>", RUNTIME)
             .map_err(|e| FxError::at(Span::new(FileId(0), 0, 0), format!("the FX-26 runtime failed to load: {e}")))?;
@@ -722,10 +780,11 @@ impl Fx26Session {
             fixpt_engine::cellular::run_word
         });
         Ok(Fx26Session {
-            checker: Checker::new(),
+            checker: if native { Checker::with_convention(crate::ast::Conv::Native) } else { Checker::new() },
             scheme,
             globals: Globals::default(),
-            strategy: Strategy::Lower,
+            strategy,
+            prelude_data_pending: !lowered,
             register_code: false,
             front_end_compiled: true,
             front_end_native: false,
@@ -801,6 +860,7 @@ impl Fx26Session {
         if self.strategy != Strategy::Lower {
             return self.speculate_own(&fixpt_read::write_syntax(form, &self.checker.interner));
         }
+        self.whole_prelude();
         self.scheme.engine.set_step_limit(self.speculation_limit);
         let result = self.scheme.scope(|s| {
             let (_, result) = s.eval_capturing("<fx26-speculative>", &code);
@@ -952,7 +1012,12 @@ impl Fx26Session {
                 self.own_made = self.strategy != Strategy::Lower && ahead.contains(&f.span);
                 let out = match fasl.as_ref().and_then(|p| Some((p, p.defs.get(&i)?))) {
                     Some((p, group)) => self.run_program_def(f, group, p).map(|o| vec![o]),
-                    None => self.run_each(f),
+                    None => {
+                        if let Some(p) = &fasl {
+                            p.unsure.set(true);
+                        }
+                        self.run_each(f)
+                    }
                 };
                 // What the pieces written in FX-26 made themselves (a
                 // generative's conversions) is not the program's to keep.
@@ -970,6 +1035,12 @@ impl Fx26Session {
                     }
                 }
             }
+        }
+        // The spliced image's values let go, and the globals made ahead
+        // for it not taken.
+        if let Some(ProgramFasl { image: ProgramImage::Spliced(values), .. }) = fasl {
+            self.scheme.replace(values, |_| fixpt_heap::Value::FALSE);
+            self.adopt_none()?;
         }
         Ok(outs)
     }
@@ -1192,7 +1263,8 @@ impl Fx26Session {
     /// its source or a `.fasl`, so that code a `.fasl` keeps finds its
     /// assumptions hold where they do, and only there. A load's, its file's
     /// stamp (`fasl::stamp`: its text and its loads'). Another's, a digest
-    /// of its form, its name, its type and the stamps of the globals it
+    /// of its form, its name, its type (by structure, `Checker::ty_digest`,
+    /// not printed) and the stamps of the globals it
     /// reads, if that is all its making does (a `lambda`'s does nothing);
     /// else one of this process's own, which no other session's code
     /// expects. A write when the program runs counts on from it (`setglbl`),
@@ -1229,7 +1301,7 @@ impl Fx26Session {
             };
             reads.sort_by_key(|g| self.checker.interner.name(*g).to_string());
             let mut h = std::collections::hash_map::DefaultHasher::new();
-            ("fixpt-stamp", self.checker.interner.name(name), &text, self.checker.show_ty(ty)).hash(&mut h);
+            ("fixpt-stamp", self.checker.interner.name(name), &text, self.checker.ty_digest(ty)).hash(&mut h);
             for g in reads {
                 let n = self.checker.interner.name(g).to_string();
                 let w = self.global_cell(&n).ok().flatten().map(|c| {
@@ -1300,6 +1372,9 @@ impl Fx26Session {
     }
 
     fn run_checked_in(&mut self, top: Top, form: &Syntax, again: bool) -> R<Outcome> {
+        if self.strategy == Strategy::Lower {
+            self.whole_prelude();
+        }
         // What runs natively is typed so: a call typed `cellular` is made
         // with no look at its callee (`TODO.md` §97).
         debug_assert!(self.native_runner.is_none() || self.native_convention, "native code in the cellular convention");
@@ -1415,6 +1490,11 @@ impl Fx26Session {
                     Err(NativeRun::Declined(why)) => note = format!("; not in the native convention yet, so `{name}` runs as cellular code: {why}\n"),
                     Err(NativeRun::Ran(Ok(_))) => unreachable!("a value is stored"),
                 }
+                // Its global, made, the one the cellular code fills: one
+                // global for the definition, as code linked to it before it
+                // was defined expects (`splice_program`).
+                let n = self.checker.interner.intern(&name);
+                self.keep_global(n)?;
             }
             let (out, words) = match self.strategy {
                 Strategy::Evaluate => (self.eval_form(&format!("{form_text}\n"))?, None),
@@ -1523,8 +1603,29 @@ impl Fx26Session {
         self.own_begun = true;
         let fail = |e: String| FxError::at(Span::new(FileId(0), 0, 0), format!("`{}`: {e}", fasl.display()));
         let bytes = fixpt_heap::Mapped::open(fasl).map_err(|e| fail(e.to_string()))?;
-        let (_, image) = crate::fasl::Header::read(&bytes).map_err(fail)?;
-        let (from, value, links, natives) = crate::fasl::read_image(image).map_err(fail)?;
+        let (header, image) = crate::fasl::Header::read(&bytes).map_err(fail)?;
+        // Spliced into the heap (`TODO.md` §160 item 5), unless
+        // `FIXPT_IMAGE_COPY` asks for it read into a heap of its own and
+        // copied in as a graph, as before: for debugging.
+        let read = match std::env::var_os("FIXPT_IMAGE_COPY") {
+            Some(_) => Some(crate::fasl::read_image(image, &header.globals).map_err(fail)?),
+            None => None,
+        };
+        let img = match read {
+            Some(_) => None,
+            None => Some(fixpt_heap::image::parts(image, false).map_err(|e| fail(format!("its image: {e:?}")))?),
+        };
+        let links = match (&read, &img) {
+            (Some((_, _, links, _)), _) => links.clone(),
+            (None, Some(img)) => {
+                let root = *img.roots.first().ok_or_else(|| fail("its image has no root".into()))?;
+                if !root.is_pair() || !img.cdr(root).is_pair() {
+                    return Err(fail("its image's root is not a list of three".into()));
+                }
+                crate::fasl::read_links(img.car(img.cdr(root)), |v| img.car(v), |v| img.cdr(v), &header.globals).map_err(fail)?
+            }
+            (None, None) => unreachable!("read or spliced"),
+        };
         let deps: Vec<Sym> = self.checker.shared_files.get(&name).map(|f| f.deps.iter().map(|d| d.2).collect()).unwrap_or_default();
         // What each link is here, held while the value is copied in; the
         // native adapter's, this heap's, found as it is copied.
@@ -1563,14 +1664,32 @@ impl Fx26Session {
                 match adapter.map(|a| a(heap)) {
                     Some(Ok(a)) => given.extend(adapters.iter().map(|p| (p.raw(), a))),
                     _ => {
-                        why = Some("it holds native code's adapter, and this session makes none");
+                        why = Some("it holds native code's adapter, and this session makes none".to_string());
                         return fixpt_heap::Value::FALSE;
                     }
                 }
             }
-            let (copy, made) = heap.copy_graph_with(&from, value, |_| false, &given);
+            // Its value, and the closures that were native, as this heap's.
+            let (copy, natives): (fixpt_heap::Value, std::collections::HashSet<u64>) = match (&read, &img) {
+                (Some((from, value, _, natives)), _) => {
+                    let (copy, made) = heap.copy_graph_with(from, *value, |_| false, &given);
+                    (copy, natives.iter().filter_map(|n| made.get(&n.raw()).map(|v| v.raw())).collect())
+                }
+                (None, Some(img)) => {
+                    let given: Vec<(fixpt_heap::Value, fixpt_heap::Value)> = given.iter().map(|(&k, &v)| (fixpt_heap::Value::from_raw(k), v)).collect();
+                    let root = match heap.splice_image(img, &given) {
+                        Ok(roots) => roots[0],
+                        Err(e) => {
+                            why = Some(format!("its image cannot be put in: {e}"));
+                            return fixpt_heap::Value::FALSE;
+                        }
+                    };
+                    (heap.car(root), list(heap, heap.cdr(heap.cdr(root))).iter().map(|v| v.raw()).collect())
+                }
+                (None, None) => unreachable!("read or spliced"),
+            };
             let copy = match compile {
-                Some(c) if !natives.is_empty() => crate::fasl::native_procedures(heap, copy, c, &natives.iter().filter_map(|n| made.get(&n.raw()).map(|v| v.raw())).collect()),
+                Some(c) if !natives.is_empty() => crate::fasl::native_procedures(heap, copy, c, &natives),
                 _ => copy,
             };
             heap.set_bloblet_slot(g, 2, copy);
@@ -1580,7 +1699,7 @@ impl Fx26Session {
             fixpt_heap::Value::FALSE
         });
         if let Some(why) = why {
-            return Ok(Err(fail(why.into()).message));
+            return Ok(Err(fail(why).message));
         }
         Ok(Ok(None))
     }
@@ -1675,7 +1794,7 @@ impl Fx26Session {
             deps.push(crate::fasl::Dep { path: written.clone(), input: *input, stamp });
             dep_values.push(self.checker.interner.name(*d).to_string());
         }
-        let header = crate::fasl::Header {
+        let mut header = crate::fasl::Header {
             build: crate::fasl::build(),
             arch: std::env::consts::ARCH.to_string(),
             native: self.native_convention,
@@ -1688,8 +1807,10 @@ impl Fx26Session {
             made,
             defs: Vec::new(),
             aliases,
+            globals: Vec::new(),
         };
-        let image = self.released(|s| s.fasl_image(&name, &dep_values)).map_err(|e| format!("`{path}`'s value cannot be kept: {e}"))?;
+        let (image, globals) = self.released(|s| s.fasl_image(&name, &dep_values)).map_err(|e| format!("`{path}`'s value cannot be kept: {e}"))?;
+        header.globals = globals;
         let tmp = fasl.with_extension(format!("fasl-tmp{}", std::process::id()));
         std::fs::write(&tmp, header.file(&image)).map_err(|e| format!("cannot write `{}`: {e}", tmp.display()))?;
         std::fs::rename(&tmp, fasl).map_err(|e| format!("cannot write `{}`: {e}", fasl.display()))?;
@@ -1822,19 +1943,31 @@ impl Fx26Session {
                 return stale(self, &format!("`{}` is defined here already", d.name));
             }
         }
-        let (heap, value, links, natives) = match crate::fasl::read_image(image) {
-            Ok(r) => r,
+        let spliced = match std::env::var_os("FIXPT_IMAGE_COPY") {
+            None => self.splice_program(image, &header.globals, forms, &header.defs),
+            Some(_) => Ok(None),
+        };
+        let image = match spliced {
+            Ok(Some(values)) => ProgramImage::Spliced(values),
+            Ok(None) => {
+                let (heap, value, links, natives) = match crate::fasl::read_image(image, &header.globals) {
+                    Ok(r) => r,
+                    Err(e) => return stale(self, &e),
+                };
+                let mut values = Vec::new();
+                let mut l = value;
+                while l.is_pair() {
+                    values.push(heap.car(l));
+                    l = heap.cdr(l);
+                }
+                if values.len() != header.defs.len() {
+                    return stale(self, "its image is not its definitions'");
+                }
+                let links = links.into_iter().map(|(p, l)| (p.raw(), l)).collect();
+                ProgramImage::Read { heap, values, links, natives }
+            }
             Err(e) => return stale(self, &e),
         };
-        let mut values = Vec::new();
-        let mut l = value;
-        while l.is_pair() {
-            values.push(heap.car(l));
-            l = heap.cdr(l);
-        }
-        if values.len() != header.defs.len() {
-            return stale(self, "its image is not its definitions'");
-        }
         if std::env::var_os("FIXPT_FASL_SAY").is_some() {
             self.checker.fasl_notes.push(format!("`{}` is read from `{}`", path.display(), fasl.display()));
         }
@@ -1842,8 +1975,139 @@ impl Fx26Session {
         for (i, d) in header.defs.into_iter().enumerate() {
             defs.entry(d.form).or_default().push((d, i));
         }
-        let links = links.into_iter().map(|(p, l)| (p.raw(), l)).collect();
-        Some(ProgramFasl { defs, heap, values, links, natives, later: std::cell::RefCell::new(later), alias_names: names })
+        let (unsure, broken) = Default::default();
+        Some(ProgramFasl { defs, image, unsure, broken, later: std::cell::RefCell::new(later), alias_names: names })
+    }
+
+    /// A program's `.fasl`'s image `image` spliced into this session's
+    /// heap (`TODO.md` §160 item 5), each of its values, one each of
+    /// `defs`, linked as it is when its definition runs, its closures that
+    /// were native made so: a vector of them. Each global it names
+    /// (`globals`) that is here already, that one; one that `forms`, the
+    /// file's, define, made ahead, for its definition to take
+    /// (`compile-adopt-globals!`), whether it is read from the `.fasl` or
+    /// run from its source; the compiler written in FX-26 says whether a
+    /// global is made for one of them after (`compile-adopt-broken?`). None
+    /// if a link cannot be known before its definition runs (a global
+    /// neither here nor the file's, defined by an `include`, say), for the
+    /// copy as each runs.
+    fn splice_program(&mut self, image: &[u8], globals: &[String], forms: &[Syntax], defs: &[crate::fasl::Def]) -> Result<Option<fixpt_scheme::Handle>, String> {
+        let img = fixpt_heap::image::parts(image, false).map_err(|e| format!("its image: {e:?}"))?;
+        let root = *img.roots.first().ok_or("its image has no root")?;
+        if !root.is_pair() || !img.cdr(root).is_pair() {
+            return Err("its image's root is not a list of three".into());
+        }
+        let mut n = 0;
+        let mut l = img.car(root);
+        while l.is_pair() {
+            n += 1;
+            l = img.cdr(l);
+        }
+        if n != defs.len() {
+            return Err("its image is not its definitions'".into());
+        }
+        let links = crate::fasl::read_links(img.car(img.cdr(root)), |v| img.car(v), |v| img.cdr(v), globals)?;
+        let defined: std::collections::HashSet<Sym> = forms.iter().flat_map(|f| self.checker.defined_names(f)).collect();
+        self.own_pieces().map_err(|e| e.message)?;
+        // Made first, to outlast the handles made meanwhile.
+        let values = self.scheme.make(|_| fixpt_heap::Value::FALSE);
+        let mark = self.scheme.root_mark();
+        let r = self.splice_program_in(&img, &links, &defined, values);
+        self.scheme.release_to(mark);
+        if !matches!(r, Ok(true)) {
+            self.scheme.replace(values, |_| fixpt_heap::Value::FALSE);
+            self.adopt_none().map_err(|e| e.message)?;
+        }
+        Ok(r?.then_some(values))
+    }
+
+    /// The globals made ahead for a program's `.fasl` and not taken let
+    /// go, and none watched (`compile-adopt-globals!`).
+    fn adopt_none(&mut self) -> R<()> {
+        let fail = |e: fixpt_scheme::SessionError| FxError::at(Span::new(FileId(0), 0, 0), e.to_string());
+        self.released(|s| {
+            let none = s.scheme.make(|_| fixpt_heap::Value::NULL);
+            s.scheme.call_global(&format!("{READER_PREFIX}compile-adopt-globals!"), &[none, none]).map_err(fail).map(|_| ())
+        })
+    }
+
+    /// Whether a global was made, since a program's `.fasl` was spliced, for
+    /// a name its code links to, not the one it links to
+    /// (`compile-adopt-broken?`).
+    fn adopt_broken(&mut self) -> R<bool> {
+        let fail = |e: fixpt_scheme::SessionError| FxError::at(Span::new(FileId(0), 0, 0), e.to_string());
+        self.released(|s| {
+            let b = s.scheme.call_global(&format!("{READER_PREFIX}compile-adopt-broken?"), &[]).map_err(fail)?;
+            Ok(s.scheme.view(|v| !v.get(b).is_false()))
+        })
+    }
+
+    fn splice_program_in(&mut self, img: &fixpt_heap::image::Parts, links: &[(fixpt_heap::Value, crate::fasl::Link)], defined: &std::collections::HashSet<Sym>, values: fixpt_scheme::Handle) -> Result<bool, String> {
+        let sfail = |e: fixpt_scheme::SessionError| e.to_string();
+        // Each global named: here, or made ahead.
+        let (mut here, mut ahead): (Vec<(String, fixpt_scheme::Handle)>, Vec<String>) = Default::default();
+        for (_, link) in links {
+            let crate::fasl::Link::Global(n) = link else { continue };
+            if here.iter().any(|(m, _)| m == n) || ahead.contains(n) {
+                continue;
+            }
+            match self.global_cell(n).map_err(|e| e.message)? {
+                Some(c) => here.push((n.clone(), c)),
+                None if defined.contains(&self.checker.interner.intern(n)) => ahead.push(n.clone()),
+                None => return Ok(false),
+            }
+        }
+        let syms = |s: &mut Self, ns: Vec<&str>| s.scheme.make(|m| ns.iter().rev().fold(fixpt_heap::Value::NULL, |l, n| { let sym = m.heap().intern(n); m.heap().cons(sym, l) }));
+        let (ns, watch) = (syms(self, ahead.iter().map(|n| n.as_str()).collect()), syms(self, here.iter().map(|(n, _)| n.as_str()).collect()));
+        let made = self.scheme.call_global(&format!("{READER_PREFIX}compile-adopt-globals!"), &[ns, watch]).map_err(sfail)?;
+        let adapter = self.native_keeping.map(|k| k.adapter_code);
+        let compile = self.native_compiler.filter(|_| self.native_convention);
+        let mut why = None;
+        self.scheme.replace(values, |m| {
+            let mut cells: std::collections::HashMap<&str, fixpt_heap::Value> = here.iter().map(|(n, c)| (n.as_str(), m.get(*c))).collect();
+            let mut l = m.get(made);
+            let heap = m.heap();
+            for n in &ahead {
+                cells.insert(n, heap.car(l));
+                l = heap.cdr(l);
+            }
+            let mut given = Vec::new();
+            for (p, link) in links {
+                let v = match link {
+                    crate::fasl::Link::Global(n) => cells[n.as_str()],
+                    crate::fasl::Link::Adapter => match adapter.map(|a| a(heap)) {
+                        Some(Ok(a)) => a,
+                        _ => {
+                            why = Some("it holds native code's adapter, and this session makes none".to_string());
+                            return fixpt_heap::Value::FALSE;
+                        }
+                    },
+                    crate::fasl::Link::DepCell(_) | crate::fasl::Link::DepValue(_) => {
+                        why = Some("it links to a file's load".to_string());
+                        return fixpt_heap::Value::FALSE;
+                    }
+                };
+                given.push((*p, v));
+            }
+            let root = match heap.splice_image(img, &given) {
+                Ok(roots) => roots[0],
+                Err(e) => {
+                    why = Some(format!("its image cannot be put in: {e}"));
+                    return fixpt_heap::Value::FALSE;
+                }
+            };
+            // Its closures that were native, made so, linked first.
+            let (mut vs, natives) = (heap.car(root), list(heap, heap.cdr(heap.cdr(root))));
+            if let Some(c) = compile.filter(|_| !natives.is_empty()) {
+                vs = crate::fasl::native_procedures(heap, vs, c, &natives.iter().map(|v| v.raw()).collect());
+            }
+            let vs = list(heap, vs);
+            heap.vector_from(&vs)
+        });
+        match why {
+            Some(why) => Err(why),
+            None => Ok(true),
+        }
     }
 
     /// Why `defs`' code is not right here, if it is not: a global it uses,
@@ -1866,13 +2130,25 @@ impl Fx26Session {
     }
 
     /// `form`, a program's definition of a procedure, read from its `.fasl`
-    /// (`program_fasl`): checked, by both checkers, as `(define name T (the
-    /// T %fasl-value))`, then made what `form` would have made of it for a
-    /// redefinition (`Checker::fasl_defined`); its global given the value
-    /// kept, linked to the globals here by name, its procedures compiled
-    /// natively in the native convention.
+    /// (`program_fasl`): checked, by both checkers, as `(define name T
+    /// %fasl-value)` (`fasl_value_at`), then made what `form` would have
+    /// made of it for a redefinition (`Checker::fasl_defined`); its global
+    /// given the value kept: spliced and linked already (`splice_program`),
+    /// its global the one made ahead for it, if code names it; or copied
+    /// in, linked to the globals here by name, its procedures compiled
+    /// natively in the native convention. From its source if a global its
+    /// code was linked to has been made again since.
     fn run_program_def(&mut self, form: &Syntax, group: &[(crate::fasl::Def, usize)], p: &ProgramFasl) -> R<Outcome> {
         let fail = |m: String| FxError::at(form.span, m);
+        // Spliced, the globals its code links to still those, or this form
+        // and those after run from their source.
+        if matches!(p.image, ProgramImage::Spliced(_)) && p.unsure.replace(false) && !p.broken.get() && self.adopt_broken()? {
+            self.checker.fasl_notes.push(format!("a global its code links to is defined again: `{}` and the definitions after are run from their source", group[0].0.name));
+            p.broken.set(true);
+        }
+        if p.broken.get() {
+            return self.run_each(form).and_then(|mut v| v.pop().ok_or_else(|| fail("a definition".into())));
+        }
         // The file's own abbreviations it names that were not yet when the
         // `.fasl` was read: what they were, or the form runs from its source.
         for t in group.iter().flat_map(|(d, _)| &d.types) {
@@ -1880,6 +2156,7 @@ impl Fx26Session {
             let a = self.checker.interner.intern(t);
             if self.checker.fasl_alias_expansion(a, &p.alias_names).map(|(t, _)| t).as_deref() != Some(was.as_str()) {
                 self.checker.fasl_notes.push(format!("the type `{t}` is not what it was: `{}` is run from its source", group[0].0.name));
+                p.unsure.set(true);
                 return self.run_each(form).and_then(|mut v| v.pop().ok_or_else(|| fail("a definition".into())));
             }
             p.later.borrow_mut().remove(t);
@@ -1890,10 +2167,12 @@ impl Fx26Session {
         };
         let decl = self.checker.read_in(form.span.file, &text)?.pop().ok_or_else(|| fail("a definition".into()))?;
         let done = self.checker.top_defining(&decl)?;
+        // The form, copied once for the group, as its run from source keeps it.
+        let kept = std::rc::Rc::new(form.clone());
         for (d, _) in group {
             let name = self.checker.interner.intern(&d.name);
             let uses = d.uses.iter().map(|(u, _)| self.checker.interner.intern(u)).collect();
-            self.checker.fasl_defined(name, std::rc::Rc::new(form.clone()), uses);
+            self.checker.fasl_defined(name, kept.clone(), uses);
         }
         let top = done.run.into_iter().next().map(|(t, _)| t).ok_or_else(|| fail("a definition".into()))?;
         // Each its definition's stamp, as its run from source leaves it.
@@ -1914,17 +2193,37 @@ impl Fx26Session {
                 let sym = s.scheme.make(|m| m.heap().intern(&d.name));
                 cells.push(s.scheme.call_global(&format!("{READER_PREFIX}compile-new-global"), &[sym]).map_err(sfail)?);
             }
+            // What the definition said where it was made, said again.
+            let said = group.iter().flat_map(|(d, _)| d.said.iter()).map(|l| format!("{l}\n")).collect();
+            let (from, values, links, natives) = match &p.image {
+                // Linked already, their globals those made ahead.
+                ProgramImage::Spliced(values) => {
+                    s.scheme.make(|m| {
+                        let vs = m.get(*values);
+                        let gs: Vec<fixpt_heap::Value> = cells.iter().map(|c| m.get(*c)).collect();
+                        let heap = m.heap();
+                        for (((_, at), g), stamp) in group.iter().zip(gs).zip(&stamps) {
+                            let v = heap.obj_ref(vs, *at);
+                            heap.set_bloblet_slot(g, 2, v);
+                            heap.set_bloblet_slot(g, fixpt_heap::layout::cellular::GLOBAL_WRITES, fixpt_heap::Value::fixnum(*stamp));
+                        }
+                        fixpt_heap::Value::FALSE
+                    });
+                    return Ok(said);
+                }
+                ProgramImage::Read { heap, values, links, natives } => (heap, values, links, natives),
+            };
             // What their code links to, found here: the globals before them,
             // and themselves.
             let mut found = Vec::new();
             let mut adapters = Vec::new();
-            let mut todo: Vec<fixpt_heap::Value> = group.iter().map(|(_, at)| p.values[*at]).collect();
+            let mut todo: Vec<fixpt_heap::Value> = group.iter().map(|(_, at)| values[*at]).collect();
             let mut seen = std::collections::HashSet::new();
             while let Some(v) = todo.pop() {
                 if !v.is_ref() || v.is_suffix_ref() || !seen.insert(v.raw()) {
                     continue;
                 }
-                if let Some(link) = p.links.get(&v.raw()) {
+                if let Some(link) = links.get(&v.raw()) {
                     if *link == crate::fasl::Link::Adapter {
                         adapters.push(v);
                         continue;
@@ -1935,10 +2234,10 @@ impl Fx26Session {
                     continue;
                 }
                 if v.is_pair() {
-                    todo.extend([p.heap.car(v), p.heap.cdr(v)]);
-                } else if p.heap.obj_type(v) != Some(fixpt_heap::ObjType::Symbol) {
-                    let trailer = p.heap.bloblet_has_trailer(v) as usize;
-                    todo.extend(((1 + trailer)..=p.heap.bloblet_head(v).fields).map(|k| p.heap.bloblet_slot(v, k)));
+                    todo.extend([from.car(v), from.cdr(v)]);
+                } else if from.obj_type(v) != Some(fixpt_heap::ObjType::Symbol) {
+                    let trailer = from.bloblet_has_trailer(v) as usize;
+                    todo.extend(((1 + trailer)..=from.bloblet_head(v).fields).map(|k| from.bloblet_slot(v, k)));
                 }
             }
             // Its native code as it was kept: nothing compiled here; of
@@ -1960,9 +2259,9 @@ impl Fx26Session {
                     }
                 }
                 for (((_, at), g), stamp) in group.iter().zip(gs).zip(&stamps) {
-                    let (copy, made) = heap.copy_graph_with(&p.heap, p.values[*at], |_| false, &given);
+                    let (copy, made) = heap.copy_graph_with(from, values[*at], |_| false, &given);
                     let copy = match compile {
-                        Some(c) if !p.natives.is_empty() => crate::fasl::native_procedures(heap, copy, c, &p.natives.iter().filter_map(|n| made.get(&n.raw()).map(|v| v.raw())).collect()),
+                        Some(c) if !natives.is_empty() => crate::fasl::native_procedures(heap, copy, c, &natives.iter().filter_map(|n| made.get(&n.raw()).map(|v| v.raw())).collect()),
                         _ => copy,
                     };
                     // What the group's definitions share, copied once.
@@ -1975,8 +2274,7 @@ impl Fx26Session {
             if no_adapter {
                 return Err(fail("it holds native code's adapter, and this session makes none".into()));
             }
-            // What the definition said where it was made, said again.
-            Ok(group.iter().flat_map(|(d, _)| d.said.iter()).map(|l| format!("{l}\n")).collect())
+            Ok(said)
         });
         let printed = value?;
         Ok(Outcome { top, code: String::new(), printed, value: Ok(None) })
@@ -2105,7 +2403,7 @@ impl Fx26Session {
             }
             d.types = types;
         }
-        let header = crate::fasl::Header {
+        let mut header = crate::fasl::Header {
             build: crate::fasl::build(),
             arch: std::env::consts::ARCH.to_string(),
             native: self.native_convention,
@@ -2118,8 +2416,10 @@ impl Fx26Session {
             made: String::new(),
             defs,
             aliases,
+            globals: Vec::new(),
         };
-        let image = self.released(|s| s.program_image(&names)).map_err(|e| format!("`{path}`'s definitions cannot be kept: {e}"))?;
+        let (image, globals) = self.released(|s| s.program_image(&names)).map_err(|e| format!("`{path}`'s definitions cannot be kept: {e}"))?;
+        header.globals = globals;
         let fasl = crate::fasl::path_for(&at);
         let tmp = fasl.with_extension(format!("fasl-tmp{}", std::process::id()));
         std::fs::write(&tmp, header.file(&image)).map_err(|e| format!("cannot write `{}`: {e}", tmp.display()))?;
@@ -2183,7 +2483,7 @@ impl Fx26Session {
 
     /// The values of globals `names`, in a list, as a `.fasl`'s image
     /// (`crate::fasl::image`).
-    fn program_image(&mut self, names: &[String]) -> Result<Vec<u8>, String> {
+    fn program_image(&mut self, names: &[String]) -> Result<crate::fasl::Image, String> {
         let mut cells = Vec::new();
         for n in names {
             cells.push(self.global_cell(n).map_err(|e| e.message)?.ok_or_else(|| format!("`{n}` has no global"))?);
@@ -2208,7 +2508,7 @@ impl Fx26Session {
     /// The value of hidden global `name` as a `.fasl`'s image, each of
     /// `deps` (the hidden globals of the files its file loads) linked by its
     /// place (`crate::fasl::image`).
-    fn fasl_image(&mut self, name: &Sym, deps: &[String]) -> Result<Vec<u8>, String> {
+    fn fasl_image(&mut self, name: &Sym, deps: &[String]) -> Result<crate::fasl::Image, String> {
         let shown = self.checker.interner.name(*name).to_string();
         let cell = self.global_cell(&shown).map_err(|e| e.message)?.ok_or_else(|| format!("`{shown}` has no global"))?;
         let mut cells = Vec::new();
@@ -2290,6 +2590,14 @@ impl Fx26Session {
         r
     }
 
+    /// The prelude whole, for lowered code to call: what a session begun
+    /// not lowering left out (`with_backend_preloaded_in`).
+    pub fn whole_prelude(&mut self) {
+        if std::mem::take(&mut self.prelude_data_pending) {
+            self.scheme.eval_str("<prelude>", fixpt_scheme::PRELUDE_DATA).expect("the prelude must load");
+        }
+    }
+
     /// The initial environment as the FX-26 reader reads it, read once.
     fn standard26(&mut self) -> R<fixpt_scheme::Handle> {
         if let Some(h) = self.standard26 {
@@ -2307,7 +2615,12 @@ impl Fx26Session {
     pub fn set_native_convention(&mut self, on: bool) {
         let syscalls = self.checker.syscalls;
         self.native_convention = on;
-        self.checker = Checker::with_convention(if on { crate::ast::Conv::Native } else { crate::ast::Conv::Cellular });
+        // A checker of that convention already, as one is made for it
+        // (`with_backend_preloaded_in`), kept: nothing is checked yet.
+        let conv = if on { crate::ast::Conv::Native } else { crate::ast::Conv::Cellular };
+        if self.checker.conv_default != conv {
+            self.checker = Checker::with_convention(conv);
+        }
         self.checker.globals_effects = self.globals_effects;
         self.checker.defer_reruns = self.defer_reruns;
         self.checker.syscalls = syscalls;
@@ -2364,10 +2677,10 @@ impl Fx26Session {
 
     /// The front end's entry points the Rust side calls by name
     /// (`READER_PREFIX`), each rebound by [`Self::front_end_as_register_code`].
-    pub const FRONT_ENTRIES: [&'static str; 36] = [
+    pub const FRONT_ENTRIES: [&'static str; 38] = [
         "read-text-at", "check-program", "check-more", "checked-tops", "checked-extracts", "checked-effects", "check-conv-native!", "checked-withs!", "checked-reshapes!",
         "check-globals-effects!", "check-defer-reruns!", "check-hold-breaks!", "check-lines!", "parse-program", "loaded-files!", "includes-given!", "run-checked", "run-checked-more", "compile-program", "compile-checked", "compile-registers!", "compile-conv-native!",
-        "compile-global-cell", "compile-new-global", "compile-name-word!", "compile-defining!", "compile-keep-global!", "compile-note-inline!", "compile-forget-globals!", "native-assemble",
+        "compile-global-cell", "compile-new-global", "compile-adopt-globals!", "compile-adopt-broken?", "compile-name-word!", "compile-defining!", "compile-keep-global!", "compile-note-inline!", "compile-forget-globals!", "native-assemble",
         "check-built-in!", "check-syscalls!",
         "native-assemble-x64", "native-assemble-x64-regs", "native-adapter-x64", "native-compile-x64-proc",
     ];
@@ -2435,13 +2748,13 @@ impl Fx26Session {
         if keeping.is_some()
             && let Some(r) = self.scheme.runtime_unrooted().preloaded.take()
         {
-            self.scheme.scope(|sc| {
-                sc.make(|m| {
-                    let pieces = m.heap().root_at(r);
-                    set_entries(m.heap(), pieces, entries, native);
-                    fixpt_heap::Value::NULL
-                })
+            let standard = self.scheme.make(|m| {
+                let both = m.heap().root_at(r);
+                let (pieces, st) = (m.heap().car(both), m.heap().cdr(both));
+                set_entries(m.heap(), pieces, entries, native);
+                st
             });
+            self.keep_standard(standard);
             return self.define_entries(entries, native, prefix);
         }
         let (cached, kept) = match keeping {
@@ -2450,16 +2763,18 @@ impl Fx26Session {
         };
         if let (Some(from), Some(k)) = (&kept, &keeping) {
             let mut loaded = false;
+            let standard = self.scheme.make(|_| fixpt_heap::Value::FALSE);
             self.scheme.scope(|sc| {
-                sc.make(|m| {
-                    if let Some(p) = load_native_front_end(k, m.heap(), from) {
-                        set_entries(m.heap(), p, entries, native);
-                        loaded = true;
-                    }
-                    fixpt_heap::Value::NULL
+                sc.replace(standard, |m| {
+                    let Some(both) = load_native_front_end(k, m.heap(), from) else { return fixpt_heap::Value::FALSE };
+                    let (pieces, st) = (m.heap().car(both), m.heap().cdr(both));
+                    set_entries(m.heap(), pieces, entries, native);
+                    loaded = true;
+                    st
                 })
             });
             if loaded {
+                self.keep_standard(standard);
                 return self.define_entries(entries, native, prefix);
             }
         }
@@ -2478,6 +2793,9 @@ impl Fx26Session {
         }
         let limit = self.step_limit();
         self.scheme.engine.set_step_limit(None);
+        // The pieces the front end's run made, kept past the scope: the
+        // cache is saved once the entries can read the standard environment.
+        let made = self.scheme.make(|_| fixpt_heap::Value::FALSE);
         let pieces: Result<(), String> = self.scheme.scope(|sc| {
             let mut compiled = Err(String::new());
             let word = sc.make(|m| {
@@ -2496,19 +2814,34 @@ impl Fx26Session {
             compiled.map_err(|e| format!("{what} as register code: {e}"))?;
             let none = sc.make(|_| fixpt_heap::Value::NULL);
             let pieces = sc.call_global("%run-front-end", &[word, none]).map_err(|e| e.to_string())?;
-            sc.make(|m| {
+            sc.replace(made, |m| {
                 let p = m.get(pieces);
                 set_entries(m.heap(), p, entries, native);
-                if let (Some((path, key)), Some(_)) = (&cache, &keeping) {
-                    save_native_front_end(m.heap(), p, path, *key);
-                }
-                fixpt_heap::Value::NULL
+                p
             });
             Ok(())
         });
         self.scheme.engine.set_step_limit(limit);
         pieces?;
-        self.define_entries(entries, native, prefix)
+        self.define_entries(entries, native, prefix)?;
+        if let (Some((path, key)), Some(_)) = (&cache, &keeping) {
+            let standard = self.standard26().map_err(|e| e.message)?;
+            self.scheme.make(|m| {
+                let (p, st) = (m.get(made), m.get(standard));
+                save_native_front_end(m.heap(), p, st, path, *key);
+                fixpt_heap::Value::NULL
+            });
+        }
+        self.scheme.replace(made, |_| fixpt_heap::Value::NULL);
+        Ok(())
+    }
+
+    /// Take `standard`, read back with the front end, as the standard
+    /// environment read (`standard26`), if the cache kept one.
+    fn keep_standard(&mut self, standard: fixpt_scheme::Handle) {
+        if self.standard26.is_none() && self.scheme.view(|v| !v.get(standard).is_false()) {
+            self.standard26 = Some(standard);
+        }
     }
 
     /// The names the Rust side calls, `{prefix}{name}`, made to call each
