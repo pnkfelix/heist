@@ -1,0 +1,25 @@
+;; s7st: R7RS Scheme, interpreted in FX-|
+;; C-c C-c interrupts; M-p and M-n go th|
+s7st> z                                 |
+7                                       |
+;; s7st started afresh                  |
+s7st> z                                 |
+Error: unbound variable: z              |
+s7st>                                   |
+                                        |
+                                        |
+-**- *s7st*   L8                        |
+                                        |
+cursor 7,6
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm|
+                                        |

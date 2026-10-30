@@ -595,6 +595,16 @@ before its line that begins with `(`; -1 if none."
 (define-command! "s7st-eval-buffer"
   (sum on-frame (s7-run-from-buffer (lambda ((t rope) (p int) (m int) (file string))
                                       (sum text (product (text (rope->string t)) (file file)))))))
+"C-c C-c in a Scheme buffer (Yank's scheme-run): s7st started afresh,
+nothing of what it had run kept, and the buffer's forms run in it."
+(define-command! "s7st-run"
+  (sum on-frame (lambda ((fr (actor frame)) (f frame))
+                  (and-then fr (reply-with f (list (lambda ()
+                                                     (begin (s7-stop!)
+                                                       (set s7-client-now (sum none #u))
+                                                       (s7-repl-say! ";; s7st started afresh\n" #f)))))
+                            (s7-run-from-buffer (lambda ((t rope) (p int) (m int) (file string))
+                                                  (sum text (product (text (rope->string t)) (file file)))))))))
 (define-command! "s7st-eval-region"
   (sum on-frame (s7-run-from-buffer (lambda ((t rope) (p int) (m int) (file string))
                                       (if (< m 0) (sum none "The mark is not set")
@@ -613,10 +623,12 @@ before its line that begins with `(`; -1 if none."
 (define-buffer-key! "<scheme>" "C-c C-b" "s7st-eval-buffer")
 (define-buffer-key! "<scheme>" "C-c C-l" "s7st-eval-buffer")
 (define-buffer-key! "<scheme>" "C-c C-r" "s7st-eval-region")
+(define-buffer-key! "<scheme>" "C-c C-c" "s7st-run")
 (define-buffer-key! "<scheme>" "C-c C-z" "run-s7st")
 
 (define-doc! "run-s7st" "Show *s7st*, s7st's REPL, making it if need be.\nIts RET runs what is typed after the prompt once its data are whole; C-c C-c interrupts what runs.")
 (define-doc! "s7st" "Show *s7st*, s7st's REPL (run-s7st).")
+(define-doc! "s7st-run" "Start s7st afresh, nothing kept of what it ran, and run the buffer's forms in it.")
 (define-doc! "run-scheme" "Show *s7st*, s7st's REPL (run-s7st).")
 (define-doc! "s7st-send-input" "In *s7st*: a new line, and what is typed after the prompt run, if its data are whole.")
 (define-doc! "s7st-interrupt" "Stop what s7st runs.")
