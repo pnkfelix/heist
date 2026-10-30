@@ -8,7 +8,22 @@ do it, and what it cost. Kayak will need the same changes later
 
 ## Base
 
-- Fixpt `main` at e4af8997 (2026-10-29), pulled from GitHub by Heist's
+- Fixpt `main` at 70382694 (2026-10-30), pulled from GitHub by Heist's
+  02fa619d (squash 3c34eead). Fifteen commits, none Heist's request:
+  a program's and a module's `.fasl` spliced into the heap once, not
+  read and copied as a graph, and a definition's stamp digesting its
+  type by structure; the native front end's entries called as native
+  code, its syntax cached with it, and an FX-26 session's checker made
+  once; arenas and reaps holding large objects, and a place's limit
+  (TODO §180, §181). Heist needed no change. After `fixpt prewarm` and
+  `bin/heist-compile all` (18.6 s), all 135 tests pass; ratfink matches
+  shakedown as before (corpus 123 of 124, playback 12 of 12, its FX-26
+  test reports unchanged).
+  Start-up from `.fasl`s, median of 20 (before: the same measure on
+  e4af8997 with kit adopted, 2026-10-29): the editor 0.42 s (0.43 s);
+  s7st 0.74 s (0.87 s); the CFA's server 1.15 s (1.35 s); combo's server
+  0.11 s (0.14 s); ratfink on a one-proof FX-26 file 0.22 s (0.26 s).
+- Before: Fixpt `main` at e4af8997 (2026-10-29), pulled from GitHub by Heist's
   c7837be9 (squash d4be8147). Three of Heist's requests, done:
   a maker's file is known by its first form, the rest not read
   (8202075e; `fixpt-module-type-per-dependent.md` cost 1,
