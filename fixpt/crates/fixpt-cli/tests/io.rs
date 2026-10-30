@@ -89,6 +89,28 @@ fn files_written_listed_and_read() {
     }
 }
 
+/// Files and directories (Heist's `FIXPT-CHANGES.md` F5), in a directory
+/// of each machine's own: what each path is, made, copied, renamed and
+/// deleted; the failures, values; nothing left but `a.txt`.
+#[test]
+fn files_inspected_copied_renamed_deleted() {
+    let path = format!("{}/tests/programs/io/fs.fx", env!("CARGO_MANIFEST_DIR"));
+    let want = "a.txt file 5\nmkdir done\nd directory\ncopy done\nd/b.txt file 5\nrename done\nd/b.txt not-found\n\
+                c.txt file 5\nno link\ndelete done\nc.txt not-found\ndelete again not-found\nrmdir full failed\nrmdir done\n\
+                d not-found\n";
+    for m in MACHINES {
+        let dir = std::env::temp_dir().join(format!("fixpt-io-fs-{m}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a directory");
+        let out = output(Command::new(FIXPT).args(["--fx26-machine", m, "run", &path]).current_dir(&dir).stdin(Stdio::null()));
+        let (stdout, stderr) = (String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+        assert_eq!((out.status.code(), stdout.as_ref()), (Some(0), want), "{m}: {stderr}");
+        let left: Vec<_> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
+        assert_eq!(left, ["a.txt"], "{m}");
+        std::fs::remove_dir_all(&dir).expect("removed");
+    }
+}
+
 /// The program's own arguments after `--`, an empty one too; and a sleep
 /// on the clock, which the clock then shows has passed.
 #[test]

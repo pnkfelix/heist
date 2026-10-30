@@ -207,6 +207,43 @@ pub fn list_dir(path: &str) -> std::io::Result<Vec<String>> {
     Ok(names)
 }
 
+/// What `file-info` says of `path` (Heist's `FIXPT-CHANGES.md` F5): of the
+/// path itself, a symbolic link not followed. Its kind (`file`,
+/// `directory`, `symlink`, `other`), its size in bytes, when it was last
+/// modified (seconds since the epoch), and its mode's permission bits.
+pub struct FileInfo {
+    pub kind: &'static str,
+    pub size: i64,
+    pub modified: i64,
+    pub mode: i64,
+}
+
+pub fn file_info(path: &str) -> std::io::Result<FileInfo> {
+    use std::os::unix::fs::MetadataExt;
+    let m = std::fs::symlink_metadata(path)?;
+    let t = m.file_type();
+    let kind = if t.is_symlink() {
+        "symlink"
+    } else if t.is_dir() {
+        "directory"
+    } else if t.is_file() {
+        "file"
+    } else {
+        "other"
+    };
+    Ok(FileInfo { kind, size: m.len() as i64, modified: m.mtime(), mode: (m.mode() & 0o7777) as i64 })
+}
+
+/// The target symbolic link `path` names, as it is written; one that is not
+/// UTF-8 is an error of kind `invalid-data`.
+pub fn read_symlink(path: &str) -> std::io::Result<String> {
+    let target = std::fs::read_link(path)?;
+    target
+        .into_os_string()
+        .into_string()
+        .map_err(|t| std::io::Error::new(std::io::ErrorKind::InvalidData, format!("a target that is not UTF-8: {t:?}")))
+}
+
 /// File `path` replaced by `bytes` whole, atomically: written to a file
 /// beside it, flushed to the disk, and renamed over it, so that a reader
 /// sees the old contents or the new, never part of either.

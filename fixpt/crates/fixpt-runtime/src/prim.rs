@@ -2893,6 +2893,63 @@ prims! {
         rt.world.process_signal(p, sig as i32);
         Ok(Value::UNIT)
     });
+    // Files and directories (Heist's `FIXPT-CHANGES.md` F5), as SRFI 170
+    // and R7RS name them: what a path is (a link not followed), a link's
+    // target; a file deleted, an empty directory deleted, a path renamed
+    // (over what is there), a directory made (its parent must be), a file
+    // copied (its permissions too). A path as the working directory
+    // resolves it; a failure an `io-error`.
+    "%fx26-file-info", 1, Some(1), simple!(|rt, a| {
+        let path = get_string(rt, a[0])?;
+        Ok(match crate::world::file_info(&path) {
+            Ok(i) => {
+                let kind = fx26_sum(rt, i.kind, Value::UNIT);
+                let info = rt.heap.make_frozen(
+                    PRODUCT_KIND,
+                    &[kind, Value::fixnum(i.size), Value::fixnum(i.modified), Value::fixnum(i.mode)],
+                );
+                fx26_sum(rt, "info", info)
+            }
+            Err(e) => fx26_io_result(rt, Err(e)),
+        })
+    });
+    "%fx26-read-symlink", 1, Some(1), simple!(|rt, a| {
+        let path = get_string(rt, a[0])?;
+        Ok(match crate::world::read_symlink(&path) {
+            Ok(t) => {
+                let t = rt.heap.make_string(&t);
+                fx26_sum(rt, "target", t)
+            }
+            Err(e) => fx26_io_result(rt, Err(e)),
+        })
+    });
+    "%fx26-delete-file", 1, Some(1), simple!(|rt, a| {
+        let path = get_string(rt, a[0])?;
+        let r = std::fs::remove_file(&path);
+        Ok(fx26_io_result(rt, r))
+    });
+    "%fx26-delete-directory", 1, Some(1), simple!(|rt, a| {
+        let path = get_string(rt, a[0])?;
+        let r = std::fs::remove_dir(&path);
+        Ok(fx26_io_result(rt, r))
+    });
+    "%fx26-rename-file", 2, Some(2), simple!(|rt, a| {
+        let from = get_string(rt, a[0])?;
+        let to = get_string(rt, a[1])?;
+        let r = std::fs::rename(&from, &to);
+        Ok(fx26_io_result(rt, r))
+    });
+    "%fx26-create-directory", 1, Some(1), simple!(|rt, a| {
+        let path = get_string(rt, a[0])?;
+        let r = std::fs::create_dir(&path);
+        Ok(fx26_io_result(rt, r))
+    });
+    "%fx26-copy-file", 2, Some(2), simple!(|rt, a| {
+        let from = get_string(rt, a[0])?;
+        let to = get_string(rt, a[1])?;
+        let r = std::fs::copy(&from, &to).map(|_| ());
+        Ok(fx26_io_result(rt, r))
+    });
 }
 
 /// Promise states. `[state, payload]`.

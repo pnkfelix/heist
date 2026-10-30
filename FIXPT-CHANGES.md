@@ -429,6 +429,51 @@ Still open in Fixpt's `TODO.md`:
 - **Kayak will need:** the I/O kind, and the same six primitives over
   its own runtime.
 
+### F5. Files and directories: `file-info`, `delete-file`, `rename-file`, … (primitive)
+
+- **Needed for:** the editor's dired (marking, deleting, renaming,
+  copying, making directories, as Yank's), and its listings, which
+  told a directory from a file by trying to list each name. Also s7st's
+  `delete-file`, which runs `rm`. This is R7's "the world outside",
+  for files, in `fx26-for-yank.md`.
+- **What changed:** seven primitives, after Fixpt's `list-dir` and
+  `write-file`, named as SRFI 170 and R7RS name them:
+  - `file-info : (subr (io fs-read) (string) (sumof (info (productof (kind (sumof (file unit) (directory unit) (symlink unit) (other unit))) (size int) (modified int) (mode int))) (failed io-error)))`,
+    what the path itself is (`lstat`: a link not followed), its size
+    in bytes, when last modified (seconds since the epoch), its
+    permission bits;
+  - `read-symlink : (subr (io fs-read) (string) (sumof (target string) (failed io-error)))`;
+  - `delete-file`, `delete-directory` (an empty one), `create-directory`
+    (in a directory that is): `(subr (io fs-write) (string) (sumof (done unit) (failed io-error)))`;
+  - `rename-file`: `(subr (io fs-write) (string string) …)`, over
+    what is there if a file is;
+  - `copy-file`: `(subr (maxeff (io fs-read) (io fs-write)) (string string) …)`,
+    a file's bytes and its permissions.
+  - **The runtime:** `prim.rs` (at the end of its table, so that no
+    primitive's number changed: they are 513–519), `world.rs`
+    (`file_info`, `read_symlink`); Rust's `std::fs`, nothing unsafe.
+  - **Names elsewhere:** `standard.rs`, `lower.rs`, `debts.rs` (they
+    cannot fail), `eval-prims.fx`, `docs/fx26.md`'s table.
+  - **Regenerated:** `standard.fx` and `native-direct-x64-layout.fx`
+    (`FIXPT_BLESS=1 cargo test -p fixpt-fx26 --test layout`).
+- **Why a primitive:** nothing in FX-26 could ask what a path is, or
+  change a directory, but by running a program (`ls`, `rm`, `mv`,
+  `cp`, `mkdir`, as Yank's dired does), which is asynchronous, gives
+  text to parse, and failures in a program's words. A syscall
+  (`docs/fx26.md`, "Syscalls") would not do: its types are plain
+  (no product or sum to give the info or an `io-error`), and only a
+  runtime's own code may declare one.
+- **Machines covered:** one of each kind (the lowering's, the
+  evaluator written in FX-26, a cellular interpreter, register code,
+  native code): `fixpt-cli/tests/io.rs`'s
+  `files_inspected_copied_renamed_deleted`, of
+  `tests/programs/io/fs.fx`; both checkers agree on it. Also run:
+  `fixpt-tidy`, `fixpt-fx26`'s `layout`, `checker` and `evaluator`
+  tests. Not Fixpt's whole suite.
+- **Not done:** permissions set, links made, times set; a directory
+  deleted with what is in it (a program does that by walking it).
+- **Kayak will need:** the seven primitives over its own runtime.
+
 Each entry takes this form:
 
 ### Fn. Title (library | primitive | language)

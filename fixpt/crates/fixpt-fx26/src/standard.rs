@@ -265,6 +265,19 @@ pub const ENTRIES: &[(&str, &str)] = &[
     ("process-write", "(subr (io process) (int string) (sumof (done unit) (failed io-error)))"),
     ("process-close-input", "(subr (io process) (int) unit)"),
     ("process-signal", "(subr (io process) (int int) unit)"),
+    // Heist's (`FIXPT-CHANGES.md` F5): files and directories, as SRFI 170
+    // and R7RS name them. What a path is, a symbolic link not followed: its
+    // kind, its size in bytes, when last modified (seconds since the epoch),
+    // its permission bits; a link's target; a file deleted, an empty
+    // directory deleted, a path renamed, a directory made (in one that
+    // is), a file copied with its permissions.
+    ("file-info", "(subr (io fs-read) (string) (sumof (info (productof (kind (sumof (file unit) (directory unit) (symlink unit) (other unit))) (size int) (modified int) (mode int))) (failed io-error)))"),
+    ("read-symlink", "(subr (io fs-read) (string) (sumof (target string) (failed io-error)))"),
+    ("delete-file", "(subr (io fs-write) (string) (sumof (done unit) (failed io-error)))"),
+    ("delete-directory", "(subr (io fs-write) (string) (sumof (done unit) (failed io-error)))"),
+    ("rename-file", "(subr (io fs-write) (string string) (sumof (done unit) (failed io-error)))"),
+    ("create-directory", "(subr (io fs-write) (string) (sumof (done unit) (failed io-error)))"),
+    ("copy-file", "(subr (maxeff (io fs-read) (io fs-write)) (string string) (sumof (done unit) (failed io-error)))"),
     ("write-file", "(poly ((r region)) (subr (maxeff (io fs-write) (read r)) (string (bytevectorof r)) (sumof (done unit) (failed io-error))))"),
     // Bytevectors (`TODO.md` §84): made, read and written at a region, as
     // arrays are; R7RS's names. `bytevector-copy` takes a start and an end,
