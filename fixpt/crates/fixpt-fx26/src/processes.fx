@@ -306,6 +306,15 @@
                            (lambda (w)
                              (begin ((proj %sched int thunk unit) 50 p w)
                                     (lambda () ((proj %sched thunk unit unit) 51 w #u)))))))))
+;; Ready once any process has news: output to take, or an end the program
+;; has not seen (52-54). Its operand is unit, as `((process-news) p …)`
+;; has none.
+(define process-news-event (subr sched (unit) event)
+  (lambda (u)
+    (the event (list (cons (lambda () ((proj %sched unit unit bool) 52 #u #u))
+                           (lambda (w)
+                             (begin ((proj %sched thunk unit unit) 53 w #u)
+                                    (lambda () ((proj %sched thunk unit unit) 54 w #u)))))))))
 ;; Ready once a read of the standard input would not wait: a byte has
 ;; come, or it is at its end (43-45; `TODO.md` §95). Its operand is unit,
 ;; as a `pselect` arm `((read-byte) b body …)` has none.

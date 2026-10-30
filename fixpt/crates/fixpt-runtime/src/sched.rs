@@ -61,6 +61,8 @@ const STDIN_WAITERS: usize = 16;
 /// each `(p . waker)`.
 const OUTPUT_WAITERS: usize = 17;
 const EXIT_WAITERS: usize = 18;
+/// The wakers waiting for any process's news.
+const NEWS_WAITERS: usize = 19;
 
 /// The polls between two decisions whether to preempt (`preempt_due`): a
 /// task's time slice, in each machine's polls (a bytecode machine's
@@ -141,6 +143,9 @@ pub mod op {
     pub const EXIT_READY: i64 = 49;
     pub const EXIT_WAIT: i64 = 50;
     pub const EXIT_UNWAIT: i64 = 51;
+    pub const NEWS_READY: i64 = 52;
+    pub const NEWS_WAIT: i64 = 53;
+    pub const NEWS_UNWAIT: i64 = 54;
 }
 
 /// The state's vector, made if there is none yet.
@@ -152,7 +157,7 @@ fn state(heap: &mut Heap) -> Value {
         return s;
     }
     let seed = std::env::var("FIXPT_SCHED_SEED").ok().and_then(|s| s.parse::<i64>().ok());
-    let s = heap.vector_from(&[Value::NULL, Value::NULL, Value::FALSE, seed.map_or(Value::FALSE, Value::fixnum), Value::fixnum(0), Value::NULL, Value::NULL, Value::FALSE, Value::NULL, Value::fixnum(0), Value::FALSE, Value::NULL, Value::NULL, Value::FALSE, Value::NULL, Value::NULL, Value::NULL, Value::NULL, Value::NULL]);
+    let s = heap.vector_from(&[Value::NULL, Value::NULL, Value::FALSE, seed.map_or(Value::FALSE, Value::fixnum), Value::fixnum(0), Value::NULL, Value::NULL, Value::FALSE, Value::NULL, Value::fixnum(0), Value::FALSE, Value::NULL, Value::NULL, Value::FALSE, Value::NULL, Value::NULL, Value::NULL, Value::NULL, Value::NULL, Value::NULL]);
     heap.set_global(slot, s);
     s
 }
@@ -463,6 +468,22 @@ pub fn run_op(rt: &mut Runtime, n: i64, a: Value, b: Value) -> Outcome<Value> {
         // is), and taken back (`a` the waker).
         op::OUTPUT_READY => Value::boolean(rt.world.process_output_ready(a.as_fixnum())),
         op::EXIT_READY => Value::boolean(rt.world.process_ended(a.as_fixnum())),
+        // Whether any process has news; waker `a` run once one has.
+        op::NEWS_READY => Value::boolean(rt.world.process_news() >= 0),
+        op::NEWS_WAIT => {
+            let s = state(heap);
+            let ws = heap.obj_ref(s, NEWS_WAITERS);
+            let ws = heap.cons(a, ws);
+            heap.obj_set(s, NEWS_WAITERS, ws);
+            unit
+        }
+        op::NEWS_UNWAIT => {
+            let s = state(heap);
+            let ws = heap.obj_ref(s, NEWS_WAITERS);
+            let ws = without(heap, ws, |_, w| w == a);
+            heap.obj_set(s, NEWS_WAITERS, ws);
+            unit
+        }
         op::OUTPUT_WAIT | op::EXIT_WAIT => {
             let slot = if n == op::OUTPUT_WAIT { OUTPUT_WAITERS } else { EXIT_WAITERS };
             let s = state(heap);
@@ -732,7 +753,8 @@ fn timers_wait(rt: &mut Runtime, sleep: bool) -> Value {
     let s = state(&mut rt.heap);
     let ts = rt.heap.obj_ref(s, TIMERS);
     let input = rt.heap.obj_ref(s, STDIN_WAITERS).is_pair();
-    let processes = rt.heap.obj_ref(s, OUTPUT_WAITERS).is_pair() || rt.heap.obj_ref(s, EXIT_WAITERS).is_pair();
+    let news = rt.heap.obj_ref(s, NEWS_WAITERS).is_pair();
+    let processes = rt.heap.obj_ref(s, OUTPUT_WAITERS).is_pair() || rt.heap.obj_ref(s, EXIT_WAITERS).is_pair() || news;
     if !ts.is_pair() && !input && !processes {
         return Value::FALSE;
     }
@@ -762,6 +784,18 @@ fn timers_wait(rt: &mut Runtime, sleep: bool) -> Value {
         while ws.is_pair() {
             order.push(heap.car(ws));
             ws = heap.cdr(ws);
+        }
+        for w in order.into_iter().rev() {
+            push(&mut rt.heap, w);
+        }
+    }
+    if news && rt.world.process_news() >= 0 {
+        let mut ws = rt.heap.obj_ref(s, NEWS_WAITERS);
+        rt.heap.obj_set(s, NEWS_WAITERS, Value::NULL);
+        let mut order = Vec::new();
+        while ws.is_pair() {
+            order.push(rt.heap.car(ws));
+            ws = rt.heap.cdr(ws);
         }
         for w in order.into_iter().rev() {
             push(&mut rt.heap, w);

@@ -531,6 +531,7 @@
       (prim! 'process-signal
              (lambda (xs)
                (begin (process-signal (as-int (ev-arg xs 0)) (as-int (ev-arg xs 1))) the-unit)))
+      (prim! 'process-news (lambda (xs) (process-news)))
       (prim! 'process-exit
              (lambda (xs)
                (tagcase (process-exit (as-int (ev-arg xs 0)))

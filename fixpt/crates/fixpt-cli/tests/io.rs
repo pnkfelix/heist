@@ -130,6 +130,19 @@ fn a_task_waits_for_a_process_while_another_runs() {
     }
 }
 
+/// News of whichever process has some (F6), one arm for any number: each's
+/// output, and each end once.
+#[test]
+fn news_of_any_process() {
+    for (m, (status, out, err)) in on_every_machine("process-news.fx") {
+        assert_eq!(
+            (status, out.as_str()),
+            (Some(0), "[A\n][B1\nB2\n] ended, last first: 0 1 ; no news left\n"),
+            "{m}: {err}"
+        );
+    }
+}
+
 /// The program's own arguments after `--`, an empty one too; and a sleep
 /// on the clock, which the clock then shows has passed.
 #[test]

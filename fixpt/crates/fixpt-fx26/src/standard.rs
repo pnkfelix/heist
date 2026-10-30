@@ -269,6 +269,10 @@ pub const ENTRIES: &[(&str, &str)] = &[
     // has; a `pselect` arm `((process-exit p) how …)` waits for that and its
     // output all taken, one `((process-output p) text …)` for its output.
     ("process-exit", "(subr (io process) (int) (sumof (exited int) (signalled int) (unknown unit)))"),
+    // The first process with news: output to take, or an end not yet seen
+    // (`process-status` or `process-exit`); -1 if none. An arm
+    // `((process-news) p …)` waits for one, whichever.
+    ("process-news", "(subr (io process) () int)"),
     // Heist's (`FIXPT-CHANGES.md` F5): files and directories, as SRFI 170
     // and R7RS name them. What a path is, a symbolic link not followed: its
     // kind, its size in bytes, when last modified (seconds since the epoch),
@@ -665,6 +669,7 @@ pub const ENTRIES: &[(&str, &str)] = &[
     // Heist's F6: a process's output, and its end.
     ("%processes:process-output-event", "(subr pure (int) (event (io process)))"),
     ("%processes:process-exit-event", "(subr pure (int) (event (io process)))"),
+    ("%processes:process-news-event", "(subr pure (unit) (event (io process)))"),
     (
         "%processes:or-event",
         "(poly ((e1 effect) (e2 effect)) (subr pure ((event e1) (event e2)) (event (maxeff e1 e2))))",

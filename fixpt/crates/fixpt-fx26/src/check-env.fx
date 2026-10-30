@@ -123,6 +123,7 @@
          '%processes:mailbox-event '%processes:or-event '%processes:sync
          '%processes:clock-event '%processes:stdin-event '%processes:race2 '%processes:attempt1
          '%processes:process-output-event '%processes:process-exit-event
+         '%processes:process-news-event
          '%processes:self
          '%processes:spawn-monitored
          ;; What a syscall's declaration expands into

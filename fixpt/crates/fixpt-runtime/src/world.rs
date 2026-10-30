@@ -296,6 +296,9 @@ pub struct Process {
     input: Option<std::process::ChildStdin>,
     output: std::sync::Arc<std::sync::Mutex<Output>>,
     status: Option<std::process::ExitStatus>,
+    /// Whether the program has seen it end (`process-status` said so, or
+    /// `process-exit` returned): its end is then no news (F6).
+    seen_end: bool,
 }
 
 /// What a process's reader has read and not yet been taken, and whether
@@ -373,7 +376,7 @@ impl World {
             crate::tty::wait_ended(pid);
             poke(&wake);
         });
-        self.processes.push(Process { child, input, output, status: None });
+        self.processes.push(Process { child, input, output, status: None, seen_end: false });
         Ok(self.processes.len() as i64 - 1)
     }
 
@@ -403,11 +406,14 @@ impl World {
             proc.status = proc.child.try_wait().ok().flatten();
         }
         match proc.status {
-            Some(s) if proc.output.lock().unwrap().ended => match (s.code(), s.signal()) {
-                (Some(c), _) => ProcessStatus::Exited(c),
-                (None, Some(sig)) => ProcessStatus::Signalled(sig),
-                (None, None) => ProcessStatus::Unknown,
-            },
+            Some(s) if proc.output.lock().unwrap().ended => {
+                proc.seen_end = true;
+                match (s.code(), s.signal()) {
+                    (Some(c), _) => ProcessStatus::Exited(c),
+                    (None, Some(sig)) => ProcessStatus::Signalled(sig),
+                    (None, None) => ProcessStatus::Unknown,
+                }
+            }
             _ => ProcessStatus::Running,
         }
     }
@@ -427,6 +433,26 @@ impl World {
         !matches!(self.process_status(p), ProcessStatus::Running)
     }
 
+    /// The first process with news (F6): output to take, or an end the
+    /// program has not seen (its output all taken); -1 if none has.
+    pub fn process_news(&mut self) -> i64 {
+        for p in 0..self.processes.len() as i64 {
+            if self.process_output_ready(p) {
+                return p;
+            }
+            let proc = &mut self.processes[p as usize];
+            if !proc.seen_end {
+                if proc.status.is_none() {
+                    proc.status = proc.child.try_wait().ok().flatten();
+                }
+                if proc.status.is_some() && proc.output.lock().unwrap().ended {
+                    return p;
+                }
+            }
+        }
+        -1
+    }
+
     /// How process `p` ended, waiting until it has, no task running
     /// meanwhile (as `read-byte` waits). Its output need not have been read:
     /// what is left is still there to take.
@@ -439,6 +465,7 @@ impl World {
             }
             match proc.status {
                 Some(s) => {
+                    proc.seen_end = true;
                     return match (s.code(), s.signal()) {
                         (Some(c), _) => ProcessStatus::Exited(c),
                         (None, Some(sig)) => ProcessStatus::Signalled(sig),

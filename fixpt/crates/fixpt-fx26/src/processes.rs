@@ -98,7 +98,8 @@ impl Checker {
             ("pselect", _) => {
                 return Err(usage(
                     "(pselect ((icell-get i-cell) name body …) ((receive mailbox) name body …) ((sleep-until time) name body …) \
-                     ((read-byte) name body …) ((process-output process) name body …) ((process-exit process) name body …) …)",
+                     ((read-byte) name body …) ((process-output process) name body …) ((process-exit process) name body …) \
+                     ((process-news) name body …) …)",
                 ));
             }
             _ => unreachable!("a form of processes"),
@@ -211,7 +212,8 @@ impl Checker {
         let sym = |c: &mut Self, sp: fixpt_read::Span, s: &str| Syntax::symbol(sp, c.interner.intern(s));
         let shape = "a `pselect` arm is `((icell-get i-cell) name body …)`, `((receive mailbox) name body …)`, \
                      `((sleep-until time) name body …)`, `((read-byte) name body …)`, \
-                     `((process-output process) name body …)` or `((process-exit process) name body …)`";
+                     `((process-output process) name body …)`, `((process-exit process) name body …)` \
+                     or `((process-news) name body …)`";
         let mut parts = Vec::new();
         for arm in arms {
             let Some([w, x, body @ ..]) = arm.as_proper_list() else { return Err(FxError::at(arm.span, shape)) };
@@ -225,6 +227,7 @@ impl Checker {
                 (Some("read-byte"), 1) => "stdin-event",
                 (Some("process-output"), 2) => "process-output-event",
                 (Some("process-exit"), 2) => "process-exit-event",
+                (Some("process-news"), 1) => "process-news-event",
                 _ => return Err(FxError::at(arm.span, shape)),
             };
             let operand = match ws.get(1) {

@@ -2950,6 +2950,9 @@ prims! {
         let r = std::fs::copy(&from, &to).map(|_| ());
         Ok(fx26_io_result(rt, r))
     });
+    // The first process with news (Heist's F6): output to take, or an end
+    // the program has not seen; -1 if none. In an arm `((process-news) p …)`.
+    "%fx26-process-news", 0, Some(0), simple!(|rt, _a| Ok(Value::fixnum(rt.world.process_news())));
     // How a process ended (Heist's F6), waiting until it has, as `read-byte`
     // waits: in a `pselect`'s arm `((process-exit p) how …)`, at once.
     "%fx26-process-exit", 1, Some(1), simple!(|rt, a| {

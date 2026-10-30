@@ -474,7 +474,7 @@ Still open in Fixpt's `TODO.md`:
   deleted with what is in it (a program does that by walking it).
 - **Kayak will need:** the seven primitives over its own runtime.
 
-### F6. A task waits for a process: `pselect` arms for its output and its end (language, primitive)
+### F6. A task waits for a process: `pselect` arms for its output, its end, and any process's news (language, primitive)
 
 - **Needed for:** the editor's processes (M-x compile, grep, shell, s7st
   and the CFA's servers), which it polled every 50 ms while one ran; and
@@ -485,16 +485,24 @@ Still open in Fixpt's `TODO.md`:
     once process `p` has output to take, `text` what `process-output`
     gives; `((process-exit p) how body …)`, ready once it has ended and
     all its output has been taken, so that an arm for the output sees all
-    of it before the end, `how` what `process-exit` gives. Both parsers
+    of it before the end, `how` what `process-exit` gives;
+    `((process-news) p body …)`, ready once any process has output to
+    take or has ended unseen, `p` its number: for a set of processes
+    known only as the program runs, which no arm of a fixed `pselect`
+    can name (and a `race` of arms cannot: its branches may do no I/O).
+    An end is seen once `process-status` says it or `process-exit`
+    gives it, and is then no news. Both parsers
     (`processes.rs`, `parser-forms.fx`), and both checkers' types for the
     events, `(event (io process))` (`standard.rs`, `check-env.fx`).
   - **A primitive:** `process-exit : (subr (io process) (int) (sumof
     (exited int) (signalled int) (unknown unit)))`, how a process ended,
     waiting until it has (as `read-byte` waits, no task running
     meanwhile); its output need not have been taken. In an arm, at once.
+  - **Primitives too:** `process-news : (subr (io process) () int)`,
+    the first process with news, -1 if none.
   - **The scheduler** (`sched.rs`): events 46–48 (output ready, a waker
-    given, taken back) and 49–51 (ended); two lists of `(p . waker)` in
-    its state; `timers_wait` sleeps on the processes too, and runs the
+    given, taken back), 49–51 (ended) and 52–54 (any news); three lists
+    of wakers in its state; `timers_wait` sleeps on the processes too, and runs the
     wakers of those that are ready.
   - **The runtime** (`world.rs`, `tty.rs`): a wake pipe, made with the
     first process, neither end blocking; each process's reader thread
@@ -508,13 +516,14 @@ Still open in Fixpt's `TODO.md`:
   - **Names elsewhere:** `lower.rs`, `debts.rs`, `eval-prims.fx`,
     `docs/fx26.md` (`pselect`, the table), `TODO.md` §132.
   - **Regenerated:** `standard.fx`, `native-direct-x64-layout.fx`
-    (`process-exit` is primitive 529, after F5's).
+    (`process-news` is primitive 529, `process-exit` 530, after F5's).
 - **Why not a library:** a task can wait only for what the scheduler can
   be woken by; nothing woke it for a process.
 - **Machines covered:** one of each kind, `fixpt-cli/tests/io.rs`:
   `a_process_waited_for` (`process-wait.fx`: output, then the end, a
   deadline beside; `process-exit` alone) and
-  `a_task_waits_for_a_process_while_another_runs` (`process-tasks.fx`).
+  `a_task_waits_for_a_process_while_another_runs` (`process-tasks.fx`),
+  `news_of_any_process` (`process-news.fx`).
   Both checkers agree on both. A second's wait for a process costs 0.01 s
   of CPU: it sleeps. Also run: `fixpt-runtime`, `fixpt-tidy`, all of
   `fixpt-cli`, and `fixpt-fx26`'s `processes`, `checker`, `evaluator`,

@@ -347,6 +347,7 @@
          (("terminal-raw") "%fx26-terminal-raw")
          (("native-code?") "%fx26-native-code?")
          (("process-exit") "%fx26-process-exit")
+         (("process-news") "%fx26-process-news")
          (("read-symlink") "%fx26-read-symlink")
          (("bytevector=?") "%fx26-bytevector=?")
          (("string-fill!") "%fx26-string-fill!")
