@@ -67,6 +67,10 @@ is kit's for completeness beside one that was.
 | `concatenate` | ratfink (three `apply-append-…`), combo |
 | `list=?` | combo (`ints=?`), the CFA (`same-path?`) |
 | `list-sort` (stable merge sort) | s7st (`s7-sort-strings`), the editor (`sorted`), combo (`sort-ints`, `list-sort-terms`), the CFA |
+| `filter-map` | ratfink (`filter-map-vals`) |
+| `last` | the CFA (`fx-last`, `last-vals`, `(car (reverse …))`), the editor |
+| `delete-duplicates` | the CFA, combo, s7st (loops adding what is not yet a member) |
+| `vector->list` (of an array, a range) | s7st (`(take (list-tail (array->list v) start) n)`) |
 
 ### `kit/numbers.fx`
 
@@ -98,6 +102,7 @@ is kit's for completeness beside one that was.
 | `string-index`, `string-index-from` | ratfink (two) |
 | `string-concatenate`, `string-join` | s7st, combo, ratfink, the editor (`joined`), the CFA |
 | `string-split`, `string-tokenize` | the editor (`words`, `s7-fields`), ratfink (`split-words`), the CFA |
+| `reverse-list->string` | `(list->string (reverse acc))` in s7st, the editor, the CFA, ratfink |
 | `string-pad-right`, `string-pad` | ratfink (`pad`), the editor (`padded`) |
 | `written-string` | s7st, ratfink |
 

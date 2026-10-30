@@ -42,6 +42,13 @@
   (plambda ((p place))
     (lambda (ss) (apply string-append ss))))
 
+"The characters of `l`, last first, as a string (SRFI 13's
+reverse-list->string): for a string built a character at a time on a list."
+(define reverse-list->string
+  (poly ((p place)) (subr (read (acyclic p)) ((listof char (acyclic p))) string))
+  (plambda ((p place))
+    (lambda (l) (list->string (the (listof char acyclic) (reverse l))))))
+
 "The strings of `ss` with `sep` between each two (SRFI 130's string-join,
 its default grammar)."
 (define string-join

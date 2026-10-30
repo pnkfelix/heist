@@ -2,7 +2,8 @@
 
 (define strings (load-module "../strings.fx"))
 (import strings string-prefix? string-suffix? string-index string-index-from string-concatenate string-join
-        string-split string-tokenize string-pad-right string-pad written-string)
+        string-split string-tokenize string-pad-right string-pad written-string
+        reverse-list->string)
 
 (define index-is (subr pure ((union false nat) int) bool)
   (lambda (x n) (if (bool? x) #f (= x n))))
@@ -19,6 +20,8 @@
 (define* check (subr pure () unit)
   (lambda ()
     (begin
+      (assert (string=? (reverse-list->string (the (listof char acyclic) (list #\c #\b #\a))) "abc"))
+      (assert (string=? (reverse-list->string (the (listof char acyclic) nil)) ""))
       (assert (string-prefix? "ab" "abc"))
       (assert (string-prefix? "" "abc"))
       (assert (not (string-prefix? "abcd" "abc")))

@@ -146,6 +146,20 @@ from the first element over the rest."
                                    (else (go (cdr l)))))))
         (go l)))))
 
+"SRFI 1's filter-map: of each element in order, `f`'s value where it is
+`(some y)`; none where it is `none`."
+(define filter-map
+  (poly ((p place) (a type) (b type) (e effect) (r region))
+    (subr (maxeff e (read (acyclic p)) (alloc r)) ((subr e (a) (sumof (none unit) (some b))) (listof a (acyclic p))) (listof b r)))
+  (plambda ((p place) (a type) (b type) (e effect) (r region))
+    (lambda (f l)
+      (letrec ((go (subr (maxeff e (read (acyclic p)) (alloc r)) ((listof a (acyclic p))) (listof b r))
+                 (lambda (l) (if (null? l) nil
+                                 (tagcase (f (car l))
+                                   (some y (cons y (go (cdr l))))
+                                   (none u (go (cdr l))))))))
+        (go l)))))
+
 "The index of the first element `pred` is true of, or #f."
 (define list-index
   (poly ((p place) (a type) (e effect))
@@ -217,6 +231,45 @@ list-tail)."
                                      ((null? l) (error "take: list too short"))
                                      (else (cons (car l) (go (cdr l) (- k 1))))))))
         (go l k)))))
+
+"The last element of `l`; an error if it is empty (SRFI 1's last)."
+(define last
+  (poly ((p place) (a type))
+    (subr (read (acyclic p)) ((listof a (acyclic p))) a))
+  (plambda ((p place) (a type))
+    (lambda (l)
+      (letrec ((go (subr (read (acyclic p)) ((listof a (acyclic p))) a)
+                 (lambda (l) (if (null? (cdr l)) (car l) (go (cdr l))))))
+        (if (null? l) (error "last: empty list") (go l))))))
+
+"The elements of `l` but those `same?` to one before them, in order (SRFI
+1's delete-duplicates: the first of each kept). Quadratic."
+(define delete-duplicates
+  (poly ((p place) (a type) (e effect) (r region))
+    (subr (maxeff e (read (acyclic p)) (alloc r)) ((listof a (acyclic p)) (subr e (a a) bool)) (listof a r)))
+  (plambda ((p place) (a type) (e effect) (r region))
+    (lambda (l same?)
+      (letrec ((go (subr (maxeff e (read (acyclic p))) ((listof a (acyclic p)) (listof a acyclic)) (listof a acyclic))
+                 ;; `seen`, the elements kept, last first.
+                 (lambda (l seen) (cond ((null? l) seen)
+                                        ((member? (car l) seen same?) (go (cdr l) seen))
+                                        (else (go (cdr l) (cons (car l) seen)))))))
+        (reverse (go l nil))))))
+
+"Elements `start` to `end` (not included) of array `v`, as a list (R7RS's
+vector->list, of an FX-26 array); an error unless 0 <= start <= end <=
+its length."
+(define vector->list
+  (poly ((q region) (a type) (r region))
+    (subr (maxeff (read q) (alloc r)) ((arrayof a q) int int) (listof a r)))
+  (plambda ((q region) (a type) (r region))
+    (lambda (v start end)
+      (letrec ((go (subr (maxeff (read q) (alloc r)) (int (listof a r)) (listof a r))
+                 ;; From the end, so that the list comes out in order.
+                 (lambda (i acc) (if (< i start) acc (go (- i 1) (cons (array-ref v i) acc))))))
+        (if (and (<= 0 start) (<= start end) (<= end (array-length v)))
+            (go (- end 1) nil)
+            (error "vector->list: range out of bounds"))))))
 
 "The lists of `ls`, one after another (SRFI 1's concatenate)."
 (define concatenate
