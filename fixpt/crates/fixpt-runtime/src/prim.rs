@@ -2893,12 +2893,11 @@ prims! {
         rt.world.process_signal(p, sig as i32);
         Ok(Value::UNIT)
     });
-    // Files and directories (Heist's `FIXPT-CHANGES.md` F5), as SRFI 170
-    // and R7RS name them: what a path is (a link not followed), a link's
-    // target; a file deleted, an empty directory deleted, a path renamed
-    // (over what is there), a directory made (its parent must be), a file
-    // copied (its permissions too). A path as the working directory
-    // resolves it; a failure an `io-error`.
+    // Files (Heist's `FIXPT-CHANGES.md` F5), as SRFI 170 names them: what
+    // a path is (a link not followed), and a link's target. A path as the
+    // working directory resolves it; a failure an `io-error`. Changing
+    // files is a program's to do (`rm`, `mv`, `cp`, `mkdir`), which a
+    // `pselect` arm for a process (F6) waits for.
     "%fx26-file-info", 1, Some(1), simple!(|rt, a| {
         let path = get_string(rt, a[0])?;
         Ok(match crate::world::file_info(&path) {
@@ -2922,33 +2921,6 @@ prims! {
             }
             Err(e) => fx26_io_result(rt, Err(e)),
         })
-    });
-    "%fx26-delete-file", 1, Some(1), simple!(|rt, a| {
-        let path = get_string(rt, a[0])?;
-        let r = std::fs::remove_file(&path);
-        Ok(fx26_io_result(rt, r))
-    });
-    "%fx26-delete-directory", 1, Some(1), simple!(|rt, a| {
-        let path = get_string(rt, a[0])?;
-        let r = std::fs::remove_dir(&path);
-        Ok(fx26_io_result(rt, r))
-    });
-    "%fx26-rename-file", 2, Some(2), simple!(|rt, a| {
-        let from = get_string(rt, a[0])?;
-        let to = get_string(rt, a[1])?;
-        let r = std::fs::rename(&from, &to);
-        Ok(fx26_io_result(rt, r))
-    });
-    "%fx26-create-directory", 1, Some(1), simple!(|rt, a| {
-        let path = get_string(rt, a[0])?;
-        let r = std::fs::create_dir(&path);
-        Ok(fx26_io_result(rt, r))
-    });
-    "%fx26-copy-file", 2, Some(2), simple!(|rt, a| {
-        let from = get_string(rt, a[0])?;
-        let to = get_string(rt, a[1])?;
-        let r = std::fs::copy(&from, &to).map(|_| ());
-        Ok(fx26_io_result(rt, r))
     });
     // The first process with news (Heist's F6): output to take, or an end
     // the program has not seen; -1 if none. In an arm `((process-news) p …)`.

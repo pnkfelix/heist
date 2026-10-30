@@ -429,50 +429,41 @@ Still open in Fixpt's `TODO.md`:
 - **Kayak will need:** the I/O kind, and the same six primitives over
   its own runtime.
 
-### F5. Files and directories: `file-info`, `delete-file`, `rename-file`, … (primitive)
+### F5. What a path is: `file-info` and `read-symlink` (primitive)
 
-- **Needed for:** the editor's dired (marking, deleting, renaming,
-  copying, making directories, as Yank's), and its listings, which
-  told a directory from a file by trying to list each name. Also s7st's
-  `delete-file`, which runs `rm`. This is R7's "the world outside",
-  for files, in `fx26-for-yank.md`.
-- **What changed:** seven primitives, after Fixpt's `list-dir` and
-  `write-file`, named as SRFI 170 and R7RS name them:
+- **Needed for:** the editor's dired listings, which told a directory
+  from a file by trying to list each name, and could show no size, time
+  or permissions; and s7st's `file-exists?`, which read the whole file,
+  and was false for a directory.
+- **What changed:** two primitives, as SRFI 170 names them:
   - `file-info : (subr (io fs-read) (string) (sumof (info (productof (kind (sumof (file unit) (directory unit) (symlink unit) (other unit))) (size int) (modified int) (mode int))) (failed io-error)))`,
-    what the path itself is (`lstat`: a link not followed), its size
-    in bytes, when last modified (seconds since the epoch), its
-    permission bits;
-  - `read-symlink : (subr (io fs-read) (string) (sumof (target string) (failed io-error)))`;
-  - `delete-file`, `delete-directory` (an empty one), `create-directory`
-    (in a directory that is): `(subr (io fs-write) (string) (sumof (done unit) (failed io-error)))`;
-  - `rename-file`: `(subr (io fs-write) (string string) …)`, over
-    what is there if a file is;
-  - `copy-file`: `(subr (maxeff (io fs-read) (io fs-write)) (string string) …)`,
-    a file's bytes and its permissions.
-  - **The runtime:** `prim.rs` (at the end of its table, so that no
-    primitive's number changed: they are 522–528), `world.rs`
-    (`file_info`, `read_symlink`); Rust's `std::fs`, nothing unsafe.
-  - **Names elsewhere:** `standard.rs`, `lower.rs`, `debts.rs` (they
-    cannot fail), `eval-prims.fx`, `docs/fx26.md`'s table.
-  - **Regenerated:** `standard.fx` and `native-direct-x64-layout.fx`
-    (`FIXPT_BLESS=1 cargo test -p fixpt-fx26 --test layout`).
-- **Why a primitive:** nothing in FX-26 could ask what a path is, or
-  change a directory, but by running a program (`ls`, `rm`, `mv`,
-  `cp`, `mkdir`, as Yank's dired does), which is asynchronous, gives
-  text to parse, and failures in a program's words. A syscall
-  (`docs/fx26.md`, "Syscalls") would not do: its types are plain
-  (no product or sum to give the info or an `io-error`), and only a
-  runtime's own code may declare one.
-- **Machines covered:** one of each kind (the lowering's, the
-  evaluator written in FX-26, a cellular interpreter, register code,
-  native code): `fixpt-cli/tests/io.rs`'s
-  `files_inspected_copied_renamed_deleted`, of
-  `tests/programs/io/fs.fx`; both checkers agree on it. Also run:
-  `fixpt-tidy`, `fixpt-fx26`'s `layout`, `checker` and `evaluator`
-  tests. Not Fixpt's whole suite.
-- **Not done:** permissions set, links made, times set; a directory
-  deleted with what is in it (a program does that by walking it).
-- **Kayak will need:** the seven primitives over its own runtime.
+    what the path itself is (`lstat`: a link not followed), its size in
+    bytes, when last modified (seconds since the epoch), its permission
+    bits;
+  - `read-symlink : (subr (io fs-read) (string) (sumof (target string) (failed io-error)))`.
+  - **The runtime:** `prim.rs` (at the end of its table: 522 and 523),
+    `world.rs` (`file_info`, `read_symlink`); Rust's `std::fs`.
+  - **Names elsewhere:** `standard.rs`, `lower.rs`, `debts.rs`,
+    `eval-prims.fx`, `docs/fx26.md`'s table. **Regenerated:**
+    `standard.fx`, `native-direct-x64-layout.fx`.
+- **Cut, 2026-10-30:** F5 first had five more, which changed files:
+  `delete-file`, `delete-directory`, `rename-file`, `create-directory`,
+  `copy-file`. The user pointed out that running the system's programs
+  could do those, as Yank's dired does (`rm -r`, `mv`, `cp -R`, `mkdir
+  -p`); what was missing was a way to wait for one without stopping the
+  other tasks, which F6 added. So they went, and the editor and s7st run
+  the programs. What a path *is* stayed a primitive: it is asked often (a
+  listing asks it of every name), and its answer is data, not text to
+  parse.
+- **Why a primitive:** nothing in FX-26 could ask what a path is but by
+  running `ls` and parsing what it writes, which differs between systems
+  and cannot hold every name. A syscall (`docs/fx26.md`, "Syscalls")
+  would not do: its types are plain (no product or sum to give the
+  answer or an `io-error`), and only a runtime's own code may declare one.
+- **Machines covered:** one of each kind: `fixpt-cli/tests/io.rs`'s
+  `files_inspected`, of `tests/programs/io/fs.fx` (a file, a directory, a
+  link and its target, a missing path); both checkers agree on it.
+- **Kayak will need:** the two primitives over its own runtime.
 
 ### F6. A task waits for a process: `pselect` arms for its output, its end, and any process's news (language, primitive)
 
@@ -500,6 +491,9 @@ Still open in Fixpt's `TODO.md`:
     meanwhile); its output need not have been taken. In an arm, at once.
   - **Primitives too:** `process-news : (subr (io process) () int)`,
     the first process with news, -1 if none.
+  - **Used by:** the editor's main loop, which waits for a key or a
+    process's news, not polling every 50 ms; its listings' `rm`, `mv`,
+    `cp` and `mkdir` (`run-command!`); s7st's `delete-file`.
   - **The scheduler** (`sched.rs`): events 46–48 (output ready, a waker
     given, taken back), 49–51 (ended) and 52–54 (any news); three lists
     of wakers in its state; `timers_wait` sleeps on the processes too, and runs the
@@ -516,7 +510,7 @@ Still open in Fixpt's `TODO.md`:
   - **Names elsewhere:** `lower.rs`, `debts.rs`, `eval-prims.fx`,
     `docs/fx26.md` (`pselect`, the table), `TODO.md` §132.
   - **Regenerated:** `standard.fx`, `native-direct-x64-layout.fx`
-    (`process-news` is primitive 529, `process-exit` 530, after F5's).
+    (`process-news` is primitive 524, `process-exit` 525, after F5's).
 - **Why not a library:** a task can wait only for what the scheduler can
   be woken by; nothing woke it for a process.
 - **Machines covered:** one of each kind, `fixpt-cli/tests/io.rs`:

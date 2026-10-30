@@ -548,19 +548,7 @@
              (lambda (xs)
                (tagcase (read-symlink (as-str (ev-arg xs 0)))
                  (target t (the val (o-sum 'target (the val t))))
-                 (failed e (ev-io-failed e)))))
-      (prim! 'delete-file
-             (lambda (xs) (ev-io-result (delete-file (as-str (ev-arg xs 0))))))
-      (prim! 'delete-directory
-             (lambda (xs) (ev-io-result (delete-directory (as-str (ev-arg xs 0))))))
-      (prim! 'rename-file
-             (lambda (xs)
-               (ev-io-result (rename-file (as-str (ev-arg xs 0)) (as-str (ev-arg xs 1))))))
-      (prim! 'create-directory
-             (lambda (xs) (ev-io-result (create-directory (as-str (ev-arg xs 0))))))
-      (prim! 'copy-file
-             (lambda (xs)
-               (ev-io-result (copy-file (as-str (ev-arg xs 0)) (as-str (ev-arg xs 1)))))))))
+                 (failed e (ev-io-failed e))))))))
 
 ;; `append`: the lists `xs`, all but the last copied, in front of it.
 (define ev-append (->* (vals) val)
