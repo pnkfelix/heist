@@ -8,7 +8,18 @@ do it, and what it cost. Kayak will need the same changes later
 
 ## Base
 
-- Fixpt `main` at 09dbb15f (2026-10-30), pulled from GitHub by Heist's
+- Fixpt `main` at 9478dd70 (2026-10-30), pulled from GitHub by Heist's
+  7aaab7ef (squash 1ea420c3): `stage` (FX-26's `eval`, step 1), and the
+  front end run quiet (no poll in it preempts for the program's tasks).
+  Heist needed no change; `fixpt/` is Fixpt's tree exactly. After
+  `fixpt prewarm` and `bin/heist-compile all` (19.1 s), all 179 tests
+  pass; ratfink matches shakedown as before (corpus 123 of 124, playback
+  12 of 12, its FX-26 test reports unchanged); an idle *shell* still
+  wakes the editor 8 times in 4 s. Start-up, median of 20: the editor
+  0.46 s, and 0.46 s on 09dbb15f measured beside it (the 0.44 s below
+  was the machine on a quieter afternoon); s7st 0.74 s; the CFA's server
+  1.18 s; combo's server 0.11 s; ratfink 0.22 s, as on 09dbb15f.
+- Before: Fixpt `main` at 09dbb15f (2026-10-30), pulled from GitHub by Heist's
   e0c8face (squash d0d61fcb), which has Heist's F5 and F6 (Fixpt
   `DONE.md` §185 and §132); Heist's own edits dropped, `fixpt/` now
   Fixpt's tree exactly. Fixpt's adjustments: the primitives are 525–528,
