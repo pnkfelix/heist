@@ -450,7 +450,7 @@ Still open in Fixpt's `TODO.md`:
   - `copy-file`: `(subr (maxeff (io fs-read) (io fs-write)) (string string) …)`,
     a file's bytes and its permissions.
   - **The runtime:** `prim.rs` (at the end of its table, so that no
-    primitive's number changed: they are 513–519), `world.rs`
+    primitive's number changed: they are 522–528), `world.rs`
     (`file_info`, `read_symlink`); Rust's `std::fs`, nothing unsafe.
   - **Names elsewhere:** `standard.rs`, `lower.rs`, `debts.rs` (they
     cannot fail), `eval-prims.fx`, `docs/fx26.md`'s table.
