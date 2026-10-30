@@ -3,20 +3,20 @@
   (lambda (x) (+ x x)))                 |
 (f x)                                   |
                                         |
-                                        |
-                                        |
-                                        |
-                                        |
-                                        |
 ---- a.fx   L3                          |
+In TMP/        |
+Uses of x:                              |
+a.fx:3:     (lambda (x) (+ x x)))       |
+a.fx:3:     (lambda (x) (+ x x)))       |
+---- *xref*   L1                        |
 2 uses here; M-n, M-p to move among them|
-cursor 2,11
+cursor 6,0
  kkkkkk f                               |
  kkkkkkk f  tttt                        |
    kkkkkk  B     u u                    |
                                         |
                                         |
-                                        |
+MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM|
                                         |
                                         |
                                         |

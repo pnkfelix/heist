@@ -93,7 +93,45 @@ line`; the text the buffers have (`texts`), else the file's."
                                            (pos (rope-line-start (extract got text) (max 0 (- lineno 1)))))
                                       (tell! fr (visit-position fr file pos))))))))))))
 
+"M-?: the uses of the binder at point (or that the name at point refers
+to) marked, as xref-mark-references does, and listed in *xref*, in
+another window (Yank's *Uses*)."
+(define* find-references (subr pure () frame-action)
+  (lambda ()
+    (lambda ((fr (actor frame)) (f frame))
+      (let* ((b (extract (selected-window f) buffer))
+             (st (actor-state b))
+             (at (binder-at st))
+             (marked (reply-with f (list (tell b (in-buffer fr (show-uses)))))))
+        (if (< at 0)
+            marked
+            (let* ((file (extract st file))
+                   (t (extract st text))
+                   (name (rope-substring t at (min (rope-length t) (let ((ms (uses-of st at)))
+                                                                     (letrec ((end (subr spin (text-faces) int)
+                                                                                     (lambda (ms) (cond ((null? ms) at)
+                                                                                                        ((= (extract (car ms) start) at) (extract (car ms) end))
+                                                                                                        (else (end (cdr ms)))))))
+                                                                       (end ms))))))
+                   (starts (map (lambda ((m text-face)) (extract m start)) (uses-of st at)))
+                   (texts (buffer-texts (extract f buffers))))
+              (if (string=? file "")
+                  marked
+                  (and-then fr marked
+                            (lambda ((fr (actor frame)) (f frame))
+                              (and-then fr ((other-window-or-split) fr f)
+                                        (lambda ((fr (actor frame)) (f frame))
+                                          (reply-with f (list (lambda ()
+                                                                (tell! fr (show-xref fr (string-append
+                                                                                          "In " (directory-of file) "\n"
+                                                                                          "Uses of " name ":\n"
+                                                                                          (apply string-append
+                                                                                                 (map (lambda ((p int)) (place-line file p texts ""))
+                                                                                                      starts)))))))))))))))))))
+
 (define-command! "xref-visit" (sum on-frame (xref-visit)))
+(define-command! "xref-find-references" (sum on-frame (find-references)))
+(define-key! "M-?" "xref-find-references")
 (define-buffer-key! "*xref*" "RET" "xref-visit")
 (define-buffer-key! "*xref*" "n" "next-line")
 (define-buffer-key! "*xref*" "p" "previous-line")
