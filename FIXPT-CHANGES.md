@@ -8,7 +8,22 @@ do it, and what it cost. Kayak will need the same changes later
 
 ## Base
 
-- Fixpt `main` at 70382694 (2026-10-30), pulled from GitHub by Heist's
+- Fixpt `main` at 09dbb15f (2026-10-30), pulled from GitHub by Heist's
+  e0c8face (squash d0d61fcb), which has Heist's F5 and F6 (Fixpt
+  `DONE.md` §185 and §132); Heist's own edits dropped, `fixpt/` now
+  Fixpt's tree exactly. Fixpt's adjustments: the primitives are 525–528,
+  after keywords' (522–524), which Fixpt added meanwhile (`#:name`,
+  typed-macro groundwork, sums joining at branches); and `process-exit`
+  waits until the reader has read all the process wrote, not only for
+  the exit. After `fixpt prewarm` and `bin/heist-compile all` (19.0 s),
+  all 179 tests pass; ratfink matches shakedown as before (corpus 123 of
+  124, playback 12 of 12, its FX-26 test reports unchanged).
+  Start-up from `.fasl`s, median of 20 (before: on 70382694 with F5 and
+  F6): the editor 0.44 s (the editor as at c7b1c8a6, 0.41 s here, 0.44 s
+  before: Fixpt is faster, and the editor's lists, dired and the rest
+  since cost some 30 ms to load); s7st 0.74 s (0.74 s); the CFA's server
+  1.18 s (1.15 s); combo's server 0.11 s (0.11 s); ratfink 0.22 s (0.22 s).
+- Before: Fixpt `main` at 70382694 (2026-10-30), pulled from GitHub by Heist's
   02fa619d (squash 3c34eead). Fifteen commits, none Heist's request:
   a program's and a module's `.fasl` spliced into the heap once, not
   read and copied as a graph, and a definition's stamp digesting its
@@ -185,7 +200,8 @@ do it, and what it cost. Kayak will need the same changes later
 
 ## Upstream
 
-F1–F4 below are all on Fixpt's `main`, as Fixpt `DONE.md` §129–§132
+F5 and F6 below are on Fixpt's `main` too (`DONE.md` §185, §132), as
+of 09dbb15f, with the adjustments the Base entry says. F1–F4 below are all on Fixpt's `main`, as Fixpt `DONE.md` §129–§132
 (Heist's requests), rebased onto Fixpt's syscalls (8c7111da). The
 entries below stay as the record of what Heist asked for and why; Fixpt's
 `DONE.md` and `docs/fx26.md` are now the definition. Where upstream
