@@ -17,7 +17,7 @@
                     (m-buffer (load-moduleof "buffer.fx" m-base))
                     (m-resolve (load-moduleof "resolve.fx" m-base m-buffer))))
 (hide (define kit-lists (load-module "../kit/lists.fx"))
-      (import kit-lists member?))
+      (import kit-lists member? last))
 
 (define keywords strings
   (list "define" "define*" "define-rec" "define-type" "define-datatype" "define-effect"
@@ -34,17 +34,7 @@
 (define definers strings
   (list "define" "define*" "define-type" "define-datatype" "define-effect" "define-generative"))
 
-(define* reverse-faces (subr pure (text-faces) text-faces)
-  (lambda (l)
-    (letrec ((go (subr pure (text-faces text-faces) text-faces)
-               (lambda (l acc) (if (null? l) acc (go (cdr l) (cons (car l) acc))))))
-      (go l nil))))
 
-(define* reverse-definitions (subr pure (definitions) definitions)
-  (lambda (l)
-    (letrec ((go (subr pure (definitions definitions) definitions)
-               (lambda (l acc) (if (null? l) acc (go (cdr l) (cons (car l) acc))))))
-      (go l nil))))
 
 "Comments and strings, found by scanning: sorted, not overlapping."
 (define* lexical-faces (subr spin (string) text-faces)
@@ -61,7 +51,7 @@
                (go (subr spin (int text-faces) text-faces)
                  (lambda (i acc)
                    (if (>= i n)
-                       (reverse-faces acc)
+                       (reverse acc)
                        (let ((c (string-ref s i)))
                          (cond ((char=? c #\;)
                                 (let ((j (line-end i)))
@@ -186,8 +176,6 @@ of the other)."
           ((> (extract (car cs) at) d) nil)
           (else (cons (car cs) (checkpoints-before (cdr cs) d))))))
 
-(define* last-checkpoint (subr spin (checkpoints checkpoint) checkpoint)
-  (lambda (cs default) (if (null? cs) default (if (null? (cdr cs)) (car cs) (last-checkpoint (cdr cs) default)))))
 
 "Text `s` read from `from` on, given the reader's state there: the state at
 the end, and a checkpoint at each line after `from`, newest first, onto
@@ -211,11 +199,6 @@ the same before it."
                          (go j st2 (if (< j n) (cons (product (at j) (state st2)) acc) acc)))))))
         (go from st acc)))))
 
-(define* reverse-checkpoints (subr pure (checkpoints) checkpoints)
-  (lambda (l)
-    (letrec ((go (subr pure (checkpoints checkpoints) checkpoints)
-               (lambda (l acc) (if (null? l) acc (go (cdr l) (cons (car l) acc))))))
-      (go l nil))))
 
 (define* append-definitions (subr spin (definitions links) definitions)
   (lambda (ds ls)
@@ -242,14 +225,14 @@ end."
                  ((error) (min (eager-state-position st) (max 0 (- (string-length s) 1))))
                  ((incomplete) (max 0 (open-start (eager-context st))))
                  (else -1)))
-           (tree (reverse-faces (extract found faces)))
+           (tree (reverse (extract found faces)))
            (links (import-links (eager-state-syntax st)))
            (marked (if (< at 0) tree
                        (merge-faces tree (list (product (start at) (end (+ at 1)) (face 'error)))))))
       (product (revision rev) (faces (merge-faces (lexical-faces s) marked))
                ;; The names imported count as definitions too: M-. from another
                ;; file lands on the import, and goes on from there.
-               (definitions (append-definitions (reverse-definitions (extract found definitions)) links))
+               (definitions (append-definitions (reverse (extract found definitions)) links))
                (references (resolve-text (eager-state-syntax st)))
                (links links)
                (problem problem) (problem-at at)))))
@@ -261,11 +244,11 @@ memory for next time."
   (lambda (s rev mem)
     (let* ((d (first-difference (extract mem text) s))
            (kept (checkpoints-before (extract mem checkpoints) d))
-           (base (last-checkpoint kept (product (at 0) (state (eager-start-fx26)))))
-           (read (read-from s (extract base at) (extract base state) (reverse-checkpoints kept)))
+           (base (if (null? kept) (product (at 0) (state (eager-start-fx26))) (last kept)))
+           (read (read-from s (extract base at) (extract base state) (reverse kept)))
            (st (eager-feed (extract read state) #\newline)))
       (product (annotation (annotation-of s rev st))
-               (memory (product (text s) (checkpoints (reverse-checkpoints (extract read checkpoints)))))))))
+               (memory (product (text s) (checkpoints (reverse (extract read checkpoints)))))))))
 
 "Text `s`, of revision `rev`, read whole, and what it is."
 (define* analyze (subr (maxeff reader-eff spin) (string int) annotation)

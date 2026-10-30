@@ -41,7 +41,7 @@
 (hide (define kit-lists (load-module "../kit/lists.fx"))
       (import kit-lists map))
 (hide (define kit-strings (load-module "../kit/strings.fx"))
-      (import kit-strings string-split))
+      (import kit-strings string-split reverse-list->string))
 
 (define s7-prompt string "s7st> ")
 "The server's process, once started; whether it has said it is ready; and
@@ -117,7 +117,7 @@ have them; and back."
                                          ((char=? c #\newline) (cons #\n (cons #\\ acc)))
                                          ((char=? c #\tab) (cons #\t (cons #\\ acc)))
                                          (else (cons c acc)))))))))
-      (list->string (reverse (go 0 nil))))))
+      (reverse-list->string (go 0 nil)))))
 (define* s7-unescape (subr spin (string) string)
   (lambda (s)
     (let ((n (string-length s)))
@@ -128,7 +128,7 @@ have them; and back."
                           (let ((c (string-ref s (+ i 1))))
                             (go (+ i 2) (cons (cond ((char=? c #\n) #\newline) ((char=? c #\t) #\tab) (else c)) acc))))
                          (else (go (+ i 1) (cons (string-ref s i) acc)))))))
-        (list->string (reverse (go 0 nil)))))))
+        (reverse-list->string (go 0 nil))))))
 
 "The server's process: started (`../bin/s7st --serve`, from editor/, where
 the editor runs) if it is not. Whether there is one."

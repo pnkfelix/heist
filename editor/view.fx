@@ -13,6 +13,8 @@
                     (m-syntax (load-moduleof "syntax.fx" m-base m-buffer m-resolve))
                     (m-sexp (load-moduleof "sexp.fx" m-base m-buffer m-resolve m-syntax))
                     (m-index (load-moduleof "index.fx" m-base m-buffer m-resolve m-syntax m-sexp))))
+(hide (define kit-strings (load-module "../kit/strings.fx"))
+      (import kit-strings reverse-list->string))
 
 "A view's report: its window, its rows, its mode line's text, and the
 cursor's row and column in it."
@@ -50,7 +52,7 @@ taken to the next stop."
                        (else (go (+ j 1) (+ col 1) (cons (string-ref s j) acc))))))
              (pad (subr spin (int (listof char acyclic)) (listof char acyclic))
                (lambda (n acc) (if (<= n 0) acc (pad (- n 1) (cons #\space acc))))))
-      (list->string (reverse (go 0 0 nil))))))
+      (reverse-list->string (go 0 0 nil)))))
 
 "The spans of line `text` (from `ls` to `le` in the buffer) that show the
 snapshot's highlighted match."

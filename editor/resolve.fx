@@ -13,7 +13,7 @@
 (module-parameters ((m-base (load-moduleof "base.fx"))
                     (m-buffer (load-moduleof "buffer.fx" m-base))))
 (hide (define kit-lists (load-module "../kit/lists.fx"))
-      (import kit-lists member?))
+      (import kit-lists member? find))
 
 
 (define-type syns-a (listof syn acyclic))
@@ -55,9 +55,9 @@
 
 (define* lookup (subr spin (string binders) (sumof (none unit) (found binder)))
   (lambda (n env)
-    (cond ((null? env) (sum none #u))
-          ((string=? (extract (car env) name) n) (sum found (car env)))
-          (else (lookup n (cdr env))))))
+    (tagcase (find (lambda ((b binder)) (string=? (extract b name) n)) env)
+      (some b (sum found b))
+      (none u (sum none #u)))))
 
 "The names a definition-like form defines, onto `acc`: `(define x …)`,
 `(define* x …)`, `(define-type t …)` or `(define-type (t p …) …)`,

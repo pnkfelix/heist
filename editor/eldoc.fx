@@ -30,7 +30,9 @@
                     (m-files (load-moduleof "files.fx" m-base m-buffer m-resolve m-syntax m-sexp m-index m-view m-frame m-calls m-process))
                     (m-help (load-moduleof "help.fx" m-base m-buffer m-resolve m-syntax m-sexp m-index m-view m-frame m-calls m-process m-files))))
 (hide (define kit-lists (load-module "../kit/lists.fx"))
-      (import kit-lists member?))
+      (import kit-lists member?)
+      (define kit-strings (load-module "../kit/strings.fx"))
+      (import kit-strings reverse-list->string))
 
 (define eldoc-on (ref bool @ed) (new #t))
 "A key was handled since eldoc last looked (main.fx's loop asks)."
@@ -59,7 +61,7 @@ revision and a position, a note, or \"\"."
                    (cond ((>= i n) acc)
                          ((char-whitespace? (string-ref s i)) (go (+ i 1) #t acc))
                          (else (go (+ i 1) #f (cons (string-ref s i) (if (and space (pair? acc)) (cons #\space acc) acc))))))))
-        (list->string (reverse (go 0 #f nil)))))))
+        (reverse-list->string (go 0 #f nil))))))
 
 "What the text `t` declares of the name starting at `at`, as it follows
 the name in the echo area: `: TYPE` where it is defined (`define`,
