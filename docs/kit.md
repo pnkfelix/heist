@@ -13,8 +13,14 @@ value, control, I/O) is Fixpt's to give, and is not here.
 
 Started 2026-10-29, once Fixpt 61a2e792 fixed the masking hole that kit's
 signatures depend on (`docs/requests/fixpt-mask-hides-acyclic-writes.md`).
-combo uses it (`rat.fx`, `term.fx` and the modules given `term`), and
-ratfink its numbers, lists and strings.
+All five programs use it: combo (`rat.fx`, `term.fx` and the modules
+given `term`), ratfink, the editor, s7st and the CFA. Each kept, as its
+own, what differs from kit's: a default past a list's end (s7st's
+`s7-opt`, the editor's `s7-nth-field`), a `take` that stops at the end
+(the CFA's `take-vals`), a number read with no sign (the editor's
+`digits-value`), a host's character names and string escapes (s7st's
+`s7-char-named` and `s7-quote-string`, ratfink's), a protocol's
+escapes.
 
 ## Conventions
 
@@ -106,7 +112,7 @@ is kit's for completeness beside one that was.
 - The written forms are R7RS's: `#\x1f`, `"\x1;"`. s7st's and ratfink's
   follow their hosts.
 
-## Three things a caller meets
+## What a caller meets
 
 - **In a module file, kit is loaded in a `hide`**, by each file that uses
   it:
@@ -134,6 +140,17 @@ is kit's for completeness beside one that was.
   Within a module the reads are none. Exports read as constants are
   `fixpt/TODO.md` §22's wish.
 
+  The reads count against a declared effect only where the caller is a
+  `define` with a type: `(define f (subr pure …) …)` calling kit's
+  `floor-quotient` is refused. A `define*` calling it is not, which is
+  how s7st and the CFA define their procedures.
+- **A program of files, not modules** (s7st; the CFA, which reads
+  s7st's files before its own) has no `hide`: it loads kit at its top
+  level, once, in its first file, and the names are the program's.
+  s7st's `value.fx` binds the modules as `s7-kit-lists` and so on, as all
+  its names begin `s7-`; the CFA imports the few more it uses from those
+  (`core.fx`).
+
 ## Tests
 
 `kit/tests/NAME-test.fx`, one a module, each checked (refused at nothing,
@@ -144,6 +161,7 @@ list built in an arena.
 
 ## Next
 
-- Programs adopt kit, one at a time, each kept if its tests pass and its
-  start-up does not grow: s7st and the CFA have the most to drop.
+- Programs adopted kit (2026-10-29), one step at a time, each kept as
+  its tests passed and its start-up did not grow by more than a few ms
+  (the first load of a kit module the program had not loaded).
 - A `spin` variant of a list procedure, if a program needs one.
