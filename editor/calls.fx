@@ -95,6 +95,9 @@ line`; the text the buffers have (`texts`), else the file's."
 
 (define-command! "xref-visit" (sum on-frame (xref-visit)))
 (define-buffer-key! "*xref*" "RET" "xref-visit")
+(define-buffer-key! "*xref*" "n" "next-line")
+(define-buffer-key! "*xref*" "p" "previous-line")
+(define-buffer-key! "*xref*" "q" "quit-window")
 
 ;;; ------------------------------------------------------------ the type at point (C-c t)
 

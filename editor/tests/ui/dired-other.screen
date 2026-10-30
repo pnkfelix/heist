@@ -1,0 +1,13 @@
+  TMP/:    |
+  ../                                   |
+  a.txt                                 |
+  b.txt                                 |
+                                        |
+---- dired-other/   L4                  |
+second file                             |
+here                                    |
+                                        |
+                                        |
+---- b.txt   L1                         |
+                                        |
+cursor 6,0

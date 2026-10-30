@@ -1,0 +1,6 @@
+(define twice (lambda (f x) (f (f x))))\n(define inc (lambda (n) (+ n 1)))\n(define dec (lambda (n) (- n 1)))\n(define a (twice inc 1))\n(define b (twice dec 2))\n
+\x0e\x06\x06\x06\x06\x06\x06\x06\x06\x06\x06\x06\x06\x06\x06\x06\x06\x06\x06\x06\x06
+\x03r
+@8000
+q
+@200

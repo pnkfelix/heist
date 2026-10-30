@@ -383,6 +383,50 @@ the selected one staying selected."
                                   (extract f next-id) (extract f echo) (extract f prefix) (extract f mini))
                         (cons (tell (extract gone buffer) (unsubscribe (extract gone id))) (extract laid cmds))))))))
 
+"Two replies, one after the other: `then` of the first's frame."
+(define* and-then (subr turn-eff ((actor frame) (reply frame) frame-action) (reply frame))
+  (lambda (fr r then)
+    (let ((r2 (then fr (extract r state))))
+      (reply-with (extract r2 state) (append (extract r cmds) (extract r2 cmds))))))
+
+"q in a list (Yank's quit-window): the selected window's buffer put last
+among the buffers, and the window closed -- or, if it is the only one,
+showing the buffer now first."
+(define* quit-window (subr pure () frame-action)
+  (lambda ()
+    (lambda ((fr (actor frame)) (f frame))
+      (let* ((b (extract (selected-window f) buffer))
+             (mine (letrec ((go (subr spin (buffer-infos) buffer-infos)
+                              (lambda (bs) (cond ((null? bs) nil)
+                                                 ((same-actor? (extract (car bs) actor) b) (cons (car bs) (go (cdr bs))))
+                                                 (else (go (cdr bs)))))))
+                     (go (extract f buffers))))
+             (others (letrec ((go (subr spin (buffer-infos) buffer-infos)
+                                (lambda (bs) (cond ((null? bs) nil)
+                                                   ((same-actor? (extract (car bs) actor) b) (go (cdr bs)))
+                                                   (else (cons (car bs) (go (cdr bs))))))))
+                       (go (extract f buffers))))
+             (f2 (frame-of f (extract f windows) (extract f selected) (append others mine) (extract f next-id)
+                           (extract f echo) (extract f prefix) (extract f mini))))
+        (cond ((pair? (cdr (extract f windows))) ((delete-window) fr f2))
+              ((null? others) (draw f2))
+              (else (show-buffer fr f2 (extract (car others) actor))))))))
+
+"The window after the selected one selected; if there is none, a new one
+below it, showing its buffer."
+(define* other-window-or-split (subr pure () frame-action)
+  (lambda ()
+    (lambda ((fr (actor frame)) (f frame))
+      (if (null? (cdr (extract f windows)))
+          (and-then fr (split-showing fr f (extract (selected-window f) buffer)) (other-window))
+          ((other-window) fr f)))))
+
+"Buffer `b` shown in another window, selected: the window after this one,
+or, if this is the only one, a new one below it."
+(define* show-other-window (subr turn-eff ((actor frame) frame (actor buffer)) (reply frame))
+  (lambda (fr f b)
+    (and-then fr ((other-window-or-split) fr f) (lambda ((fr (actor frame)) (f frame)) (show-buffer fr f b)))))
+
 "A command on the buffer that depends on the selected window's height:
 `(make lines)`, given the lines the window shows."
 (define* with-window-lines (subr pure ((subr (read @globals) (int) command)) frame-action)
@@ -585,8 +629,12 @@ file read into a new buffer -- or, if it is a directory, its listing."
         (reply-with b2 (notify b2))))))
 
 "*Buffer List*: each buffer's name, whether modified, and its file."
-(define* list-buffers (subr pure () frame-action)
-  (lambda ()
+(define* list-buffers (subr pure () frame-action) (lambda () (list-buffers-saving nil)))
+
+"*Buffer List*, with the buffers `saving` (being saved now, by x in it)
+shown as not modified."
+(define* list-buffers-saving (subr pure ((listof (actor buffer) acyclic)) frame-action)
+  (lambda (saving)
     (lambda ((fr (actor frame)) (f frame))
       (let* ((lines (letrec ((go (subr turn-eff (buffer-infos) strings)
                                (lambda (bs)
@@ -595,7 +643,9 @@ file read into a new buffer -- or, if it is a directory, its listing."
                                      (let* ((info (car bs))
                                             (st (actor-state (extract info actor)))
                                             (name (extract info name)))
-                                       (cons (string-append (if (extract st modified) " * " "   ")
+                                       (cons (string-append (if (and (extract st modified)
+                                                                     (not (member? (extract info actor) saving same-actor?)))
+                                                                " * " "   ")
                                                             name
                                                             (if (< (string-length name) 24)
                                                                 (substring "                        " 0 (- 24 (string-length name)))
@@ -1382,6 +1432,42 @@ Fixpt's TODO §75)."
                                      (list (tell b (in-buffer fr (set-visited-file file)))
                                            (tell b (save-buffer-to fr b)))))))))))
 
+"A buffer killed: no longer listed, and the windows that showed it
+showing another, or *scratch* made anew."
+(define* kill-buffer-info (subr turn-eff ((actor frame) frame buffer-info) (reply frame))
+  (lambda (fr f info)
+    (let ((name (extract info name)))
+      (let* ((gone (extract info actor))
+             (rest (letrec ((go (subr spin (buffer-infos) buffer-infos)
+                              (lambda (bs) (cond ((null? bs) nil)
+                                                 ((same-actor? (extract (car bs) actor) gone) (go (cdr bs)))
+                                                 (else (cons (car bs) (go (cdr bs))))))))
+                     (go (extract f buffers))))
+             (f2 (frame-of f (extract f windows) (extract f selected) rest (extract f next-id)
+                           (string-append "Killed " name) (extract f prefix) (extract f mini))))
+        (if (null? rest)
+            ;; The last: *scratch* made, then shown where it was.
+            (let ((b (spawn-actor "*scratch*" (new-buffer "*scratch*" "" empty-rope))))
+              (reply-with f2 (list (lambda () (tell! fr (buffer-made fr "*scratch*" "" b))))))
+            ;; Each window that showed it shows the first other buffer.
+            (let ((other (extract (car rest) actor)))
+              (letrec ((swap (subr turn-eff (frame windows) (reply frame))
+                         (lambda (f ws)
+                           (cond ((null? ws) (draw f))
+                                 ((same-actor? (extract (car ws) buffer) gone)
+                                  (let* ((sel (frame-of f (extract f windows) (extract (car ws) id) (extract f buffers)
+                                                        (extract f next-id) (extract f echo) (extract f prefix) (extract f mini)))
+                                         (r (show-buffer fr sel other))
+                                         (back (frame-of (extract r state) (extract (extract r state) windows)
+                                                         (if (= (extract (car ws) id) (extract f selected))
+                                                             (extract (extract r state) selected) (extract f selected))
+                                                         (extract f buffers) (extract (extract r state) next-id)
+                                                         (extract f echo) (extract f prefix) (extract f mini)))
+                                         (more (swap back (cdr ws))))
+                                    (reply-with (extract more state) (append (extract r cmds) (extract more cmds)))))
+                                 (else (swap f (cdr ws)))))))
+                (swap f2 (extract f2 windows)))))))))
+
 "C-x k: a buffer killed (the selected one, by default): no longer listed,
 and the windows that show it showing another, or *scratch* made anew."
 (define* kill-buffer-command (subr pure () frame-action)
@@ -1393,37 +1479,7 @@ and the windows that show it showing another, or *scratch* made anew."
                        (let ((name (if (string=? name "") current name)))
                          (tagcase (find-buffer (extract f buffers) name)
                            (none u (draw (with-echo f (string-append "No buffer named " name))))
-                           (found info
-                             (let* ((gone (extract info actor))
-                                    (rest (letrec ((go (subr spin (buffer-infos) buffer-infos)
-                                                     (lambda (bs) (cond ((null? bs) nil)
-                                                                        ((same-actor? (extract (car bs) actor) gone) (go (cdr bs)))
-                                                                        (else (cons (car bs) (go (cdr bs))))))))
-                                            (go (extract f buffers))))
-                                    (f2 (frame-of f (extract f windows) (extract f selected) rest (extract f next-id)
-                                                  (string-append "Killed " name) (extract f prefix) (extract f mini))))
-                               (if (null? rest)
-                                   ;; The last: *scratch* made, then shown where it was.
-                                   (let ((b (spawn-actor "*scratch*" (new-buffer "*scratch*" "" empty-rope))))
-                                     (reply-with f2 (list (lambda () (tell! fr (buffer-made fr "*scratch*" "" b))))))
-                                   ;; Each window that showed it shows the first other buffer.
-                                   (let ((other (extract (car rest) actor)))
-                                     (letrec ((swap (subr turn-eff (frame windows) (reply frame))
-                                                (lambda (f ws)
-                                                  (cond ((null? ws) (draw f))
-                                                        ((same-actor? (extract (car ws) buffer) gone)
-                                                         (let* ((sel (frame-of f (extract f windows) (extract (car ws) id) (extract f buffers)
-                                                                               (extract f next-id) (extract f echo) (extract f prefix) (extract f mini)))
-                                                                (r (show-buffer fr sel other))
-                                                                (back (frame-of (extract r state) (extract (extract r state) windows)
-                                                                                (if (= (extract (car ws) id) (extract f selected))
-                                                                                    (extract (extract r state) selected) (extract f selected))
-                                                                                (extract f buffers) (extract (extract r state) next-id)
-                                                                                (extract f echo) (extract f prefix) (extract f mini)))
-                                                                (more (swap back (cdr ws))))
-                                                           (reply-with (extract more state) (append (extract r cmds) (extract more cmds)))))
-                                                        (else (swap f (cdr ws)))))))
-                                       (swap f2 (extract f2 windows)))))))))))))))
+                           (found info (kill-buffer-info fr f info))))))))))
 
 (define-command! "kill-word" (sum on-buffer (kill-word 1)))
 (define-command! "backward-kill-word" (sum on-buffer (kill-word -1)))
@@ -1431,6 +1487,7 @@ and the windows that show it showing another, or *scratch* made anew."
 (define-command! "goto-line" (sum on-frame (goto-line-command)))
 (define-command! "write-file" (sum on-frame (write-file-command)))
 (define-command! "kill-buffer" (sum on-frame (kill-buffer-command)))
+(define-command! "quit-window" (sum on-frame (quit-window)))
 (define-key! "M-d" "kill-word")
 (define-key! "M-DEL" "backward-kill-word")
 (define-key! "C-o" "open-line")

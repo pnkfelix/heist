@@ -1,0 +1,13 @@
+ M Name                    Size    File |
+   a.txt                   6       /tmp/|
+   *Messages*              0            |
+   b.txt                   17      /tmp/|
+                                        |
+---- *Buffer List*   L4                 |
+second file                             |
+here                                    |
+                                        |
+                                        |
+---- b.txt   L1                         |
+                                        |
+cursor 6,0
