@@ -35,8 +35,9 @@ from, and what the last TAB said (shown after the text)."
 (define-type minibuffer
   (productof (prompt string) (text string) (point int) (then frame-action-of-string)
              (complete completion) (hint string)))
-"An incremental search: its prompt, as the buffer searching last said it."
-(define-type isearch (productof (prompt string)))
+"An incremental search: its prompt, as the buffer searching last said it,
+and whether an ESC was typed, to make the next key a Meta one."
+(define-type isearch (productof (prompt string) (esc bool)))
 "What the bottom line is doing: showing the echo area, reading in the
 minibuffer, or searching."
 (define-type mini-state (sumof (none unit) (reading minibuffer) (searching isearch)))
@@ -857,21 +858,24 @@ the name comes from."
     (lambda ((f frame))
       (tagcase (extract f mini)
         (searching i (tagcase st
-                       (prompt p (draw (with-mini f (sum searching (product (prompt p))))))
+                       (prompt p (draw (with-mini f (sum searching (product (prompt p) (esc (extract i esc)))))))
                        (over u (draw (with-mini f no-mini)))))
         (else y (same f))))))
 
 (define* search-reporter (subr pure ((actor frame)) search-report)
   (lambda (fr) (lambda ((st (sumof (prompt string) (over unit)))) (tell fr (isearch-status st)))))
 
-"C-s, C-r: a search begun, in the selected window's buffer."
-(define* isearch (subr pure (bool) frame-action)
-  (lambda (forward)
+"C-s, C-r: a search begun, in the selected window's buffer; C-M-s, C-M-r,
+one for a regexp."
+(define* isearch (subr pure (bool bool) frame-action)
+  (lambda (forward regexp)
     (lambda ((fr (actor frame)) (f frame))
       (let ((r (draw (with-mini (with-echo f "")
-                                (sum searching (product (prompt (if forward "I-search: " "I-search backward: "))))))))
+                                (sum searching (product (prompt (string-append (if regexp "Regexp I-search" "I-search")
+                                                                               (if forward ": " " backward: ")))
+                                                        (esc #f)))))))
         (reply-with (extract r state)
-                    (cons (tell (extract (selected-window f) buffer) (in-buffer fr (isearch-begin forward (search-reporter fr))))
+                    (cons (tell (extract (selected-window f) buffer) (in-buffer fr (isearch-begin forward regexp (search-reporter fr))))
                           (extract r cmds)))))))
 
 ;;; ------------------------------------------------------------ commands by name, and keys
@@ -953,8 +957,10 @@ description; until then, the echo area says the name."
             (buffer-command "keyboard-quit" (keyboard-quit))
             (frame-command "save-buffer" (save-buffer))
             (buffer-command "fail-on-purpose" (fail-on-purpose))
-            (frame-command "isearch-forward" (isearch #t))
-            (frame-command "isearch-backward" (isearch #f))
+            (frame-command "isearch-forward" (isearch #t #f))
+            (frame-command "isearch-backward" (isearch #f #f))
+            (frame-command "isearch-forward-regexp" (isearch #t #t))
+            (frame-command "isearch-backward-regexp" (isearch #f #t))
             (frame-command "xref-find-definitions" (find-definition-at-point))
             (frame-command "xref-go-back" (pop-definition))
             (buffer-command "xref-find-references" (show-uses))
@@ -1017,6 +1023,7 @@ names of their commands."
         (product (keys "M-?") (command "xref-find-references"))
         (product (keys "M-n") (command "next-use")) (product (keys "M-p") (command "previous-use"))
         (product (keys "C-s") (command "isearch-forward")) (product (keys "C-r") (command "isearch-backward"))
+        (product (keys "C-M-s") (command "isearch-forward-regexp")) (product (keys "C-M-r") (command "isearch-backward-regexp"))
         (product (keys "C-x C-s") (command "save-buffer"))
         (product (keys "C-x C-f") (command "find-file"))
         (product (keys "C-x b") (command "switch-to-buffer"))
@@ -1222,8 +1229,10 @@ After C-h k, the keys are described (`key-describer`), not run."
 RET, the search ended; any other, the search ended, and then the key does
 what it does."
 (define* isearch-key (subr turn-eff ((actor frame) frame isearch key) (reply frame))
-  (lambda (fr f i k)
-    (let* ((b (extract (selected-window f) buffer))
+  (lambda (fr f i k0)
+    (let* ((k (if (extract i esc) (meta-key k0) k0))
+           (f (if (extract i esc) (with-mini f (sum searching (product (prompt (extract i prompt)) (esc #f)))) f))
+           (b (extract (selected-window f) buffer))
            (report (search-reporter fr))
            (take (lambda ((sk search-key)) (reply-with f (list (tell b (in-buffer fr (isearch-key-in sk report)))))))
            (leave (lambda ()
@@ -1234,8 +1243,10 @@ what it does."
         (else y
           (case (key->string k)
             (("TAB") (take (sum add "\t")))
-            (("C-s") (take (sum again #t)))
-            (("C-r") (take (sum again #f)))
+            (("C-s" "C-M-s") (take (sum again #t)))
+            (("C-r" "C-M-r") (take (sum again #f)))
+            (("M-r") (take (sum toggle-regexp #u)))
+            (("ESC") (same (with-mini f (sum searching (product (prompt (extract i prompt)) (esc #t))))))
             (("DEL") (take (sum back #u)))
             (("C-w") (take (sum word #u)))
             (("C-g") (take (sum quit #u)))

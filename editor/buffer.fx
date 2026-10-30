@@ -388,21 +388,26 @@ long enough."
 
 "Where a search stands (Yank's isearch): its text, where its match starts
 and ends (or where the last one did, if it is failing), its direction,
-and whether it has wrapped around the buffer."
-(define-type search-state (productof (text string) (start int) (end int) (failing bool) (forward bool) (wrapped bool)))
+whether it has wrapped around the buffer, whether its text is a regexp,
+and why that regexp is not yet a whole one (\"\" if it is)."
+(define-type search-state (productof (text string) (start int) (end int) (failing bool) (forward bool) (wrapped bool)
+                                     (regexp bool) (invalid string)))
 "A key the search takes: text added; C-s (#t) or C-r (#f); DEL, the last
-key taken back; C-w, the word after the match added; C-g."
-(define-type search-key (sumof (add string) (again bool) (back unit) (word unit) (quit unit)))
+key taken back; C-w, the word after the match added; M-r, a regexp search
+made a plain one, or the other way; C-g."
+(define-type search-key (sumof (add string) (again bool) (back unit) (word unit) (toggle-regexp unit) (quit unit)))
 "What a search tells the frame: its prompt, or that it is over."
 (define-type search-report (subr turn-eff ((sumof (prompt string) (over unit))) cmd))
 
 "The search going on (in one buffer: any key but a search's ends it), the
 states before it, newest first, for DEL and C-g; where it began; and the
 text last searched for, which C-s C-s searches for again."
-(define isearch-now (ref search-state @ed) (new (product (text "") (start 0) (end 0) (failing #f) (forward #t) (wrapped #f))))
+(define isearch-now (ref search-state @ed)
+  (new (product (text "") (start 0) (end 0) (failing #f) (forward #t) (wrapped #f) (regexp #f) (invalid ""))))
 (define isearch-history (ref (listof search-state acyclic) @ed) (new nil))
 (define isearch-origin (ref int @ed) (new 0))
 (define last-search (ref string @ed) (new ""))
+(define last-regexp (ref string @ed) (new ""))
 
 "Whether a search for `needle` ignores case: unless it has an upper-case
 letter."
@@ -432,19 +437,31 @@ unless `needle` has an upper-case letter."
                      (lambda (p) (cond ((< p 0) -1) ((at? p 0) p) (else (go (- p 1)))))))
             (go (min pos (- h n))))))))
 
-"`s` searching for `text` from `pos`: matched, or failing where it was."
+"`s` searching for `text` from `pos` (a regexp, if `s` is a regexp
+search): matched, or failing where it was; a regexp not yet a whole one,
+failing for that."
 (define* search-from (subr spin (search-state string string int bool bool) search-state)
   (lambda (s hay text pos forward wrapped)
-    (let ((i (search-text hay text pos forward)))
-      (if (< i 0)
-          (product (text text) (start (extract s start)) (end (extract s end)) (failing #t) (forward forward) (wrapped wrapped))
-          (product (text text) (start i) (end (+ i (string-length text))) (failing #f) (forward forward) (wrapped wrapped))))))
+    (let* ((re (extract s regexp))
+           (failed (lambda ((why string))
+                     (product (text text) (start (extract s start)) (end (extract s end)) (failing #t) (forward forward)
+                              (wrapped wrapped) (regexp re) (invalid why))))
+           (found (lambda ((a int) (e int))
+                    (product (text text) (start a) (end e) (failing #f) (forward forward) (wrapped wrapped) (regexp re) (invalid "")))))
+      (if re
+          (tagcase (make-regexp text (regexp-fold-case? text))
+            (ok rx (tagcase (regexp-search rx hay pos forward)
+                     (some m (found (extract m start) (extract m end)))
+                     (none u (failed ""))))
+            (bad why (failed why)))
+          (let ((i (search-text hay text pos forward)))
+            (if (< i 0) (failed "") (found i (+ i (string-length text)))))))))
 
 "The state after C-s (`forward`) or C-r: the next match; C-s C-s, the text
 last searched for; after a failure the same way, around the buffer."
 (define* search-again (subr (maxeff spin (read @ed)) (search-state string bool) search-state)
   (lambda (s hay forward)
-    (let ((text (if (string=? (extract s text) "") (get last-search) (extract s text))))
+    (let ((text (if (string=? (extract s text) "") (get (if (extract s regexp) last-regexp last-search)) (extract s text))))
       (cond ((string=? text "") s)
             ((string=? (extract s text) "") (search-from s hay text (extract s start) forward #f))
             ((and (extract s failing) (bool=? forward (extract s forward)))
@@ -465,8 +482,11 @@ last searched for; after a failure the same way, around the buffer."
 "The prompt for `s`."
 (define* search-prompt (subr pure (search-state) string)
   (lambda (s)
-    (string-append (if (extract s failing) "Failing " "") (if (extract s wrapped) "Wrapped " "")
-                   (if (extract s forward) "I-search: " "I-search backward: ") (extract s text))))
+    (string-append (if (and (extract s failing) (string=? (extract s invalid) "")) "Failing " "")
+                   (if (extract s wrapped) "Wrapped " "")
+                   (if (extract s regexp) "Regexp I-search" "I-search")
+                   (if (extract s forward) ": " " backward: ") (extract s text)
+                   (if (string=? (extract s invalid) "") "" (string-append " [" (extract s invalid) "]")))))
 
 "`b` showing `s`: point at the match (its end, going forward), the match
 highlighted; failing, as it was."
@@ -477,12 +497,12 @@ highlighted; failing, as it was."
           (else (with-search (with-point b (if (extract s forward) (extract s end) (extract s start)))
                              (extract s start) (extract s end) 0)))))
 
-"A search begun at point, forward or back."
-(define* isearch-begin (subr pure (bool search-report) command)
-  (lambda (forward report)
+"A search begun at point, forward or back, for text or a regexp."
+(define* isearch-begin (subr pure (bool bool search-report) command)
+  (lambda (forward regexp report)
     (lambda ((b buffer))
       (let* ((p (extract b point))
-             (s (product (text "") (start p) (end p) (failing #f) (forward forward) (wrapped #f))))
+             (s (product (text "") (start p) (end p) (failing #f) (forward forward) (wrapped #f) (regexp regexp) (invalid ""))))
         (product (buffer (with-search b -1 -1 0))
                  (cmds (list (lambda () (begin (set isearch-now s) (set isearch-history nil) (set isearch-origin p)))
                              (report (sum prompt (search-prompt s)))))
@@ -510,6 +530,11 @@ highlighted; failing, as it was."
           (word u (search-to b (search-from s hay (string-append (extract s text) (word-after hay s)) (extract s start)
                                             (extract s forward) (extract s wrapped))
                              pushed report))
+          (toggle-regexp u
+            (let ((flipped (product (text (extract s text)) (start (extract s start)) (end (extract s end)) (failing (extract s failing))
+                                    (forward (extract s forward)) (wrapped (extract s wrapped)) (regexp (not (extract s regexp)))
+                                    (invalid ""))))
+              (search-to b (search-from flipped hay (extract s text) (extract s start) (extract s forward) (extract s wrapped)) pushed report)))
           (back u (if (null? history) (search-to b s history report) (search-to b (car history) (cdr history) report)))
           (quit u
             (if (extract s failing)
@@ -518,7 +543,7 @@ highlighted; failing, as it was."
                            (lambda (h)
                              (cond ((null? h)
                                     (search-to b (product (text "") (start (get isearch-origin)) (end (get isearch-origin)) (failing #f)
-                                                          (forward (extract s forward)) (wrapped #f))
+                                                          (forward (extract s forward)) (wrapped #f) (regexp (extract s regexp)) (invalid ""))
                                                nil report))
                                    ((extract (car h) failing) (go (cdr h)))
                                    (else (search-to b (car h) (cdr h) report))))))
@@ -536,7 +561,9 @@ where it began, if point moved."
              (origin (get isearch-origin))
              (moved (not (= (extract b point) origin))))
         (product (buffer (let ((c (with-search b -1 -1 0))) (if moved (with-mark c origin) c)))
-                 (cmds (list (lambda () (if (string=? (extract s text) "") #u (set last-search (extract s text))))
+                 (cmds (list (lambda () (cond ((string=? (extract s text) "") #u)
+                                              ((extract s regexp) (set last-regexp (extract s text)))
+                                              (else (set last-search (extract s text)))))
                              (report (sum over #u))))
                  (message (if moved "Mark saved where search started" "")))))))
 
