@@ -1,0 +1,13 @@
+  TMP/:                             |
+  d.........          YYYY-MM-DD hh:mm ..                               |
+  -.........        6 YYYY-MM-DD hh:mm a.txt                            |
+  -.........       17 YYYY-MM-DD hh:mm b.txt                            |
+                                                                        |
+                                                                        |
+                                                                        |
+                                                                        |
+                                                                        |
+                                                                        |
+---- dired-rename-fails/   L3                                           |
+mv: cannot move 'a.txt' to '/nonexistent/x': No such file or directory  |
+cursor 2,39

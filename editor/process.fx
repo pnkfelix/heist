@@ -155,6 +155,34 @@ runs."
         (each (get live-processes)))
       (pair? (get live-processes)))))
 
+"Program `argv` run in `dir` (\"\": the editor's), and waited for, nothing
+else done meanwhile: for a quick one, such as a listing's `rm`, `mv`,
+`cp`, `mkdir`. Done, or why not: the first line it wrote, or how it
+ended."
+(define* run-command! (subr cmd-eff (strings string) (sumof (done unit) (failed string)))
+  (lambda (argv dir)
+    (tagcase (process-start argv dir)
+      (started id
+        (begin
+          (process-close-input id)
+          (letrec ((collect (subr cmd-eff (string) (sumof (done unit) (failed string)))
+                     ;; Its output, until it ends (Fixpt's F6: the end comes
+                     ;; after all the output).
+                     (lambda (out)
+                       (pselect ((process-output id) text (collect (string-append out text)))
+                                ((process-exit id) how
+                                 (let* ((nl (string-search out "\n" 0))
+                                        (first (if (< nl 0) out (substring out 0 nl))))
+                                   (tagcase how
+                                     (exited c (if (= c 0) (sum done #u)
+                                                   (sum failed (if (string=? first "")
+                                                                   (string-append (car argv) " exited " (int->string c))
+                                                                   first))))
+                                     (signalled s (sum failed (string-append (car argv) " was stopped by signal " (int->string s))))
+                                     (unknown u (sum failed (string-append (car argv) " ended, how is not known"))))))))))
+            (collect ""))))
+      (failed e (sum failed (string-append "Could not run " (car argv) ": " (extract e detail)))))))
+
 "Every process sent signal `sig` (the editor ending: 1, a hangup)."
 (define* signal-processes! (subr cmd-eff (int) unit)
   (lambda (sig)

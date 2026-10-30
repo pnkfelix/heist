@@ -10,6 +10,7 @@
 ;;;                        this line's -- after asking; a directory whole
 ;;;   R, C, +              those marked, or this line's, renamed (moved) or
 ;;;                        copied; a directory made, and its parents
+;;;                        (as Yank's: by `rm -r`, `mv`, `cp -R`, `mkdir -p`)
 ;;;   g in a listing       the listing read again, marks and point kept
 ;;;   RET in *Buffer List* the buffer on this line, shown
 ;;;   C-x s                each file changed and not saved, saved if you say so
@@ -141,72 +142,12 @@ point's line."
 (define* describe-names (subr spin (strings) string)
   (lambda (ns) (if (and (pair? ns) (null? (cdr ns))) (car ns) (string-append (int->string (length ns)) " files"))))
 
-"What the listings' file operations do: read and change the files, and
-read the names `list-dir` gives (at @pf)."
-(define-effect fs-eff (maxeff (io fs-read) (io fs-write) (read @pf) (alloc @pf) spin))
 "What a file operation gave: done, or why not."
 (define-type fs-outcome (sumof (done unit) (failed string)))
-(define* fs-outcome-of (subr pure (string (sumof (done unit) (failed io-error))) fs-outcome)
-  (lambda (path r) (tagcase r (done u (sum done #u)) (failed e (sum failed (string-append path ": " (extract e detail)))))))
 (define* directory? (subr (io fs-read) (string) bool)
   (lambda (path) (tagcase (the (sumof (info file-facts) (failed io-error)) (file-info path))
                    (info i (tagcase (extract i kind) (directory u #t) (else y #f)))
                    (failed e #f))))
-
-"`path` deleted, and if it is a directory (not a link to one), what is in
-it first (rm -r)."
-(define* delete-tree (subr fs-eff (string) fs-outcome)
-  (lambda (path)
-    (if (directory? path)
-        (tagcase (the (sumof (names (listof string @pf)) (failed io-error)) (list-dir path))
-          (names ns (letrec ((go (subr fs-eff ((listof string @pf)) fs-outcome)
-                                   (lambda (l) (if (null? l) (fs-outcome-of path (delete-directory path))
-                                                   (tagcase (delete-tree (string-append path "/" (car l)))
-                                                     (done u (go (cdr l)))
-                                                     (failed m (sum failed m)))))))
-                      (go ns)))
-          (failed e (sum failed (string-append path ": " (extract e detail)))))
-        (fs-outcome-of path (delete-file path)))))
-
-"`from` copied to `to`, and if it is a directory, what is in it (cp -R)."
-(define* copy-tree (subr fs-eff (string string) fs-outcome)
-  (lambda (from to)
-    (if (directory? from)
-        (tagcase (create-directory to)
-          (done u (tagcase (the (sumof (names (listof string @pf)) (failed io-error)) (list-dir from))
-                    (names ns (letrec ((go (subr fs-eff ((listof string @pf)) fs-outcome)
-                                             (lambda (l) (if (null? l) (sum done #u)
-                                                             (tagcase (copy-tree (string-append from "/" (car l)) (string-append to "/" (car l)))
-                                                               (done u (go (cdr l)))
-                                                               (failed m (sum failed m)))))))
-                                (go ns)))
-                    (failed e (sum failed (string-append from ": " (extract e detail))))))
-          (failed e (sum failed (string-append to ": " (extract e detail)))))
-        (fs-outcome-of from (copy-file from to)))))
-
-"Directory `path` made, and its parents that are not (mkdir -p)."
-(define* make-directories (subr fs-eff (string) fs-outcome)
-  (lambda (path)
-    (let ((n (string-length path)))
-      (letrec ((go (subr fs-eff (int) fs-outcome)
-                 ;; Each prefix of `path` ending at a `/` (or its end), from `i`.
-                 (lambda (i)
-                   (cond ((> i n) (sum done #u))
-                         ((or (= i n) (char=? (string-ref path i) #\/))
-                          (let ((p (substring path 0 i)))
-                            (if (or (string=? p "") (directory? p))
-                                (go (+ i 1))
-                                (tagcase (fs-outcome-of p (create-directory p))
-                                  (done u (go (+ i 1)))
-                                  (failed m (sum failed m))))))
-                         (else (go (+ i 1)))))))
-        (go 1)))))
-
-"Each of `ns` done by `op`, in order; the first failure stops it."
-(define* each-file (subr fs-eff (strings (subr fs-eff (string) fs-outcome)) fs-outcome)
-  (lambda (ns op)
-    (if (null? ns) (sum done #u)
-        (tagcase (op (car ns)) (done u (each-file (cdr ns) op)) (failed m (sum failed m))))))
 
 "After a listing's operation: the listing of `dir` made again, marks
 `marks` kept, and `said` (or the failure) in the echo area."
@@ -245,7 +186,7 @@ after asking; x, those flagged D. A directory with what is in it."
                        (lambda ((fr (actor frame)) (f frame))
                          (reply-with f (list (lambda ()
                                                (after-listing-op! fr b dir marks ""
-                                                                  (each-file ns (lambda ((n string)) (delete-tree (string-append dir n))))
+                                                                  (run-command! (append (list "rm" "-r" "--") ns) dir)
                                                                   (string-append "Deleted " (describe-names ns))))))))))))))
 
 "R (`copy` #f) and C (#t) in a listing: the files marked, or the one on
@@ -282,11 +223,9 @@ it, if a directory); several, into the directory read."
                                                                                                          (describe-names ns)
                                                                                                          " into itself")))
                                                                              (else
-                                                                           (each-file ns (lambda ((n string))
-                                                                                           (if copy
-                                                                                               (copy-tree (string-append dir n) (target n))
-                                                                                               (fs-outcome-of (string-append dir n)
-                                                                                                              (rename-file (string-append dir n) (target n))))))))))
+                                                                              (run-command! (append (if copy (list "cp" "-R" "--") (list "mv" "--"))
+                                                                                                    (append ns (list to)))
+                                                                                            dir)))))
                                                          (after-listing-op! fr b dir marks "" outcome
                                                                             (string-append (if copy "Copied " "Moved ") (describe-names ns)))))))))))))))
 
@@ -302,7 +241,7 @@ it, if a directory); several, into the directory read."
                          (lambda ((fr (actor frame)) (f frame) (typed string))
                            (let ((path (if (and (> (string-length typed) 0) (char=? (string-ref typed 0) #\/)) typed (string-append dir typed))))
                              (reply-with f (list (lambda ()
-                                                   (after-listing-op! fr b dir marks (base-name path) (make-directories path)
+                                                   (after-listing-op! fr b dir marks (base-name path) (run-command! (list "mkdir" "-p" "--" path) dir)
                                                                       (string-append "Created " path))))))))))))
 
 "The buffer *Buffer List* names on line `s` (line `line` of it) -- the
