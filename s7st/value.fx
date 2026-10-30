@@ -40,6 +40,10 @@ FX-26 has no primitive for it)."
 "kit's (../kit/, Heist's library), whose names do not begin `s7-`."
 (define s7-kit-numbers (load-module "../kit/numbers.fx"))
 (import s7-kit-numbers gcd expt exact-integer-sqrt floor-quotient number->string ratio->f64)
+(define s7-kit-lists (load-module "../kit/lists.fx"))
+(import s7-kit-lists map every any list-index member? take list-tail list-sort)
+(define s7-kit-strings (load-module "../kit/strings.fx"))
+(import s7-kit-strings string-concatenate)
 
 ;;; ------------------------------------------------------------ values
 

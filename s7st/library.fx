@@ -19,12 +19,10 @@
 it was loaded for is not loaded again."
 (define s7-library-files (ref s7-strings @sc) (new nil))
 
-(define* s7-member-string? (subr spin (string s7-strings) bool)
-  (lambda (s l) (and (pair? l) (or (string=? (car l) s) (s7-member-string? s (cdr l))))))
 "Directory `dir` added to where libraries are looked for, if it is not."
 (define* s7-add-library-directory! (subr s7-eff (string) unit)
   (lambda (dir)
-    (if (s7-member-string? dir (get s7-library-path)) #u
+    (if (member? dir (get s7-library-path) string=?) #u
         (set s7-library-path (append (get s7-library-path) (list dir))))))
 
 "Whether library name `v` names a standard library: the built-ins."
@@ -60,7 +58,7 @@ neither defined nor standard (to be loaded), by name; or an error."
          (tagcase (inner)
            (bindings bs (sum bindings (letrec ((keep (subr spin ((listof s7-ns-entry acyclic)) (listof s7-ns-entry acyclic))
                                                       (lambda (l) (cond ((null? l) nil)
-                                                                        ((s7-memq-symbol (extract (car l) name) names) (cons (car l) (keep (cdr l))))
+                                                                        ((member? (extract (car l) name) names eq?) (cons (car l) (keep (cdr l))))
                                                                         (else (keep (cdr l)))))))
                                           (keep bs))))
            (else y y)))
@@ -68,7 +66,7 @@ neither defined nor standard (to be loaded), by name; or an error."
          (tagcase (inner)
            (bindings bs (sum bindings (letrec ((keep (subr spin ((listof s7-ns-entry acyclic)) (listof s7-ns-entry acyclic))
                                                       (lambda (l) (cond ((null? l) nil)
-                                                                        ((s7-memq-symbol (extract (car l) name) names) (keep (cdr l)))
+                                                                        ((member? (extract (car l) name) names eq?) (keep (cdr l)))
                                                                         (else (cons (car l) (keep (cdr l))))))))
                                           (keep bs))))
            (else y y)))

@@ -948,7 +948,7 @@ s7st's built-ins, or not known."
                          (begin
                            (if (s7-standard-library? name) #u
                                (tagcase (s7-library-file name)
-                                 (found f (if (s7-member-string? (extract f path) (get seen)) #u
+                                 (found f (if (member? (extract f path) (get seen) string=?) #u
                                               (begin (set seen (cons (extract f path) (get seen)))
                                                 (let ((ls (sc-text-libraries (extract f text) (extract f path))))
                                                   (begin (imports! (extract ls imports))

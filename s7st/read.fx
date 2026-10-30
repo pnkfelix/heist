@@ -67,15 +67,6 @@ least one digit, then perhaps an exponent."
                          (else #f)))))
         (mantissa 0 #f #f)))))
 
-(define* s7-all-bytes? (subr spin (s7-values) bool)
-  (lambda (l)
-    (or (null? l)
-        (and (tagcase (car l) (int i (and (>= i 0) (< i 256))) (else y #f))
-             (s7-all-bytes? (cdr l))))))
-(define* s7-byte-ints (subr spin (s7-values) (listof int acyclic))
-  (lambda (l)
-    (if (null? l) nil
-        (cons (tagcase (car l) (int i i) (else y 0)) (s7-byte-ints (cdr l))))))
 
 "Character `name`'s character (`#\\name`), or #f."
 (define* s7-char-named (subr spin (string) (union false char))
@@ -402,8 +393,8 @@ each visited once (it may have cycles already)."
                                ((and (char=? c #\u) (< (+ a 3) n) (string=? (substring text (+ a 1) (+ a 4)) "u8("))
                                 (tagcase (items (+ a 4) a #\) nil nil)
                                   (datum d (tagcase (s7-list-items (extract d value))
-                                             (some l (if (s7-all-bytes? l)
-                                                         (done (sum bytes (list->array (s7-byte-ints l))) a (extract d end))
+                                             (some l (if (every (lambda ((v s7-value)) (tagcase v (int i (and (>= i 0) (< i 256))) (else y #f))) l)
+                                                         (done (sum bytes (list->array (map (lambda ((v s7-value)) (tagcase v (int i i) (else y 0))) l))) a (extract d end))
                                                          (bad "a bytevector's items are 0 to 255" a)))
                                              (none u (bad "a bytevector may not be dotted" a))))
                                   (else y y)))

@@ -4,17 +4,6 @@
 ;;; `write` would): printing stops after `s7-print-limit` items with
 ;;; `...`, so that it ends.
 
-"Strings `l`, joined: pairwise, so the work is n log n."
-(define* s7-concat (subr spin ((listof string acyclic)) string)
-  (lambda (l)
-    (letrec ((pairs (subr spin ((listof string acyclic)) (listof string acyclic))
-               (lambda (l)
-                 (cond ((null? l) nil)
-                       ((null? (cdr l)) l)
-                       (else (cons (string-append (car l) (car (cdr l))) (pairs (cdr (cdr l)))))))))
-      (cond ((null? l) "")
-            ((null? (cdr l)) (car l))
-            (else (s7-concat (pairs l)))))))
 
 "`s` on `l`, an immutable list."
 (define* s7-push (subr pure (string (listof string acyclic)) (listof string acyclic))
@@ -87,7 +76,7 @@ read as a number, or has a character a symbol read cannot."
                                          ((< k 32) (string-append "\\x" (s7-hex k) ";"))
                                          (else (char->string c)))
                                    acc)))))))
-        (s7-concat (reverse (the (listof string acyclic) (cons quote (go 0 (list quote))))))))))
+        (string-concatenate (reverse (the (listof string acyclic) (cons quote (go 0 (list quote))))))))))
 
 "Which pairs (by car cell) and vectors of `v` a datum label must mark, as
 `write` marks them: those a cycle comes back to; or, if `shared`, those met
@@ -184,7 +173,7 @@ back (`write`, `display`); 2, wherever a pair or vector is met twice
                                   (cond ((string=? l "") (items (array->list a) (s7-push "#(" acc) left #t))
                                         ((char=? (string-ref l (- (string-length l) 1)) #\#) (one l))
                                         (else (items (array->list a) (s7-push "#(" (s7-push l acc)) left #t)))))
-                         (bytes a (one (s7-concat (cons "#u8(" (s7-join-ints (array->list a) ")")))))
+                         (bytes a (one (string-concatenate (cons "#u8(" (s7-join-ints (array->list a) ")")))))
                          (proc c (one (let ((n (get (extract c name))))
                                         (if (string=? n "") "#<procedure>" (string-append "#<procedure " n ">")))))
                          (prim p (one (string-append "#<procedure " (extract p name) ">")))
@@ -246,7 +235,7 @@ back (`write`, `display`); 2, wherever a pair or vector is met twice
                                     (fields (cdr names) (+ i 1) (extract g out) (extract g left)))))))
                    (fields (extract (extract r rtd) fields) 0
                            (cons (string-append "#<" (extract (extract r rtd) name)) acc) left)))))
-      (s7-concat (reverse (extract (go v nil s7-print-limit) out)))))))
+      (string-concatenate (reverse (extract (go v nil s7-print-limit) out)))))))
 
 "Value `v` as `write` (if `write?`) or `display` shows it, a cycle marked
 with datum labels."

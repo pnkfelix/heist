@@ -184,8 +184,6 @@ means. Copied only if it holds one; a cycle copied as a cycle."
                                  (else (go (cdr l)))))))
       (go (get (extract sc macros))))))
 
-(define* s7-memq-symbol (subr spin (symbol s7-symbols) bool)
-  (lambda (s l) (and (pair? l) (or (eq? (car l) s) (s7-memq-symbol s (cdr l))))))
 
 "What a name means where it is: a frame slot, a macro, a special form,
 or a global."
@@ -283,7 +281,7 @@ may make `...` with `(... ...)`, for a macro it defines)."
 (define* s7-pattern-vars (subr (maxeff spin (read @sc)) (s7-value s7-macro) s7-symbols)
   (lambda (p m)
     (tagcase p
-      (sym s (if (or (s7-memq-symbol s (extract m literals)) (s7-ellipsis? s (extract m ellipsis))
+      (sym s (if (or (member? s (extract m literals) eq?) (s7-ellipsis? s (extract m ellipsis))
                      (string=? (s7-symbol-name s) "_"))
                  nil
                  (list s)))
@@ -293,11 +291,6 @@ may make `...` with `(... ...)`, for a macro it defines)."
                (go (array->list a))))
       (else y nil))))
 
-"The first `n` of `l`, and the rest."
-(define* s7-take (subr spin (s7-values int) s7-values)
-  (lambda (l n) (if (or (<= n 0) (null? l)) nil (cons (car l) (s7-take (cdr l) (- n 1))))))
-(define* s7-drop (subr spin (s7-values int) s7-values)
-  (lambda (l n) (if (or (<= n 0) (null? l)) l (s7-drop (cdr l) (- n 1)))))
 (define* s7-lookup-match (subr spin (symbol s7-matches) s7-match)
   (lambda (name b)
     (cond ((null? b) (sum many nil))
@@ -365,7 +358,7 @@ or (no)."
   (s7-match-pattern (->* (s7-value s7-value s7-macro) (sumof (no unit) (yes s7-matches)))
     (lambda (p x m)
       (tagcase p
-        (sym s (cond ((s7-memq-symbol s (extract m literals))
+        (sym s (cond ((member? s (extract m literals) eq?)
                       (if (and (s7-symbol? x) (string=? (s7-symbol-name (s7-sym x)) (s7-symbol-name s)))
                           (sum yes nil) (sum no #u)))
                      ((string=? (s7-symbol-name s) "_") (sum yes nil))
@@ -392,7 +385,7 @@ or (no)."
                   (na (list-length after))
                   (nx (list-length xs)))
              (if (< nx na) (sum no #u)
-                 (let ((reps (s7-take xs (- nx na))) (rest (s7-drop xs (- nx na))))
+                 (let ((reps (take xs (- nx na))) (rest (list-tail xs (- nx na))))
                    (tagcase (s7-match-each (car ps) reps m)
                      (yes b1 (tagcase (s7-match-items after pt rest xt m)
                                (yes b2 (sum yes (s7-append-matches b1 b2)))
@@ -454,7 +447,7 @@ or (no)."
       (if (null? ts) (sum ok s7-nil)
           (let* ((ell (extract m ellipsis))
                  (depth (if escaped 0 (s7-ellipses (cdr ts) ell)))
-                 (rest (s7-drop (cdr ts) depth)))
+                 (rest (list-tail (cdr ts) depth)))
             (tagcase (s7-fill-many (car ts) b m suffix escaped depth)
               (ok here (tagcase (s7-fill-items rest b m suffix escaped)
                          (ok there (sum ok (s7-list* (s7-value->values here) there)))
@@ -763,7 +756,7 @@ none)."
         ((eq? name 'import) (ok (begin-of s7-nil)))
         ((eq? name 'syntax-error)
          (sum bad (string-append (tagcase (s7-car args) (str m (get m)) (else y "syntax error"))
-                                 (s7-concat (letrec ((go (subr s7-eff (s7-values) (listof string acyclic))
+                                 (string-concatenate (letrec ((go (subr s7-eff (s7-values) (listof string acyclic))
                                                            (lambda (l) (if (null? l) nil (cons (string-append " " (s7-show (car l) #t)) (go (cdr l)))))))
                                               (go (s7-value->values (s7-cdr args))))))))
         ((eq? name 'define-library)
@@ -911,8 +904,6 @@ defined in `scopes`: \"\", or an error."
                     (else y (s7-call-kw "cons" (list a d) span))))
       (else y (s7-call-kw "cons" (list a d) span)))))
 
-(define* s7-symbols->values (subr spin (s7-symbols) s7-values)
-  (lambda (l) (if (null? l) nil (cons (sum sym (car l)) (s7-symbols->values (cdr l))))))
 
 (define-rec
   ;; Datum `x` in `scopes`, as core; `outer` the span of the form around it.
@@ -1156,7 +1147,7 @@ defined in `scopes`: \"\", or an error."
                  (tagcase (s7-let-bindings (s7-cadr args))
                    (bad e (fail e))
                    (ok bs (let* ((sc (s7-new-scope (list loop)))
-                                 (lam (s7-expand-lambda (s7-list (s7-symbols->values (extract bs names)))
+                                 (lam (s7-expand-lambda (s7-list (map (lambda ((s symbol)) (the s7-value (sum sym s))) (extract bs names)))
                                                         (s7-cddr args) (the s7-scopes (cons sc scopes)) span
                                                         (s7-symbol-name loop)))
                                  (inits (s7-expand-inits (extract bs inits) (extract bs names) (extract bs spans) scopes span))
@@ -1173,7 +1164,7 @@ defined in `scopes`: \"\", or an error."
                                                 (args inits))))))))
                (tagcase (s7-let-bindings (s7-car args))
                  (bad e (fail e))
-                 (ok bs (let ((lam (s7-expand-lambda (s7-list (s7-symbols->values (extract bs names)))
+                 (ok bs (let ((lam (s7-expand-lambda (s7-list (map (lambda ((s symbol)) (the s7-value (sum sym s))) (extract bs names)))
                                                      (s7-cdr args) scopes span ""))
                               (inits (s7-expand-inits (extract bs inits) (extract bs names) (extract bs spans) scopes span)))
                           (s7-node-at span (sum n-call (product (op (s7-node-at span (sum n-lambda (list lam)))) (args inits)))))))))

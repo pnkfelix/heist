@@ -426,7 +426,7 @@ a pure procedure written in FX-26 on such: the calls a program makes most)."
                                                                 ", and no file " (s7-library-relative-file name) " where libraries are looked for"))
                                 #f k2 dyn))
         (found f
-          (if (s7-member-string? (extract f path) (get s7-library-files))
+          (if (member? (extract f path) (get s7-library-files) string=?)
               (s7-raise-state (s7-syntax-error (string-append (extract f path) " does not define " (s7-library-name name))) #f k2 dyn)
               (begin
                 (set s7-library-files (cons (extract f path) (get s7-library-files)))

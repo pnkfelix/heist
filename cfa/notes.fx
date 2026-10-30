@@ -10,7 +10,7 @@
 `s7-concat` (print.fx), so that a long list costs its length, not its square."
 (define* cf-concat (subr spin (strings string) string)
   (lambda (l sep)
-    (s7-concat (letrec ((go (subr spin (strings) strings)
+    (string-concatenate (letrec ((go (subr spin (strings) strings)
                           (lambda (l) (cond ((null? l) nil) ((null? (cdr l)) l) (else (cons (car l) (cons sep (go (cdr l)))))))))
                  (go l)))))
 

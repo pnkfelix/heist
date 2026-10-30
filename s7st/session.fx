@@ -29,7 +29,7 @@ irritants, written; anything else, written."
     (tagcase obj
       (errobj e (letrec ((go (subr s7-drive-eff (s7-values (listof string acyclic)) (listof string acyclic))
                                (lambda (l acc) (if (null? l) acc (go (cdr l) (cons (s7-show (car l) #t) (cons " " acc)))))))
-                  (s7-concat (reverse (the (listof string acyclic)
+                  (string-concatenate (reverse (the (listof string acyclic)
                                            (go (s7-value->values (extract e irritants)) (list (extract e message))))))))
       (else y (string-append "uncaught exception: " (s7-show y #t))))))
 
@@ -122,9 +122,9 @@ last asked."
                  (if (null? cs) acc
                      (let ((l (extract (car cs) info)))
                        (clauses (cdr cs)
-                                (cons (string-append "(" name (s7-concat (reverse (params (extract l names) (extract l required) (extract l rest) nil))) ")")
+                                (cons (string-append "(" name (string-concatenate (reverse (params (extract l names) (extract l required) (extract l rest) nil))) ")")
                                       (if (null? acc) acc (cons " | " acc)))))))))
-      (s7-concat (reverse (clauses (extract c clauses) nil))))))
+      (string-concatenate (reverse (clauses (extract c clauses) nil))))))
 "What global `name` is, in a line: a procedure's parameters, a special
 form, a macro, or a variable's value; \"\" if it is none of them."
 (define* s7-describe (subr s7-drive-eff (string) string)
