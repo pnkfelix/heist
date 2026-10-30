@@ -18,7 +18,7 @@ read as a number, or has a character a symbol read cannot."
     (let ((n (string-length s)))
       (letrec ((odd (subr spin (int) bool)
                  (lambda (i) (and (< i n)
-                                  (or (s7-delimiter? (string-ref s i)) (char-in? (string-ref s i) "'`,#")
+                                  (or (char-delimiter? (string-ref s i)) (char-in? (string-ref s i) "'`,#")
                                       (char=? (string-ref s i) #\[) (char=? (string-ref s i) #\])
                                       (odd (+ i 1)))))))
         (or (= n 0)
@@ -27,14 +27,6 @@ read as a number, or has a character a symbol read cannot."
             (odd 0)
             (typecase (s7-parse-number s 10) (bool b #f) (else y #t)))))))
 
-(define* s7-hex (subr spin (int) string)
-  (lambda (i)
-    (letrec ((go (subr spin (int (listof char acyclic)) (listof char acyclic))
-               (lambda (i acc)
-                 (let* ((d (remainder i 16))
-                        (c (string-ref "0123456789abcdef" d)))
-                   (if (< i 16) (cons c acc) (go (quotient i 16) (cons c acc)))))))
-      (list->string (go i nil)))))
 
 "Ints `l`, each after a space but the first, then `end`."
 (define* s7-join-ints (subr spin ((listof int acyclic) string) (listof string acyclic))
@@ -43,21 +35,6 @@ read as a number, or has a character a symbol read cannot."
           ((null? (cdr l)) (list (int->string (car l)) end))
           (else (cons (int->string (car l)) (cons " " (s7-join-ints (cdr l) end)))))))
 
-"How character `c` is written."
-(define* s7-char-name (subr spin (char) string)
-  (lambda (c)
-    (let ((i (char->integer c)))
-      (cond ((char=? c #\space) "space")
-            ((char=? c #\newline) "newline")
-            ((char=? c #\tab) "tab")
-            ((= i 13) "return")
-            ((= i 0) "null")
-            ((= i 7) "alarm")
-            ((= i 8) "backspace")
-            ((= i 127) "delete")
-            ((= i 27) "escape")
-            ((< i 32) (string-append "x" (s7-hex i)))
-            (else (char->string c))))))
 
 "String `s` as `write` writes it: quoted, escaped."
 (define* s7-quote-string (subr spin (string string) string)
@@ -73,7 +50,7 @@ read as a number, or has a character a symbol read cannot."
                                          ((char=? c #\newline) "\\n")
                                          ((char=? c #\tab) "\\t")
                                          ((= k 13) "\\r")
-                                         ((< k 32) (string-append "\\x" (s7-hex k) ";"))
+                                         ((< k 32) (string-append "\\x" (hex-string k) ";"))
                                          (else (char->string c)))
                                    acc)))))))
         (string-concatenate (reverse (the (listof string acyclic) (cons quote (go 0 (list quote))))))))))
@@ -161,7 +138,7 @@ back (`write`, `display`); 2, wherever a pair or vector is met twice
                          (int i (one (int->string i)))
                          (ratio q (one (string-append (int->string (extract q num)) "/" (int->string (extract q den)))))
                          (real r (one (f64->string r)))
-                         (char c (one (if write? (string-append "#\\" (s7-char-name c)) (char->string c))))
+                         (char c (one (if write? (written-char c) (char->string c))))
                          (str s (one (if write? (s7-quote-string (get s) "\"") (get s))))
                          (sym s (let ((name (s7-symbol-name s)))
                                   (one (if (and write? (s7-bar-symbol? name)) (s7-quote-string name "|") name))))

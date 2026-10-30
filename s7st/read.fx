@@ -24,8 +24,6 @@ where."
          (incomplete unit)
          (bad (productof (message string) (at int)))))
 
-(define* s7-delimiter? (subr pure (char) bool)
-  (lambda (c) (or (char-whitespace? c) (char-in? c "()\";|"))))
 
 "The value of digits `s` in `radix`, or -1 if one is no digit of it (or
 there are none). Any length: an int is a bignum."
@@ -246,7 +244,7 @@ each visited once (it may have cycles already)."
                           (block (+ i 2) (+ depth 1)))
                          (else (block (+ i 1) depth)))))
                (token-end (subr s7-read-eff (int) int)
-                 (lambda (i) (if (or (>= i n) (s7-delimiter? (string-ref text i))) i (token-end (+ i 1)))))
+                 (lambda (i) (if (or (>= i n) (char-delimiter? (string-ref text i))) i (token-end (+ i 1)))))
                (done (subr s7-read-eff (s7-value int int) s7-read)
                  (lambda (v a e) (sum datum (product (value v) (start a) (end e)))))
                ;; The datum from `i`.
@@ -304,7 +302,7 @@ each visited once (it may have cycles already)."
                                   (done (build (reverse acc) (reverse spans) s7-nil open (+ a 1)) open (+ a 1))
                                   (bad "mismatched close parenthesis" a)))
                              ((and (char=? (string-ref text a) #\.) (pair? acc)
-                                   (or (>= (+ a 1) n) (s7-delimiter? (string-ref text (+ a 1)))))
+                                   (or (>= (+ a 1) n) (char-delimiter? (string-ref text (+ a 1)))))
                               (tagcase (datum (+ a 1))
                                 (datum d
                                   (tagcase (skip (extract d end))

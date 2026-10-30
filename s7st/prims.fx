@@ -437,24 +437,6 @@ already, is taken to be alike (R7RS's `equal?`)."
 
 ;;; ------------------------------------------------------------ strings and characters
 
-"Where each block of Unicode's decimal digits (Nd) begins: ten code points,
-0 to 9 (Unicode 16)."
-(define s7-digit-zeros (listof int acyclic)
-  (list 48 1632 1776 1984 2406 2534 2662 2790 2918 3046
-        3174 3302 3430 3558 3664 3792 3872 4160 4240 6112
-        6160 6470 6608 6784 6800 6992 7088 7232 7248 42528
-        43216 43264 43472 43504 43600 44016 65296 66720 68912 68928
-        69734 69872 69942 70096 70384 70736 70864 71248 71360 71376
-        71472 71904 72016 72688 72784 73040 73120 73552 90416 92768
-        92864 93008 93552 118000 120782 120792 120802 120812 120822 123200
-        123632 124144 124401 125264 130032))
-"The decimal digit `c` is, or -1."
-(define* s7-digit-of (subr spin (char) int)
-  (lambda (c)
-    (let ((k (char->integer c)))
-      (letrec ((go (subr spin ((listof int acyclic)) int)
-                 (lambda (l) (cond ((null? l) -1) ((and (>= k (car l)) (< k (+ (car l) 10))) (- k (car l))) (else (go (cdr l)))))))
-        (if (< k 128) (if (and (>= k 48) (<= k 57)) (- k 48) -1) (go s7-digit-zeros))))))
 "Unicode's Other_Lowercase and Other_Uppercase: letters and symbols that
 are lower (upper) case though no case maps them."
 (define s7-other-lowercase (listof (productof (lo int) (hi int)) acyclic)
@@ -787,7 +769,7 @@ and when what runs ends."
       (s7-prim! "char-ci<=?" 1 -1 (lambda ((a s7-values)) (s7-chain "char-ci<=?" #t #t s7-str<=? a)))
       (s7-prim! "char-ci>=?" 1 -1 (lambda ((a s7-values)) (s7-chain "char-ci>=?" #t #t s7-str>=? a)))
       (s7-prim! "char-alphabetic?" 1 1 (lambda ((a s7-values)) (tagcase (car a) (char c (s7-bool (char-alphabetic? c))) (else y (s7-wrong "char-alphabetic?" "a character" y)))))
-      (s7-prim! "char-numeric?" 1 1 (lambda ((a s7-values)) (tagcase (car a) (char c (s7-bool (>= (s7-digit-of c) 0))) (else y (s7-wrong "char-numeric?" "a character" y)))))
+      (s7-prim! "char-numeric?" 1 1 (lambda ((a s7-values)) (tagcase (car a) (char c (s7-bool (not (bool? (digit-value c))))) (else y (s7-wrong "char-numeric?" "a character" y)))))
       (s7-prim! "char-whitespace?" 1 1 (lambda ((a s7-values)) (tagcase (car a) (char c (s7-bool (char-whitespace? c))) (else y (s7-wrong "char-whitespace?" "a character" y)))))
       (s7-prim! "char-upper-case?" 1 1 (lambda ((a s7-values)) (tagcase (car a) (char c (s7-bool (s7-char-upper? c))) (else y (s7-wrong "char-upper-case?" "a character" y)))))
       (s7-prim! "char-lower-case?" 1 1 (lambda ((a s7-values)) (tagcase (car a) (char c (s7-bool (s7-char-lower? c))) (else y (s7-wrong "char-lower-case?" "a character" y)))))
@@ -796,7 +778,7 @@ and when what runs ends."
       (s7-prim! "char-foldcase" 1 1 (lambda ((a s7-values)) (tagcase (car a) (char c (sum ok (sum char (s7-char-foldcase c)))) (else y (s7-wrong "char-foldcase" "a character" y)))))
       (s7-prim! "digit-value" 1 1 (lambda ((a s7-values))
                                     (tagcase (car a)
-                                      (char c (let ((d (s7-digit-of c))) (if (>= d 0) (s7-ok-int d) (s7-bool #f))))
+                                      (char c (let ((d (digit-value c))) (if (bool? d) (s7-bool #f) (s7-ok-int d))))
                                       (else y (s7-wrong "digit-value" "a character" y)))))
       (s7-prim! "string?" 1 1 (lambda ((a s7-values)) (s7-bool (tagcase (car a) (str s #t) (else y #f)))))
       (s7-prim! "make-string" 1 2 (lambda ((a s7-values))

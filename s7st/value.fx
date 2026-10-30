@@ -44,6 +44,8 @@ FX-26 has no primitive for it)."
 (import s7-kit-lists map every any list-index member? take list-tail list-sort)
 (define s7-kit-strings (load-module "../kit/strings.fx"))
 (import s7-kit-strings string-concatenate)
+(define s7-kit-chars (load-module "../kit/chars.fx"))
+(import s7-kit-chars digit-value char-delimiter? hex-string written-char)
 
 ;;; ------------------------------------------------------------ values
 
