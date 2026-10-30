@@ -150,7 +150,7 @@ infinity or NaN; each signed, and perhaps prefixed (`#x`, `#e`, …)."
                           (bool b #f)
                           (else y (tagcase y
                                     (int i (sum real (int->f64 i)))
-                                    (ratio q (sum real (s7-ratio->f64 (extract q num) (extract q den))))
+                                    (ratio q (sum real (ratio->f64 (extract q num) (extract q den))))
                                     (else z y))))))
                      (else #f))))
             ((string=? s "+inf.0") (sum real (f64/ 1.0 0.0)))

@@ -37,6 +37,10 @@ FX-26 has no primitive for it)."
 `s7-eff`, the effect of the code the machine runs, which never makes one."
 (define-effect s7-drive-eff (maxeff s7-eff (io native) (read @k) (alloc @k)))
 
+"kit's (../kit/, Heist's library), whose names do not begin `s7-`."
+(define s7-kit-numbers (load-module "../kit/numbers.fx"))
+(import s7-kit-numbers gcd expt exact-integer-sqrt floor-quotient number->string ratio->f64)
+
 ;;; ------------------------------------------------------------ values
 
 "A Scheme value. A pair, string, vector or bytevector is mutable, so it is
@@ -267,33 +271,14 @@ list read at `list` (no span if it begins none)."
   (lambda (s) (sum str (new s))))
 (define* s7-symbol (subr pure (string) s7-value)
   (lambda (s) (sum sym (string->symbol s))))
-"Greatest common divisor, of magnitudes."
-(define* s7-gcd (subr spin (int int) int)
-  (lambda (a b) (if (= b 0) (if (< a 0) (- 0 a) a) (s7-gcd b (remainder a b)))))
 "The exact number `n/d` (d not 0), in lowest terms: an int if it is one."
 (define* s7-make-ratio (subr spin (int int) s7-value)
   (lambda (n d)
-    (let* ((g (s7-gcd n d))
+    (let* ((g (gcd n d))
            (sign (if (< d 0) -1 1))
            (nn (* sign (quotient n g)))
            (dd (* sign (quotient d g))))
       (if (= dd 1) (sum int nn) (sum ratio (product (num nn) (den dd)))))))
-"How many bits the magnitude of `n` has."
-(define* s7-bit-length (subr spin (int) int)
-  (lambda (n)
-    (letrec ((go (subr spin (int int) int)
-               (lambda (m k) (if (= m 0) k (go (arithmetic-shift m -1) (+ k 1))))))
-      (go (if (< n 0) (- 0 n) n) 0))))
-"`n/d` (d > 0) as the nearest float, or near it: 62 bits of the quotient
-kept, then scaled."
-(define* s7-ratio->f64 (subr spin (int int) f64)
-  (lambda (n d)
-    (if (and (< (s7-bit-length n) 53) (< (s7-bit-length d) 53))
-        (f64/ (int->f64 n) (int->f64 d))
-        (let ((k (- 62 (- (s7-bit-length n) (s7-bit-length d)))))
-          (if (>= k 0)
-              (f64* (int->f64 (quotient (arithmetic-shift n k) d)) (f64-expt 2.0 (int->f64 (- 0 k))))
-              (f64* (int->f64 (quotient n (arithmetic-shift d (- 0 k)))) (f64-expt 2.0 (int->f64 (- 0 k)))))))))
 "Float `r` (finite) exactly, as an int or a ratio: a float is a binary
 fraction, so doubling it enough makes it whole."
 (define* s7-f64->exact (subr spin (f64) s7-value)
