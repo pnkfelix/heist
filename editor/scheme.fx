@@ -366,7 +366,8 @@ the main loop to look again in 50 ms."
 (define* s7-stop! (subr cmd-eff () unit)
   (lambda ()
     (let ((s (get s7-server)))
-      (if (null? s) #u (begin (process-close-input (car s)) (process-signal (car s) 1) (set s7-server nil))))))
+      (if (null? s) #u (begin (process-close-input (car s)) (process-signal (car s) 1) (abandon-process! (car s))
+                         (set s7-server nil))))))
 
 "Text `text` (of `file`, \"\" if none) sent to run for `client`, relative
 file names relative to `dir`; `repl`: only if its data are whole, each

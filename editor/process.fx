@@ -129,11 +129,27 @@ and it dropped."
           (signalled s (ended #f s))
           (unknown u (ended #f 0)))))))
 
+"Processes the editor listens to no more (a server stopped): their
+output thrown away and their ends looked for, so that each is no news
+(`(process-news)`, main.fx) once it is over."
+(define abandoned (ref ints @ed) (new nil))
+(define* abandon-process! (subr cmd-eff (int) unit)
+  (lambda (id) (set abandoned (cons id (get abandoned)))))
+
 "Each running process's output sent to its buffer, and those that have
-ended said so and dropped. Whether any still runs."
+ended said so and dropped; the abandoned looked at. Whether any still
+runs."
 (define* poll-processes! (subr cmd-eff () bool)
   (lambda ()
     (begin
+      (set abandoned (letrec ((go (subr cmd-eff (ints) ints)
+                                (lambda (ids)
+                                  (if (null? ids) nil
+                                      (begin (process-output (car ids))
+                                        (tagcase (process-status (car ids))
+                                          (running u (cons (car ids) (go (cdr ids))))
+                                          (else y (go (cdr ids)))))))))
+                       (go (get abandoned))))
       (letrec ((each (subr cmd-eff ((listof running-process acyclic)) unit)
                  (lambda (ps) (if (null? ps) #u (begin (poll-one! (car ps)) (each (cdr ps)))))))
         (each (get live-processes)))

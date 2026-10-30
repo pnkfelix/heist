@@ -5,10 +5,10 @@
 ;;; Turns run while any wait, a batch at a time, keys typed meanwhile read
 ;;; between batches and sent to the frame. A batch stops after a turn of a
 ;;; view or the painter (display class), so a key waits for at most one
-;;; such turn. With none waiting, it waits for a key, and every half second
-;;; looks at the terminal's size; with processes running (process.fx), it
-;;; looks for their output every 50 ms, and for s7st's answers while one is
-;;; awaited (scheme.fx).
+;;; such turn. With none waiting, it waits for a key or a process's news
+;;; (its output, or its end: Fixpt's `(process-news)`, Heist's F6) --
+;;; compile's and grep's (process.fx), s7st's (scheme.fx), the CFA's
+;;; (cfa.fx) -- and every half second looks at the terminal's size.
 (module-parameters ((m-base (load-moduleof "base.fx"))
                     (m-buffer (load-moduleof "buffer.fx" m-base))
                     (m-resolve (load-moduleof "resolve.fx" m-base m-buffer))
@@ -25,9 +25,14 @@
                     (m-scheme (load-moduleof "scheme.fx" m-base m-buffer m-resolve m-syntax m-sexp m-index m-view m-frame m-calls m-process m-files m-help m-eldoc))
                     (m-cfa (load-moduleof "cfa.fx" m-base m-buffer m-resolve m-syntax m-sexp m-index m-view m-frame m-calls m-process m-files m-help m-eldoc m-scheme))))
 
+"Whether the last wait for a key ended for a process's news, not for the
+time: a news is not the quiet that eldoc waits for, nor the half second
+after which the terminal's size is looked at."
+(define news-came (ref bool @ed) (new #f))
+
 "The next byte typed, or #f if none comes within `timeout` ms (0: only
-one already there)."
-(define* next-byte (subr (maxeff (io stdin) (io clock) (read @ed) (write @ed) nondet spin) (int) (union false int))
+one already there), or a process has news first (`news-came`)."
+(define* next-byte (subr (maxeff (io stdin) (io clock) (io process) (read @ed) (write @ed) nondet spin) (int) (union false int))
   (lambda (timeout)
     (let ((of (lambda ((r (sumof (byte u8) (eof unit) (failed io-error))))
                 (the (union false int)
@@ -38,6 +43,7 @@ one already there)."
       (if (<= timeout 0)
           (if (stdin-ready?) (of (read-byte)) (the (union false int) #f))
           (pselect ((read-byte) r (of r))
+            ((process-news) p (begin (set news-came #t) (the (union false int) #f)))
             ((sleep-until (i64+ (clock) (int->i64 (* timeout 1000000)))) u (the (union false int) #f)))))))
 
 "The keys typed and not yet sent, oldest first; and the activity of the
@@ -85,16 +91,19 @@ queue; C-g at once. Whether any came."
 
 (define* run-loop (subr (maxeff cmd-eff (io stdin) (io clock) (io terminal)) ((actor frame) int int) unit)
   (lambda (fr rows columns)
-    (let* ((polling (poll-processes!))
-           (scheming (s7-poll!))
-           (flowing (cfa-poll!)))
+    (begin
+      ;; What the processes said, taken: else it is news still.
+      (poll-processes!)
+      (s7-poll!)
+      (cfa-poll!)
       (pump-keys! fr)
       (run-turns! 100)
       (cond ((not (get running)) #u)
             ((or (turns-waiting?) (pair? (get pending-keys))) (begin (send-keys! fr 0) (run-loop fr rows columns)))
-            ;; Processes' output looked for every 50 ms while any runs;
-            ;; after a key, eldoc's turn when 100 ms pass with no other.
-            ((send-keys! fr (cond ((or polling scheming flowing) 50) ((get eldoc-due) 100) (else 500))) (run-loop fr rows columns))
+            ;; A key, or a process's news, awaited; after a key, eldoc's
+            ;; turn when 100 ms pass with no other.
+            ((send-keys! fr (if (get eldoc-due) 100 500)) (run-loop fr rows columns))
+            ((get news-came) (begin (set news-came #f) (run-loop fr rows columns)))
             ((not (get running)) #u)
             ((get eldoc-due) (begin (set eldoc-due #f) (tell! fr (eldoc-now fr)) (run-loop fr rows columns)))
             (else

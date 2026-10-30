@@ -270,7 +270,8 @@ the main loop to look again in 50 ms."
 (define* cfa-stop! (subr cmd-eff () unit)
   (lambda ()
     (let ((s (get cfa-server)))
-      (if (null? s) #u (begin (process-close-input (car s)) (process-signal (car s) 1) (set cfa-server nil))))))
+      (if (null? s) #u (begin (process-close-input (car s)) (process-signal (car s) 1) (abandon-process! (car s))
+                         (set cfa-server nil))))))
 
 ;;; ------------------------------------------------------------ buffers
 

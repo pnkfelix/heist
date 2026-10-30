@@ -10,7 +10,7 @@ s7st> (string-upcase                    |
                                         |
                                         |
 -**- *s7st*   L3                        |
-                                        |
+string-upcase: 1 argument               |
 cursor 2,20
 == at the end
 ;; s7st: R7RS Scheme, interpreted in FX-|
