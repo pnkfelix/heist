@@ -18,14 +18,16 @@
 
 
 "Where the top-level form `pos` is in starts: the last `(` at the start of a
-line at or before `pos`; 0 if none."
+line before `pos` (as Yank's `top-level-start`: a line that starts with
+`(` is indented by the form before it, not taken as a top-level form's
+start); 0 if none."
 (define top-start (->* (rope int) int)
   (lambda (t pos)
     (letrec ((go (->* (int) int)
                (lambda (line)
                  (if (< line 0) 0
                      (let ((s (rope-line-start t line)))
-                       (if (and (< s (rope-length t)) (<= s pos) (char=? (rope-ref t s) #\())
+                       (if (and (< s (rope-length t)) (< s pos) (char=? (rope-ref t s) #\())
                            s
                            (go (- line 1))))))))
       (go (rope-line-of t pos)))))
@@ -395,6 +397,37 @@ argument: definitions, binders, and the forms with clauses."
         "receive" "delay" "delay-force" "dynamic-wind" "call-with-current-continuation" "call/cc"
         "with-exception-handler" "call-with-values"))
 
+"Forms with distinguished arguments, as Yank's Scheme indentation has
+them (`(yank scheme indent)`): that many arguments, if they start a line,
+are indented by four, and the body after them by two -- `(let` with its
+bindings on the next line. A form in `body-forms` not here has none; so
+has any other whose name begins `def`."
+(define indent-specs (listof (productof (name string) (count int)) acyclic)
+  (list (product (name "lambda") (count 1)) (product (name "named-lambda") (count 2))
+        (product (name "let") (count 1)) (product (name "let*") (count 1)) (product (name "letrec") (count 1))
+        (product (name "letrec*") (count 1)) (product (name "let-values") (count 1)) (product (name "let*-values") (count 1))
+        (product (name "let-syntax") (count 1)) (product (name "letrec-syntax") (count 1))
+        (product (name "define-values") (count 1)) (product (name "receive") (count 2))
+        (product (name "when") (count 1)) (product (name "unless") (count 1)) (product (name "do") (count 2))
+        (product (name "case") (count 1)) (product (name "syntax-rules") (count 1)) (product (name "define-syntax") (count 1))
+        (product (name "define-library") (count 1)) (product (name "define-record-type") (count 2))
+        (product (name "guard") (count 1)) (product (name "parameterize") (count 1))
+        (product (name "call-with-port") (count 1)) (product (name "call-with-input-file") (count 1))
+        (product (name "call-with-output-file") (count 1)) (product (name "with-input-from-file") (count 1))
+        (product (name "with-output-to-file") (count 1))))
+
+"How many distinguished arguments `head` has, if it is a form indented as
+a body: -1 if it is not."
+(define* indent-spec (subr spin (string) int)
+  (lambda (head)
+    (letrec ((go (subr spin ((listof (productof (name string) (count int)) acyclic)) int)
+               (lambda (l) (cond ((null? l) (if (or (member? head body-forms string=?)
+                                                    (and (>= (string-length head) 3) (string=? (substring head 0 3) "def")))
+                                                0 -1))
+                                 ((string=? (extract (car l) name) head) (extract (car l) count))
+                                 (else (go (cdr l)))))))
+      (go indent-specs))))
+
 "The column of position `p` in `t` (characters since its line's start)."
 (define* column-at (subr spin (rope int) int)
   (lambda (t p) (- p (rope-line-start t (rope-line-of t p)))))
@@ -412,7 +445,10 @@ leave it (in a string)."
                     (cs (children t (+ o 1) ls))
                     (head (if (pair? cs) (rope-substring t (extract (car cs) start) (extract (car cs) end)) "")))
                (cond ((null? cs) (+ col 1))
-                     ((member? head body-forms string=?) (+ col 2))
+                     ;; A form with a body: a distinguished argument by four,
+                     ;; the rest by two.
+                     ((>= (indent-spec head) 0)
+                      (if (< (- (length cs) 1) (indent-spec head)) (+ col 4) (+ col 2)))
                      ;; An arm of a `tagcase` or `typecase`, `(tag x body …)`:
                      ;; its body by two.
                      ((and (pair? (cdr (extract st opens)))

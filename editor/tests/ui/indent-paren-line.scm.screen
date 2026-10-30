@@ -1,0 +1,25 @@
+(let loop ((i 0))                       |
+  (if (< i 3)                           |
+      (loop (+ i 1))                    |
+      i))                               |
+(define x 1)                            |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+-**- a.scm   L5                         |
+define: a special form                  |
+cursor 4,9
+ kkk                                    |
+   kk                                   |
+                                        |
+                                        |
+ kkkkkk f                               |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm|
+                                        |

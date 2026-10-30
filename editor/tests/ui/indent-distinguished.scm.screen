@@ -1,0 +1,25 @@
+(let                                    |
+    ((x 1))                             |
+  x)                                    |
+(do ((i 0 (+ i 1)))                     |
+    ((= i 3))                           |
+  (display i))                          |
+                                        |
+                                        |
+                                        |
+                                        |
+-**- a.scm   L6                         |
+calls loop                              |
+cursor 5,10
+ kkk                                    |
+                                        |
+                                        |
+ kk                                     |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |
+mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm|
+                                        |

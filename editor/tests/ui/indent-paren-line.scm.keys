@@ -1,0 +1,10 @@
+(let loop ((i 0))\n(if (< i 3)\n(loop (+ i 1))\ni))\n(define x 1)
+@500
+\x0e\t
+@200
+\x0e\t
+@200
+\x0e\t
+@200
+\x0e\t
+@300
