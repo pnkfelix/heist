@@ -1,0 +1,25 @@
+(define* sq (subr pure (int) int) (lambda (x) (* x x)))     |
+(sq 12)                                                     |
+                                                            |
+                                                            |
+                                                            |
+---- a.fx   L2                                              |
+fx26> (sq 12)                                               |
+144 : int ! (read (globals sq))                             |
+fx26>                                                       |
+                                                            |
+---- *fxpt*   L10                                           |
+                                                            |
+cursor 1,7
+ kkkkkkk ff  tttt                  kkkkkk                   |
+P     P                                                     |
+                                                            |
+                                                            |
+                                                            |
+mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm|
+                                                            |
+                                                            |
+                                                            |
+                                                            |
+MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM|
+                                                            |

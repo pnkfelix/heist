@@ -1,0 +1,13 @@
+fx26> (define* sq (subr pure (int) int) (lambda (x) (* x x))|
+sq : (subr pure (int) int) ! pure                           |
+fx26> (sq 12)                                               |
+144 : int ! (read (globals sq))                             |
+fx26> (read-file "a.txt")                                   |
+#<sum data> : (sumof (#:data (bytevectorof @r.1)) (#:failed |
+fx26>                                                       |
+                                                            |
+                                                            |
+                                                            |
+-**- *fxpt*   L12                                           |
+                                                            |
+cursor 6,6

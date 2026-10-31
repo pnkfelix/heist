@@ -1,0 +1,8 @@
+(define* sq (subr pure (int) int) (lambda (x) (* x x)))\n(sq 12)
+#cols 60
+\x05
+\x18\x05
+@3000
+\x0e\x05
+\x18\x05
+@1500

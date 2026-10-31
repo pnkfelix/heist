@@ -10,6 +10,9 @@
 ;;;   M-!                 a shell command, its output in *Shell Command Output*
 ;;;   M-x shell           a shell, in *shell*: RET sends the line, C-c C-c
 ;;;                       interrupts what it runs
+;;;   M-x run-fxpt        Fixpt's FX-26 REPL, in *fxpt*, as *shell* is
+;;;   C-x C-e             in an FX-26 buffer, the sexp before point sent to
+;;;                       *fxpt*
 ;;;
 ;;; A process's output is asked for, never waited for: the main loop polls
 ;;; each running one (`poll-processes!`), every 50 ms while any runs, and
@@ -102,7 +105,8 @@ output now ends. The buffer is no more modified than it was."
              (product (line (string-append "\nGrep " how "\n")) (echo (string-append "Grep " how))))
             ((string=? kind "compilation")
              (product (line (string-append "\nCompilation " how "\n")) (echo (string-append "Compilation " how))))
-            ((string=? kind "shell") (product (line (string-append "\nProcess shell " how "\n")) (echo "")))
+            ((or (string=? kind "shell") (string=? kind "fxpt"))
+             (product (line (string-append "\nProcess " kind " " how "\n")) (echo "")))
             (else (product (line "") (echo (if (and exited (= code 0)) "" (string-append "Shell command " how)))))))))
 
 "Process `p`'s output sent to its buffer; if it has ended, that said,
@@ -366,20 +370,74 @@ Output*."
                      (lambda ((fr (actor frame)) (f frame) (cmd string))
                        (run-in-buffer fr f "*Shell Command Output*" "command" (list "/bin/sh" "-c" cmd) dir "" #f)))))))
 
+"Buffer `name` shown in the selected window, its process (`argv`, of kind
+`kind`) started in `dir` if it runs none: as a shell, reading what RET
+sends."
+(define* run-interactive (subr turn-eff ((actor frame) frame string string strings string) (reply frame))
+  (lambda (fr f name kind argv dir)
+    (tagcase (find-buffer (extract f buffers) name)
+      (found info
+        (tagcase (process-of (extract info actor))
+          (found p (show-buffer fr f (extract info actor)))
+          (none u (run-in-buffer fr f name kind argv dir "" #t))))
+      (none u (run-in-buffer fr f name kind argv dir "" #t)))))
+
 "M-x shell: a shell in *shell*, reading what RET sends."
 (define* shell (subr pure () frame-action)
   (lambda ()
     (lambda ((fr (actor frame)) (f frame))
-      (tagcase (find-buffer (extract f buffers) "*shell*")
-        (found info
-          (if (pair? (letrec ((go (->* ((listof running-process acyclic)) (listof running-process acyclic))
-                                    (lambda (ps) (cond ((null? ps) nil)
-                                                       ((same-actor? (extract (car ps) buffer) (extract info actor)) ps)
-                                                       (else (go (cdr ps)))))))
-                       (go (get live-processes))))
-              (show-buffer fr f (extract info actor))
-              (run-in-buffer fr f "*shell*" "shell" (list "/bin/sh" "-i") (selected-directory f) "" #t)))
-        (none u (run-in-buffer fr f "*shell*" "shell" (list "/bin/sh" "-i") (selected-directory f) "" #t))))))
+      (run-interactive fr f "*shell*" "shell" (list "/bin/sh" "-i") (selected-directory f)))))
+
+"M-x run-fxpt: Fixpt's FX-26 REPL in *fxpt*, reading what RET sends, run
+in the buffer's directory. Fixpt is ../fixpt/target/release/fixpt from
+editor/, where the editor runs, so a shell started there finds it before
+it goes to the buffer's directory."
+(define* run-fxpt (subr pure () frame-action)
+  (lambda ()
+    (lambda ((fr (actor frame)) (f frame))
+      (let ((dir (selected-directory f)))
+        (run-interactive fr f "*fxpt*" "fxpt"
+                         (list "/bin/sh" "-c" "f=\"$PWD/../fixpt/target/release/fixpt\"; cd \"$1\" && exec \"$f\"" "sh"
+                               (if (string=? dir "") "." dir))
+                         "")))))
+
+"Text `s` sent to *fxpt*'s REPL, and shown there as if typed."
+(define* fxpt-send! (subr cmd-eff (string) unit)
+  (lambda (s)
+    (letrec ((go (subr cmd-eff ((listof running-process acyclic)) unit)
+               (lambda (ps)
+                 (cond ((null? ps) #u)
+                       ((string=? (extract (car ps) kind) "fxpt")
+                        (let ((p (car ps)))
+                          (begin (tell! (extract p buffer) (process-insert (extract p id) (string-append s "\n")))
+                            (process-write (extract p id) (string-append s "\n"))
+                            #u)))
+                       (else (go (cdr ps)))))))
+      (go (get live-processes)))))
+
+"C-x C-e in an FX-26 buffer: the sexp before point sent to *fxpt*'s REPL,
+which is started, and shown in another window, if it runs nothing."
+(define* fxpt-eval-last-sexp (subr pure () frame-action)
+  (lambda ()
+    (lambda ((fr (actor frame)) (f frame))
+      (let* ((st (actor-state (extract (selected-window f) buffer)))
+             (t (extract st text))
+             (p (extract st point))
+             (a (backward-sexp t p)))
+        (if (< a 0)
+            (draw (with-echo f "No sexp before point"))
+            (let* ((s (rope-substring t a p))
+                   (running (letrec ((go (subr (maxeff (read @ed) spin) ((listof running-process acyclic)) bool)
+                                           (lambda (ps) (and (pair? ps) (or (string=? (extract (car ps) kind) "fxpt") (go (cdr ps)))))))
+                              (go (get live-processes))))
+                   (dir (selected-directory f))
+                   (r (if running
+                          (draw f)
+                          (run-in-buffer fr f "*fxpt*" "fxpt"
+                                         (list "/bin/sh" "-c" "f=\"$PWD/../fixpt/target/release/fixpt\"; cd \"$1\" && exec \"$f\"" "sh"
+                                               (if (string=? dir "") "." dir))
+                                         "" "" #f))))
+              (reply-with (extract r state) (append (extract r cmds) (list (lambda () (fxpt-send! s)))))))))))
 
 "RET in a process's buffer: the text after its output sent to it, with a
 newline."
@@ -595,3 +653,8 @@ line shown as the current one there. Whether there was one."
 (define-buffer-key! "*grep*" "C-c C-k" "kill-compilation")
 (define-buffer-key! "*shell*" "RET" "comint-send-input")
 (define-buffer-key! "*shell*" "C-c C-c" "comint-interrupt-subjob")
+(define-command! "run-fxpt" (sum on-frame (run-fxpt)))
+(define-buffer-key! "*fxpt*" "RET" "comint-send-input")
+(define-buffer-key! "*fxpt*" "C-c C-c" "comint-interrupt-subjob")
+(define-command! "fxpt-eval-last-sexp" (sum on-frame (fxpt-eval-last-sexp)))
+(define-buffer-key! "<fx26>" "C-x C-e" "fxpt-eval-last-sexp")

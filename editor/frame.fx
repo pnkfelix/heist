@@ -504,7 +504,7 @@ fx26-for-yank.md, R7.)"
 
 "What kind of buffer one named `name` is, for its keys: a directory's
 listing (its name ends in `/`), Scheme (.scm, .sld, .ss, .sps: scheme.fx),
-or none."
+FX-26 (.fx), or none."
 (define* buffer-kind (subr spin (string) string)
   (lambda (name)
     (let* ((n (string-length name))
@@ -512,6 +512,7 @@ or none."
                    (let ((k (string-length x))) (and (> n k) (string=? (substring name (- n k) n) x))))))
       (cond ((and (> n 0) (char=? (string-ref name (- n 1)) #\/)) "<listing>")
             ((or (ends ".scm") (ends ".sld") (ends ".ss") (ends ".sps")) "<scheme>")
+            ((ends ".fx") "<fx26>")
             (else "")))))
 
 "Directory `dir` (ending in `/`) with `..` and `.` steps taken out."
