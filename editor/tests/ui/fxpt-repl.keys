@@ -2,10 +2,10 @@ alpha
 #cols 60
 \x1bx
 run-fxpt\r
-@3000
+@until fx26>
 (define* sq (subr pure (int) int) (lambda (x) (* x x)))\r
-@1500
+@until sq : (subr
 (sq 12)\r
-@1500
+@until 144 :
 (read-file "a.txt")\r
-@1000
+@until #<sum data>

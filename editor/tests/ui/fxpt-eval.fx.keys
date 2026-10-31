@@ -2,7 +2,7 @@
 #cols 60
 \x05
 \x18\x05
-@3000
+@until sq : (subr
 \x0e\x05
 \x18\x05
-@1500
+@until 144 :

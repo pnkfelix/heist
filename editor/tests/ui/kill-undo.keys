@@ -5,9 +5,7 @@ one two three\nfour
 \x19
 \x1f
 \x1bxend-of-buffer\r
-@200
 END
 \x1bxno-such\r
-@200
 \x18\x06
 \x07

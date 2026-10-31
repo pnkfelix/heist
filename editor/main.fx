@@ -9,6 +9,10 @@
 ;;; (its output, or its end: Fixpt's `(process-news)`, Heist's F6) --
 ;;; compile's and grep's (process.fx), s7st's (scheme.fx), the CFA's
 ;;; (cfa.fx) -- and every half second looks at the terminal's size.
+;;;
+;;; `bin/heist-edit --report-idle [FILE]`, as tests/drive.py runs it, says
+;;; when the editor has settled (`report-idle!`), so that what drives it
+;;; need not guess by waiting.
 (module-parameters ((m-base (load-moduleof "base.fx"))
                     (m-buffer (load-moduleof "buffer.fx" m-base))
                     (m-resolve (load-moduleof "resolve.fx" m-base m-buffer))
@@ -30,6 +34,9 @@ time: a news is not the quiet that eldoc waits for, nor the half second
 after which the terminal's size is looked at."
 (define news-came (ref bool @ed) (new #f))
 
+"How many bytes have been read from the terminal."
+(define bytes-read (ref int @ed) (new 0))
+
 "The next byte typed, or #f if none comes within `timeout` ms (0: only
 one already there), or a process has news first (`news-came`)."
 (define* next-byte (subr (maxeff (io stdin) (io clock) (io process) (read @ed) (write @ed) nondet spin) (int) (union false int))
@@ -37,7 +44,7 @@ one already there), or a process has news first (`news-came`)."
     (let ((of (lambda ((r (sumof (byte u8) (eof unit) (failed io-error))))
                 (the (union false int)
                      (tagcase r
-                       (byte u (u8->int u))
+                       (byte u (begin (set bytes-read (+ 1 (get bytes-read))) (u8->int u)))
                        ;; The input ended (or failed): the editor ends.
                        (else y (begin (set running #f) #f)))))))
       (if (<= timeout 0)
@@ -89,33 +96,58 @@ queue; C-g at once. Whether any came."
       (size s s)
       (else y (product (rows 24) (columns 80))))))
 
+"Whether the editor says when it has settled (`--report-idle`); and
+whether it has said so since it last did anything."
+(define report-idle (ref bool @ed) (new #f))
+(define idle-reported (ref bool @ed) (new #f))
+
+"If asked to, and not said since the editor last did anything: that it
+has settled -- no turn waits, no key, no answer of s7st's or the CFA's
+awaited (`awaited`), nor eldoc's turn due -- with how many bytes it has
+read, as `ESC ] 7777 ; idle ; N BEL`, which a terminal ignores. What a
+process such as *shell*'s writes it cannot know is coming."
+(define* report-idle! (subr cmd-eff (bool) unit)
+  (lambda (awaited)
+    (if (or (not (get report-idle)) (get idle-reported) awaited (get eldoc-due)
+            (and (>= (get current-key) 0) (activity-running? (get current-key))))
+        #u
+        (begin (set idle-reported #t)
+          (write-out (string-append "\x1b;]7777;idle;" (int->string (get bytes-read)) "\x07;"))
+          #u))))
+
 (define* run-loop (subr (maxeff cmd-eff (io stdin) (io clock) (io terminal)) ((actor frame) int int) unit)
   (lambda (fr rows columns)
     (begin
       ;; What the processes said, taken: else it is news still.
       (poll-processes!)
-      (s7-poll!)
-      (cfa-poll!)
-      (pump-keys! fr)
-      (run-turns! 100)
-      (cond ((not (get running)) #u)
-            ((or (turns-waiting?) (pair? (get pending-keys))) (begin (send-keys! fr 0) (run-loop fr rows columns)))
-            ;; A key, or a process's news, awaited; after a key, eldoc's
-            ;; turn when 100 ms pass with no other.
-            ((send-keys! fr (if (get eldoc-due) 100 500)) (run-loop fr rows columns))
-            ((get news-came) (begin (set news-came #f) (run-loop fr rows columns)))
-            ((not (get running)) #u)
-            ((get eldoc-due) (begin (set eldoc-due #f) (tell! fr (eldoc-now fr)) (run-loop fr rows columns)))
-            (else
-             (let ((now (terminal-dimensions)))
-               (if (and (= (extract now rows) rows) (= (extract now columns) columns))
-                   (run-loop fr rows columns)
-                   (begin (tell! fr (resized (extract now rows) (extract now columns)))
-                     (run-loop fr (extract now rows) (extract now columns))))))))))
+      (let* ((s7 (s7-poll!))
+             (awaited (or (cfa-poll!) s7)))
+        (begin
+          (pump-keys! fr)
+          (run-turns! 100)
+          (cond ((not (get running)) #u)
+                ((or (turns-waiting?) (pair? (get pending-keys)))
+                 (begin (set idle-reported #f) (send-keys! fr 0) (run-loop fr rows columns)))
+                ;; A key, or a process's news, awaited; after a key, eldoc's
+                ;; turn when 100 ms pass with no other.
+                ((begin (report-idle! awaited) (send-keys! fr (if (get eldoc-due) 100 500)))
+                 (begin (set idle-reported #f) (run-loop fr rows columns)))
+                ((get news-came) (begin (set news-came #f) (set idle-reported #f) (run-loop fr rows columns)))
+                ((not (get running)) #u)
+                ((get eldoc-due) (begin (set eldoc-due #f) (set idle-reported #f) (tell! fr (eldoc-now fr)) (run-loop fr rows columns)))
+                (else
+                 (let ((now (terminal-dimensions)))
+                   (if (and (= (extract now rows) rows) (= (extract now columns) columns))
+                       (run-loop fr rows columns)
+                       (begin (tell! fr (resized (extract now rows) (extract now columns)))
+                         (set idle-reported #f)
+                         (run-loop fr (extract now rows) (extract now columns))))))))))))
 
 (define* main (subr (maxeff cmd-eff (io stdin) (io clock) (io terminal) (io args) (alloc @a)) () int)
   (lambda ()
-    (let* ((as (the (listof string @a) (args)))
+    (let* ((as0 (the (listof string @a) (args)))
+           (idle? (and (pair? as0) (string=? (car as0) "--report-idle")))
+           (as (if idle? (cdr as0) as0))
            (file (if (pair? as) (car as) ""))
            (name (if (string=? file "") "*scratch*" (base-name file)))
            (got (if (string=? file "") (product (text empty-rope) (found #t)) (file-text file)))
@@ -130,6 +162,7 @@ queue; C-g at once. Whether any came."
                                      (buffers (the buffer-infos (list (product (name "*Messages*") (file "") (actor messages))))) (next-id 1) (echo "")
                                      (prefix (the keys nil)) (mini no-mini) (painter painter)))))
       (begin
+        (set report-idle idle?)
         (set-class! painter display)
         (set messages-buffer (list messages))
         (let ((ix (spawn-actor "index" (product (directories (the strings nil)) (pending (the strings nil))

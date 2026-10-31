@@ -1,6 +1,6 @@
 #!/bin/sh
 # The editor: cahoots on FX-26, run on Heist's own build of Fixpt.
-#   bin/heist-edit [FILE]
+#   bin/heist-edit [--report-idle] [FILE]   (--report-idle: main.fx)
 heist=$(cd "$(dirname "$0")/.." && pwd)
 fixpt="$heist/fixpt/target/release/fixpt"
 [ -x "$fixpt" ] || { echo "build fixpt first: (cd $heist/fixpt && cargo build --release -p fixpt-cli)" >&2; exit 2; }
@@ -8,7 +8,7 @@ fixpt="$heist/fixpt/target/release/fixpt"
 # and a file named relative to here is made absolute first.
 for f in "$@"; do
   shift
-  case "$f" in /*) ;; *) f="$PWD/$f" ;; esac
+  case "$f" in /*|--*) ;; *) f="$PWD/$f" ;; esac
   set -- "$@" "$f"
 done
 cd "$heist/editor" || exit 2

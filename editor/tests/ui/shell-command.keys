@@ -2,4 +2,4 @@ alpha
 \x1b!
 echo hello; ls
 \r
-@600
+@until b.txt
