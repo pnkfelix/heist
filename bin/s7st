@@ -7,4 +7,8 @@
 heist=$(cd "$(dirname "$0")/.." && pwd)
 fixpt="$heist/fixpt/target/release/fixpt"
 [ -x "$fixpt" ] || { echo "build fixpt first: (cd $heist/fixpt && cargo build --release -p fixpt-cli)" >&2; exit 2; }
+# Its heap dump resumed while fresh (bin/heist-dump), else loaded.
+if [ -z "$HEIST_NO_DUMP" ] && "$heist/bin/heist-dump" --fresh s7st; then
+  exec "$fixpt" resume "$heist/target/dumps/s7st.img" -- "$@"
+fi
 exec "$fixpt" run $(for f in $(cat "$heist/s7st/program"); do echo "$heist/s7st/$f"; done) "$heist/s7st/main.fx" -- "$@"

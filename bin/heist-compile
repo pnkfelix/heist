@@ -22,11 +22,14 @@
 #                  trusting the files' times
 #   --clean        remove the target's files' `.fasl`s
 #   --dry-run      say what would be compiled (or removed), and do nothing
+#   --no-dump      make no heap dumps
+# Then the targets' heap dumps made again (bin/heist-dump), those stale:
+# kit's change makes every program's stale.
 heist=$(cd "$(dirname "$0")/.." && pwd)
 fixpt="$heist/fixpt/target/release/fixpt"
 [ -x "$fixpt" ] || { echo "build fixpt first: (cd $heist/fixpt && cargo build --release -p fixpt-cli)" >&2; exit 2; }
 
-mode=force dry=
+mode=force dry= nodump=
 targets=
 if [ "$1" = clean ]; then
   shift
@@ -43,6 +46,7 @@ for a in "$@"; do
     --timestamps) mode=timestamps;;
     --clean) mode=clean;;
     --dry-run|-n) dry=1;;
+    --no-dump) nodump=1;;
     kit|editor|s7st|cfa|combo|ratfink) targets="$targets $a";;
     all) targets="kit editor s7st cfa combo ratfink";;
     -h|--help) sed -n '2,/^heist=/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 0;;
@@ -117,4 +121,8 @@ for t in $targets; do
     *) (cd "$dir" && "$fixpt" compile-file $todo) || status=1;;
   esac
 done
+[ -n "$dry$nodump" ] || [ "$mode" = clean ] || {
+  stale=$("$heist/bin/heist-dump" --stale)
+  [ -z "$stale" ] || "$heist/bin/heist-dump" $stale || status=1
+}
 exit $status

@@ -1,0 +1,80 @@
+#!/bin/sh
+# Heist's programs' heap dumps (Fixpt's `fixpt dump`), which their launchers
+# resume (`fixpt resume`) in place of loading the program: a start of some
+# 0.03 s, not 0.4-1.2 s. Each in target/dumps/NAME.img.
+#   bin/heist-dump [TARGET…]     those programs' dumps made; all if none
+#   bin/heist-dump --stale       say which dumps are missing or stale
+#   bin/heist-dump --fresh NAME  exit 0 if NAME's dump is fresh (the
+#                                launchers' check), 1 if not
+#   bin/heist-dump --clean       remove them all
+# TARGET: editor, s7st, cfa, combo, ratfink, or all.
+# A launcher resumes a dump only while it is fresh: newer than Fixpt's
+# executable and than each `.fx` (and `program`) of the program's
+# directories and kit/'s, tests/ aside. Else it loads the program as
+# before, quietly: run this again after a change (bin/heist-compile does).
+# Fixpt keys a dump by the files given it, not by those they load, hence
+# the launchers' own check. HEIST_NO_DUMP=1 makes a launcher load the
+# program even so.
+heist=$(cd "$(dirname "$0")/.." && pwd)
+fixpt="$heist/fixpt/target/release/fixpt"
+[ -x "$fixpt" ] || { echo "build fixpt first: (cd $heist/fixpt && cargo build --release -p fixpt-cli)" >&2; exit 2; }
+dumps="$heist/target/dumps"
+
+# The directories whose files a program is made of.
+dirs_of() {
+  case "$1" in
+    cfa) echo "$heist/s7st $heist/cfa $heist/kit";;
+    *) echo "$heist/$1 $heist/kit";;
+  esac
+}
+
+# Is NAME's dump missing, or older than what it was made of?
+stale() {
+  img="$dumps/$1.img"
+  [ -e "$img" ] && [ ! "$fixpt" -nt "$img" ] || return 0
+  [ -n "$(find $(dirs_of "$1") -name tests -prune -o \( -name '*.fx' -o -name program \) -newer "$img" -print | head -1)" ]
+}
+
+# NAME's dump made, into a file beside it renamed over it, so that a
+# launcher that starts meanwhile finds the old dump or the new one whole.
+# Each from where, and of the files, its launcher runs it.
+dump() {
+  img="$dumps/$1.img"; new="$img.new.$$"
+  case "$1" in
+    editor) (cd "$heist/editor" && "$fixpt" dump "$new" editor.fx);;
+    combo) (cd "$heist/combo" && "$fixpt" dump "$new" combo.fx);;
+    ratfink) "$fixpt" dump "$new" "$heist/ratfink/ratfink.fx";;
+    s7st) "$fixpt" dump "$new" $(for f in $(cat "$heist/s7st/program"); do echo "$heist/s7st/$f"; done) \
+                               "$heist/s7st/main.fx";;
+    cfa) "$fixpt" dump "$new" $(for f in $(cat "$heist/s7st/program"); do echo "$heist/s7st/$f"; done) \
+                              $(for f in $(cat "$heist/cfa/program"); do echo "$heist/cfa/$f"; done);;
+  esac || { rm -f "$new"; echo "$1: not dumped" >&2; return 1; }
+  mv "$new" "$img"
+}
+
+all="editor s7st cfa combo ratfink"
+case "$1" in
+  --clean) rm -f "$dumps"/*.img; exit 0;;
+  --fresh) ! stale "$2"; exit;;
+  --stale) for t in $all; do stale "$t" && echo "$t"; done; exit 0;;
+  -h|--help) sed -n '2,/^heist=/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 0;;
+esac
+targets=
+for a in "$@"; do
+  case "$a" in
+    editor|s7st|cfa|combo|ratfink) targets="$targets $a";;
+    all) targets=$all;;
+    *) echo "heist-dump: unknown argument \`$a' (--help)" >&2; exit 2;;
+  esac
+done
+[ -n "$targets" ] || targets=$all
+mkdir -p "$dumps"
+# The dumps made at once: each is a process of its own, some 3 s.
+pids=
+for t in $targets; do
+  dump "$t" & pids="$pids $!"
+done
+status=0
+for p in $pids; do wait "$p" || status=1; done
+[ $status = 0 ] && echo "dumped:$targets"
+exit $status

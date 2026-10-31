@@ -13,4 +13,8 @@ larceny=${LARCENY:-$HOME/Dev/LangPlay/accomplice/larceny}
 set -- --larceny "$larceny" "$@"
 [ -n "$RATFINK_SOLVER" ] && set -- --solver-command "$RATFINK_SOLVER" "$@"
 [ -n "$RATFINK_SMT_LOG" ] && set -- --smt-log "$RATFINK_SMT_LOG" "$@"
+# Its heap dump resumed while fresh (bin/heist-dump), else loaded.
+if [ -z "$HEIST_NO_DUMP" ] && "$heist/bin/heist-dump" --fresh ratfink; then
+  exec "$fixpt" resume "$heist/target/dumps/ratfink.img" -- --environment <(env -0) "$@"
+fi
 exec "$fixpt" run "$heist/ratfink/ratfink.fx" -- --environment <(env -0) "$@"

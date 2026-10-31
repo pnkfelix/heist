@@ -13,4 +13,8 @@ for f in "$@"; do
 done
 cd "$heist/editor" || exit 2
 # The program: editor.fx makes each of its files once, from those before it.
+# Its heap dump resumed while fresh (bin/heist-dump), else loaded.
+if [ -z "$HEIST_NO_DUMP" ] && "$heist/bin/heist-dump" --fresh editor; then
+  exec "$fixpt" resume "$heist/target/dumps/editor.img" -- "$@"
+fi
 exec "$fixpt" run editor.fx -- "$@"

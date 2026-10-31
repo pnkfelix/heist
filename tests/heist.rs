@@ -11,6 +11,10 @@
 //!   conformance::LIB   s7st/conformance/run.sh LIB (its summary all passed);
 //!                      the libraries s7st does not have yet, ignored
 //! Each needs Fixpt built (`cd fixpt && cargo build --release -p fixpt-cli`).
+//! The launchers in bin/ resume a program's heap dump while it is fresh,
+//! some 0.03 s a start, and load the program (0.4-1.2 s) when it is not:
+//! `bin/heist-dump` remakes them (`bin/heist-compile` does too), and
+//! `bin/heist-dump --stale` says which are stale.
 
 use libtest_mimic::{Arguments, Failed, Trial};
 use std::path::{Path, PathBuf};

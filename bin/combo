@@ -11,4 +11,8 @@ for a in "$@"; do
   set -- "$@" "$a"
 done
 cd "$heist/combo" || exit 2
+# Its heap dump resumed while fresh (bin/heist-dump), else loaded.
+if [ -z "$HEIST_NO_DUMP" ] && "$heist/bin/heist-dump" --fresh combo; then
+  exec "$fixpt" resume "$heist/target/dumps/combo.img" -- "$@"
+fi
 exec "$fixpt" run combo.fx -- "$@"
