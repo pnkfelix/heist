@@ -573,6 +573,21 @@ Still open in Fixpt's `TODO.md`:
 - **Kayak will need:** the two arms, and an event for each in its
   scheduler.
 
+### F7. `length` counts without a vector (bug fix: speed)
+
+- **Needed for:** s7st, which asks a list's length at every call it makes
+  of a closure (`s7-apply`); and anything else counting lists.
+- **What changed:** `length` in `prim.rs` (FX-26's `list-length`) made a
+  `Vec` of the list's elements to take its length: a `malloc`, its
+  growth and a `free` each time. It now counts with `Heap::list_len`, as
+  `reverse` already did, which refuses a cyclic or improper list as the
+  vector did.
+- **Measured:** s7st's R7RS `lazy` test 8% faster (a `delay-force` step
+  1.53 to 1.40 µs); Heist's whole suite 38.3 to 34.9 s.
+- **Machines covered:** all, as it is the runtime's primitive;
+  `fixpt-runtime`'s and `fixpt-tidy`'s tests, and Heist's suite.
+- **Kayak will need:** nothing new.
+
 Each entry takes this form:
 
 ### Fn. Title (library | primitive | language)

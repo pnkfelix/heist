@@ -1143,9 +1143,11 @@ prims! {
         rt.heap.set_cdr(a[0], a[1]); Ok(Value::UNSPECIFIED)
     });
     "list", 0, None, simple!(|rt, a| Ok(rt.heap.list_from(a)));
+    // Counted as it is walked, no vector made (Heist's `FIXPT-CHANGES.md`
+    // F7): s7st asks it at every call.
     "length", 1, Some(1), simple!(|rt, a| {
-        match rt.heap.list_to_vec(a[0]) {
-            Some(v) => Ok(Value::fixnum(v.len() as i64)),
+        match rt.heap.list_len(a[0]) {
+            Some(n) => Ok(Value::fixnum(n as i64)),
             None => rt.type_error("a proper list", a[0]),
         }
     });
