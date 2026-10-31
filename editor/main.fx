@@ -129,8 +129,9 @@ process such as *shell*'s writes it cannot know is coming."
                 ((or (turns-waiting?) (pair? (get pending-keys)))
                  (begin (set idle-reported #f) (send-keys! fr 0) (run-loop fr rows columns)))
                 ;; A key, or a process's news, awaited; after a key, eldoc's
-                ;; turn when 100 ms pass with no other.
-                ((begin (report-idle! awaited) (send-keys! fr (if (get eldoc-due) 100 500)))
+                ;; turn when 100 ms pass with no other. Whether an answer is
+                ;; awaited asked again: the turns may have asked for one.
+                ((begin (report-idle! (or awaited (s7-awaited?) (cfa-awaited?))) (send-keys! fr (if (get eldoc-due) 100 500)))
                  (begin (set idle-reported #f) (run-loop fr rows columns)))
                 ((get news-came) (begin (set news-came #f) (set idle-reported #f) (run-loop fr rows columns)))
                 ((not (get running)) #u)

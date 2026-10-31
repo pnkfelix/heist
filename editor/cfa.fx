@@ -263,8 +263,14 @@ the main loop to look again in 50 ms."
                 (tagcase (process-status (car s))
                   (running u #u)
                   (else y (begin (set cfa-server nil) (set cfa-requests nil) (set cfa-askers nil) (set cfa-queries nil))))
-                (and (pair? (get cfa-server))
-                     (or (not (get cfa-ready)) (pair? (get cfa-requests)) (pair? (get cfa-queries)))))))))))
+                (cfa-awaited?))))))))
+
+"Whether an answer of the CFA's is awaited: it is starting, or was asked
+something not yet answered."
+(define* cfa-awaited? (subr cmd-eff () bool)
+  (lambda ()
+    (and (pair? (get cfa-server))
+         (or (not (get cfa-ready)) (pair? (get cfa-requests)) (pair? (get cfa-queries))))))
 
 "The server stopped (the editor ends)."
 (define* cfa-stop! (subr cmd-eff () unit)

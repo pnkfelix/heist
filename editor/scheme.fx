@@ -355,12 +355,18 @@ the main loop to look again in 50 ms."
                               (none u #u)
                               (else z (s7-finished! "" "s7st's process ended")))
                             (s7-repl-say! ";; s7st's process ended; it starts again when next asked for\n" #f))))
-                (and (pair? (get s7-server))
-                     (or (not (get s7-ready))
-                         (pair? (get s7-describe-for))
-                         (pair? (get s7-analyses))
-                         (pair? (get s7-completion))
-                         (tagcase (get s7-client-now) (none u #f) (else z #t)))))))))))
+                (s7-awaited?))))))))
+
+"Whether an answer of the server's is awaited: it is starting, or was
+asked something not yet answered."
+(define* s7-awaited? (subr cmd-eff () bool)
+  (lambda ()
+    (and (pair? (get s7-server))
+         (or (not (get s7-ready))
+             (pair? (get s7-describe-for))
+             (pair? (get s7-analyses))
+             (pair? (get s7-completion))
+             (tagcase (get s7-client-now) (none u #f) (else z #t))))))
 
 "The server stopped (the editor ends)."
 (define* s7-stop! (subr cmd-eff () unit)

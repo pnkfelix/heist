@@ -41,7 +41,9 @@ import fcntl, termios, struct
 fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", a.rows, a.cols, 0, 0))
 
 out = bytearray()
-def pump(seconds):
+def pump(seconds, once=False):
+    """Read what the editor writes for `seconds`; or, if `once`, until it
+    writes something, at most that long."""
     end = time.time() + seconds
     while True:
         left = end - time.time()
@@ -57,6 +59,8 @@ def pump(seconds):
                 return
             out.extend(data)
             pump.last = time.time()
+            if once:
+                return
 
 pump.last = time.time()
 
@@ -71,7 +75,7 @@ def settled(limit=10.0):
         ms = list(IDLE.finditer(out, max(0, len(out) - 64)))
         if ms and ms[-1].end() == len(out) and int(ms[-1].group(1)) >= sent:
             return
-        pump(min(0.05, max(0.0, end - time.time())))
+        pump(min(0.05, max(0.0, end - time.time())), once=True)
     ms = list(IDLE.finditer(out))
     sys.stderr.write(f"drive.py: not settled within {limit:g} s, {sent} bytes sent"
                      + (f"; last said idle at {ms[-1].group(1).decode()} bytes read, {len(out) - ms[-1].end()} bytes after it"
