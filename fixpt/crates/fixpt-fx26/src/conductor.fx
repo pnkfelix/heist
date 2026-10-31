@@ -59,12 +59,18 @@
           ((load-input "fx26:check-proving.fx")
            check-types check-env check-read check-syntax
            parser-module))
+         ;; Flat data, which reading types uses.
+         (check-flat
+          ((load-input "fx26:check-flat.fx")
+           check-types check-read check-env check-subst
+           check-print check-syntax check-effects parser-module
+           check-print-parts))
          ;; What reading types uses that reads none of them.
          (check-read-helpers
           ((load-input "fx26:check-read-helpers.fx")
            check-types check-read check-env check-subst
            check-print check-syntax check-effects parser-module
-           check-print-parts))
+           check-print-parts check-flat))
          ;; Specifications in procedure types, read.
          (check-specs
           ((load-input "fx26:check-specs.fx")
@@ -189,7 +195,7 @@
           ((load-input "fx26:check-test-facts.fx")
            check-infer check-types check-env check-terminate
            check-print check-calls check-sc-graphs check-binders check-print-parts
-           check-logic check-resolve))
+           check-logic check-resolve check-subtype check-subst))
          ;; The checker, letrec: a group's types found and checked.
          (check-letrec
           ((load-input "fx26:check-letrec.fx")
@@ -339,9 +345,11 @@
          ;; The evaluator.
          (eval-values ((load-input "fx26:eval-values.fx") check-types))
          (eval-prims ((load-input "fx26:eval-prims.fx") eval-values tables check-types))
+         (eval-bloblets ((load-input "fx26:eval-bloblets.fx") eval-values))
          (eval-core
           ((load-input "fx26:eval-core.fx")
-           eval-values eval-prims check-env check-resolve))
+           eval-values eval-prims eval-bloblets check-env check-resolve read-text-at
+           parse-program))
          ;; The compiler's loop over a program's forms.
          (compile-programs
           ((load-input "fx26:compile-programs.fx")
@@ -398,21 +406,20 @@
            (load-input "fx26:x86_64.fx") native-direct-layout layout native-direct-asm native-reps
            native-direct-raw native-direct-proc native-direct-ops native-direct-prims))
          ;; `stage` (`docs/research/eval.md`): code a running program gives,
-         ;; checked by this instance, as `(with m text)` of type `r` whose
-         ;; evaluation's effect is within `e`, for `m` of module type `mt`, in
-         ;; the standard environment alone; and compiled, to the word that
-         ;; makes `(lambda ((m mt)) (lambda () (with m text)))`. Or why not,
-         ;; as `stage-failure` says it, placed in `text`. Each type as the
-         ;; checker that checked the form printed it.
+         ;; wrapped as `stage.rs` wraps it, checked by this instance in the
+         ;; standard environment alone, and compiled to the word that makes
+         ;; the procedure the wrapping is. Or why not, as `stage-failure`
+         ;; says it, placed in the code.
+         ;; A refusal as `stage-failure` says it; and place `n` of the text
+         ;; checked, in the code, which starts at `k`.
+         (fail
+          (lambda ((k (sumof (unread unit) (malformed unit) (refused unit) (stale unit)))
+                   (m string) (a int) (b int))
+            (sum failed (product (kind k) (message m) (start a) (end b)))))
+         (clamp (lambda ((n int) (k int) (len int))
+                  (let ((at (- n k))) (cond ((< at 0) 0) ((> at len) len) (else at)))))
          (stage-check
-          (let* ((fail
-                  (lambda ((k (sumof (unread unit) (malformed unit) (refused unit) (stale unit)))
-                           (m string) (a int) (b int))
-                    (sum failed (product (kind k) (message m) (start a) (end b)))))
-                 ;; Place `n` of the text checked, in `text`, which starts at `k`.
-                 (clamp (lambda ((n int) (k int) (len int))
-                          (let ((at (- n k))) (cond ((< at 0) 0) ((> at len) len) (else at)))))
-                 ;; The text checked, `prefix` then `text`, its trees `tops`.
+          (let* (;; The text checked, its trees `tops`.
                  (checked
                   (lambda ((standard (listof syn acyclic)) (tops (listof top acyclic))
                            (k int) (len int) (native bool) (registers bool))
@@ -430,29 +437,105 @@
                                     ((with check-env checked-extracts)))
                             (c-ok (w) (sum made w))
                             (c-err (m) (fail (sum refused #u) m 0 len)))))))))
-            (lambda ((standard (listof syn acyclic)) (mt string) (e string) (r string)
-                     (text string) (native bool) (registers bool))
-              (let* ((len (string-length text))
-                     (alone (read-text-at text 0))
-                     (prefix (string-append "(the (subr pure (" mt ") (subr " e " () " r "))\n"
-                                            "(lambda ((stage-module " mt "))\n"
-                                            "(lambda () (with stage-module\n"))
-                     (k (string-length prefix))
-                     (whole (read-text-at (string-append prefix text "\n))))\n") 0))
-                     (unread "the text is not one whole expression"))
-                ;; One datum, read alone, cannot reach past the parentheses
-                ;; around it.
-                (cond ((or (null? alone) (null? (car alone)) (not (null? (cdr (car alone))))
-                           (null? whole))
-                       (fail (sum unread #u) unread 0 len))
-                      (else
-                       (begin
-                         (loaded-files! nil)
-                         (includes-given! nil)
-                         (tagcase (parse-program (car whole))
-                           (p-err (m a b)
-                             (fail (sum malformed #u) m (clamp a k len) (clamp b k len)))
-                           (p-ok (tops) (checked standard tops k len native registers)))))))))))
+            ;; The code wrapped (`stage.rs`'s `wrapped`), `whole`, the code
+            ;; `len` characters at `k` of it.
+            (lambda ((standard (listof syn acyclic)) (whole string) (k int) (len int)
+                     (native bool) (registers bool))
+              (let ((read (read-text-at whole 0)))
+                (if (null? read)
+                    (fail (sum unread #u) "the code is not one whole expression" 0 len)
+                    (begin
+                      (loaded-files! nil)
+                      (includes-given! nil)
+                      (tagcase (parse-program (car read))
+                        (p-err (m a b)
+                          (fail (sum malformed #u) m (clamp a k len) (clamp b k len)))
+                        (p-ok (tops) (checked standard tops k len native registers)))))))))
+         ;; A session's step (`sessions26.rs`), checked by this instance's
+         ;; checker, which holds the session's definitions, and compiled by
+         ;; its compiler, whose globals are the session's: `whole`, the code
+         ;; wrapped, the code `len` characters at `k` of it; `how`: 0, the
+         ;; first, in the standard environment `standard`, checked alone; 1,
+         ;; more, kept, and compiled (if `make`), into the procedure that
+         ;; runs it (if `deferred`, a commit's) or the word; 2, tried, not
+         ;; kept, the type `name` then has given. What each gives, or why
+         ;; not, placed in the code.
+         (session-step
+          (lambda ((standard (listof syn acyclic)) (whole string) (k int) (len int) (how int)
+                   (name symbol) (make bool) (deferred bool) (native bool) (registers bool))
+            (let ((read (read-text-at whole 0))
+                  (refused (lambda ((m string) (a int) (b int))
+                             (fail (sum refused #u) m (clamp a k len) (clamp b k len)))))
+              (if (null? read)
+                  (fail (sum unread #u) "the code is not one whole expression" 0 len)
+                  (begin
+                    (loaded-files! nil)
+                    (includes-given! nil)
+                    ((with check-program check-lines!) #f)
+                    ((with check-print-parts check-conv-native!) native)
+                    ((with compile compile-conv-native!) native)
+                    ((with regcode-entry compile-registers!) registers)
+                    (tagcase (parse-program (car read))
+                      (p-err (m a b)
+                        (fail (sum malformed #u) m (clamp a k len) (clamp b k len)))
+                      (p-ok (tops)
+                        (cond
+                          ((= how 2)
+                           (let ((r ((with check-program check-try) tops name)))
+                             (tagcase (extract r 1)
+                               (k-err (m a b) (refused m a b))
+                               (else y (sum typed (extract r 2))))))
+                          ((= how 0)
+                           (tagcase ((with check-program check-program) standard tops)
+                             (k-err (m a b) (refused m a b))
+                             (else y (sum checked #u))))
+                          (else
+                           (tagcase ((with check-program check-more) tops)
+                             (k-err (m a b) (refused m a b))
+                             (k-done (t) (refused "not a form" 0 len))
+                             (k-ok (ls)
+                               (if (not make)
+                                   (sum checked #u)
+                                   (let ((runs ((with check-program checked-tops)))
+                                         (facts ((with check-env checked-extracts))))
+                                     (tagcase (if deferred
+                                                  ((with compile-programs compile-checked-deferred)
+                                                   runs facts)
+                                                  ((with compile-programs compile-checked)
+                                                   runs facts))
+                                       (c-ok (w) (sum made w))
+                                       (c-err (m) (refused m k (+ k len)))))))))))))))))
+         ;; The types of what the checker tells the compiler.
+         (stage-env-types (load-module "fx26:check-env-types.fx"))
+         ;; A session's code (`sessions.rs`), checked by the checker written
+         ;; in Rust, which gives what it found: compiled by this instance,
+         ;; whose globals are the session's, to the word that runs it, or,
+         ;; `deferred`, that makes the procedure that does (a commit's); or
+         ;; why not.
+         (session-compile
+          (lambda ((text string) (facts (select stage-env-types k-facts))
+                   (withs (select stage-env-types k-with-list))
+                   (reshapes (select stage-env-types k-reshape-list))
+                   (native bool) (registers bool) (deferred bool))
+            (let ((read (read-text-at text 0)))
+              (if (null? read)
+                  (sum failed "the code does not read")
+                  (begin
+                    (loaded-files! nil)
+                    (includes-given! nil)
+                    (tagcase (parse-program (car read))
+                      (p-err (m a b) (sum failed m))
+                      (p-ok (tops)
+                        (begin
+                          ((with check-env checked-withs!) withs)
+                          ((with check-env checked-reshapes!) reshapes)
+                          ((with compile compile-conv-native!) native)
+                          ((with regcode-entry compile-registers!) registers)
+                          (tagcase (if deferred
+                                       ((with compile-programs compile-deferred) tops facts)
+                                       ((with compile-programs compile-program) tops facts))
+                            (c-ok (w) (sum made w))
+                            (c-err (m) (sum failed m))))))))))))
     ;; What Rust and `bootstrap.fx` call of them (`syn.rs`, `session.rs`).
     (product (run-checked (with eval-core run-checked))
              (run-checked-more (with eval-core run-checked-more))
@@ -476,6 +559,8 @@
              (compile-registers! (with regcode-entry compile-registers!))
              (compile-conv-native! (with compile compile-conv-native!))
              (check-defer-reruns! (with check-program check-defer-reruns!))
+             (check-redefines (with check-program check-redefines))
+             (checked-run-names (with check-program checked-run-names))
              (check-hold-breaks! (with check-program check-hold-breaks!))
              (check-lines! (with check-program check-lines!))
              (check-more (with check-program check-more))
@@ -492,13 +577,33 @@
              (k-ok (with check-types k-ok))
              (k-err (with check-types k-err))
              (k-done (with check-types k-done))
-             (stage-check stage-check))))
+             (stage-check stage-check)
+             (session-compile session-compile)
+             (session-step session-step))))
 ;;; The end of `front-end-entries`: `make-front-end`, made of its `let*`
 ;;; again, follows it in the front end (`lib.rs`'s `front_end`).
 
 ;; A front end of its own for `stage`, whose checking leaves the
 ;; program's alone: made when a program first stages code (`stage.rs`).
 (define make-stage-check (lambda () (extract (make-front-end) stage-check)))
+;; And one for each session on a machine that runs the compilers written in
+;; FX-26 (`sessions.rs`): its compiler, whose globals are the session's; how
+;; a global is made in it for the driver to fill (the session's module); and
+;; how a name's next definition keeps its global (one every use can take).
+(define make-session-compiler
+  (lambda ()
+    (let ((fe (make-front-end)))
+      (product (compile (extract fe session-compile)) (global (extract fe compile-new-global))
+               (keep (extract fe compile-keep-global!))
+               ;; And its checker (`sessions26.rs`): a step; whether re-runs
+               ;; wait; whether reading a global is an effect; a global's
+               ;; type and users.
+               (step (extract fe session-step)) (defer (extract fe check-defer-reruns!))
+               (globals-effects (extract fe check-globals-effects!))
+               (redefines (extract fe check-redefines))
+               ;; And what the last step runs, by name (a session on the
+               ;; evaluator, which runs their texts).
+               (runs (extract fe checked-run-names))))))
 
 (define run-checked (extract front-end-entries run-checked))
 (define run-checked-more (extract front-end-entries run-checked-more))

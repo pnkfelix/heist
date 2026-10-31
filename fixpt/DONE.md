@@ -4140,6 +4140,120 @@ is `(maxeff stage spin)`, `stage` a new effect atom, in both checkers.
   checking is not interruptible; `certify`, `install` and sessions (§186's
   list).
 
+**Sessions, step 1 (2026-10-31): on `rs-scheme-vm`.** `make-session`,
+`session-check` (a top-level form: an expression's procedure, or a
+definition, pending), `session-redefines` and `session-commit!`
+(`docs/fx26.md`, "Sessions"; decided with the user: one form whose answer
+says which, each delayed with its own protocol; `E` written, types found,
+the decision the program's, anywhere, so a continuation may be captured
+before it). A session's state is a
+checker written in Rust, the REPL's own top level made one per session
+(`sessions.rs`): a pending definition is `try_top`, a commit
+`top_defining`, re-runs waiting for `shadow` and not for `rerun`, and the
+users a redefinition reports the checker's. `m`'s values are its first
+definitions (`(define n (with stage-module n))`, `stage-module` the global
+`m` is given). Lowered, each session's globals are named by a prefix of its
+own, and each step's Scheme given to `eval`. `(sessionof M r)` and
+`(pending E r)` are generative types 15 and 16; `session-commit!` a form,
+so that the program, not a primitive, runs the initializer. Test:
+`stage.rs`'s `a_session_keeps_definitions` (`programs/stage/session.fx`).
+
+**Sessions on the cellular machines (2026-10-31).** The session's checker
+is still the one written in Rust; what it found of a step is given the
+compiler written in FX-26 (`rust_facts.rs`'s `FormFacts`, what
+`syn::rust_facts` made, now made of the runtime alone, and of a step's own
+expressions, `Kth::walked`). Each session has a compiler of its own
+(`make-session-compiler`, the conductor's: compile, a new global, keep
+one), so its globals persist between steps; `m` is the global
+`stage-module`. An expression is compiled and run to its procedure; a
+commit's initializers run as `%session-ready` readies it, the `go` it
+gives doing nothing. The FX-26 printer names no types when told not to
+(`k-naming!`), as a session's types are written back as its source.
+`a_session_keeps_definitions` passes on every machine but `fx-ast-eval`.
+
+**Sessions on the evaluator (2026-10-31).** The checker written in Rust
+gives back each step's forms as text (`sessions.rs`, "evaluated":
+`%fx26-session-eval-check`, `-eval-ready`): an expression's, after what
+defines `m`'s values the first time, the last's value its procedure; a
+commit's, each with whether it keeps its globals' cells. The evaluator
+(`eval-core.fx`, "sessions") reads, parses and runs them in the session's
+globals, an environment kept beside it (`eval-top-in`, the top level's
+procedures given the globals they define in), `stage-module` bound to
+`m`; a commit's run by the `go` it gives, the program's. A session and a
+pending definition are the runtime's, an `o-host` to the evaluator, never
+looked in. `a_session_keeps_definitions` passes on every machine.
+
+**A commit runs as the program calls it, on the cellular machines
+(2026-10-31).** `%session-ready` no longer runs the commit's forms: the
+session's compiler compiles them, the definition's and those run again, as
+one text (each form's facts shifted to its place, `FormFacts::and_after`)
+into the body of a procedure of no arguments (`compile-deferred`), which
+the word makes; that is `go`. Each global is made as its form is compiled,
+in the scope `c-tops` gives it, and holds the undefined value until `go`
+fills it. So an initializer is the program's code, which may be preempted,
+capture a continuation or fail where the program sees it. The session's
+procedure of nothing is gone. Test: `stage.rs`'s
+`a_commit_runs_as_the_program_calls_it` (`programs/stage/commit.fx`), alike
+on every machine.
+
+**Evidence (2026-10-31).** `stage` and `session-check` within a
+`plambda` over their `M`, `E` or `R`, checked against what each variable
+was instantiated as (`docs/research/eval.md`, "Evidence"; `docs/fx26.md`,
+"Evidence"). The forms take `(given g …)`; `reify-effect`, `reify-region`
+and `reify-type` make the evidence, generative types 17 to 19, invariant,
+at run time their text. Both checkers find the variables free in what
+they print (the printers' marks, as `show_apart` uses them: `free_in_shown`,
+`k-free-shown`), refuse one with no evidence given, and note the names
+with the texts (`Staged`, `n-staged`'s fourth field); every machine puts
+them in the staged product, and the check that runs substitutes the
+evidence (`fixpt_runtime::evidence`), binding a region named afresh (in a
+session, in its checker, for good). `reify-…` notes what it is of at its
+operand, as `stage` notes at its code. Tests: `stage.rs`'s
+`staged_code_is_checked_against_what_a_variable_was_given` (effect, type,
+composed evidence, regions of a `letregion` and `@a`, a session's steps)
+and `staging_without_evidence_is_refused`, alike on every machine.
+
+Bounds, the same day: `(effectbound e)` and `(typebound t)`, covariant,
+made of exact evidence by `effect-bound` and `type-bound`, may be given
+where the variable stands only where less is safe: the type the code is
+checked as must be a supertype of itself with the variable `pure` or
+`void`, as each checker's subtyping says (`monotone_in`, `k-monotone-in?`;
+at first a walk of the types, of its own, conservative, replaced the same
+day at the user's asking); a `reify-…` refuses a bound. Tests:
+`evidence-bound.fx` (a `pure` bound for `(io stdout)`, a bound in a frozen
+list, exact evidence where `e` is taken) and the refusals
+`evidence-bound-taken.fx`, `evidence-bound-reify.fx`,
+`evidence-bound-region.fx` (a list at a region a variable names).
+
+**Sessions in the condition-raising style (2026-10-31).** A library built
+in, `fx26:session-conditions.fx`, of one procedure over the forms:
+`commit!`, a pending definition committed as `session-commit!` commits it,
+but a redefinition `raise`d (`fx26:conditions.fx`) to the handler a key's
+mark holds, whose answer is the decision; a fresh one committed without.
+The handler runs in the program's code, so it may escape to a `handle`
+outside (a restart, nothing committed) or capture a continuation. Test:
+`stage.rs`'s `a_redefinition_is_raised_to_the_handler`
+(`programs/stage/session-conditions.fx`: answered, refused, escaped, and
+fresh), alike on every machine.
+
+**Step 2 (2026-10-30): `rs-scheme-vm` and `fx-ast-eval`.** Both check the
+code with the checker written in Rust, of the standard environment alone
+(`stage.rs`'s `checked`), the wrapper as on every machine; the Rust checker
+notes `M`, `E` and `R` printed whole at the call (`facts.staged`,
+`Checker::staged_text`), as the one written in FX-26 does.
+- **`rs-scheme-vm`**: the lowering gives the code to the runtime's
+  `%fx26-stage-lowered`, which has it checked and lowered
+  (`%fx26-stage-lower`), the lowering a datum (`sx::Sx` made heap data), and
+  gives that Scheme's `eval` (§188): the procedure of the module.
+- **`fx-ast-eval`**: the evaluator runs `stage` itself (`eval-core.fx`'s
+  `ev-stage`): the datum written out, checked (`%stage-check`, the text as
+  checked), read and parsed by the front end's own reader and parser, at
+  positions past any of a program's, and run in no environment but the
+  standard one. So its `evals` holds reading and parsing.
+- Either way the code runs on the program's own machine, so it calls `m`'s
+  procedures, and reaches what they and `m` hold, as the program does:
+  `programs/stage/state.fx`, on every machine.
+
 Test: `fixpt-cli/tests/stage.rs` (`programs/stage/stage.fx`: accepted, a
 type refused, a name unbound, an effect beyond `E`, a definition, I/O
 within `E`, a procedure made, and thirty made while values wait on the
@@ -4173,3 +4287,109 @@ Test: `fixpt-cli/tests/stage.rs`'s `a_process_stages_while_another_runs`
 (`programs/stage/in-a-process.fx`: one process stages five times while
 another loops, slices of 7 polls), on every machine that stages; without
 the fix, the native one fails, `no such task`.
+
+## 188. Scheme's `eval` (the user's, 2026-10-30)
+
+For `stage` on `rs-scheme-vm` (§186), where staged code is lowered Scheme
+the VM runs. `(eval expr [(interaction-environment)])`, in the prelude, is
+`((%host 'eval expr))`: the `%host` of procedural macros pauses the machine,
+and the session (`session/eval.rs`, `Session::answered`, at every run it
+makes) takes the datum as syntax, expands it as a top-level form, compiles
+it (`Prepared::thunk_for`) and answers with the procedure that runs it, or a
+message the prelude raises. No primitive runs the expander, and the engine
+is never entered twice. What differs from R7RS: `docs/divergences.md`,
+"`eval` has one environment, and no procedural macros". Test:
+`fixpt-scheme/tests/eval.rs`, on both engines.
+
+## 189. The lowering builds syntax, not text (the user's, 2026-10-30)
+
+`lower.rs` made Scheme text with `format!`, which the session read back
+(`eval_str`): because the checker's interner and the Scheme session's are
+apart, and so that `,code` could show it. Neither needs text. The lowering
+builds s-expressions (`sx::Sx`), symbols by name; a form's lowering is a
+`sx::Code`, made syntax for the session (`Code::syntax`, its symbols
+interned there) and given to `Session::eval_forms_capturing`. It is
+written out only when shown: `Outcome::code` is a `Made`, the `Code` or
+the words, which `,code` writes as the text was. `Globals` keeps names unescaped,
+escaped only when written. FX-87's and FX-91's lowerings still make text.
+
+## 188. Files over 900 lines: refactoring candidates (the user's, 2026-10-31)
+
+Started: a survey by script of the `.fx` files over 900 lines for runs of
+definitions that could move out (`TODO.md` §188 lists them). The first
+moved: `eval-prims.fx`'s bloblets and blobrefs (`ev-bloblet`, `ev-bref`,
+`ev-blobref`, `ev-flat-tag`, `ev-label-is?` and what they use), which
+nothing else in it used and which used nothing else of it, are
+`eval-bloblets.fx`, a module of their own the conductor gives
+`eval-core.fx` (`eval-bloblets-sig`); `eval-prims.fx` 964 lines to 770.
+
+Then `parser.fx`'s record of the files a program loads (what a driver
+says it read, where an error in one is placed, each `include`'s names,
+the loads shared between files), which nothing else there used, into
+`parser-loads.fx`, a module file of the same regions that `parser.fx`
+loads and gives on by `import` (its users unchanged), 985 lines to 832;
+and `check-read-helpers.fx`'s flat data (flat types, layouts, views,
+blobrefs) into `check-flat.fx`, given to it by the conductor and given on
+(`check-flat-sig`, its 18 names its clients use), 1000 lines to 535.
+
+Then `compile.fx`'s tables of what the checker found, by expression (facts,
+conversions, reshapes, `with`s, `stage`s, calls' conventions and
+summaries), into `compile-facts.fx`, which `compile.fx` makes itself, by
+`load-input`, of the modules it is given, bound by a `let` around its
+`module` and given on by `import`: no signature of its own, the module's
+type found; 1000 lines to 808.
+
+By the same way, a module a file makes of what it is given:
+`check-program.fx`'s machinery of what a program's forms define (clauses,
+warnings and lines, the globals they bind, `define-rec` groups, `define*`
+and `->*`, what a redefinition reaches) into `check-program-defs.fx`, 979
+lines to 421; and `check-types.fx`'s arena of type nodes and their
+interning into `check-types-arena.fx`, 995 lines to 801.
+
+And `check-print-parts.fx`'s sizes (linear sizes and what the facts in
+force say of them) into `check-sizes.fx`, 951 lines to 718; and
+`check-synth.fx`'s parts of the rules (notes for the compilers, joins of
+branches, a body against its specification, what tests certify and
+narrow) into `check-synth-parts.fx`, 960 lines to 476.
+
+And `native-direct-x64-prims.fx`'s primitives of strings and characters
+into `native-direct-x64-strings.fx`, 943 lines to 834; and
+`check-read-descs.fx`'s reading of what is declared ahead into
+`check-read-ahead.fx`, 989 lines to 921 (the rest one recursive group,
+nothing more of it apart).
+
+Repeated code, the first of it: a part of a `k-parts` by its label,
+written eight times under eight names, and its position, three, are one
+each, `k-part-find` and `k-part-position`, in `check-types.fx`, which
+every file of the checker is given (`check-types-sig`); the copies, their
+signatures' entries (`check-sub-env-sig`, `check-subtype-sig`) and two
+aliases of them gone. `check-rules.fx`'s debt 1014 to 1013.
+
+## 189. Heap dumps for FX-26 (the user's, 2026-10-31)
+
+Measured (`TODO.md` §189): a warm s7st test is Fixpt's warm start, not
+s7st's setup; the FX-26 checker alone checks and runs Heist's programs as
+the usual path does. Then sessions on the checker written in FX-26 on the
+machines of the compilers written in FX-26 (`sessions26.rs`): each
+session's own front end checks (`session-step`; a pending definition by
+`check-try`, a trial the checker undoes; a redefinition's report by
+`check-redefines`) and compiles (a commit by `compile-checked-deferred`),
+its generation in the session's own vector, so that nothing of a session
+is outside the heap. `%fx26-session-redefines` now runs code
+(`prim::reenters`). The stage tests pass on every machine, unchanged.
+And on `fx-ast-eval`: its sessions' checker the FX-26 one too, checking
+without compiling, each step's forms given the evaluator as text, a
+commit's runs named by the checker (`checked-run-names`), their texts
+kept in the session's own vector (a fourth field); its session primitives
+run code too (`prim::reenters`).
+
+Then the dumps: `fixpt dump IMAGE FILE…`, `fixpt resume IMAGE [FILE…]
+[-- ARG…]` and `(dump-heap! path start)` (`%fx26-dump-heap`, the
+session's `Runtime::dump_heap`), on every machine whose front end is
+native code and whose program the compilers written in FX-26 compile;
+the others say they cannot. The heap as the load left it, the program's
+state with it; more files checked and run after a resume by the FX-26
+checker alone, `main` defined again among them; a dump of changed sources
+refused. s7st's tests from a dump: 0.58 s, against 46.9 s
+(`fixpt-cli/tests/dumps.rs`; `docs/fx26.md`, "Heap dumps").
+

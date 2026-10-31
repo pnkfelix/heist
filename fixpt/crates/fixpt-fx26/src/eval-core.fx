@@ -1,5 +1,5 @@
 ;;; The FX-26 evaluator proper: the parser's trees, run. After
-;;; `eval-values.fx` and `eval-prims.fx`.
+;;; `eval-values.fx`, `eval-prims.fx` and `eval-bloblets.fx`.
 ;;;
 ;;; An environment is a list of each name and the cell that holds its value,
 ;;; newest first; a closure is a procedure of the host's, closing over the
@@ -22,17 +22,24 @@
        (check-subst-types (load-module "fx26:check-subst-types.fx")))
   ;; What it is given: the evaluator's values and primitives, and the
   ;; checker's environment (`check-env.fx`) and resolution (`check-resolve.fx`).
+  ;; And the reader's and the parser's entries, for `stage` (`ev-stage`).
   (lambda ((values (select eval-types eval-values-sig))
            (prims (select eval-types eval-prims-sig))
+           (bloblets (select eval-types eval-bloblets-sig))
            (env (select check-env-types check-env-sig))
-           (resolve (select check-resolve-types check-resolve-sig)))
+           (resolve (select check-resolve-types check-resolve-sig))
+           (read-text (subr (select eval-types evals) (string int)
+                            (listof (listof (select parser-types syn) acyclic) acyclic)))
+           (parse (subr (select eval-types evals) ((listof (select parser-types syn) acyclic))
+                        (select parser-types presult))))
     (module
 (hide (include eval-types) (include parser-types) (include check-env-types)
       (include check-resolve-types) (include check-types-types) (include check-subst-types))
 ;; What it uses of the modules it is given.
-(import values apply-val apply1 ev-poll as-bool as-fields as-other as-tag efail efail-expected
-        eval-tag show-val the-unit)
-(import prims ev-bloblet ev-bref ev-blobref ev-flat-tag ev-label-is? standard)
+(import values apply-val apply1 ev-poll as-bool as-fields as-other as-str as-tag efail
+        efail-expected ev-eq? eval-tag show-val the-unit)
+(import prims prim! standard)
+(import bloblets ev-bloblet ev-bref ev-blobref ev-flat-tag ev-label-is?)
 ;; What it uses of the modules it is given: all of each, hidden.
 (hide (include env) (include resolve))
 
@@ -40,6 +47,111 @@
 (define genv (ref env @v) (new nil))
 
 (define cell (->* (val) vcell) (lambda (v) (new v)))
+
+;;; ------------------------------------------------------------------- stage
+;; `stage` (`docs/research/eval.md`), which this runs itself: the code, a
+;; datum the program made, written out and checked by the checker written
+;; in Rust (`%stage-check`) against what the checker noted at it
+;; (`n-staged`); then read, parsed and run here, in no environment but the
+;; standard one, and the procedure it makes given the module (`ev-stage`).
+
+;; What the checker noted at the code at `a` `b` `k`: the module's type,
+;; the effect and the result type, and the names of the variables whose
+;; evidence it is given, in a list of one; none if nothing.
+(define ev-staged-in
+  (->* (k-facts int int int)
+       (listof (productof (1 string) (2 string) (3 string) (4 string)) acyclic))
+  (lambda (fs a b k)
+    (cond ((null? fs) nil)
+          ((ev-at-is? (extract (car fs) 1) a b k)
+           (tagcase (extract (car fs) 2)
+             (n-staged (m eff r ns) (cons (product (1 m) (2 eff) (3 r) (4 ns)) nil))
+             (else y (ev-staged-in (cdr fs) a b k))))
+          (else (ev-staged-in (cdr fs) a b k)))))
+
+;; Datum `v` written as the reader reads it, pieces in reverse onto `acc`;
+;; or not, if it is not code (a procedure, say).
+(define-type ev-code (sumof (text (listof string acyclic)) (not-code unit)))
+(define ev-code-pieces (->* (val (listof string acyclic)) ev-code)
+  (lambda (v acc)
+    (typecase v
+      (int n (sum text (cons (int->string n) acc)))
+      (bool b (sum text (cons (if b "#t" "#f") acc)))
+      (string s (sum text (cons (ev-string-text s) acc)))
+      (char c (sum text (cons (string-append "#\\x" (ev-hex (char->integer c))) acc)))
+      (symbol s (sum text (cons (symbol->string s) acc)))
+      (keyword k (sum text (cons (string-append "#:" (symbol->string (keyword->symbol k))) acc)))
+      (nil z (sum text (cons "()" acc)))
+      (f64 x (sum text (cons (f64->string x) acc)))
+      (pair p (ev-code-list p (cons "(" acc)))
+      (else y (sum not-code #u)))))
+(define ev-code-list (->* ((pairof val val @v) (listof string acyclic)) ev-code)
+  (lambda (p acc)
+    (tagcase (ev-code-pieces (car p) acc)
+      (text acc
+        (let ((tail (cdr p)))
+          (typecase tail
+            (nil z (sum text (cons ")" acc)))
+            (pair q (ev-code-list q (cons " " acc)))
+            (else y (tagcase (ev-code-pieces tail (cons " . " acc))
+                      (text acc (sum text (cons ")" acc)))
+                      (not-code u (sum not-code #u)))))))
+      (not-code u (sum not-code #u)))))
+(define ev-string-text (->* (string) string)
+  (lambda (s)
+    (letrec ((go (subr spin (int (listof string acyclic)) (listof string acyclic))
+               (lambda (i acc)
+                 (if (= i (string-length s))
+                     acc
+                     (let ((c (string-ref s i)))
+                       (go (+ i 1)
+                           (cons (cond ((char=? c #\") "\\\"")
+                                       ((char=? c #\\) "\\\\")
+                                       ((char=? c (integer->char 10)) "\\n")
+                                       (else (char->string c)))
+                                 acc)))))))
+      (string-append "\"" (ev-joined (go 0 nil) "") "\""))))
+(define ev-joined (->* ((listof string acyclic) string) string)
+  (lambda (rev acc) (if (null? rev) acc (ev-joined (cdr rev) (string-append (car rev) acc)))))
+(define ev-hex (->* (int) string)
+  (lambda (n)
+    (let ((d (char->string (string-ref "0123456789abcdef" (remainder n 16)))))
+      (if (< n 16) d (string-append (ev-hex (quotient n 16)) d)))))
+
+;; A `stage-failure` as the program sees it, a product of its kind, its
+;; message and its place.
+(define ev-stage-failure
+  (->* ((productof (kind (sumof (unread unit) (malformed unit) (refused unit) (stale unit)))
+                   (message string) (start int) (end int)))
+       val)
+  (lambda (f)
+    (let ((kind (tagcase (extract f kind)
+                  (unread u 'unread) (malformed u 'malformed) (refused u 'refused)
+                  (stale u 'stale))))
+      (the val (o-sum 'failed
+                      (the val (o-product (list (cons 'kind (the val (o-sum kind the-unit)))
+                                                (cons 'message (the val (extract f message)))
+                                                (cons 'start (the val (extract f start)))
+                                                (cons 'end (the val (extract f end)))))))))))
+(define ev-stage-refused (->* (string) val)
+  (lambda (m)
+    (ev-stage-failure (product (kind (sum refused #u)) (message m) (start 0) (end 0)))))
+;; Where the code `stage` runs is read from: past any place of a program's,
+;; so that no fact of the program's is taken for one of it.
+(define ev-stage-base int 1000000000000)
+;; Whether `n` is bound in `e`, not the standard one.
+(define ev-bound? (->* (env symbol) bool)
+  (lambda (e n) (and (not (null? e)) (or (symbol=? (car (car e)) n) (ev-bound? (cdr e) n)))))
+;; Whether `f`, in `e`, is `stage`'s operator, `(proj %stage E R)`, the
+;; standard `%stage`; or `session-check`'s, of `%session-check`: `op`.
+(define ev-stage-op? (->* (exp env symbol) bool)
+  (lambda (f e op)
+    (tagcase f
+      (e-proj (body ds a b abk)
+        (tagcase body
+          (e-var (n c d cdk) (and (symbol=? n op) (not (ev-bound? e n))))
+          (else y #f)))
+      (else y #f))))
 
 ;; `e` with `n` bound to a new cell holding `v`.
 (define bind1 (->* (symbol val env) env)
@@ -261,7 +373,13 @@
         ;; A closure: the host's procedure of its arguments.
         (e-lambda (ps body a b abk) (lambda ((xs vals)) (eval body (bind ps xs e))))
         (e-app (f args a b abk)
-          (let* ((fv (eval f e)) (xs (eval-all args e))) (begin (ev-poll) (apply-val fv xs))))
+          (cond ((ev-stage-op? f e '%stage) (ev-stage args e))
+                ((ev-stage-op? f e '%session-check) (ev-session-check args e))
+                ((ev-stage-op? f e '%reify-effect) (ev-reify #t args e))
+                ((ev-stage-op? f e '%reify-region) (ev-reify #t args e))
+                ((ev-stage-op? f e '%reify-type) (ev-reify #f args e))
+                (else (let* ((fv (eval f e)) (xs (eval-all args e)))
+                        (begin (ev-poll) (apply-val fv xs))))))
         (e-plambda (d body a b abk) (eval body e))
         ;; Regions and places are erased: a `letrena`'s or `letreap`'s
         ;; allocation is the heap's, and its name, the place as a value, is
@@ -303,6 +421,81 @@
                                           e)))))))))
   ;; A module's items, as a `letrec*`'s (`DONE.md` §37): every name first,
   ;; holding #u; then each item's values, in order, in the scope of all.
+  ;; `stage`'s call, `((proj %stage E R) m code)` (`ev-staged-in`).
+  (ev-stage (->* ((listof exp acyclic) env) val)
+    (lambda (args e)
+      (ev-staged args e
+                 (lambda ((m val) (mt string) (eff string) (r string) (text string) (ns string)
+                          (g (listof string acyclic)))
+                   (tagcase (%stage-check mt eff r text ns g)
+                     (failed f (ev-stage-failure f))
+                     (checked w (ev-stage-run w m)))))))
+  ;; A `reify-…`'s call, of the evidence it is given: what the checker
+  ;; noted at it, the effect (or a region), or the type, given the evidence.
+  (ev-reify (->* (bool (listof exp acyclic) env) val)
+    (lambda (effect args e)
+      (let* ((x (car args))
+             (noted (ev-staged-in (get ev-facts) (exp-start x) (exp-end x) (exp-kth x))))
+        (if (null? noted)
+            (efail "evidence: what it is of is not known")
+            (let ((n (car noted)))
+              (the val (%reify-text (extract n 1) (if effect (extract n 2) (extract n 3))
+                                    (extract n 4) (ev-given (eval x e)))))))))
+  ;; Evidence given, a product of texts, as their list.
+  (ev-given (->* (val) (listof string acyclic))
+    (lambda (v)
+      (letrec ((go (subr (maxeff evals spin) (vfields) (listof string acyclic))
+                 (lambda (fs) (if (null? fs) nil (cons (as-str (cdr (car fs))) (go (cdr fs)))))))
+        (go (as-fields v "evidence")))))
+  ;; `stage`'s or `session-check`'s call, `(op m code)`: what `k` makes of
+  ;; `m`'s value, what the checker noted at the code (`ev-staged-in`) and
+  ;; the code, written out; or the refusal.
+  (ev-staged (->* ((listof exp acyclic) env
+                   (subr (maxeff evals spin)
+                         (val string string string string string (listof string acyclic)) val))
+                  val)
+    (lambda (args e k)
+      (let* ((m (eval (car args) e))
+             (code (car (cdr args)))
+             (noted (ev-staged-in (get ev-facts) (exp-start code) (exp-end code) (exp-kth code)))
+             (v (eval code e)))
+        (if (null? noted)
+            (ev-stage-refused
+             "this machine cannot stage code: what it is checked against is not known")
+            (tagcase (ev-code-pieces v nil)
+              (not-code u (ev-stage-refused "the code is not a datum"))
+              (text rev
+                (let ((n (car noted)))
+                  (k m (extract n 1) (extract n 2) (extract n 3) (ev-joined rev "") (extract n 4)
+                     (ev-given (eval (car (cdr (cdr args))) e))))))))))
+  ;; `session-check`'s call: checked by the session's checker
+  ;; (`%session-eval-check`); an expression's forms run in the session,
+  ;; the last's value its procedure; a definition, pending.
+  (ev-session-check (->* ((listof exp acyclic) env) val)
+    (lambda (args e)
+      (ev-staged args e
+                 (lambda ((s val) (mt string) (eff string) (r string) (text string) (ns string)
+                          (g (listof string acyclic)))
+                   (tagcase (%session-eval-check (ev-host s) mt eff r text ns g)
+                     (run ts (ev-sum2 'ok 'expression (ev-session-run s ts)))
+                     (ok d (tagcase d
+                             (definition p (ev-sum2 'ok 'definition (the val (o-host p))))))
+                     (failed f (ev-stage-failure f)))))))
+  ;; The code as checked, `w`, read, parsed and run in no environment but
+  ;; the standard one: the procedure of the module it makes, given `m`.
+  (ev-stage-run (->* (string val) val)
+    (lambda (w m)
+      (let ((read (read-text w ev-stage-base)))
+        (if (null? read)
+            (ev-stage-refused "the code as checked does not read")
+            (tagcase (parse (car read))
+              (p-err (msg a b) (ev-stage-refused msg))
+              (p-ok (tops)
+                (if (null? tops)
+                    (ev-stage-refused "the code as checked is no form")
+                    (tagcase (car tops)
+                      (t-exp (x) (the val (o-sum 'ok (apply1 (eval x (the env nil)) m))))
+                      (else y (ev-stage-refused "the code as checked is not an expression"))))))))))
   (eval-module (->* (mod-items env) val)
     (lambda (items e)
       (let ((inner (open-names (module-names items) e)))
@@ -398,35 +591,38 @@
           ((symbol=? (car ks) n) (ev-unkeep (cdr ks) n))
           (else (the (listof symbol acyclic) (cons (car ks) (ev-unkeep (cdr ks) n)))))))
 
-(define ev-new-global (->* (symbol) vcell)
-  (lambda (n) (let ((c (cell the-unit))) (begin (set genv (cons (cons n c) (get genv))) c))))
+;; Globals `g`: the program's (`genv`), or a session's (`ev-sessions`).
+(define-type vglobals (ref env @v))
+
+(define ev-new-global (->* (vglobals symbol) vcell)
+  (lambda (g n) (let ((c (cell the-unit))) (begin (set g (cons (cons n c) (get g))) c))))
 
 ;; The cell global `n` has; a new one, if it has none.
-(define ev-cell-of (->* (env symbol) vcell)
-  (lambda (e n)
-    (cond ((null? e) (ev-new-global n))
+(define ev-cell-of (->* (vglobals env symbol) vcell)
+  (lambda (g e n)
+    (cond ((null? e) (ev-new-global g n))
           ((symbol=? (car (car e)) n) (cdr (car e)))
-          (else (ev-cell-of (cdr e) n)))))
+          (else (ev-cell-of g (cdr e) n)))))
 
 ;; The cell a definition of `n` sets: the one it has, if kept; else new.
-(define push-global (->* (symbol) vcell)
-  (lambda (n)
+(define push-global (->* (vglobals symbol) vcell)
+  (lambda (g n)
     (if (ev-kept? (get ev-keep) n)
-        (begin (set ev-keep (ev-unkeep (get ev-keep) n)) (ev-cell-of (get genv) n))
-        (ev-new-global n))))
+        (begin (set ev-keep (ev-unkeep (get ev-keep) n)) (ev-cell-of g (get g) n))
+        (ev-new-global g n))))
 
-(define rec-cells (->* (exp-letrec-bs) vcells)
-  (lambda (bs)
+(define rec-cells (->* (vglobals exp-letrec-bs) vcells)
+  (lambda (g bs)
     (if (null? bs)
         nil
-        (let ((c (push-global (extract (car bs) 1)))) (cons c (rec-cells (cdr bs)))))))
+        (let ((c (push-global g (extract (car bs) 1)))) (cons c (rec-cells g (cdr bs)))))))
 
-(define rec-fill (->* (exp-letrec-bs vcells) unit)
-  (lambda (bs cells)
+(define rec-fill (->* (vglobals exp-letrec-bs vcells) unit)
+  (lambda (g bs cells)
     (if (null? bs)
         #u
-        (begin (set (car cells) (eval (extract (car bs) 3) (get genv)))
-               (rec-fill (cdr bs) (cdr cells))))))
+        (begin (set (car cells) (eval (extract (car bs) 3) (get g)))
+               (rec-fill g (cdr bs) (cdr cells))))))
 
 ;; Whether `x` is a lambda, under any type abstractions and ascriptions.
 (define lambda-exp? (->* (exp) bool)
@@ -439,22 +635,25 @@
       (else y #f))))
 
 ;; Defines `n` as `x`'s value, run in the scope before it.
-(define ev-define (->* (symbol exp) val)
-  (lambda (n x) (let ((v (eval x (get genv)))) (begin (set (push-global n) v) the-unit))))
+(define ev-define (->* (vglobals symbol exp) val)
+  (lambda (g n x) (let ((v (eval x (get g)))) (begin (set (push-global g n) v) the-unit))))
 
-(define eval-top (->* (top) val)
-  (lambda (t)
+;; Top-level form `t` run in globals `g`.
+(define eval-top-in (->* (vglobals top) val)
+  (lambda (g t)
     (tagcase t
       (t-define (n ty x a b)
         (if (and (not (null? ty)) (lambda-exp? x))
             ;; A lambda: the cell first, so that it can call itself.
-            (let ((c (push-global n))) (begin (set c (eval x (get genv))) the-unit))
+            (let ((c (push-global g n))) (begin (set c (eval x (get g))) the-unit))
             ;; Not recursive: the value first, in the scope before it.
-            (ev-define n x)))
+            (ev-define g n x)))
       ;; Every name's cell first; then each lambda, which runs nothing.
-      (t-define-rec (bs a b) (begin (rec-fill bs (rec-cells bs)) the-unit))
-      (t-exp (x) (eval x (get genv)))
+      (t-define-rec (bs a b) (begin (rec-fill g bs (rec-cells g bs)) the-unit))
+      (t-exp (x) (eval x (get g)))
       (else x the-unit))))
+
+(define eval-top (->* (top) val) (lambda (t) (eval-top-in genv t)))
 
 ;; The value so far, after top-level form `t` gave `v`: `v` if `t` is an
 ;; expression, else `last`, as before.
@@ -504,11 +703,127 @@
         (ev-ok (go runs the-unit)))
       (lambda (r) r))))
 
+;;; ---------------------------------------------------------------- sessions
+;; Sessions (`docs/research/eval.md`, "Sessions"), kept here: a session,
+;; and a pending definition, are the runtime's, which the checker written
+;; in Rust keeps the state of (`sessions.rs`, "evaluated"), given here as
+;; arrays never looked in; a session's globals beside it, the module's
+;; `stage-module`.
+(define ev-sessions (ref (listof (pairof val vglobals @v) @v) @v) (new nil))
+
+;; Session `s`'s globals.
+(define ev-session-globals (->* (val) vglobals)
+  (lambda (s)
+    (letrec ((find (subr (maxeff evals spin) ((listof (pairof val vglobals @v) @v)) vglobals)
+               (lambda (ss)
+                 (cond ((null? ss) (efail "not a session"))
+                       ((ev-eq? (car (car ss)) s) (cdr (car ss)))
+                       (else (find (cdr ss)))))))
+      (find (get ev-sessions)))))
+
+;; A session, or a pending definition, as the runtime has it.
+(define ev-host (->* (val) (arrayof val @v))
+  (lambda (v)
+    (tagcase (as-other v "a session") (o-host (h) h) (else y (efail-expected "a session")))))
+
+;; `(sum t1 (sum t2 v))`.
+(define ev-sum2 (->* (symbol symbol val) val)
+  (lambda (t1 t2 v) (the val (o-sum t1 (the val (o-sum t2 v))))))
+
+;; A session's form, as text, read and parsed.
+(define ev-session-top (->* (string) top)
+  (lambda (w)
+    (let ((read (read-text w ev-stage-base)))
+      (if (null? read)
+          (efail "a session's form does not read")
+          (tagcase (parse (car read))
+            (p-err (msg a b) (efail msg))
+            (p-ok (tops) (if (null? tops) (efail "a session's form is no form") (car tops))))))))
+
+;; Forms `ts` run in session `s`, each in turn: the last's value.
+(define ev-session-run (->* (val (listof string acyclic)) val)
+  (lambda (s ts)
+    (let ((g (ev-session-globals s)))
+      (letrec ((go (subr (maxeff evals spin) ((listof string acyclic) val) val)
+                 (lambda (ts last)
+                   (if (null? ts)
+                       last
+                       (let ((t (ev-session-top (car ts))))
+                         (go (cdr ts) (ev-last t (eval-top-in g t) last)))))))
+        (go ts the-unit)))))
+
+;; A commit's forms run in session `s`, each in turn, those that assign
+;; keeping their globals' cells.
+(define ev-session-commit (->* (val (listof (productof (text string) (keeps bool)) acyclic)) val)
+  (lambda (s fs)
+    (let ((g (ev-session-globals s)))
+      (letrec ((go (subr (maxeff evals spin) ((listof (productof (text string) (keeps bool))
+                                                       acyclic))
+                         val)
+                 (lambda (fs)
+                   (if (null? fs)
+                       the-unit
+                       (let ((t (ev-session-top (extract (car fs) text))))
+                         (begin (if (extract (car fs) keeps) (ev-keep-names t) #u)
+                                (eval-top-in g t)
+                                (go (cdr fs))))))))
+        (go fs)))))
+
+;; Strings `ns`, as the evaluator's list of them.
+(define ev-string-vals (->* ((listof string acyclic)) val)
+  (lambda (ns) (if (null? ns) nil (cons (the val (car ns)) (ev-string-vals (cdr ns))))))
+
+;; The steps of a session but `session-check`'s (`ev-session-check`), made
+;; primitives as a program begins.
+(define ev-session-prims! (->* () unit)
+  (lambda ()
+   (begin
+    ;; A session of module `m`.
+    (prim! 'make-session
+           (lambda (xs)
+             (let* ((m (car xs))
+                    (s (the val (o-host (%session-eval-make m)))))
+               (begin (set ev-sessions
+                           (cons (cons s
+                                       (the vglobals (new (list (cons 'stage-module (cell m))))))
+                                 (get ev-sessions)))
+                      s))))
+    (prim! 'session-redefines
+           (lambda (xs)
+             (tagcase (%session-eval-redefines (ev-host (car xs)) (ev-host (car (cdr xs))))
+               (fresh u (the val (o-sum 'fresh the-unit)))
+               (redefines r
+                 (the val
+                      (o-sum 'redefines
+                             (the val
+                                  (o-product
+                                   (list (cons 'name (the val (extract r name)))
+                                         (cons 'old (the val (extract r old)))
+                                         (cons 'new (the val (extract r new)))
+                                         (cons 'users (ev-string-vals (extract r users))))))))))))
+    ;; Readied, given the decision: what the commit runs, run by `go`, the
+    ;; program's, in the session.
+    (prim! '%session-ready
+           (lambda (xs)
+             (let* ((s (car xs))
+                    (tag (tagcase (as-other (car (cdr (cdr xs))) "a `session-decision`")
+                           (o-sum (t v) (symbol->string t))
+                           (else y ""))))
+               (tagcase (%session-eval-ready (ev-host s) (ev-host (car (cdr xs))) tag)
+                 (run fs (the val (o-sum 'go (the val (lambda ((ys vals))
+                                                       (ev-session-commit s fs))))))
+                 (failed f (ev-stage-failure f))))))
+    (prim! '%session-committed!
+           (lambda (xs)
+             (tagcase (%session-eval-committed! (ev-host (car xs)) (ev-host (car (cdr xs))))
+               (defined n (the val (o-sum 'defined (the val n))))
+               (failed f (ev-stage-failure f))))))))
+
 ;; A whole program begins with no globals, and no names kept.
 (define ev-begin! (->* (k-reshape-list k-with-list k-facts) unit)
   (lambda (rs ws fs)
     (begin (set genv nil) (set ev-keep nil) (set ev-reshapes rs) (set ev-withs ws)
-           (set ev-facts fs))))
+           (set ev-facts fs) (set ev-sessions nil) (ev-session-prims!))))
 
 ;; The entry point for a program the checker written in FX-26 checked: what
 ;; it runs (`checked-tops`, under redefinition), run; its value shown, or

@@ -65,7 +65,21 @@ pub const STAGE_FAILURE: &str = "(productof (kind (sumof (unread unit) (malforme
 /// types name them: `datum`, what a reader reads (`docs/fx26.md`,
 /// "Datums"), `io-error` and `stage-failure`.
 /// In both checkers (`standard_text`).
-pub const STANDARD_TYPES: [(&str, &str); 3] = [("datum", DATUM), ("io-error", IO_ERROR), ("stage-failure", STAGE_FAILURE)];
+/// A definition a session would make again (`session-redefines`): the name,
+/// its type and the new one, printed, and the session's definitions that
+/// name it.
+pub const SESSION_REDEFINITION: &str = "(productof (name string) (old string) (new string) (users (listof string acyclic)))";
+/// What a redefinition does (`session-commit!`): code staged before keeps
+/// what it saw, code after sees the new; nothing is defined; or (not yet)
+/// the definitions that name it checked and run again.
+pub const SESSION_DECISION: &str = "(sumof (shadow unit) (refuse unit) (rerun unit))";
+pub const STANDARD_TYPES: [(&str, &str); 5] = [
+    ("datum", DATUM),
+    ("io-error", IO_ERROR),
+    ("stage-failure", STAGE_FAILURE),
+    ("session-redefinition", SESSION_REDEFINITION),
+    ("session-decision", SESSION_DECISION),
+];
 pub const FLATLAYOUT: &str = "(flatlayout (t type)) int";
 /// A flat array (`flatarrayof`, Q6), generative type 2: an array to
 /// safety's analyses (its regions), opaque to anything else; its elements
@@ -188,6 +202,35 @@ pub const EVENT: &str = "(event (e effect +)) (subr e () bool)";
 /// them where a `stringof`'s region is still to be found).
 pub const STRINGOF: &str = "(stringof (r region)) (arrayof char r)";
 pub(crate) const STRINGOF_INDEX: u32 = 14;
+/// A session (`docs/research/eval.md`, "Sessions"), generative type 15:
+/// definitions that last between pieces of code staged against a module of
+/// type `m`, the session's state at `r`, which defining in it writes.
+pub const SESSIONOF: &str = "(sessionof (m type) (r region)) (ref m r)";
+pub(crate) const SESSIONOF_INDEX: u32 = 15;
+/// A definition checked against a session at `r`, not yet made, generative
+/// type 16: its initializer does `e` when it is (`session-commit!`).
+pub const PENDING: &str = "(pending (e effect +) (r region)) (subr (maxeff e (read r)) () unit)";
+/// Evidence of an effect, a region and a type, as a program runs
+/// (`docs/research/eval.md`, "Evidence"), generative types 17, 18 and 19:
+/// what `reify-effect`, `reify-region` and `reify-type` make of the one
+/// each is given, for `stage` and `session-check` to check code against
+/// where a variable names it. At run time its text. Invariant: each says
+/// exactly what it is of (a bound, below, may say less).
+pub const EFFECTREP: &str = "(effectrep (e effect)) string";
+pub(crate) const EFFECTREP_INDEX: u32 = 17;
+pub const REGIONREP: &str = "(regionrep (r region)) string";
+pub(crate) const REGIONREP_INDEX: u32 = 18;
+pub const TYPEREP: &str = "(typerep (t type)) string";
+pub(crate) const TYPEREP_INDEX: u32 = 19;
+/// A bound on an effect and a type, generative types 20 and 21: evidence
+/// of at most what it is of, covariant, made of the exact evidence
+/// (`effect-bound`, `type-bound`), so that evidence of less may stand for
+/// more. A variable given a bound may stand only where less is safe
+/// (`Checker::evidence`).
+pub const EFFECTBOUND: &str = "(effectbound (e effect +)) string";
+pub(crate) const EFFECTBOUND_INDEX: u32 = 20;
+pub const TYPEBOUND: &str = "(typebound (t type +)) string";
+pub(crate) const TYPEBOUND_INDEX: u32 = 21;
 /// The scheduler of processes and `par`, a module file built in, which the
 /// forms `spawn`, `send`, `receive`, `par`, `icell-get` and `icell-put!`
 /// call through the hidden global of its load (`Checker::library_type`).
@@ -715,6 +758,11 @@ pub struct NodeFacts {
     /// position in the module, in order: what lowering and the compilers
     /// bind.
     pub with_vals: HashMap<ExpId, Vec<(Sym, usize)>>,
+    /// Each `stage`'s code: the module's type, the effect and the type it
+    /// is checked at, printed whole (`Checker::staged_text`), which the
+    /// lowering gives `%fx26-stage-lowered` with it, and the evidence of the
+    /// variables they name; a `reify-…`'s, what it is of.
+    pub staged: HashMap<ExpId, Staged>,
     /// Modules given where a type with fewer values, or the same in
     /// another order, is wanted: for each value the wanted type has, its
     /// position in the module given. Made into a module of that layout.
@@ -789,6 +837,7 @@ impl NodeFacts {
         self.no_escape.retain(|e| e.0 < first);
         self.datum.retain(|e, _| e.0 < first);
         self.with_vals.retain(|e, _| e.0 < first);
+        self.staged.retain(|e, _| e.0 < first);
         self.reshaped.retain(|e, _| e.0 < first);
         self.converted.retain(|e, _| e.0 < first);
         self.masked.retain(|e| e.0 < first);
@@ -1019,7 +1068,7 @@ impl Checker {
         // (no `up-` or `down-`: a `vsubr` is called with its arguments, not
         // their list). `vlambda` makes one; `apply` calls one on a list.
         c.arena.string_sym = Some(c.interner.intern("string"));
-        for decl in [VSUBR, FLATLAYOUT, FLATARRAYOF, IDENTITY, EQTABLE, BLOBREF, FLAT_ARRAYOF, FLAT_KEYED, BYTEVECTOROF, ESCAPE_TAG, ADDR, INBOX, PROCESS, EVENT, STRINGOF] {
+        for decl in [VSUBR, FLATLAYOUT, FLATARRAYOF, IDENTITY, EQTABLE, BLOBREF, FLAT_ARRAYOF, FLAT_KEYED, BYTEVECTOROF, ESCAPE_TAG, ADDR, INBOX, PROCESS, EVENT, STRINGOF, SESSIONOF, PENDING, EFFECTREP, REGIONREP, TYPEREP, EFFECTBOUND, TYPEBOUND] {
             let forms = c.read(decl).expect("reads");
             c.define_generative(&forms[0], &forms[1]).unwrap_or_else(|e| panic!("`{decl}` is wrong: {e}"));
         }
@@ -5137,6 +5186,21 @@ impl BinderEnv {
                 .collect(),
         )
     }
+}
+
+/// What a `stage`'s code is checked against (`Facts::staged`), as the
+/// checker that runs then reads it: the module's type, the effect and the
+/// result type, printed whole; and the names, as printed, of the variables
+/// whose evidence it is given, in order (`docs/research/eval.md`,
+/// "Evidence"). A `reify-effect`'s is its effect, a `reify-type`'s its type
+/// (as `r`), a `reify-region`'s its region (as `e`), `m` saying `fresh` for
+/// a region a variable names, of no evidence.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Staged {
+    pub m: String,
+    pub e: String,
+    pub r: String,
+    pub evidence: Vec<String>,
 }
 
 /// Value variables in scope, innermost last: read as a slice, each name's

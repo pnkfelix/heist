@@ -538,6 +538,26 @@ impl Checker {
         Ok(t)
     }
 
+    /// The evidence a staging form is given, `(given g …)`, as the product
+    /// its operator takes, `(product (1 g) …)`; none given, the empty one.
+    fn given(&mut self, given: Option<&Syntax>, span: fixpt_read::Span, usage: &str) -> R<Syntax> {
+        let sym = |p: &mut Self, s: &str| Syntax::symbol(span, p.interner.intern(s));
+        let mut fields = vec![sym(self, "product")];
+        if let Some(g) = given {
+            let items = match g.as_proper_list() {
+                Some([head, items @ ..]) if head.as_symbol().is_some_and(|h| self.name(h) == "given") => items.to_vec(),
+                _ => return Err(FxError::at(g.span, format!("evidence is given as `(given variable …)`: {usage}"))),
+            };
+            for (i, x) in items.iter().enumerate() {
+                if x.as_symbol().is_none() {
+                    return Err(FxError::at(x.span, "evidence is given as `(given variable …)`"));
+                }
+                fields.push(Syntax::list(x.span, vec![sym(self, &(i + 1).to_string()), x.clone()]));
+            }
+        }
+        Ok(Syntax::list(span, fields))
+    }
+
     /// Whether signature `s` is `(->* …)`, under any `poly`s.
     pub(crate) fn written_arrow_star(&self, s: &Syntax) -> bool {
         let items = s.as_proper_list().unwrap_or(&[]);
@@ -1565,14 +1585,26 @@ impl Checker {
                 self.parse_exp(&call)
             }
             // Code a running program gives (`docs/research/eval.md`):
-            // `(stage m E R text (p body …) (why else …))` is `(tagcase
-            // ((proj %stage E R) m text) (ok p body …) (failed why else
-            // …))`, `%stage` checked at its call as `m`'s type says.
-            "stage" => {
-                let usage = "`(stage module effect type code (procedure body …) (failure else …))`";
-                let [_, m, e, r, text, ok, failed] = &items[..] else {
+            // `(stage m E R code (p body …) (why else …))` is `(tagcase
+            // ((proj %stage E R) m code) (ok p body …) (failed why else
+            // …))`, `%stage` checked at its call as `m`'s type says; so is a
+            // session's, `(session-check s E R code (c …) (why …))` over
+            // `%session-check`, `c` an expression's procedure or a pending
+            // definition.
+            head @ ("stage" | "session-check") => {
+                let (op, usage) = match head {
+                    "stage" => ("%stage", "`(stage module effect type code (procedure body …) (failure else …) (given evidence …))`, the last if any"),
+                    _ => ("%session-check", "`(session-check session effect type code (checked body …) (failure else …) (given evidence …))`, the last if any"),
+                };
+                let (rest, given) = match &items[..] {
+                    [rest @ .., last] if items.len() == 8 => (rest, Some(last)),
+                    all => (all, None),
+                };
+                let [_, target, e, r, code, ok, failed] = rest else {
                     return Err(FxError::at(span, usage));
                 };
+                let given = self.given(given, span, usage)?;
+                let descs = vec![e.clone(), r.clone()];
                 let sym = |p: &mut Self, s: &str| Syntax::symbol(span, p.interner.intern(s));
                 let arm = |p: &mut Self, tag: &str, a: &Syntax| -> R<Syntax> {
                     match a.as_proper_list() {
@@ -1585,9 +1617,49 @@ impl Checker {
                     }
                 };
                 let (ok, failed) = (arm(self, "ok", ok)?, arm(self, "failed", failed)?);
-                let op = Syntax::list(span, vec![sym(self, "proj"), sym(self, "%stage"), e.clone(), r.clone()]);
-                let call = Syntax::list(span, vec![op, m.clone(), text.clone()]);
+                let mut proj = vec![sym(self, "proj"), sym(self, op)];
+                proj.extend(descs);
+                let call = Syntax::list(span, vec![Syntax::list(span, proj), target.clone(), code.clone(), given]);
                 let form = Syntax::list(span, vec![sym(self, "tagcase"), call, ok, failed]);
+                self.parse_exp(&form)
+            }
+            // Evidence (`docs/research/eval.md`, "Evidence"): `(reify-effect
+            // E (given g …))` is `((proj %reify-effect E) (product (1 g)
+            // …))`, the operand where what it is of is noted; `reify-region`
+            // and `reify-type` alike.
+            head @ ("reify-effect" | "reify-region" | "reify-type") => {
+                let op = format!("%{head}");
+                let usage = format!("`({} description (given evidence …))`, the last if any", &op[1..]);
+                let (d, given) = match &items[..] {
+                    [_, d] => (d, None),
+                    [_, d, g] => (d, Some(g)),
+                    _ => return Err(FxError::at(span, usage)),
+                };
+                let given = self.given(given, span, &usage)?;
+                let sym = |p: &mut Self, s: &str| Syntax::symbol(span, p.interner.intern(s));
+                let proj = Syntax::list(span, vec![sym(self, "proj"), sym(self, &op), d.clone()]);
+                let call = Syntax::list(span, vec![proj, given]);
+                self.parse_exp(&call)
+            }
+            // `(session-commit! s d decision)`: the initializer, which the
+            // program runs, then what it made recorded, or why not (`(let
+            // ((%session s) (%pending d) (%decision decision)) (tagcase
+            // (%session-ready %session %pending %decision) (go %run (begin
+            // (%run) (%session-committed! %session %pending))) (failed %why
+            // (sum failed %why))))`).
+            "session-commit!" => {
+                let [_, sess, pending, decision] = &items[..] else {
+                    return Err(FxError::at(span, "`(session-commit! session pending decision)`"));
+                };
+                let sym = |p: &mut Self, s: &str| Syntax::symbol(span, p.interner.intern(s));
+                let list = |xs: Vec<Syntax>| Syntax::list(span, xs);
+                let bind = |p: &mut Self, n: &str, x: &Syntax| list(vec![sym(p, n), x.clone()]);
+                let bs = list(vec![bind(self, "%session", sess), bind(self, "%pending", pending), bind(self, "%decision", decision)]);
+                let ready = list(vec![sym(self, "%session-ready"), sym(self, "%session"), sym(self, "%pending"), sym(self, "%decision")]);
+                let committed = list(vec![sym(self, "%session-committed!"), sym(self, "%session"), sym(self, "%pending")]);
+                let go = list(vec![sym(self, "go"), sym(self, "%run"), list(vec![sym(self, "begin"), list(vec![sym(self, "%run")]), committed])]);
+                let failed = list(vec![sym(self, "failed"), sym(self, "%why"), list(vec![sym(self, "sum"), sym(self, "failed"), sym(self, "%why")])]);
+                let form = list(vec![sym(self, "let"), bs, list(vec![sym(self, "tagcase"), ready, go, failed])]);
                 self.parse_exp(&form)
             }
             "rlambda" => {

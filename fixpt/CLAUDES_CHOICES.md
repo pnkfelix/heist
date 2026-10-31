@@ -2981,3 +2981,190 @@ of `TODO.md` §141, working on my own.
   checker, which would lose the program's own state.
 - **`rs-scheme-vm` and `fx-ast-eval` refuse**, as `native-procedure` fails
   where it cannot run: the value says so, the program goes on.
+
+### `stage` on `rs-scheme-vm` and `fx-ast-eval` (2026-10-30, TODO §186)
+
+- **The Rust checker checks there**, not a second front end written in
+  FX-26: on these machines nothing else of the front end runs the
+  program's code, and the evaluator could not call a second front end's
+  checker without its effect, `evals`, holding everything the checker
+  does. The checkers agree by design; interruptible checking (§186's 2.)
+  is where the FX-26 one would be wanted.
+- **The evaluator reads and parses the code itself**, rather than being
+  given trees: so `evals` (its `runs`) holds the reader's and parser's
+  effects, at the front end's regions.
+- **Staged code runs where the program's does**: lowered Scheme by `eval`,
+  the evaluator's trees by the evaluator, so values cross nothing.
+
+
+## Sessions on the cellular machines (2026-10-31)
+
+- **The Rust checker, the FX-26 compiler**: a session keeps the checker
+  written in Rust (option 1, the user's); its facts reach a compiler written
+  in FX-26 made per session, the way `syn::rust_facts` fed it when a whole
+  program was checked in Rust. One compiler per session holds the session's
+  globals across steps, as the checker holds its types.
+- **Initializers run inside `%session-ready`**, at first: the compiled
+  initializer was run by the primitive that readies the commit, and the
+  `go` given back did nothing. Since made the program's (below,
+  "A commit compiled as a procedure").
+- **`k-naming!`**: the FX-26 printer was naming types by the standard
+  environment's names (`api-type`), which the session's source cannot read
+  back; a switch turns naming off while a session's types are printed.
+
+## Sessions on the evaluator (2026-10-31)
+
+- **Text, as `stage` there**: the session's checker hands the evaluator
+  each step's forms written out, which it parses and runs, as
+  `%stage-check` does for `stage`; no facts go with them, as none go with
+  staged code.
+- **The session's globals are the evaluator's**: an environment per
+  session, kept beside the session (a list keyed by identity), with the top
+  level's own procedures, now given the globals they define in. A shadowing
+  definition is a new cell, what was made before keeping the old; one kept
+  (it assigns) reuses the cell.
+- **`o-host`**: a session and a pending definition are the runtime's
+  vectors; FX-26's arrays are bloblets on the cellular machines, so the
+  evaluator cannot make or read one as an array. They cross as a new
+  `other`, passed back to the runtime's primitives, never looked in.
+- **`go` runs the commit here**, the program's code, as on `rs-scheme-vm`.
+
+## A commit compiled as a procedure (2026-10-31)
+
+- **`c-tops` into a lambda's body**: rather than a new store into a global
+  from code, or a rewriting of the source, a commit's forms are compiled as
+  a top-level program is, but onto the code of a procedure of no arguments,
+  which the word makes and gives (`compile-deferred`). Globals are the
+  compiler's at compile time, so each is made in its scope as at the top
+  level (a non-`lambda` initializer sees the old one, a `lambda` the new);
+  the body only computes and stores.
+- **One text per commit**: the definition and what runs again are one
+  program, read from their texts joined, each form's facts shifted by
+  where its text begins, so `go` is one procedure, made by running one
+  word that runs nothing of the program's.
+- **Between ready and `go`** a new global holds the undefined value; code
+  that reads it then sees that, as a top-level forward use does. Calling
+  `go` twice runs the initializers twice; affine types may later forbid it.
+
+## Sessions in the condition-raising style (2026-10-31)
+
+- **Only the commit raises**: `session-check` cannot be wrapped by a
+  library procedure, since its `E` and `R` are written where it is called
+  and printed there for the check at run time; a polymorphic procedure
+  would print its type variables. So the library takes a pending
+  definition, which the program's own `session-check` gives, and commits
+  it: `commit!`, polymorphic in the session, the effect, the handler's key
+  and its effect.
+- **A redefinition is the condition**: the `session-redefinition` itself,
+  raised with `fx26:conditions.fx`'s `raise`, and the handler answers a
+  `session-decision`. A fresh definition raises nothing and is committed
+  as `shadow` (any decision does the same there). Failures stay values, as
+  `session-commit!` gives them: a program that wants them raised raises
+  them, with the key it chooses.
+- **Its own file**, beside `conditions.fx` and `processes.fx` in
+  `STANDARD_MODULES`, which it loads; nothing in the language changed.
+
+## Evidence (2026-10-31)
+
+- **Given at the form, not found by type**: the design shown the user had
+  `stage` find each variable's evidence in scope by its type. Built so,
+  the evidence would be variables no tree mentions: the compilers written
+  in FX-26 capture what a lambda's body mentions (`c-free`), and
+  `compile.fx`, at its line limit, had no room to change that. `(given g
+  …)` makes the evidence expressions every machine compiles and captures;
+  the checker still finds what needs evidence and refuses a form missing
+  any. Each `g` a variable, so the checker written in FX-26 reads its type
+  (`k-lookup`) where it notes the form.
+- **Exact evidence, invariant types**: a smaller effect's evidence in a
+  larger one's place is unsound where the variable stands contravariantly
+  (`docs/research/eval.md`, "Evidence").
+- **Text as the representation**: what the checker that runs reads; the
+  printed `M`, `E` and `R` are substituted token by token (labels print
+  `#:name`, so a bare token that is a variable's name is it).
+- **Free variables from the printers' marks**: both printers already mark
+  each variable free or bound to tell two of one name apart; the same
+  marks say which a staged check needs, with no walker of every type.
+- **A `letregion`'s region in the checker written in FX-26** is a region
+  of its own kind (`r-fresh`), which its printer does not mark: its
+  evidence is taken in `(given …)`, and `reify-region` of one is named
+  afresh, but one named at `stage` with none given is refused only as the
+  program runs (`TODO.md` §186, 3.).
+- **Evaluator**: `reify-…` intercepted at the form, as `stage` is, and
+  substituted by the runtime (`%reify-text`), so that every machine names
+  fresh regions alike.
+- **Bounds beside exact evidence** (the user's, the same day): one
+  covariant evidence type would let a caller pass less than the
+  instantiation, which the staging form, unable to see its callers, could
+  then allow only where less is safe: exact evidence would lose its use
+  where the variable is taken. Two types keep both, the `plambda`'s
+  signature saying which it asks for.
+- **Where a bound may stand, by subtyping** (the user's): first a walk of
+  the types of its own, which knew fewer variances than subtyping and so
+  refused more; replaced by asking subtyping itself whether the checked
+  type is a supertype of itself with the variable at its least (`pure`,
+  `void`). Sound as the variable is rigid: an occurrence where it is taken
+  or compared exactly asks it to be within the least. Every variance
+  subtyping has, frozen regions and generative types' declared ones
+  included, and none it has not.
+- **No bound in a `reify-…`**: its result is exact evidence, which a
+  bound cannot make; composing bounds would want a `reify-…-bound`, left.
+
+## Splitting front-end files (`TODO.md` §188, 2026-10-31)
+
+- **Users unchanged**: a part moved out is given on by the file it left,
+  by `import` (which defines, so gives on), so the conductor's wiring of
+  its users and their signatures stay.
+- **A module made where it is used, no signature**: a file made of the
+  modules it is given (`load-input`) can be applied by the file it left,
+  to modules that file is given, bound by a `let` around its `module` (a
+  binding inside the module would be one of the names its `import`
+  defines), its type found as the file is checked. So a split needs no
+  signature written (`compile-facts.fx`); one the conductor makes and
+  gives does (`check-flat.fx`, `check-flat-sig`), and is for a part more
+  than one file uses.
+- **State stays one**: a part with state made once by the file it left is
+  made once for each of that file's instances, as it was.
+
+## Sessions on the checker written in FX-26 (`TODO.md` §189, 2026-10-31)
+
+- **A front end each, all in the heap**: the session's instance of the
+  front end (`make-session-compiler`) was its compiler; now its checker
+  too, whose environment holds the session's definitions. Its generation
+  is kept in the session's vector (`S_INDEX`, -2 less it), so that a
+  session needs no Rust state and a whole-heap dump keeps it.
+- **A trial undone, not a copy checked**: `check-try` marks the trail,
+  checks with re-runs waiting (so nothing but the form's own names is
+  bound), unbinds back to the mark and puts back the lists of definitions,
+  breaks and runs; as the Rust checker's `try_top`.
+- **The orchestration in FX-26**: `session-step` reads, parses, checks
+  (first, more or tried) and compiles in one call, placing a refusal as
+  `stage-check` does; Rust only wraps the text, gives the evidence and
+  keeps the generation.
+- **A region of its own keeps the Rust checker**: binding a fresh region
+  at the top level of a session's checker, as `sessions.rs` does in the
+  Rust checker's description scope, is not yet in the FX-26 checker; a
+  session whose first step names one stays on the Rust checker.
+
+## Heap dumps (`TODO.md` §189, 2026-10-31)
+
+- **The front end's cache, with a start**: a dump is written as the
+  front end's cache is (`native_image`), its pieces taken from the
+  `fx26-native:` globals as the program left them, and the start after
+  the standard environment; so it is read back by the same code, and
+  holds the program because the FX-26 checker and compilers do.
+- **A start that is a name, or a procedure**: `fixpt dump`'s start is the
+  name `main`, looked up at the resume, after the files it is given, so
+  that one of them may define `main` again; `dump-heap!`'s is the
+  procedure it is given.
+- **`dump-heap!` does not call its start**: its effect is the write, its
+  start's effect polymorphic (`(poly ((e effect)) …)`) and not its own,
+  as a resumed run is a run of its own; the program goes on after it.
+- **Keyed by the files given**: the build, the machine, the files'
+  paths (made absolute) and digests; checked before anything is read.
+  A file they load is not in the key (left, `TODO.md` §189).
+- **Refused where it would not be the machine's**: `fixpt dump` loads with
+  the compilers written in FX-26, so a machine that lowers or evaluates
+  refuses, rather than dumping a program run otherwise than it says; the
+  evaluator's `dump-heap!` fails as an I/O failure.
+- **The primitive last**: `%fx26-dump-heap` is registered after every
+  other, so that the generated layouts number the others as before.

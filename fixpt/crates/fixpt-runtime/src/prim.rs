@@ -215,7 +215,7 @@ fn run_word_by(rt: &mut Runtime, a: &[Value], run: Option<crate::RunWord>) -> Ou
 /// code calls it as it calls what is not native code, its frames' values
 /// kept where a collection finds them (`call_foreign`).
 pub fn reenters(name: &str) -> bool {
-    name == "%fx26-stage"
+    matches!(name, "%fx26-stage" | "%fx26-session-check" | "%fx26-session-ready" | "%fx26-session-redefines" | "%fx26-session-eval-check" | "%fx26-session-eval-ready")
 }
 
 fn is_closure(rt: &Runtime, f: Value) -> bool {
@@ -878,6 +878,32 @@ fn string_cmp(rt: &mut Runtime, a: Value, b: Value) -> Outcome<std::cmp::Orderin
 }
 
 /// `(sum tag v)`, as FX-26 makes one.
+/// `stage`'s refusal, `(sum failed why)`, a `stage-failure` of kind `kind`
+/// placed at characters `start` to `end` of the code.
+pub fn stage_failed(rt: &mut Runtime, kind: &str, why: &str, start: i64, end: i64) -> Value {
+    let kind = fx26_sum(rt, kind, Value::UNIT);
+    let message = rt.heap.make_string(why);
+    let failure = rt.heap.make_frozen(PRODUCT_KIND, &[kind, message, Value::fixnum(start), Value::fixnum(end)]);
+    fx26_sum(rt, "failed", failure)
+}
+
+/// Session operation `op` on `a`, by the checker's side (`sessions`): its
+/// value, or a refusal saying why it could not.
+fn session_op(rt: &mut Runtime, op: &str, a: &[Value]) -> Outcome<Value> {
+    let made = match rt.sessions {
+        Some(f) => f(rt, op, a),
+        None => Err("this machine cannot keep sessions yet".to_string()),
+    };
+    Ok(match made {
+        Ok(v) => v,
+        Err(why) => stage_refused(rt, &why),
+    })
+}
+
+fn stage_refused(rt: &mut Runtime, why: &str) -> Value {
+    stage_failed(rt, "refused", why, 0, 0)
+}
+
 fn fx26_sum(rt: &mut Runtime, tag: &str, v: Value) -> Value {
     let tag = rt.heap.intern(tag);
     rt.heap.make_frozen(SUM_KIND, &[tag, v])
@@ -3018,24 +3044,93 @@ prims! {
     // `stage` (`docs/research/eval.md`): module `a[0]`, and what the
     // compilers made of the form's text, `a[1]`, a product of the module's
     // type, the effect and the type it is checked at, and the text. A
-    // `(sumof (ok (subr E () R)) (failed stage-failure))`. The checker is
+    // `(sumof (ok (subr E () R)) (failed stage-failure))`; `a[2]`, the
+    // evidence of the variables those name (`docs/research/eval.md`,
+    // "Evidence"), a product, in the order the text names them. The checker is
     // above this crate; the session installs it (`stage`). Where none is,
     // or the text came as it was written (a machine that does not compile
     // with the compilers written in FX-26), a refusal.
-    "%fx26-stage", 2, Some(2), simple!(|rt, a| {
+    "%fx26-stage", 3, Some(3), simple!(|rt, a| {
         let made = match rt.stage {
-            Some(stage) => stage(rt, a[0], a[1]),
+            Some(stage) => stage(rt, a[0], a[1], a[2]),
             None => Err("this machine cannot stage code".to_string()),
         };
         Ok(match made {
             Ok(v) => v,
-            Err(why) => {
-                let kind = fx26_sum(rt, "refused", Value::UNIT);
-                let message = rt.heap.make_string(&why);
-                let failure = rt.heap.make_frozen(PRODUCT_KIND, &[kind, message, Value::fixnum(0), Value::fixnum(0)]);
-                fx26_sum(rt, "failed", failure)
-            }
+            Err(why) => stage_refused(rt, &why),
         })
+    });
+    // `stage` lowered (`rs-scheme-vm`): what the lowering made of the
+    // form's code, checked and lowered again by the checker written in
+    // Rust (the session installs it, `stage_lower`): a list of the datum
+    // that makes the procedure of the module, which the runtime's
+    // `%fx26-stage-lowered` gives `eval`; or the sum `(failed why)`.
+    "%fx26-stage-lower", 2, Some(2), simple!(|rt, a| {
+        let made = match rt.stage_lower {
+            Some(lower) => lower(rt, a[0], a[1]),
+            None => Err("this machine cannot stage code".to_string()),
+        };
+        Ok(match made {
+            Ok(v) => v,
+            Err(why) => stage_refused(rt, &why),
+        })
+    });
+    // `stage` on the evaluator written in FX-26 (`fx-ast-eval`): the
+    // module's type, the effect, the result type and the code, as text,
+    // checked by the checker written in Rust (the session installs it,
+    // `stage_check`): `(sum checked text)`, the code as checked, for the
+    // evaluator to parse and run; or `(sum failed why)`.
+    // Sessions (`docs/research/eval.md`, "Sessions"): one made, of module
+    // `a[0]`, a vector of it, the number of its state, kept by the checker's
+    // side (`fixpt-fx26`'s `sessions.rs`), none yet, and that side's own
+    // front end, none yet, and its texts, none yet. The rest
+    // ask that side (`sessions`), by name: a form checked in one, an
+    // expression or a definition; whether a pending one redefines, readied
+    // given the decision, recorded; and, lowered (`rs-scheme-vm`), the
+    // Scheme each makes, for `eval`.
+    "%fx26-make-session", 1, Some(1), simple!(|rt, a| Ok(rt.heap.vector_from(&[a[0], Value::fixnum(-1), Value::FALSE, Value::FALSE])));
+    "%fx26-session-check", 3, Some(3), simple!(|rt, a| session_op(rt, "check", a));
+    "%fx26-session-redefines", 2, Some(2), simple!(|rt, a| session_op(rt, "redefines", a));
+    "%fx26-session-ready", 3, Some(3), simple!(|rt, a| session_op(rt, "ready", a));
+    "%fx26-session-committed!", 2, Some(2), simple!(|rt, a| session_op(rt, "committed", a));
+    "%fx26-session-lower", 3, Some(3), simple!(|rt, a| session_op(rt, "lower", a));
+    "%fx26-session-commit-lower", 3, Some(3), simple!(|rt, a| session_op(rt, "commit-lower", a));
+    "%fx26-stage-check", 6, Some(6), simple!(|rt, a| {
+        let [mt, e, r, text] = [a[0], a[1], a[2], a[3]].map(|x| get_string(rt, x));
+        let (mt, e, r, text) = (mt?, e?, r?, text?);
+        let given = crate::evidence::Given::of(rt, a[4], a[5]);
+        Ok(match rt.stage_check {
+            Some(check) => check(rt, &mt, &e, &r, &text, &given),
+            None => stage_refused(rt, "this machine cannot stage code"),
+        })
+    });
+    // Evaluated (`fx-ast-eval`), each step's forms as text, for the
+    // evaluator to run: a form checked, given the module's type, the
+    // effect, the result type and the code as text; and readied, given the
+    // decision's tag as text.
+    "%fx26-session-eval-check", 7, Some(7), simple!(|rt, a| session_op(rt, "eval-check", a));
+    "%fx26-session-eval-ready", 3, Some(3), simple!(|rt, a| session_op(rt, "eval-ready", a));
+    // Evidence (`docs/research/eval.md`, "Evidence"): what a `reify-…`
+    // makes of the product the compilers make of its operand
+    // (`evidence::reified`).
+    "%fx26-reify-effect", 1, Some(1), simple!(|rt, a| Ok(crate::evidence::reified(rt, a[0], 1)));
+    "%fx26-reify-region", 1, Some(1), simple!(|rt, a| Ok(crate::evidence::reified(rt, a[0], 1)));
+    "%fx26-reify-type", 1, Some(1), simple!(|rt, a| Ok(crate::evidence::reified(rt, a[0], 2)));
+    "%fx26-reify-text", 4, Some(4), simple!(|rt, a| Ok(crate::evidence::reified_text(rt, a[0], a[1], a[2], a[3])));
+    // A bound made of exact evidence (`effect-bound`, `type-bound`): the
+    // same text.
+    "%fx26-evidence-bound", 1, Some(1), simple!(|_rt, a| Ok(a[0]));
+    // The heap dumped to file `a[0]` (`TODO.md` §189): the program as it
+    // now is, which a resumed run (`fixpt resume`) starts by calling `a[1]`,
+    // a procedure of no arguments. Where the session installed no way to,
+    // a failure.
+    "%fx26-dump-heap", 2, Some(2), simple!(|rt, a| {
+        let path = get_string(rt, a[0])?;
+        let r = match rt.dump_heap {
+            Some(dump) => dump(rt, &path, a[1]).map_err(std::io::Error::other),
+            None => Err(std::io::Error::other("this machine cannot dump its heap")),
+        };
+        Ok(fx26_io_result(rt, r))
     });
 }
 

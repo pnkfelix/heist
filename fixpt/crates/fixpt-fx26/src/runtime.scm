@@ -31,6 +31,29 @@
 ;;; kind `product` (37) and `sum` (36), so that what one is can be told.
 (define (%fx26-product . fields) (apply %make-frozen 37 fields))
 (define (%fx26-sum tag v) (%make-frozen 36 tag v))
+;; `stage` lowered (`docs/research/eval.md`): the code, with what it is
+;; checked against, checked and lowered by the checker written in Rust
+;; (`%fx26-stage-lower`), the datum that makes the procedure of the module
+;; given `eval`, and the procedure the module: the thunk. Or the refusal.
+;; A session's steps lowered (`sessions.rs`): a form checked in it, an
+;; expression's datum, which makes the procedure that evaluates it, given
+;; `eval`, or a definition, pending, given back as it is; one committed,
+;; the datum that defines it given `eval` when the program runs the
+;; initializer (`session-commit!`), and nothing more to record after.
+(define (%fx26-session-check-lowered s staged given)
+  (let ((made (%fx26-session-lower s staged given)))
+    (if (pair? made) (%fx26-sum 'ok (%fx26-sum 'expression (eval (car made)))) made)))
+(define (%fx26-session-ready-lowered s d decision)
+  (let ((made (%fx26-session-commit-lower s d decision)))
+    (if (pair? made)
+        (%fx26-sum 'go (lambda () (eval (car made)) %fx26-unit))
+        made)))
+(define (%fx26-session-committed-lowered s d) (%fx26-sum 'defined (vector-ref d 2)))
+(define (%fx26-stage-lowered m staged given)
+  (let ((made (%fx26-stage-lower staged given)))
+    (if (pair? made)
+        (%fx26-sum 'ok ((eval (car made)) m))
+        made)))
 ;; A `vsubr` (`vlambda`): Scheme's own variadic procedure, giving `f` the
 ;; list of its arguments; `apply`, Scheme's. (The cellular machines have
 ;; runtime primitives of these names, which this Scheme shadows.)

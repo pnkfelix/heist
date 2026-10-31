@@ -66,6 +66,20 @@ pub struct Runtime {
     /// (`stage`, `docs/research/eval.md`; `fixpt-fx26` installs it): the
     /// front end is above this crate. None: it says it cannot.
     pub stage: Option<Stage>,
+    /// How `%fx26-stage-lower` checks and lowers code a program gives
+    /// (`stage` lowered: `fixpt-fx26` installs it): a datum, or the
+    /// refusal. None: it says it cannot.
+    pub stage_lower: Option<StageLower>,
+    /// How `%fx26-stage-check` checks code a program gives, for the
+    /// evaluator written in FX-26 to run (`fixpt-fx26` installs it).
+    pub stage_check: Option<StageCheck>,
+    /// How sessions' primitives (`%fx26-session-…`) do what needs a
+    /// checker (`fixpt-fx26` installs it): by the operation's name.
+    pub sessions: Option<Sessions>,
+    /// How `%fx26-dump-heap` dumps the heap to a file, with the procedure a
+    /// resumed run starts at (`TODO.md` §189; `fixpt-fx26` installs it,
+    /// where its front end is native code). None: it says it cannot.
+    pub dump_heap: Option<DumpHeap>,
     /// How many steps (cells, or polls in machine code) a run of a word by
     /// `run_word` may take before it stops; unlimited unless set, as the
     /// FX-26 REPL sets it from its step limit for the run of a form.
@@ -107,7 +121,21 @@ pub type TypeAt = fn(&str, i64) -> String;
 /// How FX-26's `stage` makes code (`docs/research/eval.md`): of module `m`
 /// and what the compilers made of the form's text, the sum the form takes
 /// apart; or why it could not try, which the program sees as a refusal.
-pub type Stage = fn(&mut Runtime, Value, Value) -> Result<Value, String>;
+pub type Stage = fn(&mut Runtime, Value, Value, Value) -> Result<Value, String>;
+/// How `stage` lowered makes code: of what the lowering made of the form's
+/// code (the product `Stage` is given), a list of the Scheme datum that
+/// makes the procedure of the module, or the sum `(failed why)`.
+pub type StageLower = fn(&mut Runtime, Value, Value) -> Result<Value, String>;
+/// How `stage` on the evaluator written in FX-26 checks code: of the
+/// module's type, the effect, the result type and the code, as text, the
+/// sum `(checked text)`, the code as checked, or `(failed why)`.
+pub type StageCheck = fn(&mut Runtime, &str, &str, &str, &str, &crate::evidence::Given) -> Value;
+/// A session's operation, by name, on its arguments: what the primitive
+/// gives, or why it could not try, which the program sees as a refusal.
+pub type Sessions = fn(&mut Runtime, &str, &[Value]) -> Result<Value, String>;
+
+/// See [`Runtime::dump_heap`]: the file's path, and the start.
+pub type DumpHeap = fn(&mut Runtime, &str, Value) -> Result<(), String>;
 
 /// How a call between machines left, if not with a value.
 #[derive(Debug)]
@@ -182,6 +210,10 @@ impl Runtime {
             adapt: None,
             type_at: None,
             stage: None,
+            stage_lower: None,
+            stage_check: None,
+            sessions: None,
+            dump_heap: None,
             word_fuel: u64::MAX,
             run_nanos: 0,
             compile_nanos: 0,
@@ -273,6 +305,10 @@ impl Runtime {
             adapt: None,
             type_at: None,
             stage: None,
+            stage_lower: None,
+            stage_check: None,
+            sessions: None,
+            dump_heap: None,
             word_fuel: u64::MAX,
             run_nanos: 0,
             compile_nanos: 0,

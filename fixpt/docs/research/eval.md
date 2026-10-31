@@ -294,6 +294,152 @@ string)) (host-insert! x))")`, then `(session-stage s edit unit
 "(f \"hi\")" …)`, the host keeping `p`, and a refusal coming
 back as `why`. A fault is §106's.
 
+### Decided (the user's, 2026-10-30): definitions are pending, then committed
+
+What a redefinition does is the program's to decide, and it may want
+control to decide it: ask the user, and wait for an answer while the
+editor goes on. A policy called from inside the session's machinery
+could not capture a continuation there (the checking runs inside a
+primitive, below Rust's frames on most machines). So a definition is
+made in two steps, as `certify` and `install` are, and the program
+decides between them, anywhere it likes:
+
+```
+(session-check s E R code (c body) (why else))
+    ; any top-level form: c : (sumof (expression (subr E () R)) (definition (pending E r)))
+    ; checks, changes nothing
+(session-redefines s d)    ; (sumof (fresh unit) (redefines session-redefinition))
+(session-commit! s d decision)   ; runs the initializer within E, defines;
+                                 ; (sumof (defined string) (failed stage-failure))
+```
+
+(The user's, 2026-10-31: the code itself is a definition or an
+expression, and the answer says which: one form, not one for each, each
+answer delayed, with its own protocol: an expression's procedure to call,
+a definition to commit.)
+
+- **`E` is written**, as at `stage`: the initializer's effect, known only
+  at run time, is checked within it, and `session-commit!`'s effect has
+  it (`(pending E r)` carries it).
+- **The type is inferred**: `(define name init)`, the initializer checked
+  once for its type and once within `E`. `(define name T init)` writes it,
+  and the initializer, a `lambda`, may then call itself.
+- **The decision**: `session-redefinition` is `(productof (name string)
+  (old string) (new string) (users (listof string acyclic)))`, the old
+  and new types printed and the definitions that name it;
+  `session-decision` is `(sumof (shadow unit) (refuse unit) (rerun
+  unit))`. `shadow`: code staged before keeps what it saw, code staged
+  after sees the new. `refuse`: nothing is defined. `rerun`, later: the
+  users checked and run again, or broken, as the REPL's "Redefinition".
+- **A pending definition is used once, and only while the session is as
+  it was**: committed after another commit to the session, or a second
+  time, it is refused as stale. A run-time check now; an affine type's,
+  perhaps, later.
+- **The condition-raising style** (the policy a handler, `raise`d at a
+  redefinition, which may answer, escape, or capture) is a library
+  procedure over these forms, not a form of its own.
+
+### Evidence (the user's, 2026-10-31)
+
+`stage` within a `plambda` over `M`, `E` or `R` could not be checked as
+it runs: the instantiation is erased, so the checker that runs then sees
+only the variable's name. The user chose explicit evidence: a value that
+describes an effect, a region or a type, threaded by the caller as the
+`plambda`'s instantiation is, and given at the staging form, `(given g
+…)`. Its type, `(effectrep e)`, `(regionrep r)` or `(typerep t)`, is
+generative and invariant, and only `reify-effect`, `reify-region` and
+`reify-type` make one, of what is written (with the evidence of what that
+names), so the evidence of `e` says what `e` is, exactly. Not a smaller
+effect in a larger one's place: a variable may stand where checking
+within less is not more cautious (an `R` of `(subr pure ((subr e () unit))
+unit)`, the code then taking `e`'s callback for a pure one). Any program
+can make evidence of `pure`, but it is evidence of `e` only where `e` is
+instantiated `pure`. A variable `M`, `E` or `R` names with none given is
+refused as the program is checked.
+
+Exact evidence rules out a caller passing `pure` where `e` is larger,
+which is safe where `e` is only the code's effect (the user's, the same
+day). So a second kind: a bound, `(effectbound e)` or `(typebound t)`,
+covariant, made of exact evidence (`effect-bound`, `type-bound`), which a
+`plambda` asks for to say "anything at most `e`, and I use it only where
+less is safe". That is checked at the staging form by subtyping itself:
+what the code is checked as, `(subr pure (M) (subr E () R))`, must be
+monotone in the variable, which, the variable rigid, is that it is a
+supertype of itself with the variable the least there is, `pure` or
+`void` (each place it is taken, or compared exactly, then asks that the
+variable be within the least; `Checker::monotone_in`, `k-monotone-in?`).
+So every rule of subtyping's, and only those, says where less is safe.
+Exact evidence stands anywhere. Which a form is given is
+known as the program is checked; at run time both are the text.
+
+Regions have no text of their own: a region's evidence is a name. `@a`
+is itself; a region a variable names, given no evidence of it, is named
+afresh, and the staged check binds the name as a region it knows nothing
+of. Two names for one region are only more cautious than the program
+(the code cannot mix them), never less.
+
+Found implicitly, by type, the evidence would be variables no tree
+mentions, which the compilers written in FX-26 would not capture in
+closures; given explicitly, it is ordinary expressions every machine
+compiles, and the staging operators take it as one more argument.
+
+### Evidence as an interval? (the user's question, 2026-10-31; not built)
+
+Could a bound alone do, exact evidence dropped? No: what each kind says
+of the variable is what the check needs. The code checked against `e′`,
+what the evidence says, is used as if checked against `e`, what the
+variable was instantiated as, so `T[e′] ≤ T[e]` must hold, `T` being
+`(subr pure (M) (subr E () R))`. Each place the variable stands asks:
+
+| Where it stands | Safe if the evidence is | Which |
+|---|---|---|
+| given (`E`; a frozen list in `R`) | at most `e`, `e′ ⊆ e` | a bound |
+| taken (a parameter's type in `R`) | at least `e`, `e′ ⊇ e` | none yet |
+| both (a reference; a list at a region variable) | `e` exactly | exact |
+
+A bound says "at most"; where the variable is taken, polarity turns what
+is asked into "at least", of which a bound says nothing. Once a caller
+has passed `(effectbound pure)` where `(effectbound (io stdout))` was
+wanted, nothing says whether the evidence was exact: exact evidence keeps
+that only as its type is invariant, which subsumption cannot widen. With
+bounds alone, every use where the variable is taken, or compared exactly,
+is refused.
+
+One type could hold all three: evidence of an interval, "at least `L`, at
+most `U`", `(effectev L U)`, `L` covariant and `U` contravariant:
+
+- exact evidence is `L = U`, what `reify-effect` makes;
+- a bound, "at most", is `L` known, `U` the most there is;
+- its opposite, "at least", which there is none of now, is `U` known, `L`
+  the least (`pure`, `void`);
+- a `plambda` asks for `(effectev e e)` for exact evidence, `(effectev e
+  top)` for a bound, and subsumption widens an interval as it should.
+
+The staged check would then substitute `L` where the variable is given
+and `U` where it is taken, and ask `L = U` where it stands both ways. Its
+costs:
+
+- two texts at run time for each variable, not one;
+- the checker that prints `M`, `E` and `R` naming each variable's places
+  apart by polarity (a variable printed `e⁺` where it is given and `e⁻`
+  where it is taken), so that the substitution as the program runs puts
+  each text in its place; or the check that runs then finding polarity
+  itself, as subtyping does now;
+- where it stands both ways, `L = U` checked as the program runs, by the
+  checker that runs then (each a subtype of the other), not by text;
+- a most effect and a most type, for a bound's `U`: FX-26 has neither
+  (an effect is a set of atoms, with regions; there is no type of every
+  value), so a mark for "no upper limit" instead, the check refusing
+  where one is taken.
+
+Most uses are where the variable is the code's effect, `E`, given: a
+bound serves, and exact evidence only where it is also taken or stands
+under what may be written. So the two types stay as they are until a
+program wants "at least `e`"; the interval is how they would be made one
+then, and both of today's would be read as intervals of it (`effectrep`
+`(effectev e e)`, `effectbound` `(effectev e top)`), so nothing written
+now would change meaning.
+
 ### The program's own top level as `m`?
 
 `TODO.md` §105 offered two ways: (a) the editor is the session, as Emacs
