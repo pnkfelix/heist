@@ -70,12 +70,13 @@ files_of() {
 
 # Is DIR/F's `.fasl` older than what it was made of, by the files' times,
 # or does it load a file being compiled now (in $todo)? The files it loads
-# are the `dep` lines of the `.fasl` itself.
+# are the `dep` lines of the `.fasl` itself, which is binary: read in the C
+# locale, which a UTF-8 one's sed (macOS's) refuses ("illegal byte sequence").
 outdated() {
   fasl="$1/${2%.fx}.fasl"
   [ -e "$fasl" ] || return 0
   if [ "$1/$2" -nt "$fasl" ] || [ "$fixpt" -nt "$fasl" ]; then return 0; fi
-  for d in $(sed -n 's/^dep [a-z]* [0-9a-f]* \([^:]*\)$/\1/p' "$fasl"); do
+  for d in $(LC_ALL=C sed -n 's/^dep [a-z]* [0-9a-f]* \([^:]*\)$/\1/p' "$fasl"); do
     case " $todo " in *" $d "*) return 0;; esac
     dep="$1/$d"; depf="${dep%.fx}.fasl"
     [ -e "$depf" ] && [ "$depf" -nt "$fasl" ] && return 0
