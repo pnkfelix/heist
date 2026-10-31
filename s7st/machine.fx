@@ -175,13 +175,46 @@ code calls it through this."
   (lambda (f args k dyn)
     (let ((h (get s7-apply-hook))) (if (null? h) (s7-apply-state f args k dyn) ((car h) f args k dyn)))))
 
+"The call whose operator and arguments are `done`, the last evaluated
+first, `(argN … arg1 op)`, finished as a call whose arguments were all
+quick is: a built-in with a fast entry for that many (one or two) called
+by it; a closure of one clause that takes as many entered, its frame
+filled from them, its last slot first; with no list of them in order
+made, nor `s7-apply`'s search. Any other call made as `s7-call` makes it.
+(The first argument that is not quick costs a call this, else.)"
+(define* s7-call-done (subr s7-eff (s7-values s7-k s7-dyn) s7-state)
+  (lambda (done k dyn)
+    (letrec ((op-of (subr spin (s7-values int) (productof (op s7-value) (n int)))
+               (lambda (l n) (if (null? (cdr l)) (product (op (car l)) (n n)) (op-of (cdr l) (+ n 1))))))
+      (let* ((on (op-of done 0))
+             (n (extract on n))
+             (slow (lambda () (let ((all (the s7-values (reverse done)))) (s7-call (car all) (cdr all) k dyn)))))
+        (tagcase (extract on op)
+          (prim p (let ((v (if (extract p pure)
+                               (tagcase (extract p fast)
+                                 (f1 g (if (= n 1) (g (car done)) s7-undefined))
+                                 (f2 g (if (= n 2) (g (car (cdr done)) (car done)) s7-undefined))
+                                 (none u s7-undefined))
+                               s7-undefined)))
+                    (if (s7-undef? v) (slow) (s7-return v k dyn))))
+          (proc c (let ((cls (extract c clauses)))
+                    (if (and (pair? cls) (null? (cdr cls))
+                             (not (extract (extract (car cls) info) rest))
+                             (= n (extract (extract (car cls) info) required)))
+                        (let ((slots (the (arrayof s7-value @sc) (make-array (extract (extract (car cls) info) size) s7-undefined))))
+                          (letrec ((fill (subr s7-eff (s7-values int) unit)
+                                     (lambda (l i) (if (< i 0) #u (begin (array-set! slots i (car l)) (fill (cdr l) (- i 1)))))))
+                            (begin (fill done (- n 1))
+                              (s7-enter (extract (car cls) code) (sum frame (product (slots slots) (up (extract c env)))) k dyn))))
+                        (slow))))
+          (else y (slow)))))))
 "A call's operator and arguments evaluated, from `rest` on, as far as
 they evaluate quickly; then the call made, or the first that does not run
 as code, a frame pushed to come back for the rest."
 (define* s7-run-args (subr s7-eff (s7-values s7-compileds s7-env s7-k s7-dyn) s7-state)
   (lambda (done rest env k dyn)
     (if (null? rest)
-        (let ((all (the s7-values (reverse done)))) (s7-call (car all) (cdr all) k dyn))
+        (s7-call-done done k dyn)
         (let* ((c (car rest))
                (slow (lambda () ((extract c code) env (s7-push-k (sum k-args (product (done done) (rest (cdr rest)) (env env))) k) dyn))))
           (if (null? (extract c quick)) (slow)
