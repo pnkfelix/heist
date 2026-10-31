@@ -8,7 +8,14 @@ do it, and what it cost. Kayak will need the same changes later
 
 ## Base
 
-- Fixpt `main` at 59114584 (2026-10-31), pulled from GitHub by Heist's
+- Fixpt `main` at 71de5b88 (2026-10-31), pulled from GitHub by Heist's
+  836648da (squash a3b4fd3a), which has Heist's F7 (`length` counting
+  without a vector), and `append` and its kin counting lists the same
+  way; Heist's own edit dropped, `fixpt/` Fixpt's tree exactly. After
+  `fixpt prewarm` and `bin/heist-compile all`, all 181 tests pass (33.8
+  s); ratfink matches shakedown as before (corpus 123 of 124, playback
+  12 of 12, its FX-26 test reports unchanged).
+- Before: Fixpt `main` at 59114584 (2026-10-31), pulled from GitHub by Heist's
   ef441e76 (squash 3e64f9e3): heap dumps on the FX-26 front end (`fixpt
   dump`, `fixpt resume`, `dump-heap!`; Heist uses none yet), sessions on
   the FX-26 checker, Scheme's `eval`, evidence bounds, and TODO §188's
