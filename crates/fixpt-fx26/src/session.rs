@@ -2,17 +2,19 @@
 //!
 //! One top-level form at a time, in one environment: a definition stays
 //! defined, for the checker (`Checker::top`) and for the Scheme session
-//! (`lower::Globals`) alike. The lowered code goes across as text and is
-//! re-read, as FX-87's and FX-91's does, because the checker and the Scheme
-//! session intern symbols separately — and so that `,code` can show it.
+//! (`lower::Globals`) alike. The lowered code goes across as syntax
+//! (`sx::Code`), its symbols by name, since the checker and the Scheme
+//! session intern symbols separately; it is written out only for `,code`.
 //!
-//! Running goes through `Session::eval_capturing`, which is the whole of what
-//! the three FX front ends' sessions had in common: evaluate, and keep what the
-//! program printed apart from its value.
+//! Running goes through `Session::eval_forms_capturing`, the syntax-given
+//! `eval_capturing`, which is the whole of what the three FX front ends'
+//! sessions had in common: evaluate, and keep what the program printed apart
+//! from its value.
 
 use crate::check::Checker;
 use crate::error::{FxError, R};
 use crate::lower::{Globals, lower};
+use crate::sx::{Code, Sx};
 use crate::top::Top;
 use fixpt_read::{FileId, Span, Sym, Syntax};
 use fixpt_scheme::Session;
@@ -220,24 +222,24 @@ pub enum Consider {
 
 /// Check and lower one top-level form, keeping what it defines, alone: not
 /// under redefinition (`compile_form_defining` is).
-pub fn compile_form(checker: &mut Checker, globals: &mut Globals, form: &Syntax) -> R<(Top, String)> {
+pub fn compile_form(checker: &mut Checker, globals: &mut Globals, form: &Syntax) -> R<(Top, Code)> {
     let before = std::mem::take(&mut checker.hoisted);
     let top = checker.top(form);
     // The hidden globals of the files it loads first, defined before it.
     let hoisted = std::mem::replace(&mut checker.hoisted, before);
     let top = top?;
-    let mut code: String = hoisted.iter().map(|(t, _)| lower_top(checker, globals, t)).collect::<Vec<_>>().join("\n");
-    if !code.is_empty() {
-        code.push('\n');
+    let mut code = Code::default();
+    for (t, _) in &hoisted {
+        code.extend(lower_top(checker, globals, t));
     }
-    code.push_str(&lower_top(checker, globals, &top));
+    code.extend(lower_top(checker, globals, &top));
     Ok((top, code))
 }
 
 /// Check and lower one top-level form, under redefinition
 /// (`Checker::top_defining`): the Scheme for everything it makes run, in
 /// order, and what it broke.
-pub fn compile_form_defining(checker: &mut Checker, globals: &mut Globals, form: &Syntax) -> R<(crate::top::Defining, Vec<String>)> {
+pub fn compile_form_defining(checker: &mut Checker, globals: &mut Globals, form: &Syntax) -> R<(crate::top::Defining, Vec<Code>)> {
     let done = checker.top_defining(form)?;
     let code = done.hoisted.iter().chain(&done.run).map(|(top, _)| lower_top(checker, globals, top)).collect();
     Ok((done, code))
@@ -245,7 +247,7 @@ pub fn compile_form_defining(checker: &mut Checker, globals: &mut Globals, form:
 
 /// A checked top-level form, lowered: a definition that assigns keeps the
 /// global its name has (`Globals::keep_next`).
-pub fn lower_top(checker: &Checker, globals: &mut Globals, top: &Top) -> String {
+pub fn lower_top(checker: &Checker, globals: &mut Globals, top: &Top) -> Code {
     match top {
         Top::Define { name, assigns: true, .. } => globals.keep_next(*name),
         Top::DefineRec { bindings, assigns: true } => bindings.iter().for_each(|(n, _, _)| globals.keep_next(*n)),
@@ -253,7 +255,7 @@ pub fn lower_top(checker: &Checker, globals: &mut Globals, top: &Top) -> String 
     }
     match top {
         Top::DefineType { .. } | Top::DefineTypeFamily { .. } | Top::DefineGenerative { .. } | Top::DefineEffect { .. } | Top::DefineConvention { .. } => {
-            String::new()
+            Code::default()
         }
         Top::Define { name, exp, recursive, .. } => {
             // A recursive definition refers to itself; a plain one to
@@ -265,16 +267,16 @@ pub fn lower_top(checker: &Checker, globals: &mut Globals, top: &Top) -> String 
                 let body = lower(checker, globals, *exp);
                 (globals.define(checker, *name), body)
             };
-            format!("(define {global} {body})")
+            Sx::call("define", [Sx::sym(global), body]).into()
         }
         Top::DefineRec { bindings, .. } => {
             // Every name first: each lambda refers to the group's globals.
             let names: Vec<String> = bindings.iter().map(|(n, _, _)| globals.define(checker, *n)).collect();
-            let defs: Vec<String> =
-                bindings.iter().zip(&names).map(|((_, _, e), g)| format!("(define {g} {})", lower(checker, globals, *e))).collect();
-            format!("(begin {})", defs.join(" "))
+            let defs: Vec<Sx> =
+                bindings.iter().zip(&names).map(|((_, _, e), g)| Sx::call("define", [Sx::sym(g.as_str()), lower(checker, globals, *e)])).collect();
+            Sx::call("begin", defs).into()
         }
-        Top::Exp(k) => lower(checker, globals, k.exp),
+        Top::Exp(k) => lower(checker, globals, k.exp).into(),
     }
 }
 
@@ -282,7 +284,7 @@ pub fn lower_top(checker: &Checker, globals: &mut Globals, top: &Top) -> String 
 /// checked it, and the Scheme for each form, in order.
 pub struct Compiled {
     pub checker: Checker,
-    pub code: Vec<String>,
+    pub code: Vec<Code>,
 }
 
 /// Check and lower the program `text`, whose definitions may come in any
@@ -431,12 +433,30 @@ fn save_front_end(heap: &fixpt_heap::Heap, w: fixpt_heap::Value, path: &std::pat
 /// code makes are in its fields, each the call-out itself, encoded, the
 /// same in every machine.
 fn save_native_front_end(heap: &fixpt_heap::Heap, pieces: fixpt_heap::Value, standard: fixpt_heap::Value, path: &std::path::Path, key: u64) {
+    let mut bytes = key.to_le_bytes().to_vec();
+    bytes.resize(CACHE_IMAGE_AT, 0);
+    bytes.extend(native_image(heap, pieces, standard, fixpt_heap::Value::FALSE));
+    write_cache(path, &bytes);
+}
+
+/// The image of what [`save_native_front_end`] keeps: `pieces` and their
+/// native code, the adapter, `standard`, and, if not `#f`, `start` (a
+/// dump's, `dump_image`), copied out of `heap` into a heap of their own.
+fn native_image(heap: &fixpt_heap::Heap, pieces: fixpt_heap::Value, standard: fixpt_heap::Value, start: fixpt_heap::Value) -> Vec<u8> {
     use fixpt_heap::Value;
     let mut alone = fixpt_heap::Heap::new();
     // The shared stub first, where a session's heap has it when the image
     // is read, so that the image can go where it was made (`TODO.md` §160).
     alone.foreign_stub();
-    let (copy, made) = alone.copy_graph_with(heap, pieces, |_| false, &Default::default());
+    let (copy, mut made) = alone.copy_graph_with(heap, pieces, |_| false, &Default::default());
+    // The start, with the pieces' objects it shares, which `made` maps.
+    let start = if start == Value::FALSE {
+        start
+    } else {
+        let (s, more) = alone.copy_graph_with(heap, start, |_| false, &made.clone());
+        made.extend(more);
+        s
+    };
     let adapter = heap.adapter_code().filter(|a| made.contains_key(&a.raw()));
     let mut codes = Value::NULL;
     for (&k, &c) in &made {
@@ -449,18 +469,28 @@ fn save_native_front_end(heap: &fixpt_heap::Heap, pieces: fixpt_heap::Value, sta
     // The standard environment as the reader written in FX-26 reads it
     // (`standard26`): the same at every start, read once (`TODO.md` §177).
     let standard = alone.copy_graph_from(heap, standard);
-    let rest = alone.cons(standard, Value::NULL);
+    let mut rest = Value::NULL;
+    if start != Value::FALSE {
+        rest = alone.cons(start, rest);
+    }
+    let rest = alone.cons(standard, rest);
     let rest = alone.cons(adapter, rest);
     let rest = alone.cons(codes, rest);
     let root = alone.cons(copy, rest);
     alone.push_root(root);
-    save_image(&alone, path, key);
+    fixpt_heap::image::dump_static(&alone)
 }
 
 /// What [`save_native_front_end`] kept, copied into `heap`, its code made
 /// code again: the pieces; none if the image is not one, when the front
 /// end is compiled and run as ever.
 fn load_native_front_end(k: &NativeKeeping, heap: &mut fixpt_heap::Heap, file: &fixpt_heap::Mapped) -> Option<fixpt_heap::Value> {
+    load_native_front_end_keeping(k, heap, file).map(|(pieces, _)| pieces)
+}
+
+/// The same, and what the image keeps after the standard environment (a
+/// dump's start, `dump_image`), or `#f`; spliced, not copied.
+fn load_native_front_end_keeping(k: &NativeKeeping, heap: &mut fixpt_heap::Heap, file: &fixpt_heap::Mapped) -> Option<(fixpt_heap::Value, fixpt_heap::Value)> {
     let bytes = file.get(CACHE_IMAGE_AT..)?;
     use fixpt_heap::Value;
     let img = fixpt_heap::image::parts(bytes, false).ok()?;
@@ -477,6 +507,7 @@ fn load_native_front_end(k: &NativeKeeping, heap: &mut fixpt_heap::Heap, file: &
         let rest = h.cdr(h.cdr(h.cdr(root)));
         if rest.is_pair() { h.car(rest) } else { Value::FALSE }
     };
+    let mut kept = Value::FALSE;
     let (pieces, standard, made_code) = if std::env::var_os("FIXPT_IMAGE_COPY").is_some() {
         let from = fixpt_heap::image::load_trusted(bytes).ok()?;
         let root = *from.roots_slice().first()?;
@@ -511,11 +542,142 @@ fn load_native_front_end(k: &NativeKeeping, heap: &mut fixpt_heap::Heap, file: &
         if mine.is_none() && theirs != Value::FALSE {
             heap.set_adapter_code(theirs);
         }
+        // What follows the standard environment: a dump's start.
+        let rest = heap.cdr(heap.cdr(heap.cdr(root)));
+        if rest.is_pair() && heap.cdr(rest).is_pair() {
+            kept = heap.car(heap.cdr(rest));
+        }
         (heap.car(root), standard_of(heap, root), list(heap, heap.car(heap.cdr(root))))
     };
     (k.note_code)(heap, &made_code);
     let pieces = heap.cons(pieces, standard);
-    Some(pieces)
+    Some((pieces, kept))
+}
+
+// ------------------------------------------------------------ heap dumps
+
+/// A program's heap dumped (`TODO.md` §189): the front end as the program's
+/// load left it, its checker's and compiler's state holding the program, and
+/// a procedure to start it (`fixpt dump`, `fixpt resume`). Written as the
+/// front end's cache is (`save_native_front_end`), its root the same and
+/// the start after the standard environment; its first page `DUMP_MAGIC`,
+/// the cache's key, the dump's key (the machine and the program's sources),
+/// and the sources' paths, a line each.
+const DUMP_MAGIC: &[u8; 8] = b"fx26dump";
+const DUMP_KEY_AT: usize = 16;
+const DUMP_SOURCES_AT: usize = 32;
+
+/// The key of the front end's cache for this build, whatever the cache's
+/// directory or `FIXPT_NO_CACHE`: what a dump made by this build is read by.
+fn front_end_key() -> u64 {
+    use std::hash::{Hash, Hasher};
+    let text = register_text(&crate::front_end(), &Fx26Session::FRONT_ENTRIES);
+    let mut key = std::collections::hash_map::DefaultHasher::new();
+    (&text, env!("FIXPT_BUILD_HASH")).hash(&mut key);
+    key.finish()
+}
+
+/// The key of a dump made on `machine` of the program in `sources` (each
+/// file's path and text).
+pub fn dump_key(machine: &str, sources: &[(String, String)]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut key = std::collections::hash_map::DefaultHasher::new();
+    machine.hash(&mut key);
+    for (path, text) in sources {
+        (path, crate::fasl::digest(text)).hash(&mut key);
+    }
+    key.finish()
+}
+
+/// What a dump says of itself, if `bytes` is one this build can read: its
+/// key, and its sources' paths (`dump_key`).
+pub fn dump_header(bytes: &[u8]) -> Result<(u64, Vec<String>), String> {
+    let word = |at: usize| bytes.get(at..at + 8).map(|b| u64::from_le_bytes(b.try_into().expect("8 bytes")));
+    if bytes.get(..8) != Some(&DUMP_MAGIC[..]) {
+        return Err("it is not a dump".into());
+    }
+    if word(8) != Some(front_end_key()) {
+        return Err("it was dumped by another build of fixpt: dump it again".into());
+    }
+    let key = word(DUMP_KEY_AT).ok_or("it is not a dump")?;
+    let n = word(DUMP_KEY_AT + 8).ok_or("it is not a dump")? as usize;
+    let text = bytes.get(DUMP_SOURCES_AT..DUMP_SOURCES_AT + n).and_then(|b| std::str::from_utf8(b).ok()).ok_or("it is not a dump")?;
+    Ok((key, text.lines().map(str::to_string).collect()))
+}
+
+thread_local! {
+    /// The dump a session about to be made starts from (`resume_from`), in
+    /// place of the front end's cache.
+    static RESUMED: std::cell::RefCell<Option<std::path::PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The global a resumed session's start is in.
+const DUMP_START: &str = "fx26-dump:start";
+
+/// The next session made starts from the dump at `path` (`fixpt resume`):
+/// its front end, and the program in it, read from there.
+pub fn resume_from(path: &std::path::Path) {
+    RESUMED.with(|r| *r.borrow_mut() = Some(path.to_path_buf()));
+}
+
+thread_local! {
+    /// What a dump the program makes of itself is keyed by
+    /// ([`Fx26Session::dump_sources`]): the machine, and the sources.
+    static DUMP_SOURCES: std::cell::RefCell<Option<(String, Vec<(String, String)>)>> = const { std::cell::RefCell::new(None) };
+}
+
+/// A dump of `heap`: the front end as the `fx26-native:` globals hold it,
+/// `standard`, and `start`, what a resumed session calls (a procedure, or
+/// the name of a global); its header keyed by `machine` and `sources`.
+fn dump_bytes(heap: &mut fixpt_heap::Heap, standard: fixpt_heap::Value, start: fixpt_heap::Value, machine: &str, sources: &[(String, String)]) -> Result<Vec<u8>, String> {
+    let mut header = DUMP_MAGIC.to_vec();
+    header.extend(front_end_key().to_le_bytes());
+    header.extend(dump_key(machine, sources).to_le_bytes());
+    let paths: String = sources.iter().map(|(p, _)| format!("{p}\n")).collect();
+    header.extend((paths.len() as u64).to_le_bytes());
+    header.extend(paths.as_bytes());
+    if header.len() > CACHE_IMAGE_AT {
+        return Err("its sources' paths are too long to keep".into());
+    }
+    header.resize(CACHE_IMAGE_AT, 0);
+    // Kept where a collection updates them while the pieces are made.
+    let base = heap.push_root(standard);
+    heap.push_root(start);
+    let mut entries = Vec::new();
+    for n in Fx26Session::FRONT_ENTRIES {
+        let sym = heap.intern(&format!("fx26-native:{n}"));
+        let v = heap.global(heap.symbol_global_slot(sym));
+        if v.is_unbound() {
+            heap.pop_roots_to(base);
+            return Err("the front end is not loaded".into());
+        }
+        entries.push(v);
+    }
+    let pieces = heap.make_frozen(fixpt_heap::layout::kind("product"), &entries);
+    let (standard, start) = (heap.root_at(base), heap.root_at(base + 1));
+    heap.pop_roots_to(base);
+    header.extend(native_image(heap, pieces, standard, start));
+    Ok(header)
+}
+
+/// `bytes` written to `path`: by a temporary file renamed, so that a
+/// reader never sees half of one.
+fn write_dump(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
+    let tmp = path.with_extension(format!("tmp{}", std::process::id()));
+    std::fs::write(&tmp, bytes).map_err(|e| format!("cannot write {}: {e}", tmp.display()))?;
+    std::fs::rename(&tmp, path).map_err(|e| format!("cannot write {}: {e}", path.display()))
+}
+
+/// `dump-heap!` (`%fx26-dump-heap`), installed where the front end is
+/// native code (`stage_settings`): the heap dumped to `path`, its start
+/// `start`, keyed as the session said (`dump_sources`).
+fn dump_heap(rt: &mut fixpt_runtime::Runtime, path: &str, start: fixpt_heap::Value) -> Result<(), String> {
+    let standard = crate::stage::standard(rt).ok_or("the front end is not loaded")?;
+    let (machine, sources) = DUMP_SOURCES
+        .with(|d| d.borrow().clone())
+        .ok_or("only a program run from its files (`fixpt run`) can dump its heap")?;
+    let bytes = dump_bytes(&mut rt.heap, standard, start, &machine, &sources)?;
+    write_dump(std::path::Path::new(path), &bytes)
 }
 
 /// The elements of list `l` of `heap`'s.
@@ -548,12 +710,19 @@ fn save_image(alone: &fixpt_heap::Heap, path: &std::path::Path, key: u64) {
     let mut bytes = key.to_le_bytes().to_vec();
     bytes.resize(CACHE_IMAGE_AT, 0);
     bytes.extend(fixpt_heap::image::dump_static(alone));
+    write_cache(path, &bytes);
+}
+
+/// `bytes` written to `path`, in the cache's directory: by a temporary file
+/// renamed, so that a reader never sees half of one; then the caches no
+/// longer wanted removed (`sweep_cache`). Any failure only means no cache.
+fn write_cache(path: &std::path::Path, bytes: &[u8]) {
     let Some(dir) = path.parent() else { return };
     if std::fs::create_dir_all(dir).is_err() {
         return;
     }
     let tmp = path.with_extension(format!("tmp{}", std::process::id()));
-    if std::fs::write(&tmp, &bytes).is_ok() && std::fs::rename(&tmp, path).is_err() {
+    if std::fs::write(&tmp, bytes).is_ok() && std::fs::rename(&tmp, path).is_err() {
         let _ = std::fs::remove_file(&tmp);
     }
     sweep_cache(dir);
@@ -630,9 +799,44 @@ impl Compiled {
         // All in one evaluation: each recompiles the whole of the session's
         // program so far (`Prepared::update`), so one per form made loading
         // the front end quadratic in its forms.
-        let all: String = self.code.iter().flat_map(|c| [c.as_str(), "\n"]).collect();
-        scheme.eval_str("<fx26>", &all).map_err(|e| e.to_string())?;
+        let mut all = Code::default();
+        for c in &self.code {
+            all.extend(c.clone());
+        }
+        let forms = all.syntax(scheme.runtime_unrooted(), "<fx26>");
+        scheme.eval_forms(&forms).map_err(|e| e.to_string())?;
         Ok(())
+    }
+}
+
+/// What a form became, written out only when it is shown (`,code`): the
+/// Scheme it was lowered to, or the words the compiler written in FX-26
+/// made of it, disassembled, those not shown before.
+#[derive(Clone, Debug, Default)]
+pub enum Made {
+    #[default]
+    Nothing,
+    Scheme(Code),
+    Words(String),
+}
+
+impl Made {
+    pub fn is_empty(&self) -> bool {
+        match self {
+            Made::Nothing => true,
+            Made::Scheme(c) => c.is_empty(),
+            Made::Words(w) => w.is_empty(),
+        }
+    }
+}
+
+impl std::fmt::Display for Made {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Made::Nothing => Ok(()),
+            Made::Scheme(c) => write!(f, "{c}"),
+            Made::Words(w) => f.write_str(w),
+        }
     }
 }
 
@@ -640,8 +844,8 @@ impl Compiled {
 pub struct Outcome {
     /// What checking found, as the REPL prints it after the value.
     pub top: Top,
-    /// The Scheme it was lowered to, empty for a `define-type`.
-    pub code: String,
+    /// What it became, as `,code` shows it: none for a `define-type`.
+    pub code: Made,
     /// What it printed while it ran.
     pub printed: String,
     /// Its value, written; `None` for a definition. An error when running
@@ -752,6 +956,15 @@ impl Fx26Session {
     ) -> R<Fx26Session> {
         let preload = |heap: &mut fixpt_heap::Heap| -> Option<fixpt_heap::Value> {
             let k = keeping?;
+            // A dump's, resumed (`resume_from`): its start in a global.
+            if let Some(path) = RESUMED.with(|r| r.borrow_mut().take()) {
+                let b = fixpt_heap::Mapped::open(&path).ok()?;
+                let (pieces, start) = load_native_front_end_keeping(&k, heap, &b)?;
+                let sym = heap.intern(DUMP_START);
+                let slot = heap.symbol_global_slot(sym);
+                heap.set_global(slot, start);
+                return Some(pieces);
+            }
             let text = register_text(&crate::front_end(), &Self::FRONT_ENTRIES);
             let (path, key) = front_end_cache(&text, true)?;
             let b = fixpt_heap::Mapped::open(&path).ok()?;
@@ -768,6 +981,9 @@ impl Fx26Session {
             .map_err(|e| FxError::at(Span::new(FileId(0), 0, 0), format!("the FX-26 runtime failed to load: {e}")))?;
         scheme.engine.set_step_limit(Some(DEFAULT_STEP_LIMIT));
         scheme.runtime_unrooted().type_at = Some(crate::typeat::type_at);
+        scheme.runtime_unrooted().stage_lower = Some(crate::stage::lower_staged);
+        scheme.runtime_unrooted().stage_check = Some(crate::stage::check_staged);
+        scheme.runtime_unrooted().sessions = Some(crate::sessions::op);
         // The front end run as register code (`front_end_compiled`), read
         // back from its cache, on the hand register machine (where no
         // machine code runs, the cellular machine written in Rust): lowered,
@@ -833,7 +1049,7 @@ impl Fx26Session {
 
     /// Check one top-level form and lower it, without running it.
     pub fn compile(&mut self, form: &Syntax) -> R<(Top, String)> {
-        compile_form(&mut self.checker, &mut self.globals, form)
+        compile_form(&mut self.checker, &mut self.globals, form).map(|(top, code)| (top, code.to_string()))
     }
 
     /// Run `form` early, if the licence allows: check it without keeping
@@ -863,7 +1079,8 @@ impl Fx26Session {
         self.whole_prelude();
         self.scheme.engine.set_step_limit(self.speculation_limit);
         let result = self.scheme.scope(|s| {
-            let (_, result) = s.eval_capturing("<fx26-speculative>", &code);
+            let forms = Code::from(code).syntax(s.runtime_unrooted(), "<fx26-speculative>");
+            let (_, result) = s.eval_forms_capturing(&forms);
             result.map(|v| s.write(v))
         });
         self.scheme.engine.set_step_limit(self.step_limit);
@@ -1079,7 +1296,7 @@ impl Fx26Session {
             let printed = format!("; compiled `{path}` to `{}`\n", made.display());
             let exp = self.checker.arena.exp(form.span, crate::ast::Exp::Unit);
             let top = Top::Exp(crate::check::Checked { ty: self.checker.unit, effect: crate::ast::Effect::pure(), exp });
-            return Ok(Outcome { top, code: String::new(), printed, value: Ok(None) });
+            return Ok(Outcome { top, code: Made::Nothing, printed, value: Ok(None) });
         }
         // A top-level `include`: its forms' outcomes, the last shown.
         if self.checker.include_forms(form)?.is_some() {
@@ -1388,14 +1605,14 @@ impl Fx26Session {
             // checked, neither run (`compile_program_file`).
             if self.program_record.is_some() && !again {
                 match &top {
-                    Top::Exp(_) => return Ok(Outcome { top, code: String::new(), printed: String::new(), value: Ok(None) }),
+                    Top::Exp(_) => return Ok(Outcome { top, code: Made::Nothing, printed: String::new(), value: Ok(None) }),
                     // One that only reads globals whose definitions ran runs
                     // too: making it does nothing else (a module of
                     // procedures, say).
                     Top::Define { name, exp, effect, .. } if !Self::names_its_word(&self.checker, *exp) && !self.checker.interner.name(*name).starts_with('%') => {
                         if !self.only_reads_ran(effect) {
                             self.declare_only(form)?;
-                            return Ok(Outcome { top, code: String::new(), printed: String::new(), value: Ok(None) });
+                            return Ok(Outcome { top, code: Made::Nothing, printed: String::new(), value: Ok(None) });
                         }
                     }
                     _ => {}
@@ -1409,7 +1626,7 @@ impl Fx26Session {
             {
                 let name = *name;
                 let value = self.fasl_define(name, form, &fasl)?;
-                return Ok(Outcome { top, code: String::new(), printed: String::new(), value });
+                return Ok(Outcome { top, code: Made::Nothing, printed: String::new(), value });
             }
             if self.own_made {
                 // What the native compiler declines runs as cellular code,
@@ -1421,10 +1638,10 @@ impl Fx26Session {
                     let name = self.checker.interner.name(*name);
                     printed = format!("; `{name}` is not in the native convention yet, so it runs as cellular code: {why}\n");
                 }
-                return Ok(Outcome { top, code: String::new(), printed, value: Ok(None) });
+                return Ok(Outcome { top, code: Made::Nothing, printed, value: Ok(None) });
             }
             if again && self.native_runner.is_none() {
-                return Ok(Outcome { top, code: String::new(), printed: String::new(), value: Ok(None) });
+                return Ok(Outcome { top, code: Made::Nothing, printed: String::new(), value: Ok(None) });
             }
             let form_text = if crate::sources::wanted() {
                 let (text, map) = fixpt_read::write_syntax_mapped(form, &self.checker.interner);
@@ -1452,7 +1669,7 @@ impl Fx26Session {
                 };
                 match self.with_native_thunk(&form_text, written)? {
                     Ok(Ok(value)) => {
-                        return Ok(Outcome { top, code: String::new(), printed: String::new(), value: value.map(Some) });
+                        return Ok(Outcome { top, code: Made::Nothing, printed: String::new(), value: value.map(Some) });
                     }
                     Ok(Err(why)) => note = format!("; not in the native convention yet, so run as cellular code: {why}\n"),
                     Err(why) => note = format!("; not compiled as a procedure: {why}\n"),
@@ -1485,8 +1702,8 @@ impl Fx26Session {
                     self.check_built_in(false)?;
                 }
                 match defined? {
-                    Ok(()) => return Ok(Outcome { top, code: String::new(), printed: String::new(), value: Ok(None) }),
-                    Err(NativeRun::Ran(Err(e))) => return Ok(Outcome { top, code: String::new(), printed: String::new(), value: Err(e) }),
+                    Ok(()) => return Ok(Outcome { top, code: Made::Nothing, printed: String::new(), value: Ok(None) }),
+                    Err(NativeRun::Ran(Err(e))) => return Ok(Outcome { top, code: Made::Nothing, printed: String::new(), value: Err(e) }),
                     Err(NativeRun::Declined(why)) => note = format!("; not in the native convention yet, so `{name}` runs as cellular code: {why}\n"),
                     Err(NativeRun::Ran(Ok(_))) => unreachable!("a value is stored"),
                 }
@@ -1503,21 +1720,23 @@ impl Fx26Session {
             // A form is compiled with every definition before it, so only
             // the words not shown before are this form's.
             let code = match words {
-                Some(w) => w
-                    .split_inclusive('\n')
-                    .fold(Vec::<String>::new(), |mut blocks, line| {
-                        match blocks.last_mut() {
-                            Some(b) if !line.starts_with("word ") => b.push_str(line),
-                            _ => blocks.push(line.to_string()),
-                        }
-                        blocks
-                    })
-                    .into_iter()
-                    .filter(|b| self.words_shown.insert(b.clone()))
-                    .collect::<String>()
-                    .trim_matches('\n')
-                    .to_string(),
-                None => code,
+                Some(w) => Made::Words(
+                        w
+                        .split_inclusive('\n')
+                        .fold(Vec::<String>::new(), |mut blocks, line| {
+                            match blocks.last_mut() {
+                                Some(b) if !line.starts_with("word ") => b.push_str(line),
+                                _ => blocks.push(line.to_string()),
+                            }
+                            blocks
+                        })
+                        .into_iter()
+                        .filter(|b| self.words_shown.insert(b.clone()))
+                        .collect::<String>()
+                        .trim_matches('\n')
+                        .to_string(),
+                ),
+                None => Made::Scheme(code),
             };
             let value = match out.strip_prefix("!! ") {
                 Some(e) => Err(e.to_string()),
@@ -1553,14 +1772,15 @@ impl Fx26Session {
             return Ok(Outcome { top, code, printed: note, value });
         }
         if code.is_empty() {
-            return Ok(Outcome { top, code, printed: String::new(), value: Ok(None) });
+            return Ok(Outcome { top, code: Made::Nothing, printed: String::new(), value: Ok(None) });
         }
         let is_define = matches!(top, Top::Define { .. } | Top::DefineRec { .. });
         let (printed, value) = self.scheme.scope(|s| {
             // The lowered Scheme's own compiling, quick, is counted as run.
             let start = std::time::Instant::now();
             s.bare_failures = true;
-            let (printed, result) = s.eval_capturing("<fx26>", &code);
+            let forms = code.syntax(s.runtime_unrooted(), "<fx26>");
+            let (printed, result) = s.eval_forms_capturing(&forms);
             s.bare_failures = false;
             s.runtime_unrooted().run_nanos += start.elapsed().as_nanos() as u64;
             let value = match result {
@@ -1571,7 +1791,7 @@ impl Fx26Session {
             };
             (printed, value)
         });
-        Ok(Outcome { top, code, printed, value })
+        Ok(Outcome { top, code: Made::Scheme(code), printed, value })
     }
 
     /// Whether a load reads a fresh `.fasl` (`fasls`): only compiled code
@@ -2301,7 +2521,7 @@ impl Fx26Session {
             Ok(said)
         });
         let printed = value?;
-        Ok(Outcome { top, code: String::new(), printed, value: Ok(None) })
+        Ok(Outcome { top, code: Made::Nothing, printed, value: Ok(None) })
     }
 
     /// Program file `path` (from the program's directory) compiled to a
@@ -2645,6 +2865,9 @@ impl Fx26Session {
             value
         });
         crate::stage::settings(self.scheme.runtime_unrooted(), value, self.native_convention, self.register_code);
+        if self.native_keeping.is_some() && self.front_end_native && self.strategy == Strategy::Cellular {
+            self.scheme.runtime_unrooted().dump_heap = Some(dump_heap);
+        }
     }
 
     /// Make the program's convention native, or cellular: what every
@@ -2715,11 +2938,11 @@ impl Fx26Session {
 
     /// The front end's entry points the Rust side calls by name
     /// (`READER_PREFIX`), each rebound by [`Self::front_end_as_register_code`].
-    pub const FRONT_ENTRIES: [&'static str; 39] = [
+    pub const FRONT_ENTRIES: [&'static str; 40] = [
         "read-text-at", "check-program", "check-more", "checked-tops", "checked-extracts", "checked-effects", "check-conv-native!", "checked-withs!", "checked-reshapes!",
         "check-globals-effects!", "check-defer-reruns!", "check-hold-breaks!", "check-lines!", "parse-program", "loaded-files!", "includes-given!", "run-checked", "run-checked-more", "compile-program", "compile-checked", "compile-registers!", "compile-conv-native!",
         "compile-global-cell", "compile-new-global", "compile-adopt-globals!", "compile-adopt-broken?", "compile-name-word!", "compile-defining!", "compile-keep-global!", "compile-note-inline!", "compile-forget-globals!", "native-assemble",
-        "check-built-in!", "check-syscalls!", "make-stage-check",
+        "check-built-in!", "check-syscalls!", "make-stage-check", "make-session-compiler",
         "native-assemble-x64", "native-assemble-x64-regs", "native-adapter-x64", "native-compile-x64-proc",
     ];
 
@@ -2912,6 +3135,81 @@ impl Fx26Session {
     /// they are not yet.
     pub fn load_own_pieces(&mut self) -> R<()> {
         self.own_pieces()
+    }
+
+    /// This session's heap dumped to `path` (`TODO.md` §189): the front end
+    /// as the program's load left it, which holds the program, and what a
+    /// resumed session calls, the global `start` as it is then (`fixpt
+    /// dump`); keyed by the machine and the program's `sources` (each file's
+    /// path and text), what `fixpt resume` checks. Only where the front end
+    /// is native code kept as its run left it (`native_keeping`).
+    pub fn dump_image(&mut self, path: &std::path::Path, start: &str, machine: &str, sources: &[(String, String)]) -> Result<(), String> {
+        if self.native_keeping.is_none() || !self.front_end_native {
+            return Err("this machine cannot dump a program: its front end is not native code".into());
+        }
+        if self.strategy != Strategy::Cellular {
+            return Err("this machine cannot dump a program: the compilers written in FX-26 do not compile it".into());
+        }
+        self.own_pieces().map_err(|e| e.message)?;
+        if self.global_cell(start).map_err(|e| e.message)?.is_none() {
+            return Err(format!("the program defines no `{start}`"));
+        }
+        let standard = self.standard26().map_err(|e| e.message)?;
+        let mut bytes = Err(String::new());
+        self.scheme.make(|m| {
+            let st = m.get(standard);
+            let heap = m.heap();
+            let start = heap.intern(start);
+            bytes = dump_bytes(heap, st, start, machine, sources);
+            fixpt_heap::Value::NULL
+        });
+        write_dump(path, &bytes?)
+    }
+
+    /// The machine and the sources (each file's path and text) of the
+    /// program this session runs, for a dump it makes of itself
+    /// (`dump-heap!`) to be keyed by, as [`dump_image`](Self::dump_image)'s
+    /// is.
+    pub fn dump_sources(&mut self, machine: &str, sources: Vec<(String, String)>) {
+        DUMP_SOURCES.with(|d| *d.borrow_mut() = Some((machine.to_string(), sources)));
+    }
+
+    /// A resumed session's start (`resume_from`), once the front end is in
+    /// place and `files` (each a path and its text) checked and run as more
+    /// of the program: called with no arguments, its value written; or why
+    /// not. A start that is a name is its global's value then, so that a
+    /// file may define it again.
+    pub fn resumed_start(&mut self, files: &[(String, String)]) -> Result<String, String> {
+        self.own_pieces().map_err(|e| e.message)?;
+        if !self.scheme.is_bound(DUMP_START) {
+            return Err("this session was not resumed from a dump".into());
+        }
+        // The checker and the compilers written in FX-26 hold the program as
+        // its load left them: what more forms are checked after. The
+        // checker written in Rust knows nothing of it.
+        self.own_begun = true;
+        for (path, text) in files {
+            self.checker.base_dir = std::path::Path::new(path).parent().map(std::path::Path::to_path_buf);
+            let (out, _) = self.compile_form_showing(text, false).map_err(|e| format!("{path}: {}", e.message))?;
+            if let Some(m) = out.strip_prefix("!! ") {
+                return Err(format!("{path}: {m}"));
+            }
+        }
+        let rt = self.scheme.runtime_unrooted();
+        let sym = rt.heap.intern(DUMP_START);
+        let mut start = rt.heap.global(rt.heap.symbol_global_slot(sym));
+        if rt.heap.is_interned_symbol(start) {
+            let name = rt.heap.symbol_name(start);
+            let cell = self.global_cell(&name).map_err(|e| e.message)?.ok_or_else(|| format!("the program defines no `{name}`"))?;
+            self.scheme.make(|m| {
+                let c = m.get(cell);
+                start = m.heap().bloblet_slot(c, fixpt_heap::layout::cellular::GLOBAL_VALUE);
+                start
+            });
+        }
+        let rt = self.scheme.runtime_unrooted();
+        let v = fixpt_runtime::prim::call_closure(rt, start, &[])?;
+        Ok(fixpt_runtime::print::write_value(&rt.heap, v))
     }
 
     /// The pieces written in FX-26, loaded if they are not yet, and told the

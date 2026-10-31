@@ -34,6 +34,7 @@ pub mod eqtable;
 pub mod equal;
 pub mod literal;
 pub mod error;
+pub mod evidence;
 pub mod num;
 pub mod port;
 pub mod prim;
@@ -48,7 +49,7 @@ pub use error::{Outcome, Thrown};
 pub use num::N;
 pub use prim::{integer_value, low_64_bits, never_collects, EngineOp, PrimDef, PrimKind, PRIMITIVES};
 pub use print::{display_value, write_value};
-pub use runtime::{CallNative, MachineCode, NativeExit, PlaceCode, RunWord, Runtime, Sink, Stage};
+pub use runtime::{CallNative, MachineCode, NativeExit, PlaceCode, RunWord, Runtime, Sink, Sessions, Stage, StageCheck, StageLower};
 
 use fixpt_heap::Value;
 

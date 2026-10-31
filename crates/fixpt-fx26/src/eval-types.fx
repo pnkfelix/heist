@@ -1,4 +1,5 @@
-;;; The evaluator's types (`eval-values.fx`, `eval-prims.fx`, `eval-core.fx`):
+;;; The evaluator's types (`eval-values.fx`, `eval-prims.fx`, `eval-bloblets.fx`,
+;;; `eval-core.fx`):
 ;;; a module file of no state, which each of them loads (`TODO.md` §68). Its
 ;;; values and their effects, and the signatures of the evaluator's own
 ;;; modules as the others use them.
@@ -28,7 +29,18 @@
 ;; (`fx26:processes.fx`, which the program loads and this runs).
 (define-effect scheduling (maxeff (read @sched) (write @sched) (alloc @sched)))
 
-(define-effect runs (maxeff stores (read @x) (write @x) (alloc @x) io-any scheduling))
+
+;; And reading and parsing the code `stage` is given, which this runs
+;; itself (`eval-core.fx`'s `ev-stage`), at the front end's regions, and
+;; the lists the reader hands back.
+(hide (define parser-types ((proj (load-module "fx26:parser-types.fx") @s @e @m @c @p))))
+(import parser-types (effect parses))
+(hide (define eager-reader-types ((proj (load-module "fx26:eager-reader-types.fx") @s @e @m @c))))
+(import eager-reader-types (effect reading))
+
+(define-effect runs
+  (maxeff stores (read @x) (write @x) (alloc @x) io-any scheduling parses reading (read @c)
+          (alloc @c)))
 
 (define-effect evals (maxeff runs (goto @x) (comefrom @x) spin))
 
@@ -67,7 +79,10 @@
   (o-once (oneshot val val (maxeff runs spin) @x) (ref bool @v))
   ;; A `cwcc` escape.
   (o-esc (subr (goto @x) (val) void))
-  (o-key (mark-key val @x)))
+  (o-key (mark-key val @x))
+  ;; One of the runtime's, never looked in: a session, or a pending
+  ;; definition (`eval-core.fx`, "sessions").
+  (o-host (arrayof val @v)))
 
 (define-type vals (listof val @v))
 
@@ -136,12 +151,16 @@
    (val the-unit val)
    (val val->vals (subr (maxeff (read @globals) (read @v) (alloc @v) spin) (val) vals))
    (val vals->val (subr (maxeff (read @globals) (read @v) (alloc @v) spin) (vals) val))))
-;; The primitives' module as `eval-core.fx` uses it.
-(define-type eval-prims-sig
+;; The bloblets' module as `eval-core.fx` uses it (`eval-bloblets.fx`).
+(define-type eval-bloblets-sig
   (moduleof
    (val ev-bloblet (subr (maxeff evals spin) (symbol int vals) val))
    (val ev-bref (subr (maxeff evals spin) (val int) val))
    (val ev-blobref (subr (maxeff evals spin) (symbol int vals) val))
    (val ev-flat-tag (subr (maxeff evals spin) (val int) val))
-   (val ev-label-is? (subr (read @globals) (val symbol int) bool))
+   (val ev-label-is? (subr (read @globals) (val symbol int) bool))))
+;; The primitives' module as `eval-core.fx` uses it.
+(define-type eval-prims-sig
+  (moduleof
+   (val prim! (subr (maxeff stores spin) (symbol vproc) unit))
    (val standard (subr (maxeff evals spin) (symbol) val))))

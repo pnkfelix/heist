@@ -16,7 +16,8 @@
        (check-print-parts-types (load-module "fx26:check-print-parts-types.fx"))
        (check-calls-types (load-module "fx26:check-calls-types.fx"))
        (check-logic-types (load-module "fx26:check-logic-types.fx"))
-       (check-resolve-types (load-module "fx26:check-resolve-types.fx")))
+       (check-resolve-types (load-module "fx26:check-resolve-types.fx"))
+       (check-subtype-types (load-module "fx26:check-subtype-types.fx")))
   ;; What it is given: the modules of the files before it that it uses.
   (lambda ((check-infer (select check-infer-types check-infer-sig))
            (check-types (select check-types-types check-types-sig))
@@ -28,7 +29,11 @@
            (check-binders (select check-binders-types check-binders-sig))
            (check-print-parts (select check-print-parts-types check-print-parts-sig))
            (check-logic (select check-logic-types check-logic-sig))
-           (check-resolve (select check-resolve-types check-resolve-sig)))
+           (check-resolve (select check-resolve-types check-resolve-sig))
+           ;; Subtyping, and substitution, for where a bound may stand
+           ;; (`k-monotone-in?`).
+           (check-subtype (select check-subtype-types check-subtype-sig))
+           (check-subst (select check-subst-types check-subst-sig)))
     (module
 (hide (include check-test-facts-types) (include check-types-types) (include check-subst-types))
 ;; The types it uses of the files before it.
@@ -36,6 +41,8 @@
 (hide (include check-binders) (include check-types) (include check-env) (include check-sc-graphs)
       (include check-print-parts) (include check-calls) (include check-logic))
 (import check-resolve k-at-of k-start k-end)
+(import check-subtype k-subtype)
+(import check-subst k-subst)
 (import check-env-types n-staged)
 
 (define k-branch-facts-of (->* (k-fact-list k-fact-list) k-branch-facts)
@@ -121,51 +128,224 @@
       (x-app (f args a b abk)
         (let ((op (k-std-op f)))
           (cond ((string=? op "native-procedure") (k-made-native te a b))
-                ((k-stage-op? f) (k-staged args te))
+                ((not (string=? (k-stage-op f) "")) (k-staged (k-stage-op f) args te))
                 (else (k-array-sized op args te)))))
       (else y te))))
-;; Whether `f` is `stage`'s operator, `(proj %stage E R)`.
-(define k-stage-op? (->* (kx) bool)
+;; Which of `stage`'s operators `f` is, `(proj %stage E R)` or a session's:
+;; `%stage` or `%session-check`; or evidence's, `%reify-effect`,
+;; `%reify-region` or `%reify-type`; or "".
+(define k-stage-op (->* (kx) string)
   (lambda (f)
-    (tagcase f
-      (x-proj (body ds a b abk) (string=? (k-std-op body) "%stage"))
-      (else y (string=? (k-std-op f) "%stage")))))
+    (let ((op (tagcase f (x-proj (body ds a b abk) (k-std-op body)) (else y (k-std-op f)))))
+      (if (or (string=? op "%stage") (string=? op "%session-check") (string=? op "%reify-effect")
+              (string=? op "%reify-region") (string=? op "%reify-type"))
+          op
+          ""))))
 ;; `stage` (`docs/research/eval.md`): `((proj %stage E R) m code)`, `m` a
-;; module's name, its call's type `te`, `(sumof (ok (subr E () R)) …)`.
-;; `m`'s type, `E` and `R` noted at the code, printed with no `define-type`
-;; named, for the compilers to give the checker that runs then
-;; (`n-staged`).
-(define k-staged (->* (kxs k-te) k-te)
-  (lambda (args te)
-    (let ((m (car args)) (code (car (cdr args))))
+;; module's name, its call's type `te`, `(sumof (ok (subr E () R)) …)`; or
+;; a session's, `s` a session's name, `M` its type's, and a definition's
+;; `(sumof (ok (pending E r)) …)`. `M`, `E` and `R` (none for a definition)
+;; noted at the code, printed with no `define-type` named, for the
+;; compilers to give the checker that runs then (`n-staged`).
+(define k-staged (->* (string kxs k-te) k-te)
+  (lambda (op args te)
+    (if (string=? (substring op 0 2) "%r")
+        (k-reified op (car args) te)
+        (k-staged-code op args te))))
+(define k-staged-code (->* (string kxs k-te) k-te)
+  (lambda (op args te)
+    (let* ((m (car args)) (code (car (cdr args))) (given (car (cdr (cdr args))))
+           (form (substring op 1 (string-length op)))
+           (what (if (string=? op "%stage") "a module" "a session")))
       (tagcase m
         (x-var (n a b abk)
-          (let ((mt (k-resolve (k-lookup n))))
+          (let* ((mt (k-resolve (k-lookup n)))
+                 (wrong (lambda ()
+                          (k-fail (string-append "`" form "` takes " what ", not a "
+                                                 ((with check-print k-show-ty) mt))
+                                  a b))))
             (tagcase (k-get mt)
               (ty-module (abs ds vs)
-                (begin (k-note-staged (k-at-of code) mt (extract te 1)) te))
-              (else y (k-fail (string-append "`stage` takes a module, not a "
-                                             ((with check-print k-show-ty) mt))
-                              a b)))))
-        (else y (k-fail "`stage` takes a module by its name" (k-start m) (k-end m)))))))
-(define k-note-staged (->* (k-at int int) unit)
-  (lambda (at mt t)
-    (tagcase (k-get (k-resolve t))
-      (ty-sum (parts)
-        (let ((ok (k-get (k-resolve (k-staged-ok parts)))))
-          (tagcase ok
+                (if (string=? op "%stage")
+                    (begin (k-note-staged (k-at-of code) mt (extract te 1) given form) te)
+                    (wrong)))
+              (ty-named (g ds)
+                (cond ((or (string=? op "%stage") (not (= g 15)) (null? ds)) (wrong))
+                      (else (tagcase (car ds)
+                              (dt (t) (begin (k-note-staged (k-at-of code) t (extract te 1) given
+                                                            form)
+                                             te))
+                              (else z (wrong))))))
+              (else y (wrong)))))
+        (else y (k-fail (string-append "`" form "` takes " what " by its name")
+                        (k-start m) (k-end m)))))))
+;; `M`, `E` and `R` of `stage`'s call of type `t`, noted at the code: `(sumof
+;; (ok X) …)`, `X` `(subr E () R)`, or a session's `(sumof (expression (subr E
+;; () R)) …)`.
+(define k-note-staged (->* (k-at int int kx string) unit)
+  (lambda (at mt t given form)
+    (let* ((ok (k-staged-part t 'ok))
+           (x (if (< ok 0) -1 (let ((e (k-staged-part ok 'expression))) (if (< e 0) ok e)))))
+      (if (< x 0)
+          #u
+          (tagcase (k-get (k-resolve x))
             (ty-subr (e ps r cv spc)
               (let* ((show (with check-print k-show-ty-whole))
-                     (n (n-staged (show mt) (k-show-effect e) (show r))))
+                     (on (set k-show-marks #t))
+                     (free (k-free-shown (list (show mt) (k-show-effect e) (show r))))
+                     (off (set k-show-marks #f))
+                     ;; What the code is checked as, `(subr pure (M) (subr E () R))`.
+                     (checked (k-ty-new (ty-subr nil (list mt) (k-ty-new (ty-subr e nil r cv nil))
+                                                 cv nil)))
+                     (names (k-given-names given free checked #t form))
+                     (n (n-staged (show mt) (k-show-effect e) (show r) names)))
                 (set k-extracts (cons (product (1 at) (2 n)) (get k-extracts)))))
-            (else y #u))))
-      (else y #u))))
-;; The type of the `ok` of `stage`'s sum.
-(define k-staged-ok (->* (k-parts) int)
-  (lambda (ps)
-    (cond ((null? ps) -1)
-          ((symbol=? (extract (car ps) 1) 'ok) (extract (car ps) 2))
-          (else (k-staged-ok (cdr ps))))))
+            (else y #u))))))
+;; A `reify-…`'s call, `op`, of `given`, the evidence it is given, of type
+;; `te`, its `(effectrep E)`, `(regionrep r)` or `(typerep T)`: what it is
+;; of, printed whole, noted at `given`, as the effect, or a region's, or the
+;; type; a region a variable names, of no evidence, one of its own (`fresh`).
+(define k-reified (->* (string kx k-te) k-te)
+  (lambda (op given te)
+    (tagcase (k-get (k-resolve (extract te 1)))
+      (ty-named (g ds)
+        (if (null? ds)
+            te
+            (let* ((show (with check-print k-show-ty-whole)) (d (car ds))
+                   (text (lambda ()
+                           (tagcase d (dt (t) (show t)) (de (e) (k-show-effect e))
+                             (dr (r) (k-region-show r)) (else z ""))))
+                   (on (set k-show-marks #t)) (free (k-free-shown (list (text))))
+                   (off (set k-show-marks #f))
+                   (region (string=? op "%reify-region"))
+                   (form (substring op 1 (string-length op)))
+                   (names (k-given-names given free -1 (not region) form))
+                   (fresh (if (and region (string=? names "")
+                                   (or (not (null? free))
+                                       (tagcase d
+                                         (dr (r) (tagcase r (r-fresh (i n) #t) (else z #f)))
+                                         (else z #f))))
+                              "fresh"
+                              ""))
+                   (shown (text))
+                   (n (if (string=? op "%reify-type")
+                          (n-staged fresh "" shown names)
+                          (n-staged fresh shown "" names))))
+              (begin (set k-extracts (cons (product (1 (k-at-of given)) (2 n)) (get k-extracts)))
+                     te))))
+      (else y te))))
+;; The names, as printed, of the variables of which `given`, `(product (1
+;; g) …)`, each `g` a variable, is the evidence, in order, apart by spaces;
+;; each of `free` one of them, if `needed`, or `form` refused. A bound may
+;; be of less than its variable, so `checked`, the type the code is checked
+;; as (-1 for none), must be monotone in it; and a `reify-…`, which makes
+;; exact evidence, is given none (`Checker::evidence`).
+(define k-given-names (->* (kx k-ids int bool string) string)
+  (lambda (given free checked needed form)
+    (let ((of (tagcase given
+                (x-product (fs a b abk) (k-given-vars fs form))
+                (else y (the k-given nil)))))
+      (begin (if needed (k-given-all free of form given) #u)
+             (k-given-bounds of checked form given)
+             (k-given-text of "")))))
+;; What each piece of evidence is of: a variable, its name, and whether it
+;; is a bound; or a region a `letregion` makes (-1) and its.
+(define-type k-given (listof (productof (1 int) (2 string) (3 bool)) acyclic))
+;; Each bound of `of` where it may stand in `checked`, in a form that takes
+;; one; else `form` refused, at `given`.
+(define k-given-bounds (->* (k-given int string kx) unit)
+  (lambda (of checked form given)
+    (if (null? of)
+        #u
+        (let ((v (extract (car of) 1)) (n (extract (car of) 2)))
+          (cond ((not (extract (car of) 3)) (k-given-bounds (cdr of) checked form given))
+                ((and (>= (string-length form) 6) (string=? (substring form 0 6) "reify-"))
+                 (k-fail (string-append "`" form "` makes exact evidence, so it is given exact "
+                                        "evidence, and this is a bound of `" n "`")
+                         (k-start given) (k-end given)))
+                ((or (< checked 0) (k-monotone-in? checked v))
+                 (k-given-bounds (cdr of) checked form given))
+                (else
+                 (k-fail (string-append "`" form "` is given a bound of `" n "`, which may be of "
+                                        "less than `" n "` is: `" n "` may stand only where less "
+                                        "is safe, in the effect, and in what is given, not taken; "
+                                        "or give its exact evidence")
+                         (k-start given) (k-end given))))))))
+;; Whether type `t` is monotone in `v`, an effect's or a type's variable,
+;; rigid: a supertype of itself with `v` the least there is, `pure` or
+;; `void` (`Checker::monotone_in`). Each place `v` is taken, or compared
+;; exactly, then asks `v` to be within the least, which it is not.
+(define k-monotone-in? (->* (int int) bool)
+  (lambda (t v)
+    (let ((least (if (= (k-dvar-kind v) 1) (de nil) (dt (k-ty-new (ty-void))))))
+      (k-subtype (k-subst t (list (cons v least))) t))))
+;; The variable of which each of fields `fs` is the evidence.
+(define k-given-vars (->* ((listof (productof (1 symbol) (2 kx)) acyclic) string) k-given)
+  (lambda (fs form)
+    (if (null? fs)
+        nil
+        (let* ((x (extract (car fs) 2))
+               (v (tagcase x
+                    (x-var (n a b abk) (k-rep-var (k-lookup n)))
+                    (else y nil))))
+          (if (null? v)
+              (k-fail (string-append "`" form "` is given evidence of a variable, an `(effectrep "
+                                     "e)`, a `(regionrep r)`, a `(typerep t)`, an `(effectbound "
+                                     "e)` or a `(typebound t)`")
+                      (k-start x) (k-end x))
+              (cons (car v) (k-given-vars (cdr fs) form)))))))
+;; The variable type `t` is the evidence of, its name, and whether it is a
+;; bound (generative types 20 and 21), in a list of one; none if none.
+(define k-rep-var (->* (int) k-given)
+  (lambda (t)
+    (let* ((g (tagcase (k-get (k-resolve t)) (ty-named (g ds) g) (else y -1)))
+           (var (lambda ((v int))
+                  (list (product (1 v) (2 (symbol->string (k-dvar-name v))) (3 (>= g 20)))))))
+      (tagcase (k-get (k-resolve t))
+        (ty-named (g ds)
+          (if (or (null? ds) (< g 17) (> g 21))
+              nil
+              (tagcase (car ds)
+                (dt (x) (tagcase (k-get (k-resolve x)) (ty-var (v) (var v)) (else y nil)))
+                (de (e) (if (= (k-length e) 1) (tagcase (car e) (a-var (v) (var v)) (else y nil))
+                            nil))
+                (dr (r) (tagcase r
+                          (r-var (v) (var v))
+                          (r-fresh (i n) (list (product (1 -1) (2 n) (3 #f))))
+                          (else y nil)))
+                (else y nil))))
+        (else y nil)))))
+;; Each of `free` among `of`, or `form` refused, at `given`.
+(define k-given-all (->* (k-ids k-given string kx) unit)
+  (lambda (free of form given)
+    (cond ((null? free) #u)
+          ((k-given-member? (car free) of) (k-given-all (cdr free) of form given))
+          (else
+           (let* ((v (car free)) (n (symbol->string (k-dvar-name v)))
+                  (k (k-dvar-kind v))
+                  (rep (cond ((= k 0) "regionrep") ((= k 1) "effectrep") (else "typerep")))
+                  (make (cond ((= k 0) "reify-region") ((= k 1) "reify-effect")
+                              (else "reify-type"))))
+             (k-fail (string-append "`" form "`'s code is checked, as the program runs, against `"
+                                    n "`, a variable: give it its evidence, a `(" rep " " n
+                                    ")` (`" make "`), in `(given …)`")
+                     (k-start given) (k-end given)))))))
+;; The names of `vs`, apart by spaces, after `acc`.
+(define k-given-text (->* (k-given string) string)
+  (lambda (vs acc)
+    (if (null? vs)
+        acc
+        (k-given-text (cdr vs) (string-append acc (if (string=? acc "") "" " ")
+                                              (extract (car vs) 2))))))
+(define k-given-member? (->* (int k-given) bool)
+  (lambda (v vs)
+    (and (not (null? vs)) (or (= (extract (car vs) 1) v) (k-given-member? v (cdr vs))))))
+;; Sum type `t`'s part labelled `l`, or -1.
+(define k-staged-part (->* (int symbol) int)
+  (lambda (t l)
+    (tagcase (k-get (k-resolve t))
+      (ty-sum (parts) (k-part-find parts l))
+      (else y -1))))
 (define k-made-native (->* (k-te int int) k-te)
   (lambda (te a b)
     (tagcase (k-get (extract te 1))

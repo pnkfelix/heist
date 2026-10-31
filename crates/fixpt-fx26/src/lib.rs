@@ -209,6 +209,10 @@ pub const CHECK_PROOFS_TYPES: &str = include_str!("check-proofs-types.fx");
 /// `check-program.fx`: a `load-input` file, which the conductor applies (`TODO.md` §68).
 pub const CHECK_PROGRAM: &str = include_str!("check-program.fx");
 
+/// `check-program-defs.fx`: what a program's top-level forms define, made by
+/// [`CHECK_PROGRAM`] of the modules it is given (`TODO.md` §188).
+pub const CHECK_PROGRAM_DEFS: &str = include_str!("check-program-defs.fx");
+
 /// `check-effects-types.fx`: types and signatures, a module file of no state (`TODO.md` §68).
 pub const CHECK_EFFECTS_TYPES: &str = include_str!("check-effects-types.fx");
 
@@ -264,6 +268,10 @@ pub const CHECK_MODORDER: &str = include_str!("check-modorder.fx");
 
 /// `check-synth.fx`: a `load-input` file, which the conductor applies (`TODO.md` §68).
 pub const CHECK_SYNTH: &str = include_str!("check-synth.fx");
+
+/// `check-synth-parts.fx`: parts of the rules, made by
+/// [`CHECK_SYNTH`] of the modules it is given (`TODO.md` §188).
+pub const CHECK_SYNTH_PARTS: &str = include_str!("check-synth-parts.fx");
 
 /// `check-blobrefs-types.fx`: types and signatures, a module file of no state (`TODO.md` §68).
 pub const CHECK_BLOBREFS_TYPES: &str = include_str!("check-blobrefs-types.fx");
@@ -361,8 +369,18 @@ pub const CHECK_READ_HELPERS_TYPES: &str = include_str!("check-read-helpers-type
 /// `check-read-descs.fx`: a `load-input` file, which the conductor applies (`TODO.md` §68).
 pub const CHECK_READ_DESCS: &str = include_str!("check-read-descs.fx");
 
+/// `check-read-ahead.fx`: what a program declares ahead, made by
+/// [`CHECK_READ_DESCS`] of the modules it is given (`TODO.md` §188).
+pub const CHECK_READ_AHEAD: &str = include_str!("check-read-ahead.fx");
+
 /// `check-read-helpers.fx`: a `load-input` file, which the conductor applies (`TODO.md` §68).
 pub const CHECK_READ_HELPERS: &str = include_str!("check-read-helpers.fx");
+
+/// `check-flat-types.fx`: types and signatures, a module file of no state (`TODO.md` §68).
+pub const CHECK_FLAT_TYPES: &str = include_str!("check-flat-types.fx");
+
+/// `check-flat.fx`: a `load-input` file, which the conductor applies (`TODO.md` §68).
+pub const CHECK_FLAT: &str = include_str!("check-flat.fx");
 
 /// `check-proving.fx`: a `load-input` file, which the conductor applies (`TODO.md` §68).
 pub const CHECK_PROVING: &str = include_str!("check-proving.fx");
@@ -399,6 +417,10 @@ pub const CHECK_PRINT: &str = include_str!("check-print.fx");
 /// `check-print-parts.fx`: a `load-input` file, which the conductor applies (`TODO.md` §68).
 pub const CHECK_PRINT_PARTS: &str = include_str!("check-print-parts.fx");
 
+/// `check-sizes.fx`: sizes, linear, and what the facts in force say of them, made by
+/// [`CHECK_PRINT_PARTS`] of the modules it is given (`TODO.md` §188).
+pub const CHECK_SIZES: &str = include_str!("check-sizes.fx");
+
 /// `check-env.fx`: a `load-input` file, which the conductor applies (`TODO.md` §68).
 pub const CHECK_ENV: &str = include_str!("check-env.fx");
 
@@ -407,6 +429,10 @@ pub const CHECK_EFFECTS: &str = include_str!("check-effects.fx");
 
 /// `check-types.fx`: a `load-input` file, which the conductor applies (`TODO.md` §68).
 pub const CHECK_TYPES: &str = include_str!("check-types.fx");
+
+/// `check-types-arena.fx`: the arena of type nodes and their interning, made by
+/// [`CHECK_TYPES`] of the tables it is given (`TODO.md` §188).
+pub const CHECK_TYPES_ARENA: &str = include_str!("check-types-arena.fx");
 
 /// Hash tables' types: a module file of no state (`TODO.md` §68).
 pub const TABLE_TYPES: &str = include_str!("table-types.fx");
@@ -439,6 +465,10 @@ pub const PARSER_TOP: &str = include_str!("parser-top.fx");
 /// Rust front end's alike). After [`PARSER_EXPS`], before [`PARSER_TOP`].
 pub const PARSER_IDS: &str = include_str!("parser-ids.fx");
 
+/// The parser's record of the files a program loads, its `include`s and its
+/// shared loads: loaded by [`PARSER`], which gives on what it defines.
+pub const PARSER_LOADS: &str = include_str!("parser-loads.fx");
+
 /// The parser's expressions, and its `load-module`
 /// (`docs/research/first-class-modules.md`, M7): the files a program names,
 /// as the driver read them. After [`PARSER`], before [`PARSER_TOP`].
@@ -447,10 +477,11 @@ pub const PARSER_EXPS: &str = include_str!("parser-exps.fx");
 /// The evaluator written in FX-26, which runs the parser's trees: a
 /// metacircular evaluator (rewritten 2026-10-08). Its values, a union of the
 /// program's own where FX-26 has their shape;
-/// its primitives, in a table by symbol; and the evaluator proper, with its
-/// entry points.
+/// its primitives, in a table by symbol; its bloblets and blobrefs; and the
+/// evaluator proper, with its entry points.
 pub const EVAL_VALUES: &str = include_str!("eval-values.fx");
 pub const EVAL_PRIMS: &str = include_str!("eval-prims.fx");
+pub const EVAL_BLOBLETS: &str = include_str!("eval-bloblets.fx");
 pub const EVAL_CORE: &str = include_str!("eval-core.fx");
 
 /// The evaluator's types and the signatures of its modules: a module file of
@@ -463,6 +494,10 @@ pub const CONDUCTOR: &str = include_str!("conductor.fx");
 
 /// The compiler from FX-26 to cellular words, written in FX-26.
 pub const COMPILER: &str = include_str!("compile.fx");
+
+/// What the checker found of the program being compiled, by expression:
+/// made by [`COMPILER`] of the modules it is given (`TODO.md` §188).
+pub const COMPILE_FACTS: &str = include_str!("compile-facts.fx");
 
 /// Its other parts, in order: lambda lifting and the standard operations;
 /// expressions; the middle phase's plan of a form. Then the register
@@ -563,6 +598,10 @@ pub const NATIVE_DIRECT_X64_PROC: &str = include_str!("native-direct-x64-proc.fx
 pub const NATIVE_DIRECT_X64_OPS: &str = include_str!("native-direct-x64-ops.fx");
 pub const NATIVE_DIRECT_X64_PRIMS: &str = include_str!("native-direct-x64-prims.fx");
 
+/// `native-direct-x64-strings.fx`: the primitives of strings and characters, made by
+/// [`NATIVE_DIRECT_X64_PRIMS`] of the modules it is given (`TODO.md` §188).
+pub const NATIVE_DIRECT_X64_STRINGS: &str = include_str!("native-direct-x64-strings.fx");
+
 /// The loop over the instructions, what is placed after them, and the
 /// entry Rust calls.
 pub const NATIVE_DIRECT_X64: &str = include_str!("native-direct-x64.fx");
@@ -639,7 +678,7 @@ pub const READER: &str = include_str!("reader.fx");
 /// The module files built in, each loaded by the one after
 /// (`(load-module "fx26:name")`, [`built_in_module`]), the last by
 /// [`READER`]: the reader and the parser, of the reader's regions.
-pub const FRONT_END_MODULES: [(&str, &str); 171] = [
+pub const FRONT_END_MODULES: [(&str, &str); 182] = [
     ("eager-reader-types.fx", EAGER_READER_TYPES),
     ("eager-reader-states.fx", EAGER_READER_STATES),
     ("syn.fx", SYN),
@@ -688,6 +727,7 @@ pub const FRONT_END_MODULES: [(&str, &str); 171] = [
     ("eager-reader.fx", EAGER_READER),
     ("parser-types.fx", PARSER_TYPES),
     ("parser.fx", PARSER),
+    ("parser-loads.fx", PARSER_LOADS),
     ("parser-forms.fx", PARSER_FORMS),
     ("parser-exps.fx", PARSER_EXPS),
     ("parser-ids.fx", PARSER_IDS),
@@ -695,6 +735,7 @@ pub const FRONT_END_MODULES: [(&str, &str); 171] = [
     ("eval-types.fx", EVAL_TYPES),
     ("eval-values.fx", EVAL_VALUES),
     ("eval-prims.fx", EVAL_PRIMS),
+    ("eval-bloblets.fx", EVAL_BLOBLETS),
     ("eval-core.fx", EVAL_CORE),
     ("native-layout.fx", NATIVE_LAYOUT),
     ("arm64.fx", ARM64),
@@ -714,6 +755,7 @@ pub const FRONT_END_MODULES: [(&str, &str); 171] = [
     ("native-direct-x64-proc.fx", NATIVE_DIRECT_X64_PROC),
     ("native-direct-x64-ops.fx", NATIVE_DIRECT_X64_OPS),
     ("native-direct-x64-prims.fx", NATIVE_DIRECT_X64_PRIMS),
+    ("native-direct-x64-strings.fx", NATIVE_DIRECT_X64_STRINGS),
     ("native-direct-x64.fx", NATIVE_DIRECT_X64),
     ("native-x64-regs-ops.fx", NATIVE_X64_REGS_OPS),
     ("native-x64-regs.fx", NATIVE_X64_REGS),
@@ -740,6 +782,7 @@ pub const FRONT_END_MODULES: [(&str, &str); 171] = [
     ("compile-state.fx", COMPILE_STATE),
     ("compile-lift.fx", COMPILE_LIFT),
     ("compile.fx", COMPILER),
+    ("compile-facts.fx", COMPILE_FACTS),
     ("standard.fx", STANDARD_OPS),
     ("layout.fx", LAYOUT),
     ("check-proofs-types.fx", CHECK_PROOFS_TYPES),
@@ -750,6 +793,7 @@ pub const FRONT_END_MODULES: [(&str, &str); 171] = [
     ("check-errors-types.fx", CHECK_ERRORS_TYPES),
     ("check-effects-types.fx", CHECK_EFFECTS_TYPES),
     ("check-program.fx", CHECK_PROGRAM),
+    ("check-program-defs.fx", CHECK_PROGRAM_DEFS),
     ("check-proofs.fx", CHECK_PROOFS),
     ("check-proving-types.fx", CHECK_PROVING_TYPES),
     ("check-logic-types.fx", CHECK_LOGIC_TYPES),
@@ -765,6 +809,7 @@ pub const FRONT_END_MODULES: [(&str, &str); 171] = [
     ("check-facts-types.fx", CHECK_FACTS_TYPES),
     ("check-blobrefs-types.fx", CHECK_BLOBREFS_TYPES),
     ("check-synth.fx", CHECK_SYNTH),
+    ("check-synth-parts.fx", CHECK_SYNTH_PARTS),
     ("check-facts.fx", CHECK_FACTS),
     ("check-blobrefs.fx", CHECK_BLOBREFS),
     ("check-letrec.fx", CHECK_LETREC),
@@ -794,7 +839,10 @@ pub const FRONT_END_MODULES: [(&str, &str); 171] = [
     ("check-resolve.fx", CHECK_RESOLVE),
     ("check-generative.fx", CHECK_GENERATIVE),
     ("check-read-helpers-types.fx", CHECK_READ_HELPERS_TYPES),
+    ("check-flat-types.fx", CHECK_FLAT_TYPES),
+    ("check-flat.fx", CHECK_FLAT),
     ("check-read-descs.fx", CHECK_READ_DESCS),
+    ("check-read-ahead.fx", CHECK_READ_AHEAD),
     ("check-read-helpers.fx", CHECK_READ_HELPERS),
     ("check-proving.fx", CHECK_PROVING),
     ("check-logic.fx", CHECK_LOGIC),
@@ -808,9 +856,11 @@ pub const FRONT_END_MODULES: [(&str, &str); 171] = [
     ("check-print-parts-types.fx", CHECK_PRINT_PARTS_TYPES),
     ("check-print.fx", CHECK_PRINT),
     ("check-print-parts.fx", CHECK_PRINT_PARTS),
+    ("check-sizes.fx", CHECK_SIZES),
     ("check-env.fx", CHECK_ENV),
     ("check-effects.fx", CHECK_EFFECTS),
     ("check-types.fx", CHECK_TYPES),
+    ("check-types-arena.fx", CHECK_TYPES_ARENA),
 ];
 
 /// A `load-module` path naming a module file built in, in
@@ -827,9 +877,13 @@ pub fn built_in_module(path: &str) -> Option<&'static str> {
 
 /// Libraries written in FX-26 that a program loads by name, `(load-module
 /// "fx26:conditions.fx")`: raising and handling conditions (`TODO.md` §89,
-/// `docs/research/conditions.md`).
-pub const STANDARD_MODULES: [(&str, &str); 2] =
-    [("conditions.fx", include_str!("conditions.fx")), ("processes.fx", include_str!("processes.fx"))];
+/// `docs/research/conditions.md`); the scheduler; sessions in the
+/// condition-raising style (`docs/research/eval.md`, "Sessions").
+pub const STANDARD_MODULES: [(&str, &str); 3] = [
+    ("conditions.fx", include_str!("conditions.fx")),
+    ("processes.fx", include_str!("processes.fx")),
+    ("session-conditions.fx", include_str!("session-conditions.fx")),
+];
 
 /// The front end's files, by name, in the order [`front_end`] joins them;
 /// [`bootstrap_program`] puts `bootstrap.fx` after them. The module files
@@ -922,7 +976,11 @@ mod terminate;
 pub mod cellular;
 pub mod debts;
 pub mod fasl;
+pub mod rust_facts;
+pub mod sessions;
+pub(crate) mod sessions26;
 pub mod stage;
+pub mod sx;
 pub mod typeat;
 pub mod query;
 pub mod standard;

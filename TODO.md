@@ -4268,7 +4268,271 @@ FX-26; `code` a datum. Left, in order:
 2. Interruptible and cancellable checking: the front end's call made from
    the program's task, not inside a primitive.
 3. Types `M`, `E` or `R` that name the program's own: generative types,
-   `(select m t)`, regions it declares; the refusal of an effect beyond
-   `E` said of the code, not of the wrapping `(subr E () R)`.
-4. `rs-scheme-vm` and `fx-ast-eval`, which refuse every `stage` now.
-5. Sessions (`docs/research/eval.md`, "Sessions").
+   `(select m t)`; the refusal of an effect beyond `E` said of the code,
+   not of the wrapping `(subr E () R)`. Variables, and `letregion`'s
+   regions, done: evidence (`DONE.md` §186, "Evidence"). Left of it:
+   evidence of a description function, a size or a convention; evidence
+   of "at least `e`", by making evidence an interval, if a program wants
+   it (`docs/research/eval.md`, "Evidence as an interval?"); and, in
+   the checker written in FX-26, a `letregion`'s region named at `stage`
+   with no evidence refused as the program is checked (it is refused as
+   it runs, now).
+4. Sessions (`docs/research/eval.md`, "Sessions"): done on every
+   machine, with the condition-raising style as a library (`DONE.md`
+   §186).
+5. On `rs-scheme-vm` and `fx-ast-eval` the checker written in Rust
+   checks staged code (step 2, `DONE.md` §186); the one written in FX-26
+   there too, when checking is interruptible (2.), and blobrefs in it on
+   the evaluator.
+
+## 188. Files over 900 lines: refactoring candidates (the user's, 2026-10-31)
+
+Survey the files over 900 lines for seams to split along, before each
+reaches its limit (`fixpt_tidy::fx_size`: 1000 lines for an `.fx`, or its
+debt). Found pressing while adding evidence (§186): `compile.fx`, at 999,
+had no room for a line in `c-free`. On 2026-10-31, the `.fx` files:
+
+- `regcode-core.fx`, 1122
+- `check-rules.fx`, 1014
+- `check-read-helpers.fx`, 1000
+- `compile.fx`, 999
+- `check-types.fx`, 995
+- `check-read-descs.fx`, 989
+- `parser-exps.fx`, 985
+- `parser.fx`, 984
+- `check-program.fx`, 979
+- `eval-prims.fx`, 960
+- `check-synth.fx`, 960
+- `check-print-parts.fx`, 947
+- `native-direct-x64-prims.fx`, 943
+
+and 36 `.rs` files, which have no limit, the largest
+`fixpt-native/src/direct.rs`, at 6635 lines.
+
+**Started (2026-10-31).** A survey by script (top-level definitions, which
+the rest of each file names, which name the rest): a run of consecutive
+definitions nothing else in its file names can move to a module after
+it; one that names nothing else in its file, to a module before it. By
+token, so each is confirmed by hand before it moves. Done:
+`eval-prims.fx`'s bloblets and blobrefs, which nothing else there used,
+into `eval-bloblets.fx` (`DONE.md` §188), 964 lines to 770. Next, the
+runs that need nothing of their file and nothing of it them, to confirm:
+
+- `parser.fx` 739-953 (215 lines: `loaded` .. `module-items-of`);
+- `check-read-helpers.fx` 79-214 (136: `k-eff-is-var?` ..
+  `k-parts-reversed`) and 941-1001 (61: `k-in-fixed-range?` ..
+  `k-literal-op`);
+- `check-read-descs.fx` 390-465 (76: `k-read-in-order?` ..
+  `k-declared-later?`);
+- `check-synth.fx` 714-774 (61: `k-with-used` .. `k-may-be-empty?`).
+
+**Progress (2026-10-31).** Split out, each a module the file it left makes
+of what it is given and gives on by `import` (no signature, its users
+unchanged; `CLAUDES_CHOICES.md`, "Splitting front-end files"), or one the
+conductor makes (`check-flat.fx`): `eval-bloblets.fx`, `parser-loads.fx`,
+`check-flat.fx`, `compile-facts.fx`, `check-program-defs.fx`,
+`check-types-arena.fx`, `check-sizes.fx`, `check-synth-parts.fx`,
+`native-direct-x64-strings.fx`, `check-read-ahead.fx`. Over 900 lines
+still: `regcode-core.fx` and `check-rules.fx` (one recursive group each),
+`check-read-descs.fx` 921 (the rest one recursive group), and
+`parser-exps.fx` 995, whose runs use the `pfail` of its own `parser.fx`
+(its prompt's), so a part moved out must be given the failure, as
+`parser-forms.fx` is. Left of the plan below, for files under the limit
+now:
+
+Then the larger runs that need a few names of their file, the module
+moved to importing them: `check-read-helpers.fx` 294-892 (599 lines, 4
+names), `check-synth.fx` 218-787 (570, 5), `check-print-parts.fx`
+805-952 (148, 1), and `compile.fx` 45-638 (594, the first half, which
+names nothing of the rest; 15 of its names used there). Each split costs
+a signature: every name of the module moved that another uses, typed. Not
+`regcode-core.fx` and `check-rules.fx`, one recursive group each by
+choice (§41, §68).
+
+**Repeated code (2026-10-31, the user's asking).** A second survey by
+script: each top-level definition of the front end with its own name and
+its parameters' renamed, the rest compared as text. 38 groups are the same
+definition twice or more, under different names; the most:
+
+- a part of a `k-parts` by its label, eight times, and its position,
+  three: one each now, `k-part-find` and `k-part-position`
+  (`check-types.fx`; `DONE.md` §188);
+- the native layouts' tables of what never collects and of operands, each
+  twice (`native-x64-regs-layout.fx`, `native-direct-x64-layout.fx`), as
+  generated: one table, generated once;
+- a dozen list walks of two or three lines (appending, `onto`, counting,
+  rebinding, `nth`), the same but for the type of what is in the list:
+  one each would want polymorphic lists the front end does not use now,
+  or, better, generic programming (the user's: polytypic programming,
+  scrap-your-boilerplate, macros), which would also take the walks of
+  types that differ only in what each does at a node (substitution,
+  free variables, polarity, printing).
+
+Not counted, as written another way: the same walk with its parameters in
+another order, or `cond` for `and`/`or` (`k-has-id?` in `check-types.fx`,
+`k-id-in?` in `check-print-parts.fx`: one membership of an id, twice; and
+`k-given-member?`, of a field of each).
+
+## 189. Heap dumps for FX-26, for faster testing (the user's, 2026-10-31; urgent)
+
+Add heap dumping to FX-26: a running program's heap written to a file
+and loaded back, so that a test suite such as Heist's starts from the
+state its setup leaves (its libraries loaded, its prelude run), not by
+running that setup again for each test. For speeding up *testing*; first
+measure what each Heist test spends before its own code runs (front end,
+loading, the suite's setup), against the pinned snapshot only.
+
+**Measured (2026-10-31)**, on a copy of Heist's files (not its tree), with
+Fixpt as of this date: a test of s7st's takes 0.72 s warm (its `.fasl`s
+made), of which a program that does nothing takes 0.02 s; of the rest,
+in a profile, 64% Fixpt's Rust code and 18% libc, most of it checking
+each of s7st's 13 `.fasl`s against the Rust checker again
+(`fasl_type_text`, `stale_use`) and checking and compiling again every
+form not a procedure, 14% the FX-26 front end (each file's type
+definitions declared ahead, compiled again), and some 4% s7st's own code
+(its `s7-init!` too). So what a dump should skip is Fixpt's warm start,
+not s7st's setup.
+
+**The plan (the user's, 2026-10-31).** Whole-heap dumps atop the front end
+written in FX-26, whose checker's and compiler's state is in the heap
+(not the Rust checker's, which is not): `(dump-heap! path start)`, the
+heap written and `start` the procedure a resumed one calls, and the CLI's
+`fixpt dump IMAGE FILE…` (the files run, then `(dump-heap! IMAGE main)`)
+and `fixpt resume IMAGE -- ARGS`, its namespace still extensible. In
+order: (1) whether the FX-26 checker can be a program's only checker; (2)
+sessions on the FX-26 checker, when it is loaded; (3) the dumps.
+
+**(1) done.** Both checkers agree on the whole of s7st (joined), the
+editor, combo and ratfink. Checked and compiled by the front end written
+in FX-26 alone (an experiment, the files joined into one program, `main`
+called; not kept), s7st's tests (13), the editor's (9), combo's (31) and
+kit's (4) give what the usual path gives; cfa (two directories), ratfink's
+tests, the editor's ui and the conformance suites not tried. Cold, s7st so
+takes 1.5 s, against 3.6 s on the usual path with no `.fasl`s. Left for a
+run on it alone: a program of files in more than one directory, a
+top-level `include` (what it gives only the Rust checker says to the FX-26
+front end now), and `.fasl`s.
+
+**(2) on the cellular and register machines (2026-10-31).** A session's
+checker is its own front end's (`sessions26.rs`): the conductor's
+`session-step` (checked first, kept and compiled, or tried), the FX-26
+checker's `check-try` (a trial, undone: the trail unbound to its mark, its
+lists put back) and `check-redefines`, and `compile-checked-deferred` for
+a commit's `go`; and on `fx-ast-eval`, checking alone, the evaluator
+given each step's texts, a commit's runs named by the checker
+(`checked-run-names`) and their texts kept in the session's vector. Left:
+a session's region of its own (evidence), which the FX-26 checker cannot
+bind at a session's top level yet, so that such a session keeps the Rust
+checker; and `rs-scheme-vm`, which has no FX-26 front end.
+
+**(3) done (2026-10-31).** `fixpt dump IMAGE FILE…` (the files loaded by
+the front end written in FX-26 alone, `main` not called), `fixpt resume
+IMAGE [FILE…] [-- ARG…]` (the files checked and run after the forms the
+FX-26 checker holds, then `main` as it then is) and `(dump-heap! path
+start)`: the front end's pieces, the standard environment and the start
+written as the front end's cache is, after a header (the build, the
+machine and the sources' digests, their paths). On s7st (a copy of
+Heist's files, release build): the dump 2.9 s, 105 MB; a resume 0.02 s,
+against 0.72 s warm; its 13 tests 0.58 s against 46.9 s, the same
+results. Left: what a dump is keyed by is the files given, not those
+they load (`load-input`, `include`), whose change does not make it
+stale; a dump on `fx-regs-fxjit-nativecc`, whose front end is cellular
+(its native code is the program's, not kept); `,dump` in the REPL;
+Heist's runners on dumps (Heist's to decide; its tree is not ours); and
+the Rust checker's view after a resume, which knows nothing of the
+program, so that what needs it (sessions on the Rust checker, `stage`
+lowered) does not see the program's names.
+
+## 190. Q: why is `(define-datatype var (union symbol pat))` accepted? (the user's, 2026-10-31)
+
+Find out why this checks as a datatype definition, and whether it
+should: `define-type` would be the right form for it.
+
+```
+(define-datatype var (union symbol pat))
+```
+
+## 191. Q: `tagcase` binds a named product's fields by position (the user's, 2026-10-31)
+
+Why is a product with named fields taken apart by position, the arm's
+names unrelated to the fields'?
+
+```
+(tagcase (sum rect (product (w 1) (h 2))) (rect (x y) x))
+```
+
+Either (1) require a positional product for it, numeric fields
+(`(product (0 …) (1 …))`), or (2) allow names but require them to be the
+fields'; though (2) sits badly with the plan to make every label, of sums
+and products alike, the keyword syntax (§183).
+
+## 192. Q: `(the tree-loc '(1 2))` refused, `(the tree-loc (list 1 2))` accepted (the user's, 2026-10-31)
+
+With `(define-type tree-loc (listof nat acyclic))`, why is `(the tree-loc
+'(1 2))` refused (it is a `datum`, the checker says) when `(the tree-loc
+(list 1 2))` is accepted?
+
+## 193. `union` to tell sums apart by their tags (the user's, 2026-10-31)
+
+Make the `(union …)` system treat sums with distinct tags as distinct
+shapes, so that a union may hold two sum types whose tags differ.
+
+## 194. Pending type definitions and `union` (the user's, 2026-10-31)
+
+The pending type definitions (which the user relies on to define
+mutually recursive types one at a time at the REPL) do not work with
+`union`: a union refuses a type not yet defined at once.
+
+```
+(define-type a (sumof (#:a c)))
+(define-type b (sumof (#:b c)))
+(define-type c (union a b))
+=> <fx26:113>:1:23: `a` is not a type
+```
+
+## 195. Consider renaming `(union …)` (the user's, 2026-10-31)
+
+Consider renaming the `(union …)` type form `(disjoint-union …)`, or just
+`(disjoint …)`, so that `(union …)` is kept for a true union, one that
+does not care whether its members overlap.
+
+## 196. `(bool (then (shape …)))` of more than the core shapes (the user's, 2026-10-31)
+
+See whether `(bool (then (shape …)))` can be extended to prove that a
+value is of a type that is nearly arbitrary; now it is limited to a fixed
+set of core shapes (probably those `typecase` tells apart).
+
+## 197. A truthy `and` (the user's, 2026-10-31)
+
+Add `(and e1 e2 …)` that gives false or the last expression's value.
+
+## 198. `(listof T)` short for `(listof T acyclic)` (the user's, 2026-10-31)
+
+Make `(listof T)` short for `(listof T acyclic)`, as that is almost always
+what is wanted.
+
+## 199. Frame pointers in the code generators (the user's, 2026-10-31)
+
+Look into keeping frame pointers in the code each code generator emits
+(the JITs', the native convention's, register code's), so that `perf`
+and other profilers can walk the stack through generated code. Found
+profiling Heist's start-up (§189): without them a profile gives no
+callers for time in generated code, nor through it.
+
+## 200. A faster encoding of types in `.fasl` files (the user's, 2026-10-31)
+
+Investigate an encoding of a `.fasl`'s types that is cheaper to check a
+program against as it loads. Now each type a `.fasl` names is text,
+compared with the text the Rust checker prints of the type there now
+(`Checker::fasl_type_text`, `stale_use`): that printing was the largest
+part of a warm start of Heist's s7st (§189: 14% in `fasl_type_text`
+alone, more in the hashing, allocation and formatting under it). Ideas:
+
+- build in the checker's hashing of types and keep each type's hash in
+  the `.fasl` beside (or instead of) its text, so that a type is compared
+  by its hash first, printed only if the hashes differ, or never;
+- a serialized binary form of a type, not text, read without parsing and
+  compared structurally;
+
+and measure whether either wins, on s7st's warm start against a copy of
+Heist's files (not Heist's tree).
