@@ -303,26 +303,32 @@
 
 ;; R7RS 7.3's: a promise holds a box, (done? . value-or-thunk), shared by
 ;; the promises a `delay-force` chain makes, so that forcing it runs in
-;; constant space.
+;; constant space. R7RS's reference implementation, its helpers
+;; (`promise-done?`, `promise-update!`, …) written in place: each is a
+;; closure's call here, and a step of a long chain makes a dozen.
 (define-record-type promise (%promise box) promise? (box %promise-box %promise-box-set!))
-(define (%make-promise done? value) (%promise (cons done? value)))
-(define (%promise-done? p) (car (%promise-box p)))
-(define (%promise-value p) (cdr (%promise-box p)))
-(define (%promise-update! new old)
-  (set-car! (%promise-box old) (%promise-done? new))
-  (set-cdr! (%promise-box old) (%promise-value new))
-  (%promise-box-set! new (%promise-box old)))
 (define-syntax delay-force
-  (syntax-rules () ((_ expression) (%make-promise #f (lambda () expression)))))
+  (syntax-rules () ((_ expression) (%promise (cons #f (lambda () expression))))))
 (define-syntax delay
-  (syntax-rules () ((_ expression) (delay-force (%make-promise #t expression)))))
-(define (make-promise v) (if (promise? v) v (%make-promise #t v)))
+  (syntax-rules () ((_ expression) (%promise (cons #f (lambda () (%promise (cons #t expression))))))))
+(define (make-promise v) (if (promise? v) v (%promise (cons #t v))))
 (define (force promise)
-  (cond ((not (promise? promise)) promise)
-        ((%promise-done? promise) (%promise-value promise))
-        (else (let ((promise* ((%promise-value promise))))
-                (unless (%promise-done? promise) (%promise-update! (make-promise promise*) promise))
-                (force promise)))))
+  (if (promise? promise)
+      (let loop ()
+        (let ((box (%promise-box promise)))
+          (if (car box)
+              (cdr box)
+              (let* ((v ((cdr box)))
+                     (promise* (if (promise? v) v (%promise (cons #t v))))
+                     ;; Read again: forcing the thunk may have forced this.
+                     (box (%promise-box promise)))
+                (unless (car box)
+                  (let ((box* (%promise-box promise*)))
+                    (set-car! box (car box*))
+                    (set-cdr! box (cdr box*))
+                    (%promise-box-set! promise* box)))
+                (loop)))))
+      promise))
 
 ;;; ------------------------------------------------------------ hash tables
 

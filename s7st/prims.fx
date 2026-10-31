@@ -560,9 +560,15 @@ or an error."
 ;;; ------------------------------------------------------------ records
 
 "A procedure written in FX-26, made at run time (a record's constructor,
-predicate, accessor or modifier)."
+predicate, accessor or modifier), with a fast entry (value.fx's
+`s7-fast`): a record's accessors, predicate and small constructor have
+one, as a program calls them often."
+(define* s7-made-prim-fast (subr spin (string int int s7-fn s7-fast) s7-value)
+  (lambda (name min max f fast)
+    (sum prim (product (name name) (min min) (max max) (op (sum fn f)) (pure (s7-pure-name? name)) (fast fast)))))
+"The same, with none."
 (define* s7-made-prim (subr spin (string int int s7-fn) s7-value)
-  (lambda (name min max f) (sum prim (product (name name) (min min) (max max) (op (sum fn f)) (pure (s7-pure-name? name)) (fast (sum none #u))))))
+  (lambda (name min max f) (s7-made-prim-fast name min max f (sum none #u))))
 "Whether `v` is a record of type `t`."
 (define* s7-record-of? (subr pure (s7-value s7-rtd) bool)
   (lambda (v t) (tagcase v (record r (eq? (extract (extract r rtd) id) (extract t id))) (else y #f))))
@@ -1059,24 +1065,43 @@ and when what runs ends."
                   (tagcase (car a)
                     (rtd t (let* ((names (s7-symbols-of (s7-value->values (s7-arg2 a))))
                                   (n (list-length (extract t fields)))
-                                  (k (list-length names)))
-                             (sum ok (s7-made-prim (string-append "make-" (extract t name)) k k
-                                                   (lambda ((args s7-values))
+                                  (k (list-length names))
+                                  ;; Where each argument goes, found once, here: not by
+                                  ;; its name's text at each call (-1: no such field).
+                                  (places (the (listof int acyclic)
+                                               (map (lambda ((name symbol))
+                                                      (let ((j (list-index (lambda ((x symbol)) (string=? (s7-symbol-name x) (s7-symbol-name name)))
+                                                                           (extract t fields))))
+                                                        (if (bool? j) -1 j)))
+                                                    names))))
+                             (sum ok (s7-made-prim-fast (string-append "make-" (extract t name)) k k
+                                                        (lambda ((args s7-values))
                                                      (let ((fields (the (arrayof s7-value @sc) (make-array n s7-unspecified))))
-                                                       (letrec ((go (subr s7-eff (s7-symbols s7-values) unit)
-                                                                  (lambda (ns vs)
-                                                                    (if (or (null? ns) (null? vs)) #u
-                                                                        (let ((i (let ((j (list-index (lambda ((x symbol)) (string=? (s7-symbol-name x) (s7-symbol-name (car ns)))) (extract t fields)))) (if (bool? j) -1 j))))
-                                                                          (begin (if (>= i 0) (array-set! fields i (car vs)) #u)
-                                                                            (go (cdr ns) (cdr vs))))))))
-                                                         (begin (go names args)
-                                                           (sum ok (sum record (product (rtd t) (fields fields))))))))))))
+                                                       (letrec ((go (subr s7-eff ((listof int acyclic) s7-values) unit)
+                                                                  (lambda (is vs)
+                                                                    (if (or (null? is) (null? vs)) #u
+                                                                        (begin (if (>= (car is) 0) (array-set! fields (car is) (car vs)) #u)
+                                                                          (go (cdr is) (cdr vs)))))))
+                                                         (begin (go places args)
+                                                           (sum ok (sum record (product (rtd t) (fields fields))))))))
+                                                        ;; One field or two: made with no list of them.
+                                                        (let ((made (lambda ((a1 s7-value) (a2 s7-value))
+                                                                      (let ((fields (the (arrayof s7-value @sc) (make-array n s7-unspecified))))
+                                                                        (begin
+                                                                          (if (and (pair? places) (>= (car places) 0)) (array-set! fields (car places) a1) #u)
+                                                                          (if (and (pair? places) (pair? (cdr places)) (>= (car (cdr places)) 0))
+                                                                              (array-set! fields (car (cdr places)) a2) #u)
+                                                                          (sum record (product (rtd t) (fields fields))))))))
+                                                          (cond ((= k 1) (sum f1 (lambda ((v s7-value)) (made v s7-unspecified))))
+                                                                ((= k 2) (sum f2 (lambda ((v s7-value) (w s7-value)) (made v w))))
+                                                                (else (sum none #u))))))))
                     (else y (s7-wrong "define-record-type" "a record type" y)))))
       (s7-prim! " record-predicate" 1 1
                 (lambda ((a s7-values))
                   (tagcase (car a)
-                    (rtd t (sum ok (s7-made-prim (string-append (extract t name) "?") 1 1
-                                                 (lambda ((args s7-values)) (s7-bool (s7-record-of? (car args) t))))))
+                    (rtd t (sum ok (s7-made-prim-fast (string-append (extract t name) "?") 1 1
+                                                      (lambda ((args s7-values)) (s7-bool (s7-record-of? (car args) t)))
+                                                      (sum f1 (lambda ((v s7-value)) (sum bool (s7-record-of? v t)))))))
                     (else y (s7-wrong "define-record-type" "a record type" y)))))
       (s7-prim! " record-accessor" 2 2
                 (lambda ((a s7-values))
@@ -1084,12 +1109,18 @@ and when what runs ends."
                     (rtd t (let* ((f (s7-sym (s7-arg2 a)))
                                   (i (let ((j (list-index (lambda ((x symbol)) (string=? (s7-symbol-name x) (s7-symbol-name f))) (extract t fields)))) (if (bool? j) -1 j)))
                                   (who (string-append (extract t name) "-" (s7-symbol-name f))))
-                             (sum ok (s7-made-prim who 1 1
-                                                   (lambda ((args s7-values))
-                                                     (tagcase (car args)
-                                                       (record r (if (and (s7-record-of? (car args) t) (>= i 0)) (sum ok (array-ref (extract r fields) i))
-                                                                     (s7-wrong who (string-append "a " (extract t name)) (car args))))
-                                                       (else y (s7-wrong who (string-append "a " (extract t name)) y))))))))
+                             (sum ok (s7-made-prim-fast who 1 1
+                                                        (lambda ((args s7-values))
+                                                          (tagcase (car args)
+                                                            (record r (if (and (s7-record-of? (car args) t) (>= i 0)) (sum ok (array-ref (extract r fields) i))
+                                                                          (s7-wrong who (string-append "a " (extract t name)) (car args))))
+                                                            (else y (s7-wrong who (string-append "a " (extract t name)) y))))
+                                                        ;; Undefined, for the slow entry to say why, where it is
+                                                        ;; no such record.
+                                                        (sum f1 (lambda ((v s7-value))
+                                                                  (tagcase v
+                                                                    (record r (if (and (s7-record-of? v t) (>= i 0)) (array-ref (extract r fields) i) s7-undefined))
+                                                                    (else y s7-undefined))))))))
                     (else y (s7-wrong "define-record-type" "a record type" y)))))
       (s7-prim! " record-modifier" 2 2
                 (lambda ((a s7-values))
