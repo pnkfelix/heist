@@ -8,7 +8,20 @@ do it, and what it cost. Kayak will need the same changes later
 
 ## Base
 
-- Fixpt `main` at 9478dd70 (2026-10-30), pulled from GitHub by Heist's
+- Fixpt `main` at 59114584 (2026-10-31), pulled from GitHub by Heist's
+  ef441e76 (squash 3e64f9e3): heap dumps on the FX-26 front end (`fixpt
+  dump`, `fixpt resume`, `dump-heap!`; Heist uses none yet), sessions on
+  the FX-26 checker, Scheme's `eval`, evidence bounds, and TODO §188's
+  splitting of the front end's files. Heist needed no change; `fixpt/`
+  is Fixpt's tree exactly. After `fixpt prewarm` and `bin/heist-compile
+  all` (19.7 s), `cargo nextest run`: 135 of 183 pass. The rest fail on
+  this Mac whatever Fixpt is: the 13 conformance libraries (no
+  ~/Dev/LangPlay/inthematrix-rrof here), combo's 32 (macOS's /bin/sh,
+  bash 3.2, cannot parse combo/tests/run.sh's `case` in a `$( )`; under
+  `zsh --emulate sh` all 32 pass), and ui::shell, ui::dired-rename-fails
+  (their screens dash's and GNU mv's) and ui::column-number (not yet
+  committed). Start-up and ratfink's shakedown not measured this time.
+- Before: Fixpt `main` at 9478dd70 (2026-10-30), pulled from GitHub by Heist's
   7aaab7ef (squash 1ea420c3): `stage` (FX-26's `eval`, step 1), and the
   front end run quiet (no poll in it preempts for the program's tasks).
   Heist needed no change; `fixpt/` is Fixpt's tree exactly. After
