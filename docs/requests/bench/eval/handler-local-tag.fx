@@ -1,5 +1,9 @@
 ;; Option 1 with a tag the turn makes: user code polymorphic in its region,
 ;; given the tag; `insert` captures and aborts to it; the handler collects.
+;; Runs: "point; insert a; message 7;". `handled` must declare the control
+;; effects on `r`: its prompts around a resumed continuation do not
+;; delimit, but the `letregion` that made `r` and the tag masks them (the
+;; Fixpt team's reading, 2026-11-01; Heist had declared `turn-eff` alone).
 (define-effect turn-eff (maxeff spin nondet (read @globals) (read @ed) (alloc @ed)))
 (define-type request (sumof (insert string) (message string) (point unit)))
 (define-type requests (listof request acyclic))
@@ -27,13 +31,13 @@
   (lambda (u)
     (letregion r
       (let ((t (the (tag r) (make-continuation-prompt-tag))))
-        (letrec ((handled (subr turn-eff ((subr (maxeff turn-eff (goto r) (comefrom r)) () unit)) requests)
+        (letrec ((handled (subr (maxeff turn-eff (goto r) (comefrom r)) ((subr (maxeff turn-eff (goto r) (comefrom r)) () unit)) requests)
                    (lambda (body)
                      (prompt t (begin (body) nil)
                        (lambda ((a (asked r)))
                          (cons (extract a req)
                                (handled (lambda () (begin ((extract a k) (tagcase (extract a req) (point u 7) (insert s 0) (message s 0))) #u)))))))))
-          (reverse (handled (lambda () ((proj (extract u code) r) t)))))))))
+          (handled (lambda () ((proj (extract u code) r) t))))))))
 (define shown (subr (maxeff (read @globals) spin) (requests) string)
   (lambda (rs) (if (null? rs) ""
                    (string-append (tagcase (car rs) (insert s (string-append "insert " s)) (message s (string-append "message " s)) (point u "point"))

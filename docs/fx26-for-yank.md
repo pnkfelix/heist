@@ -300,16 +300,21 @@ a fault. What it found:
 **Acting directly instead of returning actions** (explored 2026-11-01, in
 standalone programs, not yet in the editor). `(insert "x")` acting, as
 Emacs's does, while the turn still writes nothing another could see:
-- **A handler (delimited control): not on Fixpt today.** `insert` captures
-  its continuation and aborts to a prompt in the turn, whose handler
-  collects the request and resumes. With a global tag, user code's type
-  names the tag's region, so the prompt does not delimit and `attempt`
-  refuses the turn ("this one has (goto @ev)"). With a tag the turn makes
-  in a `letregion`, user code polymorphic in its region, the first prompt
-  delimits, but the handler resumes the code under a prompt whose body
-  has the continuation free, whose type names the region: that prompt
-  does not delimit, and the `letregion` refuses the `comefrom`. A handler
-  that resumes cannot be written so that Fixpt sees it delimits.
+- **A handler (delimited control): works.** `insert` captures its
+  continuation and aborts to a prompt in the turn, whose handler collects
+  the request and resumes the code with an answer. With a global tag, user
+  code's type names the tag's region, and `attempt` refuses the turn
+  ("this one has (goto @ev)"). With a tag the turn makes in a
+  `letregion`, user code polymorphic in its region, it runs, and a fault
+  after a request is caught with nothing done. The handler must declare
+  `(goto r)` and `(comefrom r)` in its own effect: the prompts it puts
+  around a resumed continuation do not delimit, but the `letregion` masks
+  that control. Heist had first declared `turn-eff` alone, was refused,
+  and took it for a limit of Fixpt; the Fixpt team pointed out the
+  missing effect. Over the log below, an answer can reflect the requests
+  before it (`point` after an `insert`), the handler applying each to
+  the turn's own copy of the state. User code is rewritten the same way,
+  given the tag instead of the log, with the same limits.
 - **A log in a region of the turn's own (capability passing): works.**
   User code is a procedure of a region `r` and a log in it, `(productof
   (code (poly ((r region)) (subr … ((log r)) unit))))`; `insert` and the
