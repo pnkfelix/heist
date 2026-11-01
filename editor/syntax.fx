@@ -279,11 +279,11 @@ unless it is of the revision read last."
 
 "What attaches its analysis to a Scheme buffer (scheme.fx sets it), as
 `attach-syntax` attaches the syntax actor to an FX-26 one."
-(define scheme-attach (ref (listof (subr (maxeff (alloc @ed) (read @globals)) ((actor buffer) string) cmds) acyclic) @ed) (new nil))
+(define scheme-attach (ref (listof (subr (maxeff (alloc @ed) (read @globals) spin) ((actor buffer) string) cmds) acyclic) @ed) (new nil))
 
 "What attaches the CFA's client (cfa.fx sets it) to a file's buffer, by
 its file's name."
-(define flow-attach (ref (listof (subr (maxeff (alloc @ed) (read @globals)) ((actor buffer) string) cmds) acyclic) @ed) (new nil))
+(define flow-attach (ref (listof (subr (maxeff (alloc @ed) (read @globals) spin) ((actor buffer) string) cmds) acyclic) @ed) (new nil))
 "For an FX-26 or a Scheme file's buffer, what `flow-attach` gives."
 (define* attach-flow (subr (maxeff (alloc @ed) (read @ed) spin) ((actor buffer) string) cmds)
   (lambda (b file)

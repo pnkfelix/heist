@@ -429,7 +429,7 @@ or, if this is the only one, a new one below it."
 
 "A command on the buffer that depends on the selected window's height:
 `(make lines)`, given the lines the window shows."
-(define* with-window-lines (subr pure ((subr (read @globals) (int) command)) frame-action)
+(define* with-window-lines (subr pure ((subr (maxeff (read @globals) spin) (int) command)) frame-action)
   (lambda (make)
     (lambda ((fr (actor frame)) (f frame))
       (let ((win (selected-window f)))
@@ -719,7 +719,7 @@ file read into a new buffer -- or, if it is a directory, its listing."
         (reply-with b2 (notify b2))))))
 
 "*Buffer List*: each buffer's name, whether modified, and its file."
-(define* list-buffers (subr pure () frame-action) (lambda () (list-buffers-saving nil)))
+(define* list-buffers (subr (maxeff (read @globals) spin) () frame-action) (lambda () (list-buffers-saving nil)))
 
 "*Buffer List*, with the buffers `saving` (being saved now, by x in it)
 shown as not modified."
@@ -1125,7 +1125,7 @@ description; until then, the echo area says the name."
                          ((string=? (extract (car cs) name) name) (sum found (extract (car cs) action)))
                          (else (go (cdr cs)))))))
         (go (append (commands) (get more-commands))))))
-  (execute-extended-command (->* () frame-action)
+  (execute-extended-command (subr (maxeff (read @globals) spin) () frame-action)
     (lambda ()
       (lambda ((fr (actor frame)) (f frame))
         (read-completing f "M-x " ""

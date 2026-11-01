@@ -515,7 +515,7 @@ sent last. The answer comes to `s7-answer!`."
                                         (s7-send! "analyze" (list (int->string key) (extract snap name) (rope->string (extract snap text))))))
                                     #u)))))))))
 "A Scheme buffer's analysis actor, idle, subscribed to it."
-(define* s7-attach (subr (maxeff (alloc @ed) (read @globals)) ((actor buffer) string) cmds)
+(define* s7-attach (subr (maxeff (alloc @ed) (read @globals) spin) ((actor buffer) string) cmds)
   (lambda (b name)
     (let ((sx (spawn-actor (string-append "s7st analysis of " name) (product (buffer b) (revision -1)))))
       (list (lambda () (set-class! sx idle))

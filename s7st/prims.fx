@@ -1360,16 +1360,16 @@ two arguments, called by a quick evaluation with no list made."
                                              (op (extract p op)) (pure (extract p pure)) (fast fast)))))
         (else y #u)))))
 "Two ints' `iop`; else undefined."
-(define* s7-fast-int2 (subr pure ((subr pure (int int) int)) (subr (read @globals) (s7-value s7-value) s7-value))
+(define* s7-fast-int2 (subr pure ((subr pure (int int) int)) (subr (maxeff (read @globals) spin) (s7-value s7-value) s7-value))
   (lambda (iop)
     (lambda ((a s7-value) (b s7-value))
       (tagcase a (int i (tagcase b (int j (sum int (iop i j))) (else y s7-undefined))) (else y s7-undefined)))))
 "Whether two ints stand in `iop`; else undefined."
-(define* s7-fast-int2? (subr pure ((subr pure (int int) bool)) (subr (read @globals) (s7-value s7-value) s7-value))
+(define* s7-fast-int2? (subr pure ((subr pure (int int) bool)) (subr (maxeff (read @globals) spin) (s7-value s7-value) s7-value))
   (lambda (iop)
     (lambda ((a s7-value) (b s7-value))
       (tagcase a (int i (tagcase b (int j (if (iop i j) s7-true s7-false)) (else y s7-undefined))) (else y s7-undefined)))))
-(define* s7-truth (subr (read @globals) (bool) s7-value) (lambda (b) (if b s7-true s7-false)))
+(define* s7-truth (subr (maxeff (read @globals) spin) (bool) s7-value) (lambda (b) (if b s7-true s7-false)))
 (define* s7-init-fast! (subr s7-eff () unit)
   (lambda ()
     (begin

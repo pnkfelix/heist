@@ -298,7 +298,7 @@ runs (a Scheme buffer's starts it), unless it is of the revision last seen."
                                     (cfa-send-revision! (extract st buffer) file rev (rope->string (extract snap text)))
                                     #u)))))))))
 "A buffer's CFA actor, idle, subscribed to it."
-(define* cfa-attach (subr (maxeff (alloc @ed) (read @globals)) ((actor buffer) string) cmds)
+(define* cfa-attach (subr (maxeff (alloc @ed) (read @globals) spin) ((actor buffer) string) cmds)
   (lambda (b file)
     (let ((cx (spawn-actor (string-append "CFA of " file) (product (buffer b) (file file) (revision -1)))))
       (list (lambda () (set-class! cx idle))

@@ -8,7 +8,18 @@ do it, and what it cost. Kayak will need the same changes later
 
 ## Base
 
-- Fixpt `main` at 71de5b88 (2026-10-31), pulled from GitHub by Heist's
+- Fixpt `main` at 63b95ef0 (2026-11-01), pulled from GitHub, which has
+  Heist's F8 (staged code native, compiling while native code runs, a
+  sealed module staged against) done Fixpt's way, without Heist's
+  raw-pointer borrow; and heap types (a stage's, a session's and a
+  `.fasl`'s types by rep, not by printed text). Heist's own edits
+  dropped; `fixpt/` is Fixpt's tree exactly. Heist needed: `spin` where
+  an effect reads `@globals` (b9ed7daf dropped the first definition's
+  exemption; 8 written effects, and `list-buffers`, typed `pure` though
+  it calls a global), and a `the int` in cfa/fx26.fx (below). After
+  `fixpt prewarm` and `bin/heist-compile all`, all 181 tests pass, with
+  dumps (8.7 s) and without; ratfink's corpus 123 of 124 as before.
+- Before: Fixpt `main` at 71de5b88 (2026-10-31), pulled from GitHub by Heist's
   836648da (squash a3b4fd3a), which has Heist's F7 (`length` counting
   without a vector), and `append` and its kin counting lists the same
   way; Heist's own edit dropped, `fixpt/` Fixpt's tree exactly. After
@@ -243,6 +254,16 @@ differs from what Heist had:
 - F3: `%fx26-type-at` is primitive 509, after the syscall primitives
   (506–508).
 - F4: `(io process)` is the twelfth I/O kind, code 11, after `(io sys)`.
+
+Found at 63b95ef0, not yet reported to Fixpt:
+
+- **A `nat` refused where an `int` is expected, loading a `.fasl`.**
+  cfa/fx26.fx's `(fx-constructor file x tag (list-length l))`, the last
+  parameter an `int`, is accepted by `compile-file` and from source
+  (`FIXPT_NO_FASL=1`), but run from the CFA's `.fasl`s: "argument 4 is a
+  nat, where a int is expected". Every `nat` is an `int` (`docs/fx26.md`,
+  "Naturals"). Not reproduced by a two-file program of the same shape;
+  worked around with `(the int …)`.
 
 Still open in Fixpt's `TODO.md`:
 
