@@ -262,8 +262,9 @@ Found at 63b95ef0, not yet reported to Fixpt:
   parameter an `int`, is accepted by `compile-file` and from source
   (`FIXPT_NO_FASL=1`), but run from the CFA's `.fasl`s: "argument 4 is a
   nat, where a int is expected". Every `nat` is an `int` (`docs/fx26.md`,
-  "Naturals"). Not reproduced by a two-file program of the same shape;
-  worked around with `(the int …)`.
+  "Naturals"). Worked around with `(the int …)`. Reproduced in one file,
+  and the cause found (the rule compares type ids, and a type read from a
+  rep is a new one): `docs/requests/fixpt-nat-int-from-fasl.md`.
 
 Still open in Fixpt's `TODO.md`:
 
