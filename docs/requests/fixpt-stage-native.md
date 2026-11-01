@@ -1,7 +1,10 @@
 # A request to the Fixpt team: staged code compiled as a program's is
 
-Status: worked around in Heist's `fixpt/` (FIXPT-CHANGES.md F8), unsafely;
-for Fixpt to do properly. Drafted 2026-10-31 by Heist, for the user to
+Status: items 1 to 4 done by Fixpt in fad9deed (2026-10-31), Fixpt's own
+way, without Heist's raw-pointer borrow; pulled by Heist at 63b95ef0, F8's
+own edits dropped. Item 5 left open there, but Fixpt's heap types (a
+stage's types by rep, not printed) took a stage of s7st's from 8 ms to
+1.1 ms. Heist had worked around all of it in its `fixpt/` (F8). Drafted 2026-10-31 by Heist, for the user to
 take to the Fixpt team. Measured at Fixpt main 71de5b88 (Heist's
 `fixpt/` subtree), x86_64 Linux, the default machine (`fast`,
 `fx-regs-rsjit-nativecc`).
