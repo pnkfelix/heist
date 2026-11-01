@@ -1,0 +1,7 @@
+alpha
+\x1b
+:
+(define n 41)\r
+\x1b
+:
+(+ n 1)\r

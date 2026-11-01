@@ -12,7 +12,8 @@
   (maxeff (read @s) (write @s) (alloc @s) (read @m) (write @m) (alloc @m)
           (read @c) (write @c) (alloc @c) (read @e) (goto @e) (comefrom @e)))
 (define-effect world (maxeff (io stdout) (io terminal) (io fs-read) (io fs-write) (io process) reader-eff
-                             (read @pf) (alloc @pf)))                ; the files of a program, listed
+                             (read @pf) (alloc @pf)                  ; the files of a program, listed
+                             stage))                                 ; code made of a form (eval.fx)
 (define core ((proj (load-module "core.fx") @ed world)))
 (import core spawn-actor set-class! interactive display idle tell tell-latest tell! start! activity-running? abort-activity! run-turns!
         turns-waiting? interactive-waiting? actor-state actor-name same reply-with
@@ -72,4 +73,4 @@
 the editor itself: syntax with each form's span, in characters."
 (define reader ((proj (load-module "fx26:eager-reader.fx") @s @e @m @c)))
 (import reader eager-start-fx26 eager-feed-string eager-feed eager-status eager-state-syntax eager-context
-        eager-state-message eager-state-position atom lst dotted vec (type syn syns state))
+        eager-state-message eager-state-position eager-state-data atom lst dotted vec (type syn syns state))

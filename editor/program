@@ -13,4 +13,5 @@ help.fx
 eldoc.fx
 scheme.fx
 cfa.fx
+eval.fx
 main.fx

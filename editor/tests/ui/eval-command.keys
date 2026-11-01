@@ -1,0 +1,7 @@
+alpha
+\x1b
+:
+(define-command "hello" (lambda () (then (insert "hi ") (message "said hi"))))\r
+\x1b
+x
+hello\r

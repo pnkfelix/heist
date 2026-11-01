@@ -100,7 +100,7 @@ Revised from `fx26-for-yank.md` (R-numbers as there).
 | Subprocesses (M-!, compile, shell, inferior) | `(yank process)`, FFI pipes | Absent (`fixpt/TODO.md` §84) | A Fixpt change when the port reaches them: spawn with pipes, read through `pselect`. |
 | Files: exists?, stat, cwd, getenv (R7) | `(yank files)` | Absent (§84); `write-file` replaces atomically | A Fixpt change when visiting files needs them. |
 | Tables: delete, iterate (R6) | R6RS hash tables | `table.fx` has neither; `eqtable` has delete | Library work in `table.fx`, or an association structure of our own at first. |
-| Evaluating user code: `M-:`, init file (R4) | Larceny `eval` | None (§105) | Last. The editor is useful without it. |
+| Evaluating user code: `M-:`, init file (R4) | Larceny `eval` | `stage` and sessions (2026-10-31) | `M-:` done (`editor/eval.fx`, 2026-11-01); the init file next. |
 
 ## The first slice
 

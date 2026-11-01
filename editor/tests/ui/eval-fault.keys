@@ -1,0 +1,7 @@
+alpha
+\x1b
+:
+(define-command "boom" (lambda () (if (null? (string->list "")) (error "boom!") nothing)))\r
+\x1b
+x
+boom\r

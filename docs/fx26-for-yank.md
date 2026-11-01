@@ -272,6 +272,35 @@ environment. The second call reaches the host's `host-insert!`, the
 host keeps `f` and calls it later, and a refusal and a fault both come
 back as values.
 
+**Status (2026-11-01): a first slice in Heist's editor,** `editor/eval.fx`,
+on Fixpt's `stage` and sessions (`fixpt/docs/research/eval.md`), which
+answer 1 to 3. `M-:` (`M-x eval-expression`) reads a form, checks it in one
+session against a module of what user code sees, and runs it. A
+command defined from `M-:` runs from `M-x`, and the `ui/eval-*` scenarios
+test a value, a definition used by the next form, a command, a refusal and
+a fault. What it found:
+- **The `stage` effect** reached one line: `world` in `base.fx`, the effect
+  every command after a turn already has. Commands themselves need nothing.
+- **Faults.** A fault in a command ends the editor: `attempt` takes only
+  code that writes nothing, and a monitored process can share nothing
+  writable. So user code runs in a frame's turn, at the turn's effect, and
+  gives back what it wants done as data (`ed-action`: a message, an insert,
+  a command or a key defined), which the editor does. A fault is then a
+  failing turn, reported as a built-in command's is. A definition's
+  initializer is run once in a turn before it is committed, for the same
+  reason. Yank's API (procedures that act) becomes procedures that make
+  actions, sequenced with `then`.
+- **Printing a value** needs its type at the check: a form is checked as an
+  action, then a `unit`, `string`, `int`, `bool` and `char`, about 0.1 ms
+  each; a form of another type is run, and its type said.
+- `session-check`'s effect must be written in the file: one imported from
+  a module (`turn-eff`, from core.fx) is refused ("`e` is bound as a
+  Effect, and the description given is not one"), so eval.fx writes it out.
+
+Still to do: 5 (a form that does not end hangs the editor), user code
+reading the editor's state (point, the buffer's text), `C-x C-e` and an
+init file over the same session, and 6.
+
 ### R5. Text a program can edit (primitives)
 
 **Yank:**
