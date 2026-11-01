@@ -1,7 +1,8 @@
-# s7st: R7RS Scheme, interpreted in FX-26
+# s7st: R7RS Scheme, in FX-26
 
-s7st (branch `s7st`, 2026-10-27) is an interpreter of R7RS-small Scheme,
-written in FX-26. It is all in `s7st/`, and runs from the command line
+s7st (branch `s7st`, 2026-10-27) is an implementation of R7RS-small
+Scheme, written in FX-26: an interpreter until 2026-10-31, a compiler to
+FX-26 since, which Fixpt's `stage` checks and compiles as it runs. It is all in `s7st/`, and runs from the command line
 (`bin/s7st`). The editor runs it as a separate process, `bin/s7st
 --serve`, through one file, `editor/scheme.fx`. That gives the editor a
 REPL (`M-x run-s7st`) and runs forms from Scheme buffers.
@@ -33,36 +34,45 @@ take a group of files as one module, s7st can become a module with
 | `table.fx`    | hash tables                                                                                                                                  |
 | `library.fx`  | libraries: namespaces, import sets, finding a library's file                                                                                 |
 | `analyze.fx`  | what a text is, for an editor, read and walked but never run: faces, definitions, each local variable's binder, the read's error           |
-| `native.fx`   | loops over integers compiled to x86_64 machine code: kernels ("Speed")                                                                       |
-| `machine.fx`  | the compiler to closures, and the CEK machine that runs its code, one step at a time                                                         |
+| `machine.fx`  | what compiled code runs on: calls, raising, continuations, `dynamic-wind`, the fuel, `force`, the fused calls of built-ins                   |
+| `lower.fx`    | the compiler: core lowered to FX-26, staged, run; and the top level (`import`, libraries, `eval`, `load`)                                     |
 | `prelude.scm` | what is written in Scheme: `map`, `guard`, `parameterize`, promises, the I/O procedures over ports, a few of SRFI 1's. `prelude.fx` is generated from it by `gen-prelude.py` |
 | `session.fx`  | the API clients call: `s7-init!`, `s7-start!`, `s7-continue!`, `s7-take-output!`, `s7-interrupt!`                                            |
 | `main.fx`     | the command-line REPL, and the server (its protocol is described at the top of the file)                                                     |
 
-**The machine is a CEK machine whose continuation is data.** A state is one
-of four things:
-- a node to evaluate, in an environment, with a continuation;
-- a value returned to a continuation;
-- a procedure applied to arguments;
-- a condition raised.
-
-This gives several properties for free:
-- **Proper tail calls.** A loop of a million iterations runs in constant
-  space.
-- **`call/cc` is first-class and re-entrant.** A continuation is an
-  immutable list of frames.
-- **`dynamic-wind`** runs its `before` and `after` thunks on every jump into
-  or out of its extent.
+**Scheme is compiled to FX-26, in direct style** (2026-10-31). Up to a
+hundred top-level forms at a time are expanded, lowered to an FX-26
+datum (`lower.fx`), and checked and compiled by Fixpt's `stage` against a
+module of the runtime (`machine.fx`), then run. A Scheme procedure is an
+FX-26 procedure, of up to four arguments or of their list; a local is an
+FX-26 variable, a box if it is assigned. A call goes through the runtime
+(`s7-call1` and its kin), which finds the procedure's code. What a stack
+alone does not give comes from FX-26's delimited control, a prompt about
+each run (`lower.fx`'s `s7-run-in`):
+- **Proper tail calls.** FX-26's calls in tail position take no stack, so
+  Scheme's take none.
+- **`call/cc` is first-class and re-entrant.** It captures the rest of
+  the run up to the prompt, a composable continuation, resumable any
+  number of times. Resumed, it aborts the run to the prompt, which
+  resumes it in a prompt of its own.
+- **`dynamic-wind`** runs its `before` and `after` thunks on every jump
+  into or out of its extent: the dynamic state (winds, handlers) is a
+  global, which a continuation keeps and puts back on its way.
 - **R7RS's exceptions:** `with-exception-handler`, `raise`,
   `raise-continuable`, and `guard` (written in the prelude as R7RS 7.3
   gives it).
-- **Clients run it in slices** (`s7-continue! fuel`). The server runs
-  20,000 steps (a few milliseconds) at a time and reads requests between
-  slices, so an `interrupt` stops a loop that doesn't end, and the
-  session's state survives it.
+- **Clients run it in slices** (`s7-continue! fuel`). Each procedure's
+  entry spends fuel; with none left, the rest of the run is captured and
+  kept, and the slice ends. The server reads requests between slices, so
+  an `interrupt` stops a loop that doesn't end, and the session's state
+  survives it.
+
+Until 2026-10-31 s7st was a CEK machine whose continuation was data,
+compiled to closures ("Speed", "Before: an interpreter").
 
 **Variables are resolved when expanded, not when run.** A local is a frame
-slot, given by depth and index. A global is its cell. A `lambda`'s frame
+slot, given by depth and index, which the compiler makes an FX-26 variable.
+A global is its cell. A `lambda`'s frame
 holds its parameters and then its body's internal definitions; `letrec*`
 and `let-syntax` get frames of their own (`n-scope`).
 
@@ -183,184 +193,84 @@ Each could be added.
 
 ## Speed
 
-**Each top-level form is compiled before it runs** (`machine.fx`'s
-`s7-compile`). Every node of the core becomes two FX-26 closures, made
-once:
-- **Its code** takes the environment, continuation and dynamic state, and
-  returns the machine's next state.
-- **Its quick evaluation,** where the node allows one, gets the node's
-  value with no machine step: constants, variables, lambdas, `if` and
-  sequences of such, and calls of pure built-ins on such. It returns the
-  value itself, or undefined if it cannot finish. No wrapper is made,
-  since in Fixpt every sum is an object allocated.
+**Compiled to FX-26** (2026-10-31, `lower.fx`; Fixpt's F8). The
+lowering makes plain FX-26 of what it can:
+- **Locals are FX-26 variables.** Only an assigned one is a box, read
+  through `%lref`, which says if it is not yet defined.
+- **A `let`** (a lambda called where it is made, as the expander writes
+  one) is an FX-26 `let`: no closure, no call.
+- **A procedure set once, where its frame begins,** to a lambda of one
+  clause (a named `let`'s loop, a body's `define`) is an FX-26 `letrec`
+  procedure. A call of it with as many arguments is a direct FX-26 call.
+  Its value elsewhere is one closure, made where the slot is set.
+- **A call of a global** that holds one of the commonest built-ins when
+  the form is lowered (`+ - * < > <= >= = eq? eqv? cons car cdr null?
+  pair? not zero?`) is a fused call (`machine.fx`'s `s7-fadd` and kin).
+  It does the integer or pair case in line while every built-in is where
+  it was (`s7-builtins-intact`, cleared by assigning or defining a global
+  that holds one), and else calls through the cell. In an `if`, a test
+  gives a `bool`. Any other global's call reads the cell in the same
+  call (`s7-gcall1` and kin).
+- **`force` is written in FX-26** (`s7-force`), over the prelude's
+  promise records.
 
-A call of a closure with one clause, given the right number of quick
-arguments, fills the new frame's slots directly.
+What it takes to keep compiled code cheap, all found by profiling:
+- **The module staged code is checked against is sealed:** its types
+  abstract (`%value`), and what the code is given (its constants, cells
+  and lambdas' descriptions, and the runtime's procedures) one product,
+  `T`. Fixpt prints every type a stage is checked against whole: with
+  s7st's value type in it, a stage took 49 ms; sealed, 8 ms.
+- **Forms are staged a hundred at a time:** a definition's own code is a
+  quarter of a millisecond of a stage. A batch ends before a form with a
+  syntax error, which is raised after the forms before it have run, and
+  after a top-level `load` or `eval`, whose definitions the next forms
+  may need to be expanded.
+- **A closure has few free values:** Fixpt makes one in line only with at
+  most six on x86_64, else by a call-out to Rust, about a microsecond.
+  Each constant in a variable of its own cost R7RS's `lazy` 16 call-outs
+  a stream element. So code names `(extract T …)`.
+- **The prelude is staged as the program loads** (`main.fx`'s
+  `s7-ready`), so that its heap dump (`bin/heist-dump`) holds it compiled:
+  a start from the dump is 0.05 s.
 
-**Calls and returns made directly, paid for by fuel.** The machine's code
-is in continuation-passing style over a continuation that is data, so
-each piece of code ends by calling the next in tail position, and FX-26's
-tail calls take no native stack. So a call goes straight into the
-callee's code (`s7-enter`), and a return straight into the frame on top
-of the continuation (`s7-return`). Neither builds a state for `s7-step`.
-Each uses a unit of `s7-fuel`, the slice's budget, as a step does. With
-none left, the state is built and the slice ends as before, so slices
-are as long as they were and an interrupt is seen within about a
-millisecond.
+Measured 2026-10-31, `s7st/bench/run.sh LARCENY`, Larceny v1.3.1a2 from
+`~/Dev/LangPlay/accomplice` (times per run, as before):
 
-A quick evaluation that cannot finish (a variable not
-yet defined, an operator that turns out not to be a built-in, an error)
-has done nothing another could see, since it calls only pure built-ins.
-The node's code then runs it the slow way, and reports the error if
-there is one.
+| benchmark                     | interpreted (CEK), no kernel | with kernels | compiled | Larceny, interpreted | Larceny, compiled |
+| ----------------------------- | ---------------------------: | -----------: | -------: | -------------------: | ----------------: |
+| `(fib 25)`                    |                      49.5 ms |      48.7 ms |   7.1 ms |              11.3 ms |            0.5 ms |
+| `(tak 18 12 6)`               |                      12.0 ms |      11.9 ms |   1.7 ms |               4.0 ms |            0.1 ms |
+| a named-`let` loop, 1,000,000 |                     108.8 ms |       2.5 ms |  25.0 ms |              52.9 ms |            1.1 ms |
+| `map` over 200,000            |                     250.1 ms |     250.0 ms |  93.7 ms |              34.7 ms |           12.6 ms |
+| `do` over a vector, 500,000   |                      68.0 ms |      82.5 ms |  20.4 ms |              31.1 ms |            1.4 ms |
+| countdown from 10,000,000     |                     661.9 ms |      19.8 ms | 243.8 ms |             244.1 ms |            6.6 ms |
 
-A call gets a quick evaluation only if its operator is a global that
-holds a pure built-in when the call is compiled. Otherwise a closure's
-call would be evaluated twice: tried quickly, given up, then done.
+s7st is now faster than Larceny's interpreter but on `map` (Scheme here,
+compiled code there). The two loops over integers were faster still as
+kernels, machine code made of them by `seal-code` (`native.fx`, removed
+with the interpreter): the lowering could make those again, and more,
+from the same body. R7RS's `lazy` test went from 33 s to 5.5 s, `char`
+from 12 s to 6.4 s, Heist's whole suite from 33 s to 9 s.
 
-**Fast entries.** The commonest pure built-ins (`+ - * = < > <= >=`,
-`eq?`, `eqv?`, `cons`, `car`, `cdr`, `pair?`, `null?`, `not`, `zero?`,
-`vector-ref`, `vector-length`) also have an entry for one or two
-arguments (`s7-prim`'s `fast`, `prims.fx`'s `s7-init-fast!`). It is
-called with no list made, and answers undefined for a case it does not
-cover, such as an error or a non-integer. Variables at depth 0 and 1 are
-read with no loop (`s7-local-getter`).
+**Where the time goes now:** in `lazy`, a third is Fixpt's collector:
+a pair is four objects (the sum, a product, a box each for `car` and
+`cdr`), a closure five. In `char`, the procedures written in FX-26 and
+called by a list (`s7-prim-apply`), such as three-argument comparisons.
 
-On this machine, measured in the program itself with `current-jiffy`:
+### Before: an interpreter (2026-10-27 to 10-31)
 
-| benchmark                     | evaluating nodes | compiled | quick values unwrapped, fast entries | Fixpt b7b60d98 | calls and returns direct |
-| ----------------------------- | ---------------- | -------- | ------------------------------------ | -------------- | ------------------------ |
-| `(fib 25)`                    | 242 ms           | 100 ms   | 65 ms                                | 56 ms          | 49 ms                    |
-| `(tak 18 12 6)`               | 69 ms            | 26 ms    | 15 ms                                | 14 ms          | 11 ms                    |
-| a named-`let` loop, 1,000,000 | 1209 ms          | 333 ms   | 196 ms                               | 142 ms         | 107 ms                   |
-| `map` over 200,000            | 731 ms           | 455 ms   | 398 ms                               | 336 ms         | 314 ms                   |
-| `do` over a vector, 500,000   | 729 ms           | 221 ms   | 119 ms                               | 93 ms          | 68 ms                    |
-
-**Where the time goes now** (`FIXPT_PERF_MAP=1 perf record`, Fixpt's
-`docs/performance.md`): s7st's own machinery, a few nanoseconds at a
-time. Frames and pairs at region `@sc` were call-outs to Rust, 30–50 ns
-each. Since Fixpt b7b60d98 (Heist's request,
-`docs/requests/fixpt-region-alloc-inline.md`) they are made in line. A
-self-calling loop now takes ~70 ns an iteration, about 14 million a
-second. Larceny's `(scheme time)` test needs 10 million.
-
-**Fixpt's code is sensitive to where it lands.** Changes that do nothing
-at run time move benchmarks by 10–25%: `vec5e5` went 715 → 891 ms when
-a lambda that is never run was added to `s7-compile-in`, and 770 → 842
-ms when the code that queues kernels was made unreachable. Each result
-is steady from run to run, so it looks like the alignment or cache
-placement of compiled code. A difference under ~25% between two builds
-is therefore not evidence that one is better. The results below may be
-partly that.
-
-**Tried, and slower** (2026-10-27), on Fixpt b7b60d98:
-- *A loop's frame used again* by a call of its lambda in tail position:
-  each frame stamped with how many continuations had been captured, and
-  reused only if none had been since, and if no lambda or inner scope in
-  the body could hold it. Countdown went from 775 to 840–940 ms. A fresh
-  frame is cheap now, and checking whether one can be reused costs more.
-- *A closure specialized for one or two arguments* to fill a frame,
-  instead of `s7-quick-into`'s walk over a list: 700 to 780 ms. In Fixpt,
-  a known global function is cheaper than another closure captured.
-- *Naming the compiled lambdas* with `let`, for profiles, costs ~8%. The
-  names help in `perf`, so name them in a scratch copy when profiling.
-
-What helped instead was taking work off the call's path: no product
-returned only to be taken apart (`s7-new-frame`'s), no state built for a
-step.
-
-**Loops over integers, as machine code** (`native.fx`, 2026-10-27).
-Fixpt's `seal-code` and `native-procedure` let a program make machine code
-and call it. They work on x86_64 here, though Fixpt's `docs/fx26.md`
-says arm64 only.
-
-- **Which lambdas get a kernel:** one clause, no rest argument, no
-  internal definitions, and a body made only of:
-  - `if`;
-  - integers: constants, the parameters, and free variables of the
-    lambdas around it;
-  - `+ - *` and `= < > <= >= zero?`, as the built-ins hold them when the
-    body is compiled;
-  - other constants, as results;
-  - calls of itself in tail position.
-
-  The lambda is compiled as before, and also to x86_64 code, a *kernel*.
-- **How it is made:** the instructions come from Fixpt's encoder written
-  in FX-26 (`fx26:x86_64.fx`). Each node shape is a fixed run of
-  instructions with its slots, constants and labels filled in: copy and
-  patch, as stencils are. A small two-pass assembler places the labels.
-- **What it touches:** the kernel is a leaf. It calls no routine of the
-  runtime and allocates nothing, so no collection can happen while it
-  runs, and it needs no frame or stack map. It works on raw 64-bit
-  integers in a scratch bloblet's suffix.
-- **When it is made:** compiling the lambda only queues it. The kernel is
-  made between slices, by `s7-continue!`, so that making machine code
-  (`(io native)`, the encoder's region `@k`) is in the effect of what
-  drives the machine (`s7-drive-eff`), not of the code the machine runs.
-  The lambda's code first looks for its kernel, and runs its body as
-  before until there is one.
-- **When it is used:** entering the body checks first that the
-  built-ins are where they were, that the variable it calls itself
-  through still holds it, and that every input is an integer below
-  2^60. Otherwise the call is made as before.
-- **How it hands back:** an overflow gives up, and so does using up its
-  million iterations, after which the slice ends. Either way the kernel
-  hands back the arguments of the call of itself it was about to make,
-  and the machine makes that call the slow way. That is safe because the
-  body changes nothing. Past 64 bits, the slow way goes on in bignums.
-  `tests/kernels.scm` covers these cases.
-
-| benchmark                       | before kernels | with kernels |
-| ------------------------------- | -------------- | ------------ |
-| a named-`let` loop, 1,000,000   | 107 ms         | 2 ms         |
-| countdown from 10,000,000       | 700 ms         | 19 ms        |
-
-Start-up grew 0.3 s, for checking the encoder and `native.fx`. `fib`
-and `tak` get no kernel: their calls of themselves are not in tail
-position. Neither do the `map` and vector benchmarks, which use lists
-and vectors.
-
-**Against Larceny** (2026-10-27, `s7st/bench/run.sh LARCENY`, on the same
-machine; Larceny v1.3.1a2 from `~/Dev/LangPlay/accomplice`). Times are
-per run: s7st's the mean of 3, Larceny's compiled the mean of 20.
-"Interpreted" is Larceny's own interpreter (`(evaluator interpret)` at its
-R7RS REPL), itself compiled to machine code by Twobit. "Compiled" is
-Larceny running the benchmark as a program (`-r7rs -program`), which
-Twobit compiles to machine code.
-
-| benchmark                       | s7st, before kernels | s7st, with kernels | Larceny, interpreted | Larceny, compiled |
-| ------------------------------- | -------------------- | ------------------ | -------------------- | ----------------- |
-| `(fib 25)`                      | 49.5 ms              | 48.7 ms            | 11.4 ms              | 0.5 ms            |
-| `(tak 18 12 6)`                 | 12.0 ms              | 11.9 ms            | 4.0 ms               | 0.1 ms            |
-| a named-`let` loop, 1,000,000   | 108.8 ms             | **2.5 ms**         | 52.9 ms              | 1.1 ms            |
-| `map` over 200,000              | 250.1 ms             | 250.0 ms           | 34.2 ms              | 13.0 ms           |
-| `do` over a vector, 500,000     | 68.0 ms              | 82.5 ms            | 31.4 ms              | 1.2 ms            |
-| countdown from 10,000,000       | 661.9 ms             | **19.8 ms**        | 245.1 ms             | 4.7 ms            |
-
-The two loops over integers now run as kernels ("Loops over integers, as
-machine code"), within 2–4× of compiled Larceny. The vector loop gets no
-kernel. Its 68 → 82 ms is the code-placement sensitivity described above:
-none of its code changed.
-
-- **On calls and loops without a kernel,** s7st is 2–4× slower than Larceny's interpreter.
-- **`map` is not a like comparison.** Larceny's interpreter calls `map`
-  and `length` compiled to machine code. s7st's `map` is Scheme, in its
-  prelude, run like the program's own code. As FX-26 built-ins, they
-  would close most of the gap.
-- **Compiled Larceny is 20–140× faster.** Closing that takes code made
-  at run time: machine code by `seal-code` ("Openings").
-
-`(fib 25)` is 250,000 calls, so about 5 million procedure calls a second.
-The same `fib` written in FX-26, which Fixpt compiles to native code, is
-still much faster. FX-26 has no way to make FX-26 code at run time
-("Openings").
-
-- **Start-up** is 3.7 s, nearly all of it Fixpt compiling s7st's 6,500
-  lines. Making the interpreter ready (special forms, primitives, prelude)
-  takes milliseconds. The editor starts the server the first time it's
-  asked for Scheme, so only that first request waits.
-- **The editor's latency:** the editor looks for the server's answers
-  every 50 ms while one is awaited, as it does for `*compilation*`.
+s7st was a CEK machine whose continuation was data, run one step at a
+time: proper tail calls, re-entrant `call/cc` and slices came from the
+continuation being a list of frames. Each top-level form was compiled to
+two FX-26 closures a node, its code and, where it allowed one, a
+quick evaluation of its value with no machine step. Calls and returns
+were made directly while fuel lasted. Loops over integers got kernels
+(`native.fx`). What it found that still holds: Fixpt's code is sensitive
+to where it lands (changes that do nothing at run time moved benchmarks
+10–25%, steadily), so a difference under ~25% between two builds is no
+evidence; and taking work off a call's path (no product returned only to
+be taken apart, no state built) helped where cleverness (frames used
+again, closures specialized) did not.
 
 ## Openings
 
@@ -435,35 +345,22 @@ What remains, as Yank's analysis has it:
 
 ### For a compiler
 
-**FX-26 has no `eval`.**
-- `load-module` is resolved when a program is checked, not when it runs.
-- The only code a program can make at run time is machine code, through
-  `seal-code` and `native-procedure` (`fixpt/docs/fx26.md`, "Code a
-  program makes"). Fixpt's doc says this works only on arm64, but that is
-  out of date: on this x86_64 machine `native-code?` is true, and
-  `fixpt/crates/fixpt-fx26/tests/programs/made-code-x86_64/leaves.fx`'s
-  hand-assembled adder runs (checked 2026-10-27).
-
-So s7st can't compile Scheme to FX-26 and run the result in the same
-process. What it can do:
-
-1. **Compile to closures, within the interpreter.** This is done ("Speed").
-2. **Compile to FX-26 text and run it as a separate process.** Heist runs
-   processes already (`editor/process.fx`). The FX-26 checker would then
-   type the result, and Fixpt's native machines would run it. Scheme's
-   dynamic typing becomes a union type, as `datum` is. `call/cc` needs a
-   CPS translation or FX-26's one-shot continuations, which are enough for
-   escapes, generators and `guard`.
-3. **Machine code** through `seal-code`. Begun, for loops over integers
-   (`native.fx`, "Speed"). For the rest: x86_64 and
-   arm64. It must keep the native convention (`define-convention`,
-   `fixpt/docs/research/declared-conventions.md`): frames, the collector's
-   maps, the write barrier. Fixpt's own back end written in FX-26
-   (`native-x64.fx`, the `fx-cells-fxjit-cellcc` machine) shows what an
-   FX-26 program must do to emit such code, and has an assembler to start
-   from.
-
-The core is the input for each of these, and the expander is shared.
+Done (2026-10-31): Fixpt's `stage` (`fixpt/docs/fx26.md`, "Staging code")
+checks and compiles FX-26 code a program makes as it runs, and s7st
+compiles Scheme to it ("Speed"). It needed Fixpt to make staged code
+native code as a program's is (Heist's F8,
+`docs/requests/fixpt-stage-native.md`). What is left, by what it would
+give:
+- **Pairs and closures made of fewer objects** (the collector is a third
+  of `lazy`): a pair's two cells as one array, a closure's identity its
+  code's sum, not a cell of its own.
+- **Kernels again:** a lambda over integers lowered to code over raw
+  integers, which Fixpt would compile to machine code as it does a
+  program's.
+- **`map`, `for-each`, `append` and the like written in FX-26,** as
+  `force` now is.
+- **Types where the lowering can see them,** so that a known procedure's
+  call needs no dispatch, and an integer no box.
 
 ## In the editor
 

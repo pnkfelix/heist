@@ -9,7 +9,7 @@
 ;;;
 ;;; A library imported and not defined is looked for in a file, its name's
 ;;; parts a path: `(foo bar)` in `foo/bar.sld`, under each directory of
-;;; `s7-library-path`. The machine (machine.fx's `s7-run-form`) loads it and
+;;; `s7-library-path`. The top level (lower.fx's `s7-run-forms`) loads it and
 ;;; tries the import again.
 
 "Where a library's file is looked for: each directory, with its `/`

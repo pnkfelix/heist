@@ -233,6 +233,10 @@ then the files; or the REPL, if there are none."
              (s7-options (cdr (cdr as)))))
           (else (s7-run-files as)))))
 
+"Made ready as the program loads (session.fx's `s7-init!`), so that a heap
+dump of it (bin/heist-dump) holds the prelude staged."
+(define s7-ready string (s7-init!))
+
 (define* main (subr (maxeff s7-drive-eff (io stdout) (io stdin) (io args) (alloc @a) (read @a)) () int)
   (lambda ()
     (let ((as (the (listof string @a) (args)))

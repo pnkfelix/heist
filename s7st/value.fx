@@ -26,16 +26,18 @@
 "What the reader does: reads, writes and allocates at @sc (its spans,
 what it makes), and loops."
 (define-effect s7-read-eff (maxeff spin (read @globals) (read @sc) (write @sc) (alloc @sc)))
-"What the machine does: reads and writes its own state, loops, reads and
-writes files (`load`, `open-input-file`, `open-output-file`), reads the
-clock (`current-jiffy`) and the command line, and runs `rm` (`delete-file`:
-FX-26 has no primitive for it)."
-(define-effect s7-eff (maxeff spin (read @globals) (read @sc) (write @sc) (alloc @sc) (io fs-read) (io fs-write) (io clock)
-                              (io args) (io process)))
-"What drives the machine may do besides: make kernels between slices
-(native.fx), by Fixpt's encoder (`@k`) and `seal-code`. Kept out of
-`s7-eff`, the effect of the code the machine runs, which never makes one."
-(define-effect s7-drive-eff (maxeff s7-eff (io native) (read @k) (alloc @k)))
+"What lowered code does (lower.fx): reads and writes its own state, loops,
+reads and writes files (`load`, `open-input-file`, `open-output-file`),
+reads the clock (`current-jiffy`) and the command line, runs `rm`
+(`delete-file`: FX-26 has no primitive for it), and stages code (`eval`,
+`load`). That, and control on @sk, the region of the tag every run's
+prompt has (machine.fx's `s7-tag`), is `s7-eff`: what a procedure of
+Scheme's may do."
+(define-effect s7-base-eff (maxeff spin (read @globals) (read @sc) (write @sc) (alloc @sc) (io fs-read) (io fs-write) (io clock)
+                                   (io args) (io process) stage))
+(define-effect s7-eff (maxeff s7-base-eff (goto @sk) (comefrom @sk)))
+"What drives s7st: what it runs does."
+(define-effect s7-drive-eff (maxeff s7-eff))
 
 "kit's (../kit/, Heist's library), whose names do not begin `s7-`."
 (define s7-kit-numbers (load-module "../kit/numbers.fx"))
@@ -85,36 +87,31 @@ at @sc; a procedure has an identity (its `name` cell), as `eq?` needs."
 finding it is a field's read, and it goes when the pair goes. A pair
 `cons` makes has none."
 (define-type s7-src (sumof (none unit) (read (productof (list s7-span) (item s7-span)))))
-"A closure: its lambda's clauses (one, but for `case-lambda`), each with its
-body compiled; where it was made; and its name, which is also its identity."
-(define-type s7-closure (productof (clauses (listof s7-clause acyclic)) (env s7-env) (name (ref string @sc))))
-(define-type s7-clause (productof (info s7-lambda) (code s7-code) (kernel (ref (listof s7-kernel acyclic) @sc))))
-"A clause's body as machine code (native.fx), if it has one: a loop over
-integers. `frees`: the free variables it reads, after its parameters;
-`self`: the variable through which it calls itself; `prims`: the globals
-whose built-ins it does in line, by name, which must hold them still;
-`consts`: the values it may return besides an integer."
-(define-type s7-scratch (bloblet (fields) @sc))
-(define-type s7-kernel-code (subr (conv native) (maxeff spin (read @sc) (write @sc)) (s7-scratch) int))
-(define-type s7-kernel
-  (productof (code s7-kernel-code)
-             (frees (listof (productof (depth int) (index int)) acyclic))
-             (self (sumof (none unit) (local (productof (depth int) (index int))) (global s7-global)))
-             (prims (listof (productof (cell s7-global) (name string)) acyclic))
-             (consts s7-values)))
-"A procedure written in FX-26: a function of its arguments, or an operation
-of the machine's own (`call/cc`, `apply`, …), numbered."
+"A closure: its lambda's clauses (one, but for `case-lambda`), as the
+expander made them; its name, which is also its identity; and its code,
+lowered (lower.fx): a procedure of so many arguments, or of their list."
+(define-type s7-closure (productof (infos (listof s7-lambda acyclic)) (name (ref string @sc)) (code s7-entry)))
+(define-type s7-entry
+  (sumof (a0 (subr s7-eff () s7-value))
+         (a1 (subr s7-eff (s7-value) s7-value))
+         (a2 (subr s7-eff (s7-value s7-value) s7-value))
+         (a3 (subr s7-eff (s7-value s7-value s7-value) s7-value))
+         (a4 (subr s7-eff (s7-value s7-value s7-value s7-value) s7-value))
+         (an (subr s7-eff (s7-values) s7-value))))
+"A procedure written in FX-26: a function of its arguments."
 (define-type s7-prim (productof (name string) (min int) (max int) (op s7-op) (pure bool) (fast s7-fast)))   ; max -1: any
 ;; `pure`: it changes nothing another could see (no `!`, no I/O), so a quick
 ;; evaluation may call it, and call it again.
 ;; `fast`: for a pure one, the same of one or two arguments, called with no
 ;; list made; undefined where it cannot say (an error, a case not covered),
 ;; and `op` then asked.
-(define-type s7-op (sumof (fn (subr s7-eff (s7-values) s7-out)) (ctl int)))
+(define-type s7-op (sumof (fn (subr s7-eff (s7-values) s7-out))))
 (define-type s7-fast (sumof (none unit) (f1 (subr s7-eff (s7-value) s7-value)) (f2 (subr s7-eff (s7-value s7-value) s7-value))))
 "What a procedure written in FX-26 gives: a value, or a condition raised."
 (define-type s7-out (sumof (ok s7-value) (raise s7-value)))
-(define-type s7-cont (productof (k s7-k) (dyn s7-dyn) (id (ref unit @sc))))
+"A continuation: the rest of a run, up to its prompt (machine.fx's
+`s7-tag`), and the dynamic state it was taken in."
+(define-type s7-cont (productof (k (composable s7-value s7-value s7-base-eff @sk)) (dyn s7-dyn) (id (ref unit @sc))))
 (define-type s7-record (productof (rtd s7-rtd) (fields (arrayof s7-value @sc))))
 (define-type s7-rtd (productof (name string) (fields s7-symbols) (id (ref unit @sc))))
 "A port: of input, a text and where reading has reached; of output, what
@@ -200,23 +197,8 @@ the macros bound in it (`let-syntax`, internal `define-syntax`)."
              (macros (ref (listof (productof (name symbol) (macro s7-macro)) acyclic) @sc))))
 (define-type s7-scopes (listof s7-scope acyclic))
 
-;;; ------------------------------------------------------------ the machine
+;;; ------------------------------------------------------------ the dynamic state
 
-"Compiled code (machine.fx's `s7-compile`): what evaluating a node does,
-given its environment, continuation and dynamic state -- the machine's next
-state. And, for a node that allows it, a quick evaluation: its value got
-with no step of the machine's, or undefined if it cannot be (it needs
-steps, or has an error to report). A quick evaluation that gives undefined
-has done nothing another could see, so the node may then be run as code,
-which reports the error if there is one. (No wrapper is made for a value:
-in Fixpt every sum is an object allocated.)"
-(define-type s7-code (subr s7-eff (s7-env s7-k s7-dyn) s7-state))
-(define-type s7-quick (subr s7-eff (s7-env) s7-value))
-(define-type s7-compiled (productof (code s7-code) (quick (listof s7-quick acyclic))))   ; quick: none, or one
-(define-type s7-compileds (listof s7-compiled acyclic))
-"An environment: frames of slots, innermost first."
-(define-type s7-env (sumof (top unit) (frame s7-frame)))
-(define-type s7-frame (productof (slots (arrayof s7-value @sc)) (up s7-env)))
 "The dynamic state: the `dynamic-wind`s entered, innermost first, and the
 exception handlers installed."
 (define-type s7-wind (productof (before s7-value) (after s7-value) (id (ref unit @sc))))
@@ -225,36 +207,6 @@ exception handlers installed."
 "A thunk to call, and the dynamic state to call it in (on the way to a
 continuation's)."
 (define-type s7-step (productof (thunk s7-value) (dyn s7-dyn)))
-"A continuation's frames, innermost first. Immutable, so a continuation
-may be resumed any number of times."
-(define-type s7-kframe
-  (sumof (k-if (productof (then s7-code) (else s7-code) (env s7-env)))
-         (k-seq (productof (rest s7-compileds) (env s7-env)))
-         ;; A call's operator and arguments evaluated so far, last first.
-         (k-args (productof (done s7-values) (rest s7-compileds) (env s7-env)))
-         (k-set-local (productof (depth int) (index int) (env s7-env)))
-         (k-set-global s7-global)
-         (k-define s7-global)
-         (k-cwv s7-value)                                 ; call-with-values' consumer
-         (k-restore s7-dyn)                               ; the dynamic state put back
-         (k-dw-before (productof (before s7-value) (thunk s7-value) (after s7-value)))
-         (k-dw-body (productof (after s7-value) (dyn s7-dyn)))
-         (k-then-return s7-value)                         ; this value, not the one given
-         (k-rewind (productof (steps (listof s7-step acyclic)) (k s7-k) (dyn s7-dyn) (value s7-value)))
-         (k-raise s7-value)                               ; a handler returned from `raise`
-         ;; Top-level forms still to run; whether each value is shown; the
-         ;; text they were read from (for where an error is); the namespace
-         ;; they are in.
-         (k-top (productof (forms s7-values) (echo bool) (text string) (ns s7-ns)))))
-(define-type s7-k (listof s7-kframe acyclic))
-"The machine's state between steps."
-(define-type s7-state
-  (sumof (s-run (productof (code s7-code) (env s7-env) (k s7-k) (dyn s7-dyn)))
-         (s-return (productof (value s7-value) (k s7-k) (dyn s7-dyn)))
-         (s-apply (productof (proc s7-value) (args s7-values) (k s7-k) (dyn s7-dyn)))
-         (s-raise (productof (obj s7-value) (continuable bool) (k s7-k) (dyn s7-dyn)))
-         (s-done s7-value)
-         (s-failed (productof (obj s7-value) (k s7-k)))))
 
 ;;; ------------------------------------------------------------ making values
 

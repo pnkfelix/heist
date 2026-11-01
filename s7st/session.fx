@@ -5,8 +5,9 @@
 ;;;                              incomplete (RET should not send it), bad
 ;;;   (s7-start! text file echo) the text's forms, to run; each value shown,
 ;;;                              as a REPL does, if `echo`
-;;;   (s7-continue! fuel)        at most `fuel` steps run: still running,
-;;;                              done (with the last value), or failed
+;;;   (s7-continue! fuel)        at most `fuel` procedures entered: still
+;;;                              running, done (with the last value), or
+;;;                              failed
 ;;;   (s7-take-output!)          what was written since last taken
 ;;;   (s7-interrupt!)            what runs stopped
 ;;;   (s7-eval-string! text)     all of that at once: the output, then the
@@ -16,8 +17,10 @@
 ;;;
 ;;; There is one interpreter: its globals are FX-26 globals.
 
-"Where the machine is: stopped, when it has nothing to run."
-(define s7-machine (ref s7-state @sc) (new (sum s-done s7-unspecified)))
+"What runs next, if anything: the rest of the run (lower.fx's
+`s7-drive-run`); and the last run's value."
+(define s7-machine (ref (listof s7-thunk acyclic) @sc) (new nil))
+(define s7-last (ref s7-value @sc) (new s7-unspecified))
 
 (define-type s7-status (sumof (running unit) (done s7-value) (failed string)))
 (define-type s7-input (sumof (complete unit) (incomplete unit) (bad string)))
@@ -48,8 +51,8 @@ irritants, written; anything else, written."
   (lambda (text file echo ns)
     (tagcase (s7-read-all text file)
       (data forms (begin (set s7-console-fresh #t)
-                    (set s7-machine (s7-return-state s7-unspecified (list (sum k-top (product (forms forms) (echo echo) (text text) (ns ns))))
-                                                          s7-no-dyn))
+                    (set s7-dyn-now s7-no-dyn)
+                    (set s7-machine (list (lambda () (s7-run-forms forms echo text ns))))
                     (sum none #u)))
       (stop r (sum bad (tagcase r
                          (incomplete u "the text ends inside a datum")
@@ -63,18 +66,18 @@ wrong with it."
 (define* s7-start! (subr s7-drive-eff (string string bool) (sumof (none unit) (bad string)))
   (lambda (text file echo) (s7-start-in! text file echo s7-toplevel)))
 (define* s7-busy? (subr (read @sc) () bool)
-  (lambda () (not (s7-stopped? (get s7-machine)))))
+  (lambda () (pair? (get s7-machine))))
 
-"At most `fuel` steps run."
+"At most `fuel` procedures entered."
 (define* s7-continue! (subr s7-drive-eff (int) s7-status)
   (lambda (fuel)
-    (let ((st (begin (s7-make-kernels!) (s7-run (get s7-machine) fuel))))
-      (begin
-        (set s7-machine st)
-        (tagcase st
-          (s-done v (begin (s7-flush-files!) (sum done v)))
-          (s-failed f (begin (s7-flush-files!) (sum failed (s7-condition-message (extract f obj)))))
-          (else y (sum running #u)))))))
+    (let ((m (get s7-machine)))
+      (if (null? m) (sum done (get s7-last))
+          (tagcase (s7-drive-run (car m) fuel)
+            (paused t (begin (set s7-machine (list t)) (sum running #u)))
+            (done v (begin (set s7-machine nil) (set s7-last v) (s7-flush-files!) (sum done v)))
+            (failed obj (begin (set s7-machine nil) (set s7-last s7-unspecified) (s7-flush-files!)
+                          (sum failed (s7-condition-message obj)))))))))
 
 "What `display` and its kin have written to the console since this was
 last asked."
@@ -85,7 +88,7 @@ last asked."
       (else y ""))))
 
 (define* s7-interrupt! (subr s7-drive-eff () unit)
-  (lambda () (set s7-machine (sum s-done s7-unspecified))))
+  (lambda () (set s7-machine nil)))
 
 "`text` run to its end: what it wrote, then its last value (written) or
 `Error: …`."
@@ -117,14 +120,14 @@ last asked."
                        ((> left 0) (params (cdr ns) (- left 1) rest (cons (string-append " " (s7-symbol-name (car ns))) acc)))
                        (rest (cons (string-append " . " (s7-symbol-name (car ns))) acc))
                        (else acc))))
-             (clauses (subr s7-drive-eff ((listof s7-clause acyclic) (listof string acyclic)) (listof string acyclic))
+             (clauses (subr s7-drive-eff ((listof s7-lambda acyclic) (listof string acyclic)) (listof string acyclic))
                (lambda (cs acc)
                  (if (null? cs) acc
-                     (let ((l (extract (car cs) info)))
+                     (let ((l (car cs)))
                        (clauses (cdr cs)
                                 (cons (string-append "(" name (string-concatenate (reverse (params (extract l names) (extract l required) (extract l rest) nil))) ")")
                                       (if (null? acc) acc (cons " | " acc)))))))))
-      (string-concatenate (reverse (clauses (extract c clauses) nil))))))
+      (string-concatenate (reverse (clauses (extract c infos) nil))))))
 "What global `name` is, in a line: a procedure's parameters, a special
 form, a macro, or a variable's value; \"\" if it is none of them."
 (define* s7-describe (subr s7-drive-eff (string) string)
@@ -144,20 +147,29 @@ form, a macro, or a variable's value; \"\" if it is none of them."
                                   (string-append name " = " (if (> (string-length s) 60) (string-append (substring s 0 60) "...") s))))))))))))
 
 "The interpreter made ready: the special forms and the procedures written
-in FX-26, then the prelude (prelude.fx) run. \"\", or what went wrong."
+in FX-26, then the prelude (prelude.fx) staged and run. \"\", or what went
+wrong. Once: again, what it said then (main.fx makes it ready as it loads,
+so that a heap dump holds it ready)."
+(define s7-init-said (ref (listof string acyclic) @sc) (new nil))
 (define* s7-init! (subr s7-drive-eff () string)
   (lambda ()
-    (begin
-      (s7-define-specials! s7-special-names)
-      (s7-init-prims!)
-      (s7-init-tables!)
-      (s7-init-libraries!)
-      (tagcase (s7-start-in! s7-prelude "prelude.scm" #f s7-builtins)
-        (bad m m)
-        (none u (letrec ((go (subr s7-drive-eff () string)
-                           (lambda ()
-                             (tagcase (s7-continue! 1000000)
-                               (running u (go))
-                               (done v (begin (s7-take-output!) ""))
-                               (failed m (string-append "prelude: " m))))))
-                  (go)))))))
+    (if (pair? (get s7-init-said))
+        (car (get s7-init-said))
+        (let ((said
+               (begin
+                 (s7-define-specials! s7-special-names)
+                 (s7-init-prims!)
+                 (s7-init-control!)
+                 (s7-init-eval!)
+                 (s7-init-tables!)
+                 (s7-init-libraries!)
+                 (tagcase (s7-start-in! s7-prelude "prelude.scm" #f s7-builtins)
+                   (bad m m)
+                   (none u (letrec ((go (subr s7-drive-eff () string)
+                                      (lambda ()
+                                        (tagcase (s7-continue! 1000000)
+                                          (running u (go))
+                                          (done v (begin (s7-take-output!) ""))
+                                          (failed m (string-append "prelude: " m))))))
+                             (go)))))))
+          (begin (set s7-init-said (list said)) (set s7-builtins-intact #t) said)))))

@@ -1,5 +1,6 @@
-; Loops over integers run as machine code (native.fx), and what makes them
-; give up, or not be used: each answer is the one the slow way gives.
+; Loops over integers, and what made their machine code (the interpreter's
+; kernels, until 2026-10-31) give up, or not be used: past 64 bits, other
+; constants, a built-in redefined; each answer is the one Scheme gives.
 (define (show . xs) (for-each (lambda (x) (write x) (display " ")) xs) (newline))
 (define (count-loop n) (let loop ((i 0) (acc 0)) (if (= i n) acc (loop (+ i 1) (+ acc i)))))
 (show (count-loop 10) (count-loop 1000000))

@@ -70,6 +70,10 @@ contexts see different things (`--contexts`)."
                          (files (cdr ps)))))))
           (files paths))))))
 
+"s7st made ready as the program loads, so that a heap dump of it
+(bin/heist-dump) holds s7st's prelude staged (`s7-init!` is once)."
+(define cf-s7-ready string (s7-init!))
+
 (define* main (subr (maxeff fx-eff sc-eff s7-drive-eff (io fs-read) (io stdout) (io stderr) (io clock) (io stdin) (io args) (alloc @a) (read @a) spin) () int)
   (lambda ()
     (let* ((as (letrec ((go (subr (maxeff (read @a) spin) ((listof string @a)) strings) (lambda (l) (if (null? l) nil (cons (car l) (go (cdr l)))))))

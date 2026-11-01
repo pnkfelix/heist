@@ -5,8 +5,8 @@
 ;;; may fail in FX-26's sense (`car` of nil, an index out of range), since
 ;;; the editor runs them in a command, where nothing catches a failure.
 ;;; What calls procedures back (`map`, `for-each`, …) is in prelude.fx, in
-;;; Scheme; what moves the machine itself (`call/cc`, `apply`,
-;;; `dynamic-wind`, …) is numbered here and done in machine.fx.
+;;; Scheme; what moves control (`call/cc`, `apply`, `dynamic-wind`, …) is
+;;; machine.fx's, and `eval` and `load` lower.fx's.
 
 (define-type s7-fn (subr s7-eff (s7-values) s7-out))
 
@@ -24,10 +24,6 @@ reads or writes ports, or opens or closes them, is not."
 (define* s7-prim! (subr s7-eff (string int int s7-fn) unit)
   (lambda (name min max f)
     (s7-define-global! name (sum prim (product (name name) (min min) (max max) (op (sum fn f)) (pure (s7-pure-name? name)) (fast (sum none #u)))))))
-"An operation of the machine's own, numbered (machine.fx's `s7-control`)."
-(define* s7-ctl! (subr s7-eff (string int int int) unit)
-  (lambda (name min max op)
-    (s7-define-global! name (sum prim (product (name name) (min min) (max max) (op (sum ctl op)) (pure #f) (fast (sum none #u)))))))
 "Global `new` defined as global `old` is."
 (define* s7-alias! (subr s7-eff (string string) unit)
   (lambda (new old) (s7-define-global! new (get (extract (s7-global-cell (string->symbol old)) value)))))
@@ -1352,35 +1348,6 @@ and when what runs ends."
       (s7-prim! "get-environment-variable" 1 1 (lambda ((a s7-values)) (s7-bool #f)))
       (s7-prim! "get-environment-variables" 0 0 (lambda ((a s7-values)) (sum ok s7-nil))))))
 
-"The machine's own operations, by number (machine.fx's `s7-control`)."
-(define s7-op-apply int 0)
-(define s7-op-call/cc int 1)
-(define s7-op-values int 2)
-(define s7-op-call-with-values int 3)
-(define s7-op-dynamic-wind int 4)
-(define s7-op-with-exception-handler int 5)
-(define s7-op-raise int 6)
-(define s7-op-raise-continuable int 7)
-(define s7-op-eval int 8)
-(define s7-op-load int 9)
-(define s7-op-exit int 10)
-(define* s7-init-control! (subr s7-eff () unit)
-  (lambda ()
-    (begin
-      (s7-ctl! "apply" 1 -1 s7-op-apply)
-      (s7-ctl! "call-with-current-continuation" 1 1 s7-op-call/cc)
-      (s7-alias! "call/cc" "call-with-current-continuation")
-      (s7-ctl! "values" 0 -1 s7-op-values)
-      (s7-ctl! "call-with-values" 2 2 s7-op-call-with-values)
-      (s7-ctl! "dynamic-wind" 3 3 s7-op-dynamic-wind)
-      (s7-ctl! "with-exception-handler" 2 2 s7-op-with-exception-handler)
-      (s7-ctl! "raise" 1 1 s7-op-raise)
-      (s7-ctl! "raise-continuable" 1 1 s7-op-raise-continuable)
-      (s7-ctl! "eval" 1 2 s7-op-eval)
-      (s7-ctl! "load" 1 2 s7-op-load)
-      (s7-ctl! "exit" 0 1 s7-op-exit)
-      (s7-alias! "emergency-exit" "exit"))))
-
 ;;; ------------------------------------------------------------ fast entries
 
 "Built-in `name` given `fast` (value.fx's `s7-prim`): the same for one or
@@ -1441,8 +1408,7 @@ rewritten forms call, by names no program binds (` cons`, ` memv`, …)."
       (s7-init-vectors!)
       (s7-init-records!)
       (s7-init-ports!)
-      (s7-init-control!)
       (s7-init-fast!)
       (letrec ((hidden (subr s7-eff (s7-strings) unit)
                  (lambda (l) (if (null? l) #u (begin (s7-alias! (string-append " " (car l)) (car l)) (hidden (cdr l)))))))
-        (hidden (list "cons" "append" "list->vector" "memv" "list" "list-ref" "list-tail" "call-with-values"))))))
+        (hidden (list "cons" "append" "list->vector" "memv" "list" "list-ref" "list-tail"))))))

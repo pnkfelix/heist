@@ -303,32 +303,15 @@
 
 ;; R7RS 7.3's: a promise holds a box, (done? . value-or-thunk), shared by
 ;; the promises a `delay-force` chain makes, so that forcing it runs in
-;; constant space. R7RS's reference implementation, its helpers
-;; (`promise-done?`, `promise-update!`, …) written in place: each is a
-;; closure's call here, and a step of a long chain makes a dozen.
+;; constant space (machine.fx's `s7-force`).
 (define-record-type promise (%promise box) promise? (box %promise-box %promise-box-set!))
 (define-syntax delay-force
   (syntax-rules () ((_ expression) (%promise (cons #f (lambda () expression))))))
 (define-syntax delay
   (syntax-rules () ((_ expression) (%promise (cons #f (lambda () (%promise (cons #t expression))))))))
 (define (make-promise v) (if (promise? v) v (%promise (cons #t v))))
-(define (force promise)
-  (if (promise? promise)
-      (let loop ()
-        (let ((box (%promise-box promise)))
-          (if (car box)
-              (cdr box)
-              (let* ((v ((cdr box)))
-                     (promise* (if (promise? v) v (%promise (cons #t v))))
-                     ;; Read again: forcing the thunk may have forced this.
-                     (box (%promise-box promise)))
-                (unless (car box)
-                  (let ((box* (%promise-box promise*)))
-                    (set-car! box (car box*))
-                    (set-cdr! box (cdr box*))
-                    (%promise-box-set! promise* box)))
-                (loop)))))
-      promise))
+;; `force` is machine.fx's, in FX-26, told the promises' type here.
+(%promise-type! promise)
 
 ;;; ------------------------------------------------------------ hash tables
 
