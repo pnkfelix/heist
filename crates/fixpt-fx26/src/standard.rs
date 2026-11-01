@@ -277,8 +277,16 @@ pub const ENTRIES: &[(&str, &str)] = &[
     // of, covariant.
     ("effect-bound", "(poly ((e effect)) (subr pure ((effectrep e)) (effectbound e)))"),
     ("type-bound", "(poly ((t type)) (subr pure ((typerep t)) (typebound t)))"),
-    ("%reify-text", "(subr pure (string string string (listof string acyclic)) string)"),
-    ("%stage-check", "(subr (maxeff spin (io fs-read)) (string string string string string (listof string acyclic)) (sumof (checked string) (failed stage-failure)))"),
+    // A `reify-…`'s rep, on the evaluator (`fixpt_runtime::evidence::reified_rep`),
+    // empty if none.
+    ("%reify-rep", "(poly ((r region)) (subr (maxeff (alloc r) (read r)) (string wcell string (listof (bytevectorof r) acyclic)) (bytevectorof r)))"),
+    (
+        "%stage-check",
+        concat!(
+            "(poly ((r region)) (subr (maxeff spin (io fs-read) (read r)) (string string wcell ",
+            "(listof (bytevectorof r) acyclic)) (sumof (checked string) (failed stage-failure))))",
+        ),
+    ),
     // Sessions on the evaluator written in FX-26 (`fx-ast-eval`), which
     // keeps a session as an array of its own values and runs each step's
     // forms, given as text (`fixpt-fx26`'s `sessions.rs`, "evaluated"): a
@@ -286,7 +294,13 @@ pub const ENTRIES: &[(&str, &str)] = &[
     // and the code, written out; a pending definition readied, given the
     // decision's tag; whether one redefines. A session, made, and a
     // pending definition are the runtime's, never looked in.
-    ("%session-eval-check", "(poly ((r region) (t type)) (subr (maxeff spin (io fs-read)) ((arrayof t r) string string string string string (listof string acyclic)) (sumof (run (listof string acyclic)) (ok (sumof (definition (arrayof t r)))) (failed stage-failure))))"),
+    (
+        "%session-eval-check",
+        concat!(
+            "(poly ((r region) (t type) (s region)) (subr (maxeff spin (io fs-read) (read s)) ((arrayof t r) string string ",
+            "wcell (listof (bytevectorof s) acyclic)) (sumof (run (listof string acyclic)) (ok (sumof (definition (arrayof t r)))) (failed stage-failure))))",
+        ),
+    ),
     ("%session-eval-ready", "(poly ((r region)) (poly ((t type)) (subr (maxeff spin (io fs-read) (read r) (write r)) ((arrayof t r) (arrayof t r) string) (sumof (run (listof (productof (text string) (keeps bool)) acyclic)) (failed stage-failure)))))"),
     ("%session-eval-make", "(poly ((r region)) (poly ((t type)) (subr (alloc r) (t) (arrayof t r))))"),
     ("%session-eval-committed!", "(poly ((r region)) (poly ((t type)) (subr (maxeff (read r) (write r)) ((arrayof t r) (arrayof t r)) (sumof (defined string) (failed stage-failure)))))"),
@@ -332,6 +346,28 @@ pub const ENTRIES: &[(&str, &str)] = &[
     // The heap dumped, and the procedure a resumed run starts by calling
     // (`fixpt resume`, `TODO.md` §189). It is not called here, so its
     // effect is none of this one's.
+    // A type's rep, in its binary form, from the nodes the checker written
+    // in FX-26 makes of it (`check-reps.fx`; `docs/research/heap-types.md`).
+    (
+        "rep-nodes",
+        concat!(
+            "(poly ((s region)) (subr (read s) ((bytevectorof s) (listof string acyclic)) (productof (1 (listof (productof (1 int) ",
+            "(2 symbol) (3 bool) (4 (listof symbol acyclic)) (5 (listof (sumof (node int) (bound (productof (1 int) (2 int))) ",
+            "(hole int) (const (productof (1 string) (2 int) (3 string))) (sym symbol) (int int) (flag bool)) acyclic))) ",
+            "acyclic)) (2 (listof symbol acyclic)))))",
+        ),
+    ),
+    (
+        "rep-of-nodes",
+        concat!(
+            "(poly ((r region)) (subr (alloc r) ((listof (productof (1 int) (2 symbol) (3 bool) (4 (listof symbol acyclic)) ",
+            "(5 (listof (sumof (node int) (bound (productof (1 int) (2 int))) (hole int) ",
+            "(const (productof (1 string) (2 int) (3 string))) (sym symbol) (int int) (flag bool)) acyclic))) acyclic) ",
+            "(listof symbol acyclic) int) (bytevectorof r)))",
+        ),
+    ),
+    // A rep, as compiled code holds it: a `stage`'s (`k-staged-rep`).
+    ("rep-cell", "(poly ((r region)) (subr (read r) ((bytevectorof r)) wcell))"),
     ("dump-heap!", "(poly ((e effect)) (subr (io fs-write) (string (subr e () int)) (sumof (done unit) (failed io-error))))"),
     // Bytevectors (`TODO.md` §84): made, read and written at a region, as
     // arrays are; R7RS's names. `bytevector-copy` takes a start and an end,

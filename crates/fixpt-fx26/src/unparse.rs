@@ -26,6 +26,8 @@ impl Checker {
         }
         if self.show_marks.get() {
             format!("{MARK}{how}{}{MARK}", v.0)
+        } else if let Some(label) = self.print_abs.borrow().get(&v).filter(|_| how == 'f') {
+            label.clone()
         } else if how == 'h' {
             String::new()
         } else {
@@ -248,8 +250,12 @@ impl Checker {
     pub fn show_effect(&self, e: &Effect) -> String {
         let mut atoms: Vec<String> = Vec::new();
         let (mut reads, mut writes) = (Vec::new(), Vec::new());
+        // Printed as absorbed, however it was made (`Effect::absorbed`).
+        let (r, w) = e.absorbs();
         for a in &e.0 {
             match a {
+                Atom::Read(Region::Global(_)) if r => {}
+                Atom::Write(Region::Global(_)) if w => {}
                 Atom::Read(Region::Global(g)) => reads.push(self.interner.name(*g).to_string()),
                 Atom::Write(Region::Global(g)) => writes.push(self.interner.name(*g).to_string()),
                 _ => atoms.push(self.show_atom(*a)),
@@ -383,7 +389,13 @@ impl Checker {
             Ty::Base(s) => name(*s).hash(&mut h),
             Ty::Void | Ty::Nil | Ty::False | Ty::Link(_) => {}
             Ty::Union(ms) => ms.len().hash(&mut h),
-            Ty::Var(v) => var(*v).hash(&mut h),
+            // An abstract type of a module a global holds, as a `.fasl`'s
+            // use names it (`fasl_use_digest`): by its `select`, not by
+            // its name, which another module's may have.
+            Ty::Var(v) => match self.fasl_selects.borrow().as_ref().and_then(|m| m.get(v)) {
+                Some(select) => (true, select).hash(&mut h),
+                None => var(*v).hash(&mut h),
+            },
             Ty::Subr { conv, effect, params, spec, .. } => {
                 (self.show_conv(*conv), self.show_effect(effect), params.len()).hash(&mut h);
                 if let Some(spec) = spec {
@@ -772,6 +784,7 @@ impl Checker {
                     Some(m) => abs.iter().map(|(n, v)| (*v, m.insert(*v, self.interner.name(*n).to_string()))).collect(),
                     None => Vec::new(),
                 };
+                let shown_as: Vec<_> = abs.iter().map(|(n, v)| (*v, self.print_abs.borrow_mut().insert(*v, self.interner.name(*n).to_string()))).collect();
                 let mut out = String::from("(moduleof");
                 for (n, v) in &abs {
                     // Bound here, as a `poly`'s binders are.
@@ -808,6 +821,12 @@ impl Checker {
                     out.push_str(&format!(" (val {} {})", self.interner.name(*n), self.show_ty_on(*x, path)));
                 }
                 self.print_names.borrow_mut().truncate(mark);
+                for (v, was) in shown_as {
+                    match was {
+                        Some(w) => self.print_abs.borrow_mut().insert(v, w),
+                        None => self.print_abs.borrow_mut().remove(&v),
+                    };
+                }
                 if let Some(m) = self.print_for_fasl.borrow_mut().as_mut() {
                     for (v, was) in renamed {
                         match was {

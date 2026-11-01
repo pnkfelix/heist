@@ -12,7 +12,7 @@
 //! (`src/Asm/Shared/makefasl.sch`), and each value of a file it loads by
 //! that load.
 //!
-//! The file: a line `#fasl(fixpt-fasl 2)`, a header of lines `word value`,
+//! The file: a line `#fasl(fixpt-fasl 3)`, a header of lines `word value`,
 //! then `image N` and the image's `N` bytes (`fixpt_heap::image`). The
 //! globals its value links to are named in the header (`global`), so that
 //! the image can be spliced into the loader's heap with its links known
@@ -29,7 +29,7 @@ use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 
 /// A `.fasl`'s first line.
-pub const MARK: &str = "#fasl(fixpt-fasl 2)";
+pub const MARK: &str = "#fasl(fixpt-fasl 3)";
 
 /// What a `.fasl` says of itself before its image.
 #[derive(Clone, Debug, PartialEq)]
@@ -61,8 +61,17 @@ pub struct Header {
     /// A program's file's definitions kept, each a procedure's, the `i`th
     /// the image's value `i`.
     pub defs: Vec<Def>,
-    /// The type abbreviations its types name, each with what it is.
-    pub aliases: Vec<(String, String)>,
+    /// The type abbreviations its types name, each with what it is and
+    /// that type's digest (`Checker::fasl_use_digest`), compared first.
+    pub aliases: Vec<(String, String, u64)>,
+    /// A program's file's definitions' types, as one rep in its binary form
+    /// (`reps.rs`'s `FASL_TYPES` its root, each [`Def::rep_at`] a place of
+    /// it): what they share there once, as the text's abbreviations are.
+    pub reps: Option<Vec<u8>>,
+    /// Each abbreviation of `aliases` whose type is among `reps`' too, and
+    /// its place: what a load gives that part, the abbreviation's own type
+    /// where it reads (`session.rs`'s `run_program_def`).
+    pub rep_aliases: Vec<(String, usize)>,
     /// The globals its image's value links to by name ([`Link::Global`]),
     /// the `i`th named by the image's placeholder `(0 . i)`; and the names
     /// of the keywords it holds ([`Link::Keyword`]), placeholders `(4 . i)`.
@@ -102,12 +111,33 @@ pub struct Def {
     pub ty: String,
     /// The expression its declaration has the type by ([`fasl_value_at`]).
     pub init: String,
-    pub uses: Vec<(String, String)>,
+    /// Each global it uses: its name, its type then as text, and that
+    /// type's digest (`Checker::fasl_use_digest`), compared first.
+    pub uses: Vec<(String, String, u64)>,
     /// What its definition said as it was made, a line each (that the
     /// native compiler declined it, say), said again where it is loaded.
     pub said: Vec<String>,
     /// The type abbreviations its type names (`Header::aliases`).
     pub types: Vec<String>,
+    /// Its type's place among [`Header::reps`]' (`docs/research/heap-types.md`,
+    /// step 5): what a load enters, not `ty` read again; none where it names
+    /// a variable.
+    pub rep_at: Option<usize>,
+    /// What its stamp is made of but the write counts of the globals its
+    /// making reads (`session.rs`'s `stamp_of`): its form's text's digest
+    /// and its type's, kept so that a load need not print either again.
+    pub stamp_parts: Option<(u64, u64)>,
+}
+
+/// `bytes` in hex, two digits a byte.
+fn hex_bytes(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// The bytes hex `s` is, two digits a byte; none if it is not.
+fn bytes_of_hex(s: &str) -> Option<Vec<u8>> {
+    (s.len() % 2 == 0).then_some(())?;
+    (0..s.len() / 2).map(|i| u8::from_str_radix(s.get(2 * i..2 * i + 2)?, 16).ok()).collect()
 }
 
 /// A file a `.fasl`'s file loads: as its load wrote it, and the stamp it had.
@@ -217,22 +247,34 @@ impl Header {
         if !self.made.is_empty() {
             out.push_str(&format!("made {}\n", self.made));
         }
-        for (n, t) in &self.aliases {
-            out.push_str(&format!("alias {n} {t}\n"));
+        for (n, t, digest) in &self.aliases {
+            out.push_str(&format!("alias {n} {digest:016x} {t}\n"));
         }
         for g in &self.globals {
             out.push_str(&format!("global {g}\n"));
         }
+        if let Some(r) = &self.reps {
+            out.push_str(&format!("reps {}\n", hex_bytes(r)));
+        }
+        for (n, i) in &self.rep_aliases {
+            out.push_str(&format!("repalias {i} {n}\n"));
+        }
         for d in &self.defs {
             out.push_str(&format!("{} {} {} {}\ninit {}\n", if d.rec { "rec" } else { "def" }, d.form, d.name, d.ty, d.init));
-            for (n, t) in &d.uses {
-                out.push_str(&format!("use {n} {t}\n"));
+            for (n, t, digest) in &d.uses {
+                out.push_str(&format!("use {n} {digest:016x} {t}\n"));
             }
             for l in &d.said {
                 out.push_str(&format!("said {l}\n"));
             }
             if !d.types.is_empty() {
                 out.push_str(&format!("types {}\n", d.types.join(" ")));
+            }
+            if let Some(i) = d.rep_at {
+                out.push_str(&format!("repof {i}\n"));
+            }
+            if let Some((text, ty)) = d.stamp_parts {
+                out.push_str(&format!("stampof {text:016x} {ty:016x}\n"));
             }
         }
         out.push_str(&format!("image {}\n", image.len()));
@@ -254,7 +296,7 @@ impl Header {
             return Err(format!("it does not begin `{MARK}`"));
         }
         let hex = |s: &str| u64::from_str_radix(s, 16).map_err(|_| format!("`{s}` is not a digest"));
-        let mut h = Header { build: 0, arch: String::new(), native: false, cellular: false, kind: Kind::Module, source: 0, stamp: 0, deps: Vec::new(), ty: String::new(), made: String::new(), defs: Vec::new(), aliases: Vec::new(), globals: Vec::new() };
+        let mut h = Header { build: 0, arch: String::new(), native: false, cellular: false, kind: Kind::Module, source: 0, stamp: 0, deps: Vec::new(), ty: String::new(), made: String::new(), defs: Vec::new(), aliases: Vec::new(), reps: None, rep_aliases: Vec::new(), globals: Vec::new() };
         loop {
             let l = line()?;
             let (word, value) = l.split_once(' ').ok_or_else(|| format!("a header line `{l}`"))?;
@@ -288,19 +330,35 @@ impl Header {
                     };
                     let form = form.parse().map_err(|_| format!("a header line `{l}`"))?;
                     let rec = word == "rec";
-                    h.defs.push(Def { form, rec, name: name.to_string(), ty: ty.to_string(), init: String::new(), uses: Vec::new(), said: Vec::new(), types: Vec::new() });
+                    h.defs.push(Def { form, rec, name: name.to_string(), ty: ty.to_string(), init: String::new(), uses: Vec::new(), said: Vec::new(), types: Vec::new(), rep_at: None, stamp_parts: None });
                 }
                 "types" => h.defs.last_mut().ok_or_else(|| format!("a header line `{l}` before any `def`"))?.types = value.split(' ').map(str::to_string).collect(),
                 "said" => h.defs.last_mut().ok_or_else(|| format!("a header line `{l}` before any `def`"))?.said.push(value.to_string()),
                 "init" => h.defs.last_mut().ok_or_else(|| format!("a header line `{l}` before any `def`"))?.init = value.to_string(),
+                "repof" => h.defs.last_mut().ok_or_else(|| format!("a header line `{l}` before any `def`"))?.rep_at = Some(value.parse().map_err(|_| format!("a header line `{l}`"))?),
+                "stampof" => {
+                    let (a, b) = value.split_once(' ').ok_or_else(|| format!("a header line `{l}`"))?;
+                    h.defs.last_mut().ok_or_else(|| format!("a header line `{l}` before any `def`"))?.stamp_parts = Some((hex(a)?, hex(b)?));
+                }
+                "repalias" => {
+                    let (i, n) = value.split_once(' ').ok_or_else(|| format!("a header line `{l}`"))?;
+                    h.rep_aliases.push((n.to_string(), i.parse().map_err(|_| format!("a header line `{l}`"))?));
+                }
+                "reps" => h.reps = Some(bytes_of_hex(value).ok_or_else(|| format!("a header line `{l}`"))?),
                 "alias" => {
-                    let (name, ty) = value.split_once(' ').ok_or_else(|| format!("a header line `{l}`"))?;
-                    h.aliases.push((name.to_string(), ty.to_string()));
+                    let bad = || format!("a header line `{l}`");
+                    let (name, rest) = value.split_once(' ').ok_or_else(bad)?;
+                    let (digest, ty) = rest.split_once(' ').ok_or_else(bad)?;
+                    let digest = u64::from_str_radix(digest, 16).map_err(|_| bad())?;
+                    h.aliases.push((name.to_string(), ty.to_string(), digest));
                 }
                 "global" => h.globals.push(value.to_string()),
                 "use" => {
-                    let (name, ty) = value.split_once(' ').ok_or_else(|| format!("a header line `{l}`"))?;
-                    h.defs.last_mut().ok_or_else(|| format!("a header line `{l}` before any `def`"))?.uses.push((name.to_string(), ty.to_string()));
+                    let bad = || format!("a header line `{l}`");
+                    let (name, rest) = value.split_once(' ').ok_or_else(bad)?;
+                    let (digest, ty) = rest.split_once(' ').ok_or_else(bad)?;
+                    let digest = u64::from_str_radix(digest, 16).map_err(|_| bad())?;
+                    h.defs.last_mut().ok_or_else(|| format!("a header line `{l}` before any `def`"))?.uses.push((name.to_string(), ty.to_string(), digest));
                 }
                 "image" => {
                     let n: usize = value.parse().map_err(|_| format!("a header line `{l}`"))?;
@@ -398,8 +456,7 @@ pub fn image(heap: &mut Heap, value: Value, deps: &[(String, Value)], adapter: O
         if heap.obj_type(v) == Some(ObjType::Symbol) {
             continue;
         }
-        let trailer = heap.bloblet_has_trailer(v) as usize;
-        todo.extend(((1 + trailer)..=heap.bloblet_head(v).fields).map(|k| heap.bloblet_slot(v, k)));
+        todo.extend(heap.bloblet_values(v));
     }
     let mut alone = Heap::new();
     let (given, placeholders, globals) = placeholders(&mut alone, &links);
@@ -532,10 +589,9 @@ fn cellular_image(heap: &mut Heap, value: Value, deps: &[(String, Value)], adapt
         if heap.code_part(v) == Some(CodePart::Native) {
             continue;
         }
-        let fields = heap.bloblet_head(v).fields;
         if heap.obj_type(v).is_none() && heap.bloblet_kind(v) == closure_kind {
             let code = heap.bloblet_slot(v, CLOSURE_WORD);
-            let free: Vec<Value> = (CLOSURE_FREE0..=fields).map(|k| heap.bloblet_slot(v, k)).collect();
+            let free: Vec<Value> = heap.bloblet_fields_from(v, CLOSURE_FREE0);
             todo.extend(free.iter().copied());
             if Some(code) == adapter {
                 adapted.push((v, free[0]));
@@ -549,8 +605,7 @@ fn cellular_image(heap: &mut Heap, value: Value, deps: &[(String, Value)], adapt
             compiled.push((v, word, free));
             continue;
         }
-        let trailer = heap.bloblet_has_trailer(v) as usize;
-        todo.extend(((1 + trailer)..=fields).map(|k| heap.bloblet_slot(v, k)));
+        todo.extend(heap.bloblet_values(v));
     }
     let mut redirect: HashMap<u64, Value> = adapted.iter().map(|(c, f)| (c.raw(), *f)).collect();
     let cellular_kind = const { fixpt_heap::layout::kind("cellular-closure") };
@@ -639,10 +694,9 @@ pub fn native_procedures(heap: &mut Heap, value: Value, compile: crate::session:
                 heap.set_cdr(v, *n);
             }
         } else if inside(heap, v) && heap.obj_type(v) != Some(ObjType::Symbol) {
-            let trailer = heap.bloblet_has_trailer(v) as usize;
-            for k in (1 + trailer)..=heap.bloblet_head(v).fields {
-                if let Some(n) = made.get(&heap.bloblet_slot(v, k).raw()) {
-                    heap.set_bloblet_slot(v, k, *n);
+            for i in 0..heap.bloblet_len(v) {
+                if let Some(n) = made.get(&heap.bloblet_value(v, i).raw()) {
+                    heap.set_bloblet_value(v, i, *n);
                 }
             }
         }
@@ -666,8 +720,7 @@ fn walk(heap: &Heap, root: Value, mut visit: impl FnMut(&Heap, Value) -> Result<
         if v.is_pair() {
             todo.extend([heap.car(v), heap.cdr(v)]);
         } else if heap.obj_type(v) != Some(ObjType::Symbol) {
-            let trailer = heap.bloblet_has_trailer(v) as usize;
-            todo.extend(((1 + trailer)..=heap.bloblet_head(v).fields).map(|k| heap.bloblet_slot(v, k)));
+            todo.extend(heap.bloblet_values(v));
         }
     }
     Ok(())
@@ -761,12 +814,12 @@ impl crate::check::Checker {
         // defined one of their names again).
         let names = self.fasl_alias_names(&header.aliases);
         let changed = self.with_fasl_selects(|c| {
-            header.aliases.iter().find(|(n, t)| {
+            header.aliases.iter().find(|(n, t, digest)| {
                 let a = c.interner.intern(n);
-                c.fasl_alias_expansion(a, &names).map(|(t, _)| t).as_deref() != Some(t.as_str())
+                !c.fasl_alias_is(a, *digest) && c.fasl_alias_expansion(a, &names).map(|(t, _)| t).as_deref() != Some(t.as_str())
             })
         });
-        if let Some((n, _)) = changed {
+        if let Some((n, _, _)) = changed {
             return stale(self, &format!("the type `{n}` is not what it was"));
         }
         // The files it loads, each loaded as the file loads it, from its
@@ -1000,10 +1053,22 @@ impl crate::check::Checker {
     /// not at each type: for many printed where nothing is bound between.
     pub fn with_fasl_selects<T>(&mut self, f: impl FnOnce(&mut Self) -> T) -> T {
         let names = self.select_names();
-        let outer = self.fasl_selects.replace(Some(names));
+        let (outer, key) = self.selects_set(names);
         let r = f(self);
         *self.fasl_selects.borrow_mut() = outer;
+        self.fasl_selects_key.set(key);
         r
+    }
+
+    /// `names` the `select`s printing and digests take, and their digest
+    /// the key of the digests made under them; what were before.
+    fn selects_set(&self, names: HashMap<crate::ast::DVar, String>) -> (Option<HashMap<crate::ast::DVar, String>>, u64) {
+        let mut sorted: Vec<(&crate::ast::DVar, &String)> = names.iter().collect();
+        sorted.sort_unstable_by_key(|(v, _)| v.0);
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        sorted.iter().for_each(|(v, s)| (v.0, s).hash(&mut h));
+        let key = self.fasl_selects_key.replace(h.finish());
+        (self.fasl_selects.replace(Some(names)), key)
     }
 
     /// Type `t` as a program's `.fasl` keeps it, to be read back where the
@@ -1013,6 +1078,28 @@ impl crate::check::Checker {
     /// compared (`Fx26Session::program_fasl`).
     pub fn fasl_program_type(&self, t: crate::ast::TyId) -> Result<String, String> {
         self.fasl_type_text(t, false)
+    }
+
+    /// A digest of type `t` (`ty_digest`), each abstract type of a module a
+    /// global holds taken as the `select` that names it, as
+    /// [`fasl_program_type`](Self::fasl_program_type) prints it: what a
+    /// `.fasl` keeps of the type of a global its code uses, compared before
+    /// the text, which is printed only if the digests differ.
+    pub fn fasl_use_digest(&self, t: crate::ast::TyId) -> u64 {
+        if self.fasl_selects.borrow().is_none() {
+            let (outer, key) = self.selects_set(self.select_names());
+            let d = self.fasl_use_digest(t);
+            *self.fasl_selects.borrow_mut() = outer;
+            self.fasl_selects_key.set(key);
+            return d;
+        }
+        let at = (t, self.fasl_selects_key.get());
+        if let Some(d) = self.fasl_digests.borrow().get(&at) {
+            return *d;
+        }
+        let d = self.ty_digest(t);
+        self.fasl_digests.borrow_mut().insert(at, d);
+        d
     }
 
     /// [`fasl_program_type`](Self::fasl_program_type), or with `body` what
@@ -1164,7 +1251,7 @@ impl crate::check::Checker {
     /// The abbreviations `used` and those their definitions name, of
     /// `scope`, each as [`fasl_alias_expansion`](Self::fasl_alias_expansion)
     /// writes it with all of them allowed: what a `.fasl` keeps of them.
-    pub fn fasl_alias_closure(&self, used: Vec<fixpt_read::Sym>, scope: &[fixpt_read::Sym]) -> Vec<(String, String)> {
+    pub fn fasl_alias_closure(&self, used: Vec<fixpt_read::Sym>, scope: &[fixpt_read::Sym]) -> Vec<(String, String, u64)> {
         let mut names = used;
         let mut i = 0;
         while i < names.len() {
@@ -1177,14 +1264,27 @@ impl crate::check::Checker {
             }
             i += 1;
         }
-        names.iter().filter_map(|n| self.fasl_alias_expansion(*n, &names).map(|(t, _)| (self.interner.name(*n).to_string(), t))).collect()
+        names
+            .iter()
+            .filter_map(|n| {
+                let (t, _) = self.fasl_alias_expansion(*n, &names)?;
+                Some((self.interner.name(*n).to_string(), t, self.fasl_use_digest(self.type_named(*n)?)))
+            })
+            .collect()
+    }
+
+    /// Whether abbreviation `n` is here the type of digest `digest`
+    /// ([`fasl_use_digest`](Self::fasl_use_digest)): as a `.fasl` kept it,
+    /// compared before its text is printed.
+    pub fn fasl_alias_is(&self, n: fixpt_read::Sym, digest: u64) -> bool {
+        self.type_named(n).is_some_and(|t| self.fasl_use_digest(t) == digest)
     }
 
     /// The names of the abbreviations a `.fasl` keeps (`aliases`, as
     /// [`fasl_alias_closure`](Self::fasl_alias_closure) wrote them): what
     /// each is printed with where the `.fasl` is read, to compare.
-    pub fn fasl_alias_names(&mut self, aliases: &[(String, String)]) -> Vec<fixpt_read::Sym> {
-        aliases.iter().map(|(n, _)| self.interner.intern(n)).collect()
+    pub fn fasl_alias_names(&mut self, aliases: &[(String, String, u64)]) -> Vec<fixpt_read::Sym> {
+        aliases.iter().map(|(n, _, _)| self.interner.intern(n)).collect()
     }
 }
 

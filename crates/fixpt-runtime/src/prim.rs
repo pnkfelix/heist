@@ -1776,7 +1776,7 @@ prims! {
         let n = a.len() - 1;
         let b = rt.heap.make_bloblet(PLAIN_BLOBLET, n, bytes as usize, true);
         for (i, v) in a[1..].iter().enumerate() {
-            rt.heap.set_bloblet_slot(b, i + 2, *v);
+            rt.heap.set_bloblet_value(b, i, *v);
         }
         Ok(b)
     });
@@ -1786,8 +1786,8 @@ prims! {
         if !(0..=u32::MAX as i64).contains(&bytes) { return rt.fail("a bloblet's suffix is 0 to 4 GiB", &[a[0]]); }
         if !(0..1 << 40).contains(&n) { return rt.fail("a bloblet's field count must be non-negative", &[a[1]]); }
         let b = rt.heap.make_bloblet(PLAIN_BLOBLET, n as usize, bytes as usize, true);
-        for k in 2..n as usize + 2 {
-            rt.heap.set_bloblet_slot(b, k, a[2]);
+        for i in 0..n as usize {
+            rt.heap.set_bloblet_value(b, i, a[2]);
         }
         Ok(b)
     });
@@ -2180,12 +2180,12 @@ prims! {
         Ok(rt.heap.string_append(&strings))
     });
     // An array's elements as a list, and a list's as an array (`runtime.scm`'s
-    // layout: a plain bloblet, element `i` in field `i + 2`).
+    // layout: a plain bloblet, element `i` its value `i`).
     "%fx26-array->list", 1, Some(1), simple!(|rt, a| {
         let b = bloblet(rt, a[0])?;
-        let n = rt.heap.bloblet_head(b).fields - 1;
+        let n = rt.heap.bloblet_len(b);
         let mut acc = Value::NULL;
-        for i in (0..n).rev() { let x = rt.heap.bloblet_slot(b, i + 2); acc = rt.heap.cons(x, acc); }
+        for i in (0..n).rev() { let x = rt.heap.bloblet_value(b, i); acc = rt.heap.cons(x, acc); }
         Ok(acc)
     });
     "%fx26-list->array", 1, Some(1), simple!(|rt, a| {
@@ -2194,7 +2194,7 @@ prims! {
         let mut l = a[0];
         for i in 0..n {
             let x = rt.heap.car(l);
-            rt.heap.set_bloblet_slot(b, i + 2, x);
+            rt.heap.set_bloblet_value(b, i, x);
             l = rt.heap.cdr(l);
         }
         Ok(b)
@@ -2376,7 +2376,7 @@ prims! {
             if v.is_pair() {
                 vec![h.car(v), h.cdr(v)]
             } else if v.is_bloblet() {
-                (1..=h.bloblet_head(v).fields).filter_map(|k| h.bloblet_field(v, k).ok()).collect()
+                h.bloblet_values(v)
             } else if h.is_a(v, ObjType::Vector) {
                 (0..h.obj_len(v)).map(|i| h.obj_ref(v, i)).collect()
             } else {
@@ -2439,13 +2439,13 @@ prims! {
         if !is_tword(rt, a[0]) { return rt.type_error("a cellular word", a[0]); }
         let k = int(rt, a[1])?;
         let fields = rt.heap.bloblet_head(a[0]).fields as i64;
-        Ok(Value::boolean((1..=fields).contains(&k) && rt.heap.bloblet_slot(a[0], k as usize).is_fixnum()))
+        Ok(Value::boolean((1..=fields).contains(&k) && rt.heap.bloblet_slot(a[0], k as usize).is_fixnum())) // fields: the program's field number
     });
     "%tword-int", 2, Some(2), simple!(|rt, a| {
         if !is_tword(rt, a[0]) { return rt.type_error("a cellular word", a[0]); }
         let k = int(rt, a[1])?;
         let fields = rt.heap.bloblet_head(a[0]).fields as i64;
-        let v = if (1..=fields).contains(&k) { rt.heap.bloblet_slot(a[0], k as usize) } else { Value::fixnum(0) };
+        let v = if (1..=fields).contains(&k) { rt.heap.bloblet_slot(a[0], k as usize) } else { Value::fixnum(0) }; // fields: the program's field number
         Ok(if v.is_fixnum() { v } else { Value::fixnum(0) })
     });
     // Field k's bits, as an unsigned 64-bit integer (0 past the fields):
@@ -2454,7 +2454,7 @@ prims! {
         if !is_tword(rt, a[0]) { return rt.type_error("a cellular word", a[0]); }
         let k = int(rt, a[1])?;
         let fields = rt.heap.bloblet_head(a[0]).fields as i64;
-        let bits = if (1..=fields).contains(&k) { rt.heap.bloblet_slot(a[0], k as usize).raw() } else { 0 };
+        let bits = if (1..=fields).contains(&k) { rt.heap.bloblet_slot(a[0], k as usize).raw() } else { 0 }; // fields: the program's field number
         Ok(integer_value(rt, bits as i128))
     });
     "%string-hash", 1, Some(1), simple!(|rt, a| {
@@ -2542,7 +2542,7 @@ prims! {
     "%bloblet-ref", 2, Some(2), simple!(|rt, a| {
         let b = bloblet(rt, a[0])?;
         let k = int(rt, a[1])?;
-        match usize::try_from(k).ok().map(|k| rt.heap.bloblet_field(b, k)) {
+        match usize::try_from(k).ok().map(|k| rt.heap.bloblet_field(b, k)) { // fields: the program's field number
             Some(Ok(v)) => Ok(v),
             Some(Err(e)) => rt.fail(&format!("bloblet field: {e}"), &[a[0], a[1]]),
             None => rt.fail("bloblet field: no such field", &[a[0], a[1]]),
@@ -2551,7 +2551,7 @@ prims! {
     "%bloblet-set!", 3, Some(3), simple!(|rt, a| {
         let b = plain_bloblet(rt, a[0])?;
         let k = int(rt, a[1])?;
-        match usize::try_from(k).ok().map(|k| rt.heap.set_bloblet_field(b, k, a[2])) {
+        match usize::try_from(k).ok().map(|k| rt.heap.set_bloblet_field(b, k, a[2])) { // fields: the program's field number
             Some(Ok(())) => Ok(Value::UNSPECIFIED),
             Some(Err(e)) => rt.fail(&format!("bloblet field: {e}"), &[a[0], a[1]]),
             None => rt.fail("bloblet field: no such field", &[a[0], a[1]]),
@@ -2704,9 +2704,9 @@ prims! {
             return Ok(Value::fixnum(bits as i64));
         }
         let o = rt.heap.suffix_ref_owner(a[0]);
-        match rt.heap.bloblet_field(o, bits as usize + 2) {
-            Ok(l) => Ok(l),
-            Err(_) => rt.fail("flat sum: its tag names no field of its owner", &[a[0]]),
+        match rt.heap.bloblet_value_checked(o, bits as usize) {
+            Some(l) => Ok(l),
+            None => rt.fail("flat sum: its tag names no field of its owner", &[a[0]]),
         }
     });
     // `blobref-variant!`: the tag made label `a[2]`'s, a number as it is, or
@@ -2722,10 +2722,10 @@ prims! {
             let o = rt.heap.suffix_ref_owner(r);
             let mut i = 0;
             loop {
-                match rt.heap.bloblet_field(o, i + 2) {
-                    Ok(l) if l == a[2] => break i as u64,
-                    Ok(_) => i += 1,
-                    Err(_) => return rt.fail("blobref-variant!: no field of the owner holds the label", &[a[0], a[2]]),
+                match rt.heap.bloblet_value_checked(o, i) {
+                    Some(l) if l == a[2] => break i as u64,
+                    Some(_) => i += 1,
+                    None => return rt.fail("blobref-variant!: no field of the owner holds the label", &[a[0], a[2]]),
                 }
             }
         };
@@ -2842,8 +2842,8 @@ prims! {
         if !(0..1 << 40).contains(&n) { return rt.fail("a bloblet's field count must be non-negative", &[a[1]]); }
         Ok(rt.heap.in_region(h, |heap| {
             let b = heap.make_bloblet(PLAIN_BLOBLET, n as usize, 0, true);
-            for k in 2..n as usize + 2 {
-                heap.set_bloblet_slot(b, k, a[2]);
+            for i in 0..n as usize {
+                heap.set_bloblet_value(b, i, a[2]);
             }
             b
         }))
@@ -2886,7 +2886,7 @@ prims! {
         Ok(rt.heap.in_region(h, |heap| {
             let b = heap.make_bloblet(PLAIN_BLOBLET, a.len() - 2, bytes as usize, true);
             for (i, v) in a[2..].iter().enumerate() {
-                heap.set_bloblet_slot(b, i + 2, *v);
+                heap.set_bloblet_value(b, i, *v);
             }
             b
         }))
@@ -3116,28 +3116,34 @@ prims! {
     "%fx26-session-committed!", 2, Some(2), simple!(|rt, a| session_op(rt, "committed", a));
     "%fx26-session-lower", 3, Some(3), simple!(|rt, a| session_op(rt, "lower", a));
     "%fx26-session-commit-lower", 3, Some(3), simple!(|rt, a| session_op(rt, "commit-lower", a));
-    "%fx26-stage-check", 6, Some(6), simple!(|rt, a| {
-        let [mt, e, r, text] = [a[0], a[1], a[2], a[3]].map(|x| get_string(rt, x));
-        let (mt, e, r, text) = (mt?, e?, r?, text?);
-        let given = crate::evidence::Given::of(rt, a[4], a[5]);
+    // The evaluator's `stage` (`fx-ast-eval`): its code as text, the names of
+    // the variables its type names, what it is checked as, as a rep (or
+    // `#f`), and the evidence's reps' binary forms.
+    "%fx26-stage-check", 4, Some(4), simple!(|rt, a| {
+        let text = get_string(rt, a[0])?;
+        let given = crate::evidence::Given::of_bytes(rt, a[1], a[3]);
+        let rep = fixpt_reps::heap::from_heap(&rt.heap, a[2], true).ok();
         Ok(match rt.stage_check {
-            Some(check) => check(rt, &mt, &e, &r, &text, &given),
+            Some(check) => check(rt, &text, &given, rep),
             None => stage_refused(rt, "this machine cannot stage code"),
         })
     });
     // Evaluated (`fx-ast-eval`), each step's forms as text, for the
-    // evaluator to run: a form checked, given the module's type, the
-    // effect, the result type and the code as text; and readied, given the
-    // decision's tag as text.
-    "%fx26-session-eval-check", 7, Some(7), simple!(|rt, a| session_op(rt, "eval-check", a));
+    // evaluator to run: a form checked, given the code as text, the names
+    // of the variables its type names, what it is checked as, as a rep, and
+    // the evidence's reps; and readied, given the decision's tag as text.
+    "%fx26-session-eval-check", 5, Some(5), simple!(|rt, a| session_op(rt, "eval-check", a));
     "%fx26-session-eval-ready", 3, Some(3), simple!(|rt, a| session_op(rt, "eval-ready", a));
     // Evidence (`docs/research/eval.md`, "Evidence"): what a `reify-…`
     // makes of the product the compilers make of its operand
     // (`evidence::reified`).
-    "%fx26-reify-effect", 1, Some(1), simple!(|rt, a| Ok(crate::evidence::reified(rt, a[0], 1)));
-    "%fx26-reify-region", 1, Some(1), simple!(|rt, a| Ok(crate::evidence::reified(rt, a[0], 1)));
-    "%fx26-reify-type", 1, Some(1), simple!(|rt, a| Ok(crate::evidence::reified(rt, a[0], 2)));
-    "%fx26-reify-text", 4, Some(4), simple!(|rt, a| Ok(crate::evidence::reified_text(rt, a[0], a[1], a[2], a[3])));
+    "%fx26-reify-effect", 1, Some(1), simple!(|rt, a| Ok(crate::evidence::reified(rt, a[0])));
+    "%fx26-reify-region", 1, Some(1), simple!(|rt, a| Ok(crate::evidence::reified(rt, a[0])));
+    "%fx26-reify-type", 1, Some(1), simple!(|rt, a| Ok(crate::evidence::reified(rt, a[0])));
+    // The evaluator's: its rep, filled by the evidence's reps (`given` its
+    // binary forms), in its binary form; empty if none
+    // (`evidence::reified_rep`).
+    "%fx26-reify-rep", 4, Some(4), simple!(|rt, a| Ok(crate::evidence::reified_rep(rt, a[0], a[1], a[2], a[3])));
     // A bound made of exact evidence (`effect-bound`, `type-bound`): the
     // same text.
     "%fx26-evidence-bound", 1, Some(1), simple!(|_rt, a| Ok(a[0]));
@@ -3145,6 +3151,34 @@ prims! {
     // now is, which a resumed run (`fixpt resume`) starts by calling `a[1]`,
     // a procedure of no arguments. Where the session installed no way to,
     // a failure.
+    // A type as a rep (`docs/research/heap-types.md`, step 2), from the
+    // nodes the checker written in FX-26 made of it (`check-reps.fx`): a
+    // list of nodes, each its slot, its head, whether it is a set, its
+    // binders' names and its operands; the holes' names; the root's slot.
+    // Made canonical (`fixpt_reps::Builder`); its binary form.
+    "%fx26-rep-of-nodes", 3, Some(3), simple!(|rt, a| {
+        let rep = match rep_of_nodes(rt, a[0], a[1], a[2]) {
+            Ok(r) => r,
+            Err(why) => return rt.fail(&format!("rep-of-nodes: {why}"), &[]),
+        };
+        Ok(rt.heap.make_bytevector(&fixpt_reps::binary::encode(&rep)))
+    });
+    // A rep's nodes, for the checker written in FX-26 to import
+    // (`check-reps.fx`): its binary form `a[0]`, and the names of that
+    // checker's generative types, in its table's order, `a[1]`, by which
+    // each constant is found; as `%fx26-rep-of-nodes` takes them, each
+    // node's slot its place, the root 0, and the holes' names.
+    "%fx26-rep-nodes", 2, Some(2), simple!(|rt, a| {
+        let n = bytevector_in(rt, a[0])?;
+        let bytes: Vec<u8> = (0..n).map(|i| rt.heap.bytevector_ref(a[0], i)).collect();
+        let validate = fixpt_reps::heap::validate_all();
+        let rep = match fixpt_reps::binary::decode(&bytes, validate) {
+            Ok(r) => r,
+            Err(why) => return rt.fail(&format!("rep-nodes: {why}"), &[]),
+        };
+        let gens: Vec<String> = rt.heap.list_to_vec(a[1]).unwrap_or_default().into_iter().map(|g| rt.heap.string_to_rust(g)).collect();
+        Ok(rep_nodes(rt, &rep, &gens))
+    });
     "%fx26-dump-heap", 2, Some(2), simple!(|rt, a| {
         let path = get_string(rt, a[0])?;
         let r = match rt.dump_heap {
@@ -3152,6 +3186,28 @@ prims! {
             None => Err(std::io::Error::other("this machine cannot dump its heap")),
         };
         Ok(fx26_io_result(rt, r))
+    });
+    // A rep in its binary form `a[0]` (`%fx26-rep-of-nodes`'s) as the heap
+    // holds it (`fixpt_reps::heap`), for compiled code to hold as a
+    // constant: what a `stage` is checked as (`docs/research/heap-types.md`,
+    // step 3).
+    "%fx26-rep-cell", 1, Some(1), simple!(|rt, a| {
+        let n = bytevector_in(rt, a[0])?;
+        let bytes: Vec<u8> = (0..n).map(|i| rt.heap.bytevector_ref(a[0], i)).collect();
+        match fixpt_reps::binary::decode(&bytes, fixpt_reps::heap::validate_all()) {
+            Ok(rep) => Ok(fixpt_reps::heap::to_heap(&mut rt.heap, &rep)),
+            Err(why) => rt.fail(&format!("rep-cell: {why}"), &[]),
+        }
+    });
+    // The same, from the binary form in hex, `a[0]`: as code the lowering
+    // makes holds a rep (`lower.rs`'s `staged_rep`).
+    "%fx26-rep-of-hex", 1, Some(1), simple!(|rt, a| {
+        let hex = get_string(rt, a[0])?;
+        let bytes: Option<Vec<u8>> = (0..hex.len() / 2).map(|i| hex.get(2 * i..2 * i + 2).and_then(|h| u8::from_str_radix(h, 16).ok())).collect();
+        match bytes.ok_or("not hex".to_string()).and_then(|b| fixpt_reps::binary::decode(&b, fixpt_reps::heap::validate_all())) {
+            Ok(rep) => Ok(fixpt_reps::heap::to_heap(&mut rt.heap, &rep)),
+            Err(why) => rt.fail(&format!("rep-of-hex: {why}"), &[]),
+        }
     });
 }
 
@@ -3214,4 +3270,157 @@ pub fn lookup(name: &str) -> Option<u16> {
 
 pub fn def(index: u16) -> &'static PrimDef {
     &PRIMITIVES[index as usize]
+}
+
+/// The rep `%fx26-rep-of-nodes` makes of `nodes`, `holes` and `root`.
+fn rep_of_nodes(rt: &Runtime, nodes: Value, holes: Value, root: Value) -> Result<fixpt_reps::Rep, String> {
+    use fixpt_reps::{Arg, Builder, Const};
+    let heap = &rt.heap;
+    let list = |l: Value| heap.list_to_vec(l).ok_or("not a list".to_string());
+    let field = |v: Value, k: usize| heap.product_field(v, k);
+    let int = |v: Value| if v.is_fixnum() { Ok(v.as_fixnum()) } else { Err("not an integer".to_string()) };
+    let name = |v: Value| if heap.is_a(v, ObjType::Symbol) { Ok(heap.symbol_name(v)) } else { Err("not a symbol".to_string()) };
+    let nodes = list(nodes)?;
+    let slots = nodes.iter().map(|n| int(field(*n, 1))).collect::<Result<Vec<i64>, _>>()?;
+    let mut b = Builder::new();
+    for _ in 0..=slots.iter().copied().max().unwrap_or(0) {
+        b.reserve();
+    }
+    let mut hole_args = Vec::new();
+    for h in list(holes)? {
+        hole_args.push(b.hole(&name(h)?));
+    }
+    for (node, slot) in nodes.iter().zip(&slots) {
+        let head = name(field(*node, 2))?;
+        let set = field(*node, 3) != Value::FALSE;
+        let binders: Vec<String> = list(field(*node, 4))?.into_iter().map(name).collect::<Result<_, _>>()?;
+        let mut args = Vec::new();
+        for arg in list(field(*node, 5))? {
+            let (tag, v) = (name(heap.sum_tag(arg))?, heap.sum_payload(arg));
+            args.push(match tag.as_str() {
+                "node" => Arg::Node(int(v)? as u32),
+                "bound" => Arg::Bound { binder: int(field(v, 1))? as u32, pos: int(field(v, 2))? as u32 },
+                "hole" => *hole_args.get(int(v)? as usize).ok_or("a hole not named")?,
+                "const" => {
+                    let generative = heap.string_to_rust(field(v, 1));
+                    let which = int(field(v, 2))? as u32;
+                    let kind = heap.string_to_rust(field(v, 3));
+                    b.konst(Const { key: fixpt_reps::generative_key(&generative, which), name: generative, kind })
+                }
+                "sym" => {
+                    let s = name(v)?;
+                    Arg::Sym(b.name(&s))
+                }
+                "int" => Arg::Int(int(v)?),
+                "flag" => Arg::Flag(v != Value::FALSE),
+                other => return Err(format!("an operand tagged `{other}`")),
+            });
+        }
+        let refs: Vec<&str> = binders.iter().map(String::as_str).collect();
+        if set {
+            b.fill_set(*slot as u32, &head, args);
+        } else {
+            b.fill(*slot as u32, &head, &refs, args);
+        }
+    }
+    b.finish(int(root)? as u32).map(|f| f.rep)
+}
+
+/// What `%fx26-rep-nodes` gives of `rep`: a product of its nodes and its
+/// holes' names, each constant the place of a generative type of `gens` of
+/// its key (-1 if none).
+fn rep_nodes(rt: &mut Runtime, rep: &fixpt_reps::Rep, gens: &[String]) -> Value {
+    use fixpt_reps::Arg;
+    // Made in the heap from the leaves up, each made value rooted until
+    // what holds it is made: a list's pairs, a product's fields.
+    let base = rt.heap.root_count();
+    let sum = |rt: &mut Runtime, tag: &str, v: Value| {
+        let at = rt.heap.push_root(v);
+        let t = rt.heap.intern(tag);
+        let v = rt.heap.root_at(at);
+        rt.heap.pop_roots_to(at);
+        rt.heap.make_frozen(SUM_KIND, &[t, v])
+    };
+    let product = |rt: &mut Runtime, fields: &[Value]| {
+        let at = rt.heap.root_count();
+        for f in fields {
+            rt.heap.push_root(*f);
+        }
+        let fs: Vec<Value> = (0..fields.len()).map(|i| rt.heap.root_at(at + i)).collect();
+        let v = rt.heap.make_frozen(PRODUCT_KIND, &fs);
+        rt.heap.pop_roots_to(at);
+        v
+    };
+    let list = |rt: &mut Runtime, items: &[Value]| {
+        let at = rt.heap.root_count();
+        for v in items {
+            rt.heap.push_root(*v);
+        }
+        let mut l = Value::NULL;
+        for i in (0..items.len()).rev() {
+            let v = rt.heap.root_at(at + i);
+            l = rt.heap.cons(v, l);
+            rt.heap.set_root_at(at + i, l);
+        }
+        rt.heap.pop_roots_to(at);
+        l
+    };
+    let keys: Vec<u64> = gens.iter().enumerate().map(|(w, g)| fixpt_reps::generative_key(g, w as u32)).collect();
+    let mut nodes = Vec::new();
+    for (k, node) in rep.nodes.iter().enumerate() {
+        let mut args = Vec::new();
+        for a in &node.args {
+            let v = match *a {
+                Arg::Node(i) => sum(rt, "node", Value::fixnum(i as i64)),
+                Arg::Bound { binder, pos } => {
+                    let p = product(rt, &[Value::fixnum(binder as i64), Value::fixnum(pos as i64)]);
+                    sum(rt, "bound", p)
+                }
+                Arg::Hole(i) => sum(rt, "hole", Value::fixnum(i as i64)),
+                Arg::Const(i) => {
+                    let c = &rep.consts[i as usize];
+                    let which = keys.iter().position(|k| *k == c.key).map_or(-1, |w| w as i64);
+                    let name = rt.heap.make_string(&c.name);
+                    let at = rt.heap.push_root(name);
+                    let kind = rt.heap.make_string(&c.kind);
+                    let name = rt.heap.root_at(at);
+                    rt.heap.pop_roots_to(at);
+                    let p = product(rt, &[name, Value::fixnum(which), kind]);
+                    sum(rt, "const", p)
+                }
+                Arg::Sym(i) => {
+                    let s = rt.heap.intern(rep.name(i));
+                    sum(rt, "sym", s)
+                }
+                Arg::Int(v) => sum(rt, "int", Value::fixnum(v)),
+                Arg::Flag(b) => sum(rt, "flag", Value::boolean(b)),
+            };
+            rt.heap.push_root(v);
+            args.push(rt.heap.root_count() - 1);
+        }
+        let held: Vec<Value> = args.iter().map(|&i| rt.heap.root_at(i)).collect();
+        let args_list = list(rt, &held);
+        if let Some(&first) = args.first() {
+            rt.heap.pop_roots_to(first);
+        }
+        let at = rt.heap.push_root(args_list);
+        let binders: Vec<Value> = node.binders.iter().map(|&b| rt.heap.intern(rep.name(b))).collect();
+        let binders = list(rt, &binders);
+        rt.heap.push_root(binders);
+        let head = rt.heap.intern(rep.name(node.head));
+        let (args_list, binders) = (rt.heap.root_at(at), rt.heap.root_at(at + 1));
+        rt.heap.pop_roots_to(at);
+        let p = product(rt, &[Value::fixnum(k as i64), head, Value::boolean(node.set), binders, args_list]);
+        rt.heap.push_root(p);
+        nodes.push(rt.heap.root_count() - 1);
+    }
+    let held: Vec<Value> = nodes.iter().map(|&i| rt.heap.root_at(i)).collect();
+    let nodes_list = list(rt, &held);
+    rt.heap.pop_roots_to(base);
+    let at = rt.heap.push_root(nodes_list);
+    let holes: Vec<Value> = rep.holes.iter().map(|h| rt.heap.intern(h)).collect();
+    let holes = list(rt, &holes);
+    let nodes_list = rt.heap.root_at(at);
+    rt.heap.pop_roots_to(at);
+    product(rt, &[nodes_list, holes])
 }

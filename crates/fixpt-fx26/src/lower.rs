@@ -229,7 +229,6 @@ pub const STANDARD: &[(&str, &str, bool)] = &[
     ("%reify-effect", "%fx26-reify-effect", false),
     ("%reify-region", "%fx26-reify-region", false),
     ("%reify-type", "%fx26-reify-type", false),
-    ("%reify-text", "%fx26-reify-text", false),
     ("effect-bound", "%fx26-evidence-bound", false),
     ("type-bound", "%fx26-evidence-bound", false),
     ("%session-eval-check", "%fx26-session-eval-check", false),
@@ -514,6 +513,10 @@ pub const STANDARD: &[(&str, &str, bool)] = &[
     ("%syscall5", "%fx26-syscall", true),
     ("%syscall6", "%fx26-syscall", true),
     ("dump-heap!", "%fx26-dump-heap", false),
+    ("rep-of-nodes", "%fx26-rep-of-nodes", false),
+    ("rep-nodes", "%fx26-rep-nodes", false),
+    ("rep-cell", "%fx26-rep-cell", false),
+    ("%reify-rep", "%fx26-reify-rep", false),
 ];
 
 /// The FX-26 copy of what [`STANDARD`] says the compiler written in FX-26
@@ -968,7 +971,10 @@ impl Lowerer<'_> {
         // compilers written in FX-26 give it (`n-staged`), and the names of
         // the variables whose evidence the form is given.
         let code = match self.c.facts.staged.get(&e) {
-            Some(s) => Sx::call("%fx26-product", [Sx::Str(s.m.clone()), Sx::Str(s.e.clone()), Sx::Str(s.r.clone()), code, Sx::Str(s.evidence.join(" "))]),
+            Some(s) => {
+                let fresh = Sx::Str(if s.fresh { "fresh" } else { "" }.to_string());
+                Sx::call("%fx26-product", [fresh, code, Sx::Str(s.evidence.join(" ")), staged_rep(s)])
+            }
             None => code,
         };
         // A module reshaped: a product of the values the type wanted has.
@@ -1047,3 +1053,13 @@ impl Lowerer<'_> {
 fn flat_label(name: &str, code: usize) -> Sx {
     if code & 8 != 0 { Sx::int(name.parse::<i64>().expect("a numeric label")) } else { Sx::quote(Sx::sym(name)) }
 }
+
+/// A `stage`'s or a `reify-…`'s rep (`Staged::rep`), as lowered code makes
+/// it: from its binary form in hex (`%fx26-rep-of-hex`); `#f` if none.
+fn staged_rep(s: &crate::check::Staged) -> Sx {
+    match &s.rep {
+        Some(bytes) => Sx::call("%fx26-rep-of-hex", [Sx::Str(bytes.iter().map(|b| format!("{b:02x}")).collect())]),
+        None => Sx::Bool(false),
+    }
+}
+

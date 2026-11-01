@@ -458,6 +458,19 @@ pub struct Checker {
     /// what `print_for_fasl` starts from, each abstract type of a module a
     /// global holds named, made once rather than at each type printed.
     pub(crate) fasl_selects: std::cell::RefCell<Option<HashMap<DVar, String>>>,
+    /// While a module type's components are printed: each of its abstract
+    /// types by its label, as its binder says, not the variable's own name
+    /// (`m..t`, once a variable's module is opened), so that the type reads
+    /// back (`stage`'s, `TODO.md` §201; `k-var-shown`, the FX-26 checker's).
+    pub(crate) print_abs: std::cell::RefCell<HashMap<DVar, String>>,
+    /// A digest of `fasl_selects`, while it is set: what the digests made
+    /// under it (`fasl_digests`) are kept by, with their types.
+    pub(crate) fasl_selects_key: std::cell::Cell<u64>,
+    /// The digests of types `fasl_use_digest` made, by type and the
+    /// `select`s they were made under: a type a global or an abbreviation
+    /// has, its definition checked, is not changed after, and every file a
+    /// program loads asks again of the same ones.
+    pub(crate) fasl_digests: std::cell::RefCell<HashMap<(TyId, u64), u64>>,
     /// While a type with a cycle is printed: each node it reaches printed as
     /// its class's first, the classes those of the type's minimal graph, so
     /// that a type prints as itself however it was written or made (the
@@ -1014,6 +1027,9 @@ impl Checker {
             print_expanded: std::cell::Cell::new(false),
             print_for_fasl: std::cell::RefCell::new(None),
             fasl_selects: std::cell::RefCell::new(None),
+            print_abs: std::cell::RefCell::new(HashMap::new()),
+            fasl_selects_key: std::cell::Cell::new(0),
+            fasl_digests: std::cell::RefCell::new(HashMap::new()),
             print_canon: std::cell::RefCell::new(None),
             print_shallow: std::cell::Cell::new(false),
             print_subrs: std::cell::Cell::new(0),
@@ -1735,7 +1751,7 @@ impl Checker {
         let mut settled = Vec::new();
         let (bindings, infer) = match marked.contains(&true) {
             false => (bindings, infer),
-            true => match self.arrow_star_group(bindings, marked, depth) {
+            true => match self.arrow_star_group(bindings, marked, depth, false) {
                 Ok((f, s)) => {
                     for (i, (_, t, _)) in f.iter().enumerate() {
                         self.env.set_ty(depth + i, *t);
@@ -1850,6 +1866,7 @@ impl Checker {
         bindings: &[(Sym, TyId, ExpId)],
         marked: &[bool],
         base: usize,
+        globals: bool,
     ) -> R<(Vec<(Sym, TyId, ExpId)>, Vec<Option<TyId>>)> {
         if let Some((_, _, x)) = bindings.iter().zip(marked).find(|((_, _, x), m)| **m && !matches!(self.arena.exp_at(*x), Exp::Lambda { .. })).map(|(b, _)| b) {
             return Err(FxError::at(self.arena.span_of(*x), "`->*` finds a procedure's effect from its `lambda`: define it as one"));
@@ -1892,7 +1909,9 @@ impl Checker {
                         eff = eff.union(&own[l]);
                     }
                 }
-                if names.iter().any(|m| eff.contains(Atom::Read(Region::Global(*m)))) {
+                // A group of globals (or a module's, which a global may
+                // hold) that reads any global may reach itself (`no_reaching_itself`).
+                if names.iter().any(|m| eff.contains(Atom::Read(Region::Global(*m)))) || (globals && eff.contains(Atom::Read(Region::Globals))) {
                     eff = eff.union(&Effect::atom(Atom::Spin));
                 }
                 let (old, found) = (out[i].1, self.with_latent(out[i].1, &eff).expect("`->*` reads as a `subr`"));
@@ -5194,18 +5213,18 @@ impl BinderEnv {
 }
 
 /// What a `stage`'s code is checked against (`Facts::staged`), as the
-/// checker that runs then reads it: the module's type, the effect and the
-/// result type, printed whole; and the names, as printed, of the variables
-/// whose evidence it is given, in order (`docs/research/eval.md`,
-/// "Evidence"). A `reify-effect`'s is its effect, a `reify-type`'s its type
-/// (as `r`), a `reify-region`'s its region (as `e`), `m` saying `fresh` for
-/// a region a variable names, of no evidence.
+/// checker that runs then reads it: the names, as printed, of the
+/// variables whose evidence it is given, in order (`docs/research/eval.md`,
+/// "Evidence"), and its rep. A `reify-…`'s is of what it makes evidence of,
+/// `fresh` for a region a variable names, of no evidence: one of its own.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Staged {
-    pub m: String,
-    pub e: String,
-    pub r: String,
+    pub fresh: bool,
     pub evidence: Vec<String>,
+    /// And what the code is checked as, or what a `reify-…` makes evidence
+    /// of, as a rep in its binary form (`docs/research/heap-types.md`,
+    /// step 3), if a rep takes it.
+    pub rep: Option<Vec<u8>>,
 }
 
 /// Value variables in scope, innermost last: read as a slice, each name's

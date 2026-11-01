@@ -37,7 +37,7 @@ fn define_star_finds_what_a_procedure_reads() {
 fn define_says_what_it_reads_or_is_refused() {
     let out = check("written");
     assert_eq!(out[1], "below : (subr (read (globals limit)) (int) bool)", "{out:?}");
-    assert_eq!(out[2], "clamp : (subr (read @globals) (int) int)", "{out:?}");
+    assert_eq!(out[2], "clamp : (subr (maxeff (read @globals) spin) (int) int)", "{out:?}");
     assert!(out[3].starts_with("error:") && out[3].contains("globals"), "{out:?}");
 }
 
@@ -54,4 +54,11 @@ fn globals_are_a_region_only_in_effects() {
     let out = check("only-effects");
     assert!(out[0].contains("only in effects"), "{out:?}");
     assert!(out[1].contains("only read and written"), "{out:?}");
+}
+
+#[test]
+fn reading_any_global_absorbs_the_single_globals_read() {
+    let out = check("absorbed");
+    assert_eq!(out[2], "busy : (subr (maxeff (read @globals) spin) (int) int)", "{out:?}");
+    assert!(out[3].starts_with("error:") && out[3].contains("calling `calm` may read any global"), "{out:?}");
 }

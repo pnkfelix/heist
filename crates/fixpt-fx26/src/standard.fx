@@ -242,6 +242,7 @@
          (("string>?") "%fx26-string>?")
          (("acyclic?") "%fx26-acyclic?")
          (("symbol=?") "eq?")
+         (("rep-cell") "%fx26-rep-cell")
          (else "")))
       ((9)
        (case n
@@ -281,6 +282,7 @@
          (("%syscall4") "%fx26-syscall")
          (("%syscall5") "%fx26-syscall")
          (("%syscall6") "%fx26-syscall")
+         (("rep-nodes") "%fx26-rep-nodes")
          (else "")))
       ((10)
        (case n
@@ -303,6 +305,7 @@
          (("wcell-self") "%default-object")
          (("wcell-pair") "%fx26-pair-cell")
          (("dump-heap!") "%fx26-dump-heap")
+         (("%reify-rep") "%fx26-reify-rep")
          (else "")))
       ((11)
        (case n
@@ -318,7 +321,6 @@
          (("f32->string") "%fx26-f32->string")
          (("sleep-until") "%fx26-sleep-until")
          (("%reify-type") "%fx26-reify-type")
-         (("%reify-text") "%fx26-reify-text")
          (("make-string") "%fx26-make-string")
          (("string-set!") "%fx26-string-set!")
          (("string-copy") "%fx26-string-copy")
@@ -381,6 +383,7 @@
          (("wcell-symbol") "%fx26-identity")
          (("wcell-global") "%fx26-identity")
          (("wglobal-name") "%fx26-global-name")
+         (("rep-of-nodes") "%fx26-rep-of-nodes")
          (else "")))
       ((13)
        (case n

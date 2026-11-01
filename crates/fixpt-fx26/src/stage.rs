@@ -45,14 +45,14 @@ pub fn settings(rt: &mut Runtime, standard: Value, native: bool, registers: bool
 /// it (`settings`); none where it did not.
 pub(crate) fn standard(rt: &mut Runtime) -> Option<Value> {
     let settings = global(rt, SETTINGS)?;
-    Some(rt.heap.bloblet_slot(settings, 2))
+    Some(rt.heap.product_field(settings, 1))
 }
 
 /// Whether the program's convention is native and its words have register
 /// code, as the session set them (`settings`); none where it did not.
 pub(crate) fn flags(rt: &mut Runtime) -> Option<(bool, bool)> {
     let settings = global(rt, SETTINGS)?;
-    let field = |i: usize| rt.heap.bloblet_slot(settings, i + 1) != Value::FALSE;
+    let field = |i: usize| rt.heap.product_field(settings, i) != Value::FALSE;
     Some((field(2), field(3)))
 }
 
@@ -94,62 +94,58 @@ impl Wrapped {
     }
 }
 
-/// `stage`'s: `(the (subr pure (M) (subr E () R)) (lambda ((stage-module
-/// M)) (lambda () (with stage-module code))))`, of `parts`, each region
-/// of its own they name bound around it (`bound`).
-fn stage_wrapped(parts: &Parts, code: &str) -> Wrapped {
-    let Parts { mt, e, r, .. } = parts;
-    let prefix = format!("{}(the (subr pure ({mt}) (subr {e} () {r}))\n(lambda ((stage-module {mt}))\n(lambda () (with stage-module\n", parts.bound());
-    Wrapped::of(prefix, code, &format!("\n)))){}\n", ")".repeat(parts.closing())), code, 0)
+/// `stage`'s: `(the %stage-type (lambda (stage-module) (lambda () (with
+/// stage-module code))))`, `%stage-type` the name the rep of what the code
+/// is checked as, `(subr pure (M) (subr E () R))`, is imported by
+/// (`check-staged-program`): the type not written out, nor read again.
+fn stage_wrapped(code: &str) -> Wrapped {
+    let prefix = "(the %stage-type\n(lambda (stage-module)\n(lambda () (with stage-module\n".to_string();
+    Wrapped::of(prefix, code, "\n))))\n", code, 0)
 }
 
-/// What a form's code is checked against, as the checker that runs then
-/// reads it: the module's type, the effect and the result type, each
-/// variable they name given its evidence (`fixpt_runtime::evidence`), and
-/// the regions of their own they name.
+/// What a form's code is checked against: the type it is checked as, as a
+/// rep in its binary form (`k-staged-rep`; `docs/research/heap-types.md`,
+/// steps 3 and 6), its holes filled by the evidence's reps; none where the
+/// checker that noted it made none (a type naming what a rep does not
+/// take, an unresolved `select`), which is refused ([`NO_REP`]).
 pub(crate) struct Parts {
-    pub mt: String,
-    pub e: String,
-    pub r: String,
-    pub regions: Vec<String>,
+    pub rep: Option<Vec<u8>>,
 }
 
-impl Parts {
-    /// Of the texts as printed, given `given`.
-    pub(crate) fn of(mt: &str, e: &str, r: &str, given: &fixpt_runtime::evidence::Given) -> Parts {
-        let [mt, e, r] = [mt, e, r].map(|t| given.substituted(t));
-        let regions = fixpt_runtime::evidence::regions_in(&[&mt, &e, &r]);
-        Parts { mt, e, r, regions }
-    }
+/// Why code is refused that is checked against a type no rep takes.
+pub(crate) const NO_REP: &str = "the code would be checked against a type no rep takes (an unresolved `select`)";
 
-    /// The `plambda` that binds the regions, open; none if none.
-    pub(crate) fn bound(&self) -> String {
-        if self.regions.is_empty() {
-            return String::new();
-        }
-        let binders: Vec<String> = self.regions.iter().map(|r| format!("({r} region)")).collect();
-        format!("(plambda ({})\n", binders.join(" "))
-    }
-
-    /// How many parentheses close what `bound` opens.
-    pub(crate) fn closing(&self) -> usize {
-        usize::from(!self.regions.is_empty())
-    }
+/// The refusal of code checked against a type no rep takes.
+pub(crate) fn no_rep(rt: &mut Runtime) -> Value {
+    fixpt_runtime::prim::stage_failed(rt, "refused", NO_REP, 0, 0)
 }
 
-/// The product the compilers make of a form's code (`n-staged`): the
-/// module's type, the effect and the result type, the code, and the names
-/// of the variables those name, of which `given` is the evidence, in
-/// order: what the code is checked against, and the code.
+/// The product the compilers make of a form's code (`n-staged`): a region
+/// of its own's mark (a `reify-…`'s, unused here), the code, the names of
+/// the variables the type names, of which `given` is the evidence, in
+/// order, and the type the code is checked as, as a rep, or `#f`: what the
+/// code is checked against, and the code.
 pub(crate) fn staged_parts(rt: &Runtime, staged: Value, given: Value) -> Option<(Parts, Value)> {
-    let is_product = staged.is_bloblet() && rt.heap.bloblet_kind(staged) == PRODUCT && rt.heap.bloblet_head(staged).fields == 6;
+    let is_product = rt.heap.is_product(staged) && rt.heap.bloblet_len(staged) == 4;
     if !is_product {
         return None;
     }
-    let field = |i: usize| rt.heap.bloblet_slot(staged, i + 1);
-    let [mt, e, r] = [1, 2, 3].map(|i| rt.heap.string_to_rust(field(i)));
-    let given = fixpt_runtime::evidence::Given::of(rt, field(5), given);
-    Some((Parts::of(&mt, &e, &r, &given), field(4)))
+    let field = |i: usize| rt.heap.product_field(staged, i);
+    let given = fixpt_runtime::evidence::Given::of(rt, field(3), given);
+    // Its holes, the variables it names, filled by their evidence's reps (a
+    // region of its own's too).
+    let parts = Parts { rep: given_rep(rt, field(4), &given) };
+    Some((parts, field(2)))
+}
+
+/// What code given `given` is checked as, by rep (`rep`, a rep in the heap,
+/// or `#f`), its holes filled by the evidence's reps: its binary form;
+/// none where it has no rep, or a hole is left (the evaluator's sessions,
+/// `%fx26-session-eval-check`).
+pub(crate) fn given_rep(rt: &Runtime, rep: Value, given: &fixpt_runtime::evidence::Given) -> Option<Vec<u8>> {
+    let r = fixpt_reps::heap::from_heap(&rt.heap, rep, true).ok()?;
+    let r = if r.holes.is_empty() { Some(r) } else { given.filled(&r) }?;
+    Some(fixpt_reps::binary::encode(&r))
 }
 
 /// The front end that stages, made at the first `stage` and kept.
@@ -163,9 +159,10 @@ fn stage_front_end(rt: &mut Runtime) -> Result<Value, String> {
     Ok(global(rt, CHECK).expect("set"))
 }
 
-/// `w` checked and compiled by that front end: the word that makes the
-/// procedure the wrapping is; or the refusal, `(sum failed why)`.
-fn compiled(rt: &mut Runtime, w: &Wrapped) -> Result<Result<Value, Value>, String> {
+/// `w` checked and compiled by that front end, `rep` the type `w` names
+/// `%stage-type` (empty if none): the word that makes the procedure the
+/// wrapping is; or the refusal, `(sum failed why)`.
+fn compiled(rt: &mut Runtime, w: &Wrapped, rep: &[u8]) -> Result<Result<Value, Value>, String> {
     let settings = global(rt, SETTINGS).ok_or("this machine cannot stage code")?;
     let base = rt.heap.push_root(settings);
     let check = stage_front_end(rt);
@@ -173,32 +170,49 @@ fn compiled(rt: &mut Runtime, w: &Wrapped) -> Result<Result<Value, Value>, Strin
     rt.heap.pop_roots_to(base);
     let check = check?;
     let base = rt.heap.push_root(check);
+    rt.heap.push_root(settings);
     let whole = rt.heap.make_string(&w.whole);
-    let check = rt.heap.root_at(base);
+    rt.heap.push_root(whole);
+    let rep = rt.heap.make_bytevector(rep);
+    let (check, settings, whole) = (rt.heap.root_at(base), rt.heap.root_at(base + 1), rt.heap.root_at(base + 2));
     rt.heap.pop_roots_to(base);
-    let field = |rt: &Runtime, i: usize| rt.heap.bloblet_slot(settings, i + 1);
-    let args = [field(rt, 1), whole, Value::fixnum(w.skip), Value::fixnum(w.len), field(rt, 2), field(rt, 3)];
+    let field = |rt: &Runtime, i: usize| rt.heap.product_field(settings, i);
+    let args = [field(rt, 1), whole, Value::fixnum(w.skip), Value::fixnum(w.len), field(rt, 2), field(rt, 3), rep];
     // The front end is licensed code, which ends: no step limit of the
     // program's is its.
     let fuel = std::mem::replace(&mut rt.word_fuel, u64::MAX);
     let checked = fixpt_runtime::prim::call_front_end(rt, check, &args);
     rt.word_fuel = fuel;
     let checked = checked?;
-    if rt.heap.bloblet_slot(checked, 2) != rt.heap.intern("made") {
+    if rt.heap.sum_tag(checked) != rt.heap.intern("made") {
         return Ok(Err(checked));
     }
-    Ok(Ok(rt.heap.bloblet_slot(checked, 3)))
+    Ok(Ok(rt.heap.sum_payload(checked)))
 }
 
 /// `w` compiled, its word run, and the procedure it makes given `args`:
 /// what that gives; or the refusal. `args` are rooted from `base`.
-fn made(rt: &mut Runtime, w: &Wrapped, base: usize, args: usize) -> Result<Result<Value, Value>, String> {
-    let word = match compiled(rt, w)? {
+fn made(rt: &mut Runtime, w: &Wrapped, rep: &[u8], base: usize, args: usize) -> Result<Result<Value, Value>, String> {
+    let word = match compiled(rt, w, rep)? {
         Ok(word) => word,
         Err(refused) => return Ok(Err(refused)),
     };
     let run = rt.run_word.ok_or("no cellular machine is installed")?;
-    let maker = run(rt, word, &[])?;
+    let mut maker = run(rt, word, &[])?;
+    // Compiled as the program's own procedures are, where they are native
+    // code (`Runtime::stage_native`), so that it runs as fast and calls
+    // between it and the program's code are native calls, in tail position
+    // too (Heist's request, `TODO.md` §201); what the compiler declines
+    // stays cellular, called through an adapter.
+    if let Some(compile) = rt.stage_native {
+        let at = rt.heap.push_root(maker);
+        let native = compile(rt, maker);
+        maker = rt.heap.root_at(at);
+        rt.heap.pop_roots_to(at);
+        if let Ok(n) = native {
+            maker = n;
+        }
+    }
     let given: Vec<Value> = (0..args).map(|i| rt.heap.root_at(base + i)).collect();
     fixpt_runtime::prim::call_closure(rt, maker, &given).map(Ok)
 }
@@ -219,8 +233,9 @@ fn stage(rt: &mut Runtime, m: Value, staged: Value, given: Value) -> Result<Valu
     // The code, a datum, as the checker reads it: written out. A refusal is
     // placed in what is written.
     let text = fixpt_runtime::print::write_value(&rt.heap, code);
+    let Some(rep) = parts.rep else { return Ok(no_rep(rt)) };
     let base = rt.heap.push_root(m);
-    let out = made(rt, &stage_wrapped(&parts, &text), base, 1);
+    let out = made(rt, &stage_wrapped(&text), &rep, base, 1);
     rt.heap.pop_roots_to(base);
     match out? {
         Ok(thunk) => Ok(ok(rt, thunk)),
@@ -236,7 +251,8 @@ fn stage(rt: &mut Runtime, m: Value, staged: Value, given: Value) -> Result<Valu
 pub fn lower_staged(rt: &mut Runtime, staged: Value, given: Value) -> Result<Value, String> {
     let (parts, code) = staged_parts(rt, staged, given).ok_or("this machine cannot stage code")?;
     let text = fixpt_runtime::print::write_value(&rt.heap, code);
-    let (c, top) = match checked(rt, &stage_wrapped(&parts, &text)) {
+    let Some(rep) = parts.rep else { return Ok(no_rep(rt)) };
+    let (c, top) = match checked(rt, &stage_wrapped(&text), &rep) {
         Ok(done) => done,
         Err(refused) => return Ok(refused),
     };
@@ -247,14 +263,18 @@ pub fn lower_staged(rt: &mut Runtime, staged: Value, given: Value) -> Result<Val
 }
 
 /// `stage` on the evaluator written in FX-26 (`fx-ast-eval`), what
-/// `%fx26-stage-check` does with the module's type, the effect, the result
-/// type and the code, written out, and the names of the variables those
-/// name and their evidence (`given`): the code checked ([`checked`]), and
-/// the text that was, for the evaluator to parse and run, `(sum checked
-/// text)`; or the refusal.
-pub fn check_staged(rt: &mut Runtime, mt: &str, e: &str, r: &str, text: &str, given: &fixpt_runtime::evidence::Given) -> Value {
-    let w = stage_wrapped(&Parts::of(mt, e, r, given), text);
-    match checked(rt, &w) {
+/// `%fx26-stage-check` does with the code, written out, the names of the
+/// variables its type names and their evidence (`given`), and what it is
+/// checked as, as a rep (`rep`, the checker's that checked the program, the
+/// FX-26 one's, which the Rust one's import takes:
+/// `docs/research/heap-types.md`, step 2), its holes filled by the
+/// evidence's reps: the code checked ([`checked`]), and the text that was,
+/// for the evaluator to parse and run, `(sum checked text)`; or the refusal.
+pub fn check_staged(rt: &mut Runtime, text: &str, given: &fixpt_runtime::evidence::Given, rep: Option<fixpt_reps::Rep>) -> Value {
+    let rep = rep.and_then(|r| if r.holes.is_empty() { Some(r) } else { given.filled(&r) });
+    let Some(rep) = rep.map(|r| fixpt_reps::binary::encode(&r)) else { return no_rep(rt) };
+    let w = stage_wrapped(text);
+    match checked(rt, &w, &rep) {
         Ok(_) => {
             let tag = rt.heap.intern("checked");
             let whole = rt.heap.make_string(&w.whole);
@@ -265,11 +285,20 @@ pub fn check_staged(rt: &mut Runtime, mt: &str, e: &str, r: &str, text: &str, gi
 }
 
 /// `w` checked by a checker written in Rust of the standard environment
-/// alone: the checker and the form; or the refusal, `(sum failed why)`,
-/// placed in the code.
-pub(crate) fn checked(rt: &mut Runtime, w: &Wrapped) -> Result<(crate::check::Checker, crate::top::Top), Value> {
+/// alone, the name `%stage-type` the type of `rep` (a rep's binary form)
+/// imported, as the wrapping names it (`stage_wrapped`): the checker and
+/// the form; or the refusal, `(sum failed why)`, placed in the code.
+pub(crate) fn checked(rt: &mut Runtime, w: &Wrapped, rep: &[u8]) -> Result<(crate::check::Checker, crate::top::Top), Value> {
     let failed = fixpt_runtime::prim::stage_failed;
     let mut c = crate::check::Checker::new();
+    let t = fixpt_reps::binary::decode(rep, fixpt_reps::heap::validate_all()).and_then(|r| c.import_rep(&r, &[]));
+    match t {
+        Ok(t) => {
+            let name = c.interner.intern("%stage-type");
+            c.dscope.push((name, crate::parse::DScope::Rec(t)));
+        }
+        Err(why) => return Err(failed(rt, "refused", &format!("a rep: {why}"), 0, w.len)),
+    }
     let forms = match c.read_in(fixpt_read::FileId(0), &w.whole) {
         Ok(f) if f.len() == 1 => f,
         Ok(_) => return Err(failed(rt, "unread", "the code is not one whole expression", 0, w.len)),
@@ -304,4 +333,88 @@ pub(crate) fn sx_value(rt: &mut Runtime, x: &crate::sx::Sx) -> Value {
             out
         }
     }
+}
+
+/// What a session's step is checked against, as reps
+/// (`docs/research/heap-types.md`, step 6): of the rep of what its code is
+/// checked as, `(subr pure (M) (subr E () R))`, `M`'s, `(subr E () R)`'s and
+/// `E`'s (an effect, as evidence), each with the name the step's text gives
+/// it, in their binary forms; and `M`'s values' names.
+#[derive(Clone)]
+pub(crate) struct StepReps {
+    pub named: Vec<(String, Vec<u8>)>,
+    pub values: Vec<String>,
+}
+
+/// The names a step's text gives its types (`StepReps`).
+pub(crate) const MODULE_TYPE: &str = "%stage-module-type";
+pub(crate) const RESULT_TYPE: &str = "%stage-result-type";
+pub(crate) const EFFECT: &str = "%stage-effect";
+
+/// [`StepReps`] of `bytes`, a rep's binary form; none if it is not of that
+/// shape. Kept by the rep, which a session's every step has alike, a few.
+pub(crate) fn step_reps(bytes: &[u8]) -> Option<StepReps> {
+    thread_local! {
+        static KEPT: std::cell::RefCell<Vec<(Vec<u8>, Option<StepReps>)>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+    if let Some(r) = KEPT.with(|k| k.borrow().iter().find(|(b, _)| b == bytes).map(|(_, r)| r.clone())) {
+        return r;
+    }
+    let made = step_reps_of(bytes);
+    KEPT.with(|k| {
+        let mut k = k.borrow_mut();
+        if k.len() >= 8 {
+            k.remove(0);
+        }
+        k.push((bytes.to_vec(), made.clone()));
+    });
+    made
+}
+
+fn step_reps_of(bytes: &[u8]) -> Option<StepReps> {
+    use fixpt_reps::{fill::part, Arg};
+    let rep = fixpt_reps::binary::decode(bytes, fixpt_reps::heap::validate_all()).ok()?;
+    let node = |k: u32| rep.nodes.get(k as usize);
+    let child = |a: Option<&Arg>| match a {
+        Some(Arg::Node(k)) => Some(*k),
+        _ => None,
+    };
+    let root = node(rep.root())?;
+    if rep.name(root.head) != "subr" {
+        return None;
+    }
+    let m = child(node(child(root.args.get(2))?)?.args.first())?;
+    let result = child(root.args.get(3))?;
+    let r = node(result)?;
+    if rep.name(r.head) != "subr" {
+        return None;
+    }
+    let e = child(r.args.get(1))?;
+    let module = part(&rep, m, false).ok()?;
+    let values = module_values(&module)?;
+    let enc = fixpt_reps::binary::encode;
+    let named = vec![
+        (MODULE_TYPE.to_string(), enc(&module)),
+        (RESULT_TYPE.to_string(), enc(&part(&rep, result, false).ok()?)),
+        (EFFECT.to_string(), enc(&part(&rep, e, true).ok()?)),
+    ];
+    Some(StepReps { named, values })
+}
+
+/// The names of module type `module`'s values, from its rep (`moduleof`'s
+/// `vals`, a label then a type each), as written in text.
+fn module_values(module: &fixpt_reps::Rep) -> Option<Vec<String>> {
+    let root = &module.nodes[module.root() as usize];
+    if module.name(root.head) != "moduleof" {
+        return None;
+    }
+    let vals = root.args.iter().find_map(|a| match a {
+        fixpt_reps::Arg::Node(k) if module.name(module.nodes[*k as usize].head) == "vals" => Some(*k),
+        _ => None,
+    })?;
+    let args = &module.nodes[vals as usize].args;
+    Some(args.chunks(2).filter_map(|p| match p[0] {
+        fixpt_reps::Arg::Sym(s) => Some(fixpt_read::escape_symbol(module.name(s))),
+        _ => None,
+    }).collect())
 }
