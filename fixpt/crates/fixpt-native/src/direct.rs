@@ -591,8 +591,35 @@ pub fn with_machine<T>(f: impl FnOnce(&mut DirectMachine) -> T) -> Result<T, Str
         if m.is_none() {
             *m = Some(DirectMachine::new()?);
         }
-        Ok(f(m.as_mut().expect("made")))
+        let machine = m.as_mut().expect("made");
+        let before = RUNNING_MACHINE.replace(machine as *mut DirectMachine);
+        let r = f(machine);
+        RUNNING_MACHINE.set(before);
+        Ok(r)
     })
+}
+
+thread_local! {
+    /// The machine `with_machine` lends while it runs (Heist's F8): for a
+    /// compile while native code runs, which touches only what a compile
+    /// does (the call-out table, which keeps its place, and the slot
+    /// facts), not what the running code uses.
+    static RUNNING_MACHINE: std::cell::Cell<*mut DirectMachine> = const { std::cell::Cell::new(std::ptr::null_mut()) };
+}
+
+/// `f` of this thread's machine, for a compile: as `with_machine`, or, while
+/// the machine runs code, lent by the run (Heist's F8).
+fn with_machine_compiling<T>(f: impl FnOnce(&mut DirectMachine) -> T) -> Result<T, String> {
+    let busy = MACHINE.with(|m| m.try_borrow_mut().is_err());
+    let lent = RUNNING_MACHINE.get();
+    if busy && !lent.is_null() {
+        // SAFETY: the run that lent it is suspended in a call-out on this
+        // thread, and uses only its runner's copies of the machine's
+        // addresses until the call-out returns; a compile changes neither
+        // those nor the table's place (`DirectMachine::new` reserves it).
+        return Ok(f(unsafe { &mut *lent }));
+    }
+    with_machine(f)
 }
 
 /// A cellular closure compiled on this thread's machine: a native closure
@@ -603,7 +630,7 @@ pub fn compile_closure(heap: &mut Heap, closure: Value) -> Result<Value, String>
     if DirectMachine::compiled_of(heap, closure).is_some() && heap.adapted(closure).is_none() {
         return Ok(closure);
     }
-    with_machine(|m| m.compile(heap, closure).map(|procs| procs[0].1.closure))?
+    with_machine_compiling(|m| m.compile(heap, closure).map(|procs| procs[0].1.closure))?
 }
 
 /// A runtime's `adapt` (`%fx26-convert`, `nclosure`): an adapter of `f`,
@@ -1109,7 +1136,10 @@ impl DirectMachine {
         // continuation given a value (`REINSTATE`); 8: a pair made, for
         // code a program made (`common_cons`, `CONS`); 9: a bloblet made,
         // for it too (`common_bloblet`, `BLOBLET`).
-        let callouts: Vec<Callout> = vec![
+        // Room enough that a compile while code runs (`compile_closure`,
+        // Heist's F8) does not move the table that code calls out by.
+        let mut callouts: Vec<Callout> = Vec::with_capacity(1 << 16);
+        callouts.extend([
             Callout::Foreign,
             Callout::ClosureAny,
             Callout::Underflow,
@@ -1120,7 +1150,7 @@ impl DirectMachine {
             Callout::Reinstate,
             Callout::Cons,
             Callout::Bloblet,
-        ];
+        ]);
         let pieces: [(Vec<u8>, &str); 10] = if X86 {
             [
                 (x64::trampoline(), "trampoline"),

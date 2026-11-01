@@ -66,6 +66,11 @@ pub struct Runtime {
     /// (`stage`, `docs/research/eval.md`; `fixpt-fx26` installs it): the
     /// front end is above this crate. None: it says it cannot.
     pub stage: Option<Stage>,
+    /// How the procedure staged code makes is made native, as the program's
+    /// own procedures are, where the program's convention is native: the
+    /// session's native compiler (`fixpt-fx26` sets it with `stage`). None:
+    /// staged code runs as the cellular code it is compiled to.
+    pub stage_native: Option<fn(&mut fixpt_heap::Heap, Value) -> Result<Value, String>>,
     /// How `%fx26-stage-lower` checks and lowers code a program gives
     /// (`stage` lowered: `fixpt-fx26` installs it): a datum, or the
     /// refusal. None: it says it cannot.
@@ -210,6 +215,7 @@ impl Runtime {
             adapt: None,
             type_at: None,
             stage: None,
+            stage_native: None,
             stage_lower: None,
             stage_check: None,
             sessions: None,
@@ -305,6 +311,7 @@ impl Runtime {
             adapt: None,
             type_at: None,
             stage: None,
+            stage_native: None,
             stage_lower: None,
             stage_check: None,
             sessions: None,

@@ -595,6 +595,55 @@ Still open in Fixpt's `TODO.md`:
   `fixpt-runtime`'s and `fixpt-tidy`'s tests, and Heist's suite.
 - **Kayak will need:** nothing new.
 
+### F8. Staged code made native, as a program's is; and checked against a sealed module (bug fix: speed)
+
+- **Needed for:** s7st compiled, not interpreted: each top-level form of
+  Scheme lowered to FX-26 and `stage`d (s7st/lower.fx). On the default
+  machine (`fx-regs-rsjit-nativecc`) staged code ran as cellular words:
+  a loop 23× slower than the same loop in the program (1.5 s against
+  55 ms for 10⁷ steps), and calls between it and the program's native
+  code went through the foreign convention, not in tail position, so a
+  Scheme loop through s7st's runtime overflowed the stack.
+- **What changed:**
+  - `stage.rs`: the procedure a staged word makes is compiled natively by
+    the session's native compiler, as the program's own procedures are,
+    through `Runtime::stage_native` (new, `runtime.rs`), which
+    `stage::settings` sets from the session (`session.rs`, where the
+    convention is native and the compiler is Rust's). What the compiler
+    declines stays cellular.
+  - `fixpt-native/src/direct.rs`: a compile while native code runs (a
+    `stage` is always one: `main` is native code), which `with_machine`
+    refused (`native code called from code native code called`), now
+    borrows the running machine (`RUNNING_MACHINE`,
+    `with_machine_compiling`), for `compile_closure` only; and the
+    machine's call-out table is made with room for 2¹⁶ entries, so that
+    a compile's pushes never move it under the running code, which
+    reads it by address (`Runner::table`). Unsafe, argued at the borrow:
+    the run is suspended in a call-out and uses only its runner's copies
+    of the machine's addresses until it returns; a compile changes
+    neither those nor the table's place. A proper design is Fixpt's to
+    make (`docs/requests/`).
+  - `check-test-facts.fx` (`k-note-staged`, `k-rebind-opened`): the
+    module type a `stage` is checked against, when the module is a
+    variable's whose type seals it (`(the (moduleof (abs t type) …)
+    …)`), had its abstract types named for the variable, `m..t`, which
+    the checker of the standard environment alone cannot read (`` `m..t`
+    is not a type ``); they are bound again under their own names.
+- **Why not a library:** the code staged code compiles to, and how the
+  type it is checked against prints, are Fixpt's.
+- **Measured:** the 10⁷-step loop staged: 1.5 s to 64 ms (the program's
+  own: 55 ms); a tail call between staged and program code: a stack
+  overflow to constant space. With s7st lowered, sealed (a form staged in
+  8 ms, not 49) and its forms staged a hundred at a time: Heist's suite
+  32.6 s to about 12 s; R7RS's `lazy` 33 s to 5.4 s.
+- **Machines covered:** the native-convention machines whose compiler is
+  Rust's (the default, `fx-regs-rsjit-nativecc`, and
+  `fx-cells-rsinterp-nativecc`); `fx-regs-fxjit-nativecc` (whose native
+  compiler is FX-26's) keeps cellular staged code. The checker's change,
+  every machine whose front end is FX-26's. Fixpt's suite, and Heist's.
+- **Kayak will need:** staged code compiled as a program's code is, and
+  callable from it in tail position.
+
 Each entry takes this form:
 
 ### Fn. Title (library | primitive | language)

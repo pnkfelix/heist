@@ -2874,7 +2874,8 @@ impl Fx26Session {
             value = m.get(standard);
             value
         });
-        crate::stage::settings(self.scheme.runtime_unrooted(), value, self.native_convention, self.register_code);
+        let compile = self.native_compiler.filter(|_| self.native_convention && self.native_fx.is_none());
+        crate::stage::settings(self.scheme.runtime_unrooted(), value, self.native_convention, self.register_code, compile);
         if self.native_keeping.is_some() && self.front_end_native && self.strategy == Strategy::Cellular {
             self.scheme.runtime_unrooted().dump_heap = Some(dump_heap);
         }

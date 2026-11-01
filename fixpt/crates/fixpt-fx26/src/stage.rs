@@ -35,10 +35,12 @@ const MAKE_CHECK: &str = "fx26-native:make-stage-check";
 /// The session's part: `stage` made possible in `rt`, given the standard
 /// environment as the front end read it, and how the program's words are
 /// made.
-pub fn settings(rt: &mut Runtime, standard: Value, native: bool, registers: bool) {
+pub fn settings(rt: &mut Runtime, standard: Value, native: bool, registers: bool,
+                compile: Option<crate::session::NativeCompiler>) {
     let settings = rt.heap.make_frozen(PRODUCT, &[standard, Value::boolean(native), Value::boolean(registers)]);
     set_global(rt, SETTINGS, settings);
     rt.stage = Some(stage);
+    rt.stage_native = compile;
 }
 
 /// The standard environment as the front end read it, as the session set
@@ -198,7 +200,20 @@ fn made(rt: &mut Runtime, w: &Wrapped, base: usize, args: usize) -> Result<Resul
         Err(refused) => return Ok(Err(refused)),
     };
     let run = rt.run_word.ok_or("no cellular machine is installed")?;
-    let maker = run(rt, word, &[])?;
+    let mut maker = run(rt, word, &[])?;
+    // Made native as the program's own procedures are (Heist's F8), so that
+    // it runs as fast, and calls between it and the program's code are
+    // native calls, in tail position too; what the compiler declines stays
+    // cellular.
+    if let Some(compile) = rt.stage_native {
+        let at = rt.heap.push_root(maker);
+        let native = compile(&mut rt.heap, maker);
+        maker = rt.heap.root_at(at);
+        rt.heap.pop_roots_to(at);
+        if let Ok(n) = native {
+            maker = n;
+        }
+    }
     let given: Vec<Value> = (0..args).map(|i| rt.heap.root_at(base + i)).collect();
     fixpt_runtime::prim::call_closure(rt, maker, &given).map(Ok)
 }

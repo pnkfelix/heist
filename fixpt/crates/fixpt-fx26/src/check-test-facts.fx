@@ -194,6 +194,12 @@
                      (on (set k-show-marks #t))
                      (free (k-free-shown (list (show mt) (k-show-effect e) (show r))))
                      (off (set k-show-marks #f))
+                     ;; A module a variable holds has its abstract types
+                     ;; named for it, `m..t`, which the checker of the
+                     ;; standard environment alone that checks the code
+                     ;; cannot read: named as the module's own again, `t`
+                     ;; (Heist's F8).
+                     (mt (k-rebind-opened mt))
                      ;; What the code is checked as, `(subr pure (M) (subr E () R))`.
                      (checked (k-ty-new (ty-subr nil (list mt) (k-ty-new (ty-subr e nil r cv nil))
                                                  cv nil)))
@@ -201,6 +207,46 @@
                      (n (n-staged (show mt) (k-show-effect e) (show r) names)))
                 (set k-extracts (cons (product (1 at) (2 n)) (get k-extracts)))))
             (else y #u))))))
+;; Module type `mt`, if its abstract types are named for a variable that
+;; holds it (`m..t`), with each named as its label again (`t`). Else `mt`.
+(define k-rebind-opened (->* (int) int)
+  (lambda (mt)
+    (tagcase (k-get mt)
+      (ty-module (abs ds vals)
+        (letrec ((opened? (->* (k-parts) bool)
+                   (lambda (ps)
+                     (and (pair? ps)
+                          (or (>= (k-dots-at (symbol->string (k-dvar-name (extract (car ps) 2))) 0)
+                                  0)
+                              (opened? (cdr ps))))))
+                 (subst-parts (->* (k-parts k-map) k-parts)
+                   (lambda (ps m)
+                     (if (null? ps)
+                         nil
+                         (cons (product (1 (extract (car ps) 1))
+                                        (2 (k-subst (extract (car ps) 2) m)))
+                               (subst-parts (cdr ps) m)))))
+                 (go (->* (k-parts k-parts k-map) int)
+                   (lambda (ps acc m)
+                     (if (null? ps)
+                         (k-ty-new (ty-module (reverse acc) (subst-parts ds m)
+                                              (subst-parts vals m)))
+                         (let* ((a (extract (car ps) 1))
+                                (v (extract (car ps) 2))
+                                (k (k-dvar-kind v))
+                                (w (k-new-dvar-of a k))
+                                (to (if (= k 2)
+                                        (dt (k-ty-new (ty-var w)))
+                                        (df (k-ty-new (ty-var w))))))
+                           (go (cdr ps) (cons (product (1 a) (2 w)) acc) (cons (cons v to) m)))))))
+          (if (opened? abs) (go abs nil nil) mt)))
+      (else y mt))))
+;; Where `..` is in `s` from `i`, or -1.
+(define k-dots-at (->* (string int) int)
+  (lambda (s i)
+    (cond ((>= (+ i 1) (string-length s)) -1)
+          ((and (char=? (string-ref s i) #\.) (char=? (string-ref s (+ i 1)) #\.)) i)
+          (else (k-dots-at s (+ i 1))))))
 ;; A `reify-…`'s call, `op`, of `given`, the evidence it is given, of type
 ;; `te`, its `(effectrep E)`, `(regionrep r)` or `(typerep T)`: what it is
 ;; of, printed whole, noted at `given`, as the effect, or a region's, or the
