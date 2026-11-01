@@ -297,6 +297,42 @@ a fault. What it found:
   a module (`turn-eff`, from core.fx) is refused ("`e` is bound as a
   Effect, and the description given is not one"), so eval.fx writes it out.
 
+**Acting directly instead of returning actions** (explored 2026-11-01, in
+standalone programs, not yet in the editor). `(insert "x")` acting, as
+Emacs's does, while the turn still writes nothing another could see:
+- **A handler (delimited control): not on Fixpt today.** `insert` captures
+  its continuation and aborts to a prompt in the turn, whose handler
+  collects the request and resumes. With a global tag, user code's type
+  names the tag's region, so the prompt does not delimit and `attempt`
+  refuses the turn ("this one has (goto @ev)"). With a tag the turn makes
+  in a `letregion`, user code polymorphic in its region, the first prompt
+  delimits, but the handler resumes the code under a prompt whose body
+  has the continuation free, whose type names the region: that prompt
+  does not delimit, and the `letregion` refuses the `comefrom`. A handler
+  that resumes cannot be written so that Fixpt sees it delimits.
+- **A log in a region of the turn's own (capability passing): works.**
+  User code is a procedure of a region `r` and a log in it, `(productof
+  (code (poly ((r region)) (subr … ((log r)) unit))))`; `insert` and the
+  rest, polymorphic in `r`, add to the log; the turn makes `r` with
+  `letregion`, runs the code, and reads the log, all masked, so it is a
+  turn and a fault is caught with nothing done. Through a session, a
+  user procedure that acts, a command calling it, and the command run
+  later each worked. The user writes direct style; a rewriter of the
+  form (eval.fx has its datum) adds the region and the log to each
+  `lambda` that acts and to each call of one. Its limits: a lambda that
+  acts cannot be given to a standard procedure (`map`), which takes plain
+  ones; and a definition must have its whole type written, by the
+  rewriter, structurally, since staged code sees none of the module's
+  types (below).
+- **Found in Fixpt on the way:** (a) staged code sees the module's values
+  but not its types, though it is checked "as `(with m code)` would be",
+  and `with` gives them: `(desc t T)` in the module's type, and `t` is
+  "not a type" to the code. (b) A `poly` inside an equi-recursive type,
+  instantiated, substitutes into the nested copy of itself too (user code
+  whose log holds commands of user code): worked around by keeping a
+  command's body as a plain thunk. (c) A `poly` value must be pure, so
+  reading a global of one is refused; wrapped in a product it is not.
+
 Still to do: 5 (a form that does not end hangs the editor), user code
 reading the editor's state (point, the buffer's text), `C-x C-e` and an
 init file over the same session, and 6.
