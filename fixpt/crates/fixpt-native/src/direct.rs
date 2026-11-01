@@ -45,7 +45,7 @@
 
 use crate::arm64::*;
 use crate::codespace::{CodeSpace, Offset};
-use fixpt_heap::layout::cellular::{CLOSURE_FREE0, CLOSURE_WORD, CODE_SOURCE, GLOBAL_FIELDS, GLOBAL_WRITES, ROUTINES, WORD_CELL0, WORD_TWIN};
+use fixpt_heap::layout::cellular::{CLOSURE_FREE0, CLOSURE_WORD, CODE_SELF, CODE_SOURCE, GLOBAL_FIELDS, GLOBAL_VALUE, GLOBAL_WRITES, ROUTINES, WORD_CELL0, WORD_TWIN};
 use fixpt_heap::layout::regcode::OPS;
 use fixpt_heap::{Heap, Value};
 use std::collections::HashMap;
@@ -56,7 +56,7 @@ mod declare;
 pub use declare::{closures_before_stubs, native_convention, native_convention_of};
 mod x64;
 mod fx;
-pub use fx::{describe, fx_abandon, Each, FxCompile, FxEmitted, FxRequest};
+pub use fx::{describe, fx_abandon, fx_begin, fx_emitted, fx_finish, fx_next, fx_park, fx_unpark, Each, FxCompile, FxEmitted, FxRequest};
 pub use x64::{fx26_direct_module, fx26_direct_module_sig, oracle as oracle_x64};
 pub use reps::oracle as reps_oracle;
 use reps::{Convert, RawOp, Rep};
@@ -591,35 +591,8 @@ pub fn with_machine<T>(f: impl FnOnce(&mut DirectMachine) -> T) -> Result<T, Str
         if m.is_none() {
             *m = Some(DirectMachine::new()?);
         }
-        let machine = m.as_mut().expect("made");
-        let before = RUNNING_MACHINE.replace(machine as *mut DirectMachine);
-        let r = f(machine);
-        RUNNING_MACHINE.set(before);
-        Ok(r)
+        Ok(f(m.as_mut().expect("made")))
     })
-}
-
-thread_local! {
-    /// The machine `with_machine` lends while it runs (Heist's F8): for a
-    /// compile while native code runs, which touches only what a compile
-    /// does (the call-out table, which keeps its place, and the slot
-    /// facts), not what the running code uses.
-    static RUNNING_MACHINE: std::cell::Cell<*mut DirectMachine> = const { std::cell::Cell::new(std::ptr::null_mut()) };
-}
-
-/// `f` of this thread's machine, for a compile: as `with_machine`, or, while
-/// the machine runs code, lent by the run (Heist's F8).
-fn with_machine_compiling<T>(f: impl FnOnce(&mut DirectMachine) -> T) -> Result<T, String> {
-    let busy = MACHINE.with(|m| m.try_borrow_mut().is_err());
-    let lent = RUNNING_MACHINE.get();
-    if busy && !lent.is_null() {
-        // SAFETY: the run that lent it is suspended in a call-out on this
-        // thread, and uses only its runner's copies of the machine's
-        // addresses until the call-out returns; a compile changes neither
-        // those nor the table's place (`DirectMachine::new` reserves it).
-        return Ok(f(unsafe { &mut *lent }));
-    }
-    with_machine(f)
 }
 
 /// A cellular closure compiled on this thread's machine: a native closure
@@ -630,7 +603,9 @@ pub fn compile_closure(heap: &mut Heap, closure: Value) -> Result<Value, String>
     if DirectMachine::compiled_of(heap, closure).is_some() && heap.adapted(closure).is_none() {
         return Ok(closure);
     }
-    with_machine_compiling(|m| m.compile(heap, closure).map(|procs| procs[0].1.closure))?
+    // Not the machine: a compile changes only the compiler's state, so
+    // that native code running (a `stage` in it) may compile.
+    compile(heap, closure).map(|procs| procs[0].1.closure)
 }
 
 /// A runtime's `adapt` (`%fx26-convert`, `nclosure`): an adapter of `f`,
@@ -665,8 +640,7 @@ pub fn adapt(rt: &mut fixpt_runtime::Runtime, f: Value, arity: usize, native: bo
         && heap.bloblet_kind(f) == const { fixpt_heap::layout::kind("cellular-closure") }
         && let Some(code) = native_code_of(heap, f)
     {
-        let fields = heap.bloblet_head(f).fields;
-        let free: Vec<Value> = (CLOSURE_FREE0..=fields).map(|k| heap.bloblet_slot(f, k)).collect();
+        let free: Vec<Value> = heap.bloblet_fields_from(f, CLOSURE_FREE0);
         return Ok(native_closure(heap, code, &free));
     }
     let blob = native_adapter_code(heap)?;
@@ -682,7 +656,7 @@ pub fn native_adapter_code(heap: &mut Heap) -> Result<Value, String> {
     }
     let bytes = if X86 { x64::adapter() } else { crate::arm64::bytes(&adapter_code()) };
     let blob = heap.make_code_bloblet(const { fixpt_heap::layout::kind("bloblet") }, 1, bytes.len(), false);
-    heap.set_bloblet_slot(blob, 1, blob);
+    heap.set_bloblet_slot(blob, CODE_SELF, blob);
     heap.set_bloblet_bytes(blob, 0, &bytes).map_err(|e| format!("{e:?}"))?;
     heap.flush_code(blob);
     crate::symbols::note(heap.code_exec_address(blob), bytes.len(), "native convention: an adapter");
@@ -744,7 +718,9 @@ fn native_code_of(heap: &mut Heap, f: Value) -> Option<Value> {
         Some(_) => forget_word(heap, word.raw()),
         None => {}
     }
-    let busy = MACHINE.with(|m| m.try_borrow_mut().is_err());
+    // A compile within a compile (the compiler's state in use) makes
+    // nothing, and remembers nothing of it.
+    let busy = COMPILER.with(|c| c.try_borrow_mut().is_err());
     if busy {
         return None;
     }
@@ -1086,14 +1062,67 @@ pub struct DirectMachine {
     cache_words: u64,
     max_words: u64,
     /// The machine's own call-outs (`OWN_CALLOUTS`), which its code calls
-    /// by number, then, while a compile goes on, the others its code makes
-    /// by place: each site its own number, as both compilers number them,
-    /// written into the site's field as the call-out itself, encoded, when
-    /// the code is installed, and let go (`install`).
+    /// by number from the table here (`Runner::table`): made once, and
+    /// never changed, so that code running finds it where it was. What a
+    /// compile changes is its own (`Compiler`).
+    own: Box<[Callout]>,
+    /// The call-outs of the last compile the oracle made on this machine
+    /// (`compile_each`, `fx_each`), for `callout_codes`; its own at first.
+    last: Vec<Callout>,
+}
+
+/// What a compile changes, apart from the machine its code runs on, so
+/// that code may be compiled while native code runs (a `stage` within
+/// native code, Heist's request, `TODO.md` §201): the call-outs, the
+/// machine's own (`OWN_CALLOUTS`), then, while a compile goes on, the
+/// others its code makes by place, each site its own number, as both
+/// compilers number them, written into the site's field as the call-out
+/// itself, encoded, when the code is installed, and let go (`install`); and
+/// what each register word's slots come to (`slot_facts`), by its cells:
+/// once, not at every compile that calls it.
+pub struct Compiler {
     callouts: Vec<Callout>,
-    /// What each register word's slots come to (`slot_facts`), by its
-    /// cells: once, not at every compile that calls it.
     slot_facts: SlotMemo,
+}
+
+thread_local! {
+    /// This thread's compiler state (`with_compiler`).
+    static COMPILER: std::cell::RefCell<Compiler> = std::cell::RefCell::new(Compiler { callouts: own_callouts().to_vec(), slot_facts: HashMap::new() });
+}
+
+/// `f` of this thread's compiler state, apart from its machine: whether or
+/// not native code runs; or why not, a compile within a compile.
+pub fn with_compiler<T>(f: impl FnOnce(&mut Compiler) -> T) -> Result<T, String> {
+    if !crate::NATIVE_CONVENTION_AVAILABLE {
+        return Err(crate::UNAVAILABLE.into());
+    }
+    COMPILER.with(|c| {
+        let mut c = c.try_borrow_mut().map_err(|_| "a compile within a compile".to_string())?;
+        Ok(f(&mut c))
+    })
+}
+
+/// The machine's own call-outs, in their order (`DirectMachine::new`):
+/// 0, what is not native code, called (`common_foreign`); 1, a closure
+/// made (`common_closure`); 2 and 3, the stack cache's underflow and
+/// overflow (`common_underflow`, `common_overflow`); 4 and 5, a time
+/// slice's end at a poll, and its call of `preempt` returned (`POLL`,
+/// `POLL_DONE`); 6, a trap (`FAILED`); 7, a continuation given a value
+/// (`REINSTATE`); 8, a pair made, for code a program made (`common_cons`,
+/// `CONS`); 9, a bloblet made, for it too (`common_bloblet`, `BLOBLET`).
+const fn own_callouts() -> [Callout; OWN_CALLOUTS] {
+    [
+        Callout::Foreign,
+        Callout::ClosureAny,
+        Callout::Underflow,
+        Callout::Overflow,
+        Callout::Poll,
+        Callout::PollDone,
+        Callout::Failed,
+        Callout::Reinstate,
+        Callout::Cons,
+        Callout::Bloblet,
+    ]
 }
 
 /// A run that trapped: what, and where: the address of the stub its site
@@ -1128,29 +1157,8 @@ impl DirectMachine {
         let mut space = CodeSpace::new(8 << 20).map_err(|e| e.to_string())?;
         // The machine's own code, in bytes, for this instruction set.
         let a64 = |w: Vec<u32>| crate::arm64::bytes(&w);
-        // Call-out 0: what is not native code, called (`common_foreign`);
-        // 1: a closure made (`common_closure`); 2 and 3: the stack cache's
-        // underflow and overflow (`common_underflow`, `common_overflow`);
-        // 4 and 5: a time slice's end at a poll, and its call of `preempt`
-        // returned (`POLL`, `POLL_DONE`); 6: a trap (`FAILED`); 7: a
-        // continuation given a value (`REINSTATE`); 8: a pair made, for
-        // code a program made (`common_cons`, `CONS`); 9: a bloblet made,
-        // for it too (`common_bloblet`, `BLOBLET`).
-        // Room enough that a compile while code runs (`compile_closure`,
-        // Heist's F8) does not move the table that code calls out by.
-        let mut callouts: Vec<Callout> = Vec::with_capacity(1 << 16);
-        callouts.extend([
-            Callout::Foreign,
-            Callout::ClosureAny,
-            Callout::Underflow,
-            Callout::Overflow,
-            Callout::Poll,
-            Callout::PollDone,
-            Callout::Failed,
-            Callout::Reinstate,
-            Callout::Cons,
-            Callout::Bloblet,
-        ]);
+        // Its own call-outs, in their order (`own_callouts`).
+        let own: Box<[Callout]> = Box::new(own_callouts());
         let pieces: [(Vec<u8>, &str); 10] = if X86 {
             [
                 (x64::trampoline(), "trampoline"),
@@ -1201,8 +1209,8 @@ impl DirectMachine {
             bloblet,
             cache_words,
             max_words,
-            callouts,
-            slot_facts: HashMap::new(),
+            own,
+            last: own_callouts().to_vec(),
         })
     }
 
@@ -1218,39 +1226,50 @@ impl DirectMachine {
     /// bloblet of its own: what it compiled, the first first; or why it
     /// could not.
     pub fn compile(&mut self, heap: &mut Heap, closure: Value) -> Result<Vec<(String, Compiled)>, String> {
-        // Native already (`adapt` made it so): itself.
-        if let Some(c) = Self::compiled_of(heap, closure)
-            && heap.adapted(closure).is_none()
-        {
-            return Ok(vec![(String::new(), c)]);
-        }
-        // A global's procedure that cannot be compiled is called as what is
-        // not native code, and the rest compiled again without it.
-        let mut refused = std::collections::HashSet::new();
-        let (procs, first, free) = loop {
-            let mut c = Compiling { heap: &*heap, procs: Vec::new(), by_word: HashMap::new(), queue: Vec::new(), callouts: &mut self.callouts, resume: None, refused, native_masks: HashMap::new(), slot_facts: &mut self.slot_facts };
-            let (word, free) = c.closure_parts(closure).ok_or("not a closure of cellular code")?;
-            let first = c.proc_of(word)?;
-            let mut failed = None;
-            while let Some(p) = c.queue.pop() {
-                if let Err(e) = c.procedure(p) {
-                    failed = Some((p, e));
-                    break;
-                }
-            }
-            match failed {
-                None => break (std::mem::take(&mut c.procs), first, free),
-                Some((p, e)) if p == first || !c.procs[p].global => return Err(e),
-                Some((p, _)) => {
-                    refused = std::mem::take(&mut c.refused);
-                    refused.insert(c.procs[p].word.raw());
-                }
-            }
-        };
-        let done = install(heap, &procs, first, &free, &self.callouts);
-        self.callouts.truncate(OWN_CALLOUTS);
-        done
+        compile(heap, closure)
     }
+}
+
+/// `closure`'s procedure compiled, and every procedure it calls or makes
+/// closures of (`DirectMachine::compile`), with this thread's compiler
+/// state (`with_compiler`), not its machine: so while native code runs too.
+pub fn compile(heap: &mut Heap, closure: Value) -> Result<Vec<(String, Compiled)>, String> {
+    with_compiler(|cs| compile_with(cs, heap, closure))?
+}
+
+fn compile_with(cs: &mut Compiler, heap: &mut Heap, closure: Value) -> Result<Vec<(String, Compiled)>, String> {
+    // Native already (`adapt` made it so): itself.
+    if let Some(c) = DirectMachine::compiled_of(heap, closure)
+        && heap.adapted(closure).is_none()
+    {
+        return Ok(vec![(String::new(), c)]);
+    }
+    // A global's procedure that cannot be compiled is called as what is
+    // not native code, and the rest compiled again without it.
+    let mut refused = std::collections::HashSet::new();
+    let (procs, first, free) = loop {
+        let mut c = Compiling { heap: &*heap, procs: Vec::new(), by_word: HashMap::new(), queue: Vec::new(), callouts: &mut cs.callouts, resume: None, refused, native_masks: HashMap::new(), slot_facts: &mut cs.slot_facts };
+        let (word, free) = c.closure_parts(closure).ok_or("not a closure of cellular code")?;
+        let first = c.proc_of(word)?;
+        let mut failed = None;
+        while let Some(p) = c.queue.pop() {
+            if let Err(e) = c.procedure(p) {
+                failed = Some((p, e));
+                break;
+            }
+        }
+        match failed {
+            None => break (std::mem::take(&mut c.procs), first, free),
+            Some((p, e)) if p == first || !c.procs[p].global => return Err(e),
+            Some((p, _)) => {
+                refused = std::mem::take(&mut c.refused);
+                refused.insert(c.procs[p].word.raw());
+            }
+        }
+    };
+    let done = install(heap, &procs, first, &free, &cs.callouts);
+    cs.callouts.truncate(OWN_CALLOUTS);
+    done
 }
 
 /// `procs`, compiled, each in a code bloblet of its own: what they are,
@@ -1269,7 +1288,7 @@ fn install(heap: &mut Heap, procs: &[Proc], first: usize, free: &[Value], callou
                 Field::Closure(q, free) => native_closure(heap, blobs[*q], free),
                 Field::Callout(n) => callout_field(callouts[*n]),
             };
-            heap.set_bloblet_slot(blob, k + 1, v);
+            heap.set_bloblet_value(blob, k, v);
         }
         let bytes = &p.code;
         heap.set_bloblet_bytes(blob, 0, bytes).map_err(|e| format!("{e:?}"))?;
@@ -1320,7 +1339,7 @@ impl DirectMachine {
             poll: self.space.exec_addr(self.poll) as u64,
             cons: self.space.exec_addr(self.cons) as u64,
             bloblet: self.space.exec_addr(self.bloblet) as u64,
-            table: self.callouts.as_ptr() as u64,
+            table: self.own.as_ptr() as u64,
             cache_words: self.cache_words,
             max_words: self.max_words,
         }
@@ -1808,8 +1827,8 @@ fn continuation_bytes(n: usize) -> Vec<u8> {
 fn continuation_bloblet(heap: &mut Heap) -> Value {
     let bytes = continuation_bytes(REINSTATE);
     let blob = heap.make_code_bloblet(const { fixpt_heap::layout::kind("bloblet") }, 2, bytes.len(), false);
-    heap.set_bloblet_slot(blob, 1, blob);
-    heap.set_bloblet_slot(blob, 2, Value::FALSE);
+    heap.set_bloblet_slot(blob, CODE_SELF, blob);
+    heap.set_bloblet_slot(blob, CODE_SOURCE, Value::FALSE);
     heap.set_bloblet_bytes(blob, 0, &bytes).expect("room for its code");
     heap.flush_code(blob);
     blob
@@ -1907,8 +1926,7 @@ impl Compiling<'_> {
         if !v.is_bloblet() || h.bloblet_kind(v) != const { fixpt_heap::layout::kind("cellular-closure") } {
             return None;
         }
-        let fields = h.bloblet_head(v).fields;
-        Some((h.bloblet_slot(v, CLOSURE_WORD), (CLOSURE_FREE0..=fields).map(|k| h.bloblet_slot(v, k)).collect()))
+        Some((h.bloblet_slot(v, CLOSURE_WORD), h.bloblet_fields_from(v, CLOSURE_FREE0)))
     }
 
     /// Procedure `p`'s field holding `f`: an index from 1, shared with an
@@ -1933,7 +1951,7 @@ impl Compiling<'_> {
     /// the code may outlive a later definition. A cell with no count of its
     /// writes is read when the code runs.
     fn global_value(&mut self, cell: Value) -> Result<Field, String> {
-        let v = self.heap.bloblet_slot(cell, 2);
+        let v = self.heap.bloblet_slot(cell, GLOBAL_VALUE);
         // Not defined yet (a definition of itself, being compiled): what its
         // cell holds when the code runs.
         // A cellular closure of no register code (an adapter) cannot be
@@ -1998,7 +2016,7 @@ impl Compiling<'_> {
 
     /// `native_params` of code bloblet `code`.
     fn code_params(memo: &mut SlotMemo, h: &Heap, code: Value) -> Option<u8> {
-        if !h.is_code_bloblet(code) || h.bloblet_head(code).suffix_frozen || h.bloblet_head(code).fields < CODE_SOURCE || h.bloblet_slot(code, 1) != code {
+        if !h.is_code_bloblet(code) || h.bloblet_head(code).suffix_frozen || h.bloblet_head(code).fields < CODE_SOURCE || h.bloblet_slot(code, CODE_SELF) != code {
             return None;
         }
         let word = h.bloblet_slot(code, CODE_SOURCE);
@@ -4667,7 +4685,7 @@ fn bytes_set(a: &mut Asm, slow: Label, done: Label) {
 /// Register word `rw`'s cells, as they are compiled: a frame slot that
 /// holds an `f64` and something else in turn split (`reps::split_slots`).
 fn register_cells(h: &Heap, rw: Value) -> Vec<Value> {
-    let cells: Vec<Value> = (WORD_CELL0..=h.bloblet_head(rw).fields).map(|k| h.bloblet_slot(rw, k)).collect();
+    let cells: Vec<Value> = h.bloblet_fields_from(rw, WORD_CELL0);
     let prim_name = |p: usize| fixpt_runtime::PRIMITIVES.get(p).map_or("?", |d| d.name);
     reps::split_slots(cells, &prim_name)
 }
@@ -4689,7 +4707,7 @@ pub(super) type SlotMemo = HashMap<Vec<u64>, std::rc::Rc<SlotFacts>>;
 
 /// Register word `rw`'s `SlotFacts`, from `memo` or found and kept there.
 pub(super) fn slot_facts(memo: &mut SlotMemo, h: &Heap, rw: Value) -> std::rc::Rc<SlotFacts> {
-    let cells: Vec<Value> = (WORD_CELL0..=h.bloblet_head(rw).fields).map(|k| h.bloblet_slot(rw, k)).collect();
+    let cells: Vec<Value> = h.bloblet_fields_from(rw, WORD_CELL0);
     let key: Vec<u64> = cells.iter().map(|c| c.raw()).collect();
     if let Some(f) = memo.get(&key) {
         return f.clone();
@@ -5475,7 +5493,7 @@ extern "C" fn callout(st: *mut DState, which: u64) -> u64 {
         }
         Callout::FieldRef => {
             let k = if args[1].is_fixnum() { usize::try_from(args[1].as_fixnum()).ok() } else { None };
-            match k.and_then(|k| rt.heap.bloblet_field(args[0], k).ok()) {
+            match k.and_then(|k| rt.heap.bloblet_field(args[0], k).ok()) { // fields: the program's field number
                 Some(v) => v.raw(),
                 None => {
                     let m = format!("field@: no field {} of {}", fixpt_engine::cellular::describe(rt, args[1]), fixpt_engine::cellular::describe(rt, args[0]));
@@ -6620,7 +6638,7 @@ pub fn code_text(heap: &Heap, closure: Value) -> Option<String> {
         return None;
     }
     let mut out = String::new();
-    let free = (heap.bloblet_head(closure).fields + 1).saturating_sub(CLOSURE_FREE0);
+    let free = heap.bloblet_count_from(closure, CLOSURE_FREE0);
     let _ = writeln!(out, "a native closure over {free} value(s):");
     for i in 0..free {
         let _ = writeln!(out, "  free {i}: {}", fixpt_runtime::write_value(heap, heap.bloblet_slot(closure, CLOSURE_FREE0 + i)));
@@ -6638,8 +6656,7 @@ pub fn code_text(heap: &Heap, closure: Value) -> Option<String> {
         }
         // What it calls, and makes closures of: code in its fields, and
         // in the closures there.
-        for k in 1..=heap.bloblet_head(code).fields {
-            let f = heap.bloblet_slot(code, k);
+        for f in heap.bloblet_fields_from(code, 1) {
             if heap.is_code_bloblet(f) {
                 todo.push(f);
             } else if f.is_bloblet() && heap.bloblet_kind(f) == const { fixpt_heap::layout::kind("native-closure") } {

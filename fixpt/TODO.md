@@ -4551,7 +4551,9 @@ s7st's warm start (0.77 s, 13 `.fasl`s) after each:
    variables renamed, effects in order, abstract types named as the
    printer names them), memoised until the global is defined again: one
    walk a global a load, no text.
-3. Trusting the stamps: where the build's and sources' stamps match, each
+3. (Done as far as it pays, 2026-11-01, `heap-types.md`, step 5: the
+   stamps kept and trusted, the types entered by rep, each definition
+   still checked; `FIXPT_FASL_VERIFY` as below.) Trusting the stamps: where the build's and sources' stamps match, each
    definition's name and type entered in the environments, not checked
    again as `(define name T %fasl-value)` (`run_program_def`);
    `FIXPT_FASL_VERIFY=1` checks them as now. The types it must enter then
@@ -4565,6 +4567,60 @@ once for each comparison of a `.fasl`'s uses and of its abbreviations
 load is printing types (`core::fmt`, `String`), std's SipHash and
 allocation: 2 and 3.
 
+**2 done (2026-10-31).** A `.fasl`'s `use` line keeps the type's digest
+(`Checker::fasl_use_digest`: `ty_digest`, a module's abstract type taken
+by the `select` naming it, as two files of one name name theirs alike)
+before its text (`#fasl(fixpt-fasl 3)`); a load compares the digest of
+each global's type once a file, and prints only where they differ. On
+s7st every one of its 664 uses matched by digest; its warm start 0.67 s
+to 0.56 s. What prints types now is each definition checked again (3).
+
+**Toward 3 (2026-10-31).** Measured first, on s7st (0.56 s): of the
+526 ms its 13 files take to load, 182 ms was each `.fasl`'s preamble,
+nearly all of it its ~50 type abbreviations printed to compare (0.23 ms
+each); 178 ms its 391 definitions (the FX-26 checker's check of each
+declaration 90 ms, the definitions' stamps 41 ms, the Rust checker 38 ms);
+152 ms its 373 forms run from source. So an `alias` line keeps its type's
+digest too (`Checker::fasl_alias_is`), and the digests are kept by type
+and `select`s across the files of a run (`Checker::fasl_digests`): every
+one of its 636 matched, the preamble 0.3 ms a file but the first's 5 ms,
+the warm start 0.40 s.
+
+What is left of a definition is not its check but its type, read by both
+checkers to enter it: the FX-26 check costs with the text's length (33 µs
+of each call is the call; a 25 KB declaration takes 8.6 ms), and s7st's
+types are 3 to 4 KB each, nearly all of it its transitive `(read (globals
+…))`, hundreds of names (`s7-serve`'s 300 and more): what each checker
+reads, sorts, digests and prints of every definition grows with how many
+globals came before it. Trusting the stamps would save little of that.
+Ways ahead, for the user to choose (2026-10-31): a set of globals named
+once and shared (by the definition it is that of, say) rather than
+written out in each type; the types kept in a form each checker loads
+without reading text (the binary encoding above, or the FX-26 checker's
+own entries as heap data); or `ty_digest` without printing each node's
+effect and region (`show_effect` in `ty_label`), which the stamps' 41 ms
+is.
+
+**Absorption (2026-10-31, the user's).** An effect that reads (writes)
+`@globals` and says `spin` drops its reads (writes) of single globals, in
+both checkers' unions (`Effect::absorbed`, `k-absorbed`) and in the Rust
+printer: s7st's types are what its source says (`s7-serve`'s 300 names
+gone), its `.fasl`s 6.7 to 6.5 MB, its warm start 0.40 s to 0.37 s. Only
+under `spin`: `->*` finds that a procedure reaches itself by the single
+global it reads (`arrow_star_spins`); `define*`'s termination check sees a
+call of itself whatever the effect. Then (the user's) the first
+definition's exemption dropped, so that reading `@globals` says `spin`
+wherever a global may reach itself, and absorption unconditional
+(`CLAUDES_CHOICES.md`, "The first definition's exemption dropped").
+
+A note (the user's question, 2026-11-01: decision diagrams): effects as
+sets of atoms, which with precise effects are large and overlap (s7st's
+300 globals, the same set in each type), are what ZDDs are for: shared
+across a program's effects, equality by node, the subset test that
+subeffecting is and union polynomial in the diagram's size, not the set's.
+Absorption took s7st's away; a program that wants precise effects would
+still pay for them. To measure when one shows the cost.
+
 Walks of a whole environment found besides (2026-10-31), for later:
 `uses_of`, `users_of` and `direct_users_of` walk the definitions (an
 index by the names each defines and uses; `k-users-of`,
@@ -4573,3 +4629,191 @@ index by the names each defines and uses; `k-users-of`,
 table of stacks a name, as `Bindings` is). Indexes kept as names are
 bound, not a namespace partitioned: a module global and a value shadow
 each other by name.
+
+## 201. Heist's request: `stage` on native machines (the user's, 2026-10-31)
+
+Heist's team reports `docs/requests/fixpt-stage-native.md` (in Heist's
+repository, `~/Dev/LangPlay/heist`; read it there, not changed). After
+the knot through what a global holds was closed (2026-10-31).
+
+**(1)–(4) done (2026-10-31)**, Heist's F8 taken upstream and made safe:
+
+- (1) Staged code compiled as the program's procedures are, where those
+  are native code (`Runtime::stage_native`, the CLI's: Rust's compiler,
+  or, on `fx-regs-fxjit-nativecc`, FX-26's, driven on the runtime alone,
+  `stage_native_fx`). Heist's 10⁷-step loop staged: 1423 to 55 ms on the
+  default machine, 1445 to 54 ms on `fx-regs-fxjit-nativecc`, as the
+  program's own (55, 63).
+- (2) Tail calls between them: a staged loop of 10⁶ steps through the
+  program's `apply1` runs on every machine (`tail-across.fx`; at HEAD a
+  stack overflow on the native ones).
+- (3) Compiling while native code runs, without aliasing: what a compile
+  changes (its call-outs, the slot facts) is the compiler's
+  (`direct::Compiler`, `with_compiler`), apart from the machine, whose
+  own call-outs' table is made once and never moved; each FX-26 compile
+  keeps its own call-outs (`FxCompile`), so that one made between its
+  steps neither sees nor truncates them; the FX-26 driver's steps free
+  functions (`fx_begin`, …), needing no machine.
+- (4) A sealed module: its abstract types printed, within the module
+  type, by their labels, as their binders say, in both printers
+  (`k-var-shown`, `print_abs`), so that the type reads back; the Rust
+  checker had the same flaw, unseen (`modules/nested.fx`'s type).
+
+(5) in part (2026-11-01, `docs/research/heap-types.md`, step 3's first
+part): a stage's type kept as a rep at its call site and imported, not
+printed and read: `'1` against a module of 60 alternatives and 40
+procedures 250 to 3.9 ms; s7st's `(define x 1)` 12.3 to 5.7 ms. And the
+standard environment kept between stages (`check-staged`): 1.6 ms and
+1.15 ms; a stage of `'1` against a small module 3 to 0.16 ms. Evidence by
+rep too, the Rust checker's stage paths, and §206's generative types
+(`heap-types.md`, step 3, done).
+
+Left: staged code on the register-code machines of the cellular
+convention (`fx-regs-*-cellcc`), which runs as cellular words (649 ms
+against the program's 55: the program's words' register code is not the
+staged words'), as it did before; and Heist's note on closures of many
+free values, measured and noted (`docs/performance.md`: the step is at 8
+here, where the procedure making one has no register code).
+
+## 202. Types as heap data (the user's, 2026-11-01)
+
+Types cross every boundary between type stores (a `stage`'s checker, run-
+time evidence, a `.fasl`, a session) as printed text, read and checked
+again where they arrive: identity by name (§201 item 4), time (§201 item
+5, §200), size. The user's direction: types as heap data, an efficient
+binary form for serialization, a readable one for debugging. The design,
+for review before any code: `docs/research/heap-types.md` (reps: frozen
+node tables, binders by position, abstract and generative types as keyed
+constant objects; each checker's export and import; digests; the
+migration in six steps; four open questions). Steps 1 to 4 done
+(2026-11-01): reps, both checkers' export and import, `stage` and evidence
+by rep, sessions' definitions by rep, a program's `.fasl`'s definitions by
+rep and its stamps trusted (s7st's warm start 0.45 s to 0.42 s). Left: 6,
+the text paths removed; and of s7st's start, the 359 forms run from source
+each time (221 ms with its prelude's stage), which are not types.
+
+## 203. Abstract types whose identity depends on what they declare (the user's, 2026-11-01)
+
+An abstract type's identity as a function of its declared dependencies, as
+a build system keys a step by its inputs: none (static), the arguments'
+paths (applicative), a fresh nonce (generative), or what the program
+names (this table), enforced as a sandbox enforces declared inputs, by the
+free variables and the making effect of the sealed implementation. Today's
+behaviour, generative per binding, is the default. The reasoning and what
+the checker does now: `docs/research/heap-types.md`, "Abstract types, and
+what their identity depends on". Left to design: the syntax, and how
+applicative sharing is said. After §202's reps, whose keys this needs only
+to be able to address.
+
+A note (the user's question, 2026-11-01: decision diagrams): identity that
+depends on *conditions*, not only on inputs, is a function from conditions
+to representations, which a multi-terminal BDD is: its variables the
+conditions, its leaves the representations' keys, canonical, so that two
+sealings are one type exactly when their diagrams are one node; `(make #t)`
+twice sharing `t`, `(make #t)` and `(make #f)` not, and a condition not
+known statically leaving the diagram unreduced, generative, which is safe.
+A way to state path-sensitive applicative sharing, near dependent types
+(the checker must know the conditions). Ordered by keys, so the same in
+every process; a DAG of nodes, so a rep. For this design to weigh.
+
+## 204. `sexp-edit`: definitions inside a module file, and edits of many places (the user's, 2026-11-01)
+
+The user asked why edits were made by scripts of text replacement, not by
+`sexp-edit`, Lisp being made for tree edits; and that there be a paved
+path. Two things kept them to text:
+
+- **Where a definition is.** Most FX-26 files are one form, `(let* (…)
+  (lambda (…) (module …)))`, so `sexp-edit edit FILE NAME` finds no
+  definition in them (2026-11-01: `regcode-helpers.fx`'s
+  `r-changed-args`); nor a binding of the conductor's `let*`
+  (`stage-check`). Names should be found inside a module file's module,
+  and a path should name a binding within a definition
+  (`front-end-entries/stage-check`).
+- **One change in many places.** A field added to a variant (`n-staged`:
+  its type, three constructions, two `tagcase` patterns), a parameter
+  added to a procedure and an argument to each call. Structural commands
+  for those, over several files, applied all or none and re-read, as
+  `edit` is.
+
+A text edit that `check` would have refused (a list opened and not
+closed) was made by a script that day.
+
+## 205. A bloblet's values by their index, in the heap's API (the user's, 2026-11-01)
+
+`make_frozen(kind, &[a, b])` takes a bloblet's values from 0;
+`bloblet_slot(v, k)` counts fields from 1, field 1 the trailer, so value
+`i` is field `i + 2`, and `bloblet_head(v).fields` counts the trailer. The
+gap has been crossed wrongly at least twice (§201's `stage_native_fx`, a
+product's fields read one off; `fixpt-reps`'s heap form, the trailer read
+as the tag, 2026-11-01). The user: procedural abstractions that make it
+plain. A first cut: `Heap::value(v, i)` and `set_value`, `values_len(v)`,
+indexed as `make_frozen` takes them, and a product's and a sum's
+(`sum_tag`, `sum_payload`, `product_field(v, label)`, labels from 1 as
+FX-26 writes them); `bloblet_slot` kept for the runtime's own layouts,
+and a tidy lint against arithmetic on its index outside `fixpt-heap`.
+528 calls of `bloblet_slot` (15 of the form `k + 1`), most in
+`fixpt-native`, `fixpt-engine`, `fixpt-runtime`: moved file by file.
+
+**Done (2026-11-01).** `Heap::bloblet_value`, `set_bloblet_value`,
+`bloblet_value_checked`, `bloblet_len`, `bloblet_values`; `is_product`,
+`product_field`, `is_sum`, `sum_tag`, `sum_payload`; a fixed layout's run
+of fields, `bloblet_fields_from` and `bloblet_count_from`; and on the
+session's handles, `value`, `product_field`, `sum_tag`, `sum_payload`,
+`Local::field` renamed `raw_field`. The lint (`fixpt_tidy::fields`): a
+field accessor's index starts with a layout's constant, or the line says
+`// fields:` and why (an instruction's operand, a program's field
+number, a word's cells walked by a cursor). 208 findings at first: some
+130 moved to values (every FX-26 sum and product read in Rust, global
+cells by `GLOBAL_VALUE`, code bloblets' `CODE_SELF`, new), the rest
+marked. Left: the FX-26 side, where the compilers make a product's field
+`n` the machine's field `n + 1` (`%bloblet-ref`, `field`), a numbering
+of the instruction set's, not of the heap's API.
+
+## 206. Staging against a module whose type names a program's generative type (found 2026-11-01)
+
+`(define-generative id int)`, a module whose procedures take and give an
+`id`, and `(stage rt … '(get (make 41)) …)`: refused on both checkers'
+paths, "`id` is not a type", since the stage is checked in the standard
+environment alone, where the program's generative types are not; the rep
+path declines a type with a constant and falls back to that text. To
+stage against such a module, a rep must carry each generative type it
+names, as the design says ("A type constant … with the representation too
+for a generative type", `docs/research/heap-types.md`): its name, its
+parameters and their variances, its representation (the checker sees
+through it for shapes and a native convention's registers, so an opaque
+one would not do); and the stage's checker must make it, once, under the
+key the program's checker gave it, so that every stage against the module
+takes it as the same type. A rep format change (`fixpt-reps`'s `Const`),
+the export (`rp-ty`'s `ty-named`) and the import (`ri-gen-names`,
+`rep-nodes`). The standard generative types (`vsubr`) need none of it:
+both checkers enter them alike, under the same keys.
+
+**Done (2026-11-01).** A rep's `named` node carries the definition,
+`(gendef {params} binder… (variances v…) rep)`, shared and, for a
+recursive type, cyclic; each checker's import makes a generative type it
+has not got from it, once per import. On every machine (`generative.fx`).
+
+## 207. A top-level definition's cost, and a `.fasl`'s definitions trusted (the user's, 2026-11-01)
+
+What a `.fasl`'s definition costs at load now (`heap-types.md`, step 5) is
+not its type but the path every top-level definition takes, parts of it
+growing with what is defined already. In order:
+
+1. **The shared path made cheaper**, for source runs too: indexes in place
+   of walks of lists, in both checkers. `k-defs-without` walks every
+   definition at each one (quadratic over a file; `defs.retain` in the
+   Rust checker's `record` likewise); `k-find-desc` walks `k-dscope` at
+   each type name looked up (a table of stacks a name, as `Bindings` is);
+   the knot checks (`k-no-reaching-itself`, `k-kept-reading`) walk the
+   globals. Measured on s7st's warm start: its 406 definitions from
+   `.fasl`s (FX-26 checker 49 ms, Rust 24 ms at 2026-11-01) and its 359
+   forms from source (221 ms).
+2. **Then trusting measured properly**, in both checkers: a `.fasl`'s
+   definition entered without its check, through a narrow entry each
+   (binding, what is known of it, its record), not a second path that
+   redoes a check's bookkeeping; `FIXPT_FASL_VERIFY` and a differential
+   test (the checkers' state after a trusted load against a checked one,
+   every global's type by rep, its known and fixed facts, its users) its
+   safety. The first measure (2026-11-01) skipped only the Rust checker's
+   check of the stand-in body, the cheapest part, and saved 10 ms of 0.40
+   s: it does not say what trusting both checkers' whole check would save.

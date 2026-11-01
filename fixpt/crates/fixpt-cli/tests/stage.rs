@@ -72,6 +72,33 @@ fn code_is_staged_or_refused() {
     }
 }
 
+/// What a stage binds, refused or made, is gone for the next, though the
+/// front end that checks them keeps the standard environment between
+/// them (`check-staged`).
+#[test]
+fn a_stage_leaves_nothing_bound_for_the_next() {
+    let want = "refused: a int is expected here, and this is a string\nrefused: unbound variable `y`\n3\nrefused: unbound variable `y`\n\
+                refused: a int is expected here, and this is a (moduleof (val x int) (val bump (subr pure (int) int)))\n42\n";
+    let runs: Vec<_> = STAGING.iter().filter(|m| runs_here(m)).map(|m| (*m, std::thread::spawn(move || run(m, "kept.fx")))).collect();
+    for (m, t) in runs {
+        let (status, out, err) = t.join().expect("ran");
+        assert_eq!((status, out.as_str()), (Some(0), want), "{m}: {err}");
+    }
+}
+
+/// A stage against a module whose type names the program's own generative
+/// types: the stage's checker makes each from the definition its rep
+/// carries (`TODO.md` §206); refused, by text, before.
+#[test]
+fn a_stage_takes_the_programs_generative_types() {
+    let want = "41\n6\nrefused: argument 1 is a int, where a id is expected\n10\n";
+    let runs: Vec<_> = STAGING.iter().filter(|m| runs_here(m)).map(|m| (*m, std::thread::spawn(move || run(m, "generative.fx")))).collect();
+    for (m, t) in runs {
+        let (status, out, err) = t.join().expect("ran");
+        assert_eq!((status, out.as_str()), (Some(0), want), "{m}: {err}");
+    }
+}
+
 /// A process stages code while another runs, at tiny time slices: the
 /// checker is not the program, and no poll in it switches to the program's
 /// tasks (`TODO.md` §187: on native code, it ran them on a machine that
@@ -241,6 +268,47 @@ fn a_commit_runs_as_the_program_calls_it() {
     for (m, t) in runs {
         let (status, out, err) = t.join().expect("ran");
         assert_eq!((status, out.as_str()), (Some(0), "readied\ninitializer\ndefined k\n"), "{m}: {err}");
+    }
+}
+
+/// Staged code and the program's call each other in tail position on every
+/// machine (Heist's request, `TODO.md` §201): a staged loop of a million
+/// steps through a procedure of the program runs in constant space. On the
+/// native-convention machines only if staged code is native code, as the
+/// program's is: a call between native and cellular code is no tail call.
+#[test]
+fn a_staged_loop_through_the_programs_procedure_runs_in_constant_space() {
+    let runs: Vec<_> = STAGING.iter().filter(|m| runs_here(m)).map(|m| (*m, std::thread::spawn(move || run(m, "tail-across.fx")))).collect();
+    for (m, t) in runs {
+        let (status, out, err) = t.join().expect("ran");
+        assert_eq!((status, out.as_str()), (Some(0), "42\n"), "{m}: {err}");
+    }
+}
+
+/// A stage against a module a global seals, its abstract type read back by
+/// the staged checker, on every machine (Heist's request, `TODO.md` §201).
+#[test]
+fn a_stage_against_a_sealed_module_is_checked() {
+    let runs: Vec<_> = STAGING.iter().filter(|m| runs_here(m)).map(|m| (*m, std::thread::spawn(move || run(m, "sealed.fx")))).collect();
+    for (m, t) in runs {
+        let (status, out, err) = t.join().expect("ran");
+        assert_eq!((status, out.as_str()), (Some(0), "2\n"), "{m}: {err}");
+    }
+}
+
+/// Knots through a session's own globals refused as at the top level, at
+/// their first definitions: a procedure kept in what a global holds that
+/// reads any global, and a procedure that does (`Checker::no_reaching_itself`).
+#[test]
+fn a_session_refuses_knots_through_its_globals() {
+    const WANT: &str = "refused: `tbl` keeps a procedure that reads `@globals`, so it could reach itself through a \
+                        global: it must say `spin`, and it is a (subr (read @globals) () int)\nrefused: calling `g` may \
+                        read any global, `g` too, so `g` may reach itself through a global: its type must say `spin`\n\
+                        defined g\nrunning\n";
+    let runs: Vec<_> = STAGING.iter().filter(|m| runs_here(m)).map(|m| (*m, std::thread::spawn(move || run(m, "session-knot.fx")))).collect();
+    for (m, t) in runs {
+        let (status, out, err) = t.join().expect("ran");
+        assert_eq!((status, out.as_str()), (Some(0), WANT), "{m}: {err}");
     }
 }
 

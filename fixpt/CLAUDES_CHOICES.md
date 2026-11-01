@@ -3168,3 +3168,193 @@ of `TODO.md` §141, working on my own.
   evaluator's `dump-heap!` fails as an I/O failure.
 - **The primitive last**: `%fx26-dump-heap` is registered after every
   other, so that the generated layouts number the others as before.
+
+## Knots through what a global holds (2026-10-31)
+
+- **At the type, as the store's rule is**: a procedure kept in what
+  global `g` holds (product and sum fields, unions, lists, pairs,
+  bloblets, refs, arrays, a module's values, a generative's
+  representation and arguments, through `poly`s; not what a procedure
+  takes or gives) that reads `(globals g)` says `spin`. A first definition
+  whose type permits the knot is refused whatever its value, as a ref's is.
+- **`@globals` too**: at first, on a redefinition only, as for a
+  procedure global itself; then the first definition's exemption dropped
+  (below).
+- **A walk of its own, not `knot_in`'s**: `knot_in` assumes no procedure
+  is kept in globals' bindings and has no flag for a redefinition; the
+  walk for globals (`kept_reading`, `k-kept-reading`) also enters a
+  module's values, which `knot_in` does not.
+
+## The first definition's exemption dropped (2026-10-31, the user's)
+
+- **`@globals` says `spin` everywhere a global may reach itself**: a
+  procedure global, a procedure kept in what a global holds, at its first
+  definition as at any other. The exemption was sound only while every
+  write that could tie a knot to a new global was checked, and the
+  holder's write was not; with it gone, nothing depends on finding every
+  such write.
+- **`->*` finds it**: as it finds `spin` for a procedure that reads
+  itself, it finds `spin` for one reading `@globals`: a global's, a
+  top-level `define-rec`'s, a module's group (a global may hold the
+  module); not a local `letrec`'s, which no global reaches, and which is
+  how recursion keeps its claim to end.
+- **The front end said `spin` mechanically**: each effect it writes that
+  reads `@globals` (444, in 63 files, by a script that skips comments,
+  strings and characters), not rewritten to bind globals eagerly or
+  recurse through local `letrec`s (the user's suggestion), which would
+  keep some procedures' claims to end, a refactor for where one matters.
+- **Absorption unconditional**: reading `@globals` now says nothing less
+  than the single globals' reads would of reaching itself, so they are
+  dropped with or without `spin`.
+
+
+## A stage's type by rep (2026-11-01; `heap-types.md`, step 3's first part)
+
+- **One rep, the type the code is checked as**: `(subr pure (M) (subr E
+  () R))`, the type the checker builds at the call already, not `M`, `E`
+  and `R` apart; the wrapping then names it once and leaves the lambda's
+  parameter unannotated, which bidirectional checking types from it.
+- **The rep a constant of the code**, made at compile time
+  (`rep-cell`: the rep's heap form, a `wcell` as every constant is), so
+  the fact the checker gives the compilers holds it, a fifth field of
+  `n-staged`, and the staged product a seventh; `#f` where there is none,
+  and every machine reads the product as before but for that.
+- **Text where the rep could not stand alone yet**: evidence given (a
+  hole), a region of its own, a generative type (no stable key: a
+  constant found by its place in the checker's table, which the stage's
+  own checker does not share), a part a rep does not take. The export
+  declines such a part instead of failing (`k-rep-declined?`), since
+  failing there would refuse a program the text path takes.
+- **The stage's checker binds the name**, `%stage-type`, after the
+  standard environment and before the code (`check-staged-program`,
+  `check-program` its case of no rep); a `%` name no program writes.
+- **`check-reps` made by the conductor**, before `check-test-facts`,
+  which it is given with a signature (`check-reps-types.fx`), and then
+  given `check-program` too (one instance, not two).
+- **No cache across stages yet**: the import is cheap (1.7 KB for s7st's
+  runtime) beside the standard environment entered again each stage,
+  which a stage front end that kept it would save; left for later.
+
+## A bloblet's values by their index (2026-11-01; `TODO.md` §205)
+
+- **Values counted from 0, past the trailer**, as `make_frozen` takes
+  them, the trailer found by field 1's tag (one load), since a trailer is
+  not an invariant; an FX-26 product's from 1, as FX-26 writes them.
+- **Fields kept for the fixed layouts**, by their constants: the engines
+  read code bloblets at fixed offsets on hot paths, and that is what
+  fields are for. The lint asks that a field's index start with a
+  constant, not that fields go.
+- **A mark per line, not a file allowed**: `// fields:` and why, where a
+  field's number comes from an instruction or a program; a file allowed
+  whole would hide the next mistake in it. Only the heap's own files, the
+  test of code that reads its own fields by offset, and the lint's
+  examples are allowed whole (`raw-fields-allowed.txt`).
+- **`Local::field` renamed `raw_field`**, so that a raw read says so
+  where it is written and the lint sees it.
+- **The FX-26 side left**: the compilers' `field n + 1` for a product's
+  field `n` is the instruction set's numbering; changing it changes every
+  machine.
+
+## The standard environment kept between stages (2026-11-01)
+
+- **A try's undoing, not a snapshot**: each stage checked as `check-more`
+  checks a form and undone as `check-try` undoes one (bindings to a mark,
+  the definitions, breaks, runs, last uses, the description scope); the
+  compile comes between, while the stage's bindings stand.
+- **The store of types not rolled back**: its interned types and memos
+  would point past a mark. Instead a bound: entered again once the stages
+  have made it four times what the standard environment made, so a
+  program that stages for ever stays bounded, and the cost is a stage in
+  many paying the old 3 ms.
+
+## Evidence by rep (2026-11-01; `heap-types.md`, step 3)
+
+- **A piece of evidence carries both**, its text and its rep, a product of
+  the two: every reader of evidence takes it (`Given::of`), the text path
+  stays whole beside the rep one, and a stage takes the rep only where
+  every hole it names is filled.
+- **Evidence a rep of its own, rooted at `evidence`**: what it is of may be
+  a hole (a type variable given evidence), which no rep's root can be.
+- **Holes matched by name**: as the text path substitutes, by the names the
+  evidence is given for; both checkers refuse two variables of one name.
+- **`fill` is told the occurrence head (`var`)**, not taught it: the crate
+  knows no heads; a type variable's occurrence is a node of its own in
+  both checkers' reps, and the evidence takes the node's place.
+- **Sets deduplicated by a second canonical pass**, not inside `canonical`:
+  a member joined from evidence and one the set had are equal only once
+  their classes are, which the pass that orders them finds.
+- **The evaluator's evidence stays text**: its `reify-…` makes text
+  (`%reify-text`), its evidence list typed so; a stage given none takes the
+  rep there too.
+- **Lowered code makes a rep from hex** (`%fx26-rep-of-hex`): a string
+  literal survives any way the lowering's code is written and read.
+
+## Generative types in reps (2026-11-01; `TODO.md` §206)
+
+- **The definition as nodes, not a format change**: `(gendef {params}
+  binder… (variances v…) rep)`, an operand of each `named` node, shared by
+  the rep's minimal graph; the binary form and `Const` stay as they were.
+- **The representation carried**, not an opaque type: the checker sees
+  through a generative type for shapes and a native convention's
+  registers, so staged code calling the module must agree with it.
+- **Every rep carries it**, standard generative types' too: simpler than
+  telling which a checker has, at the cost of a larger rep where one is
+  named.
+- **Made once per import, not kept across stages**: the stage's checker
+  makes the type again at each stage (its key is its own index's there);
+  nothing staged outlives its stage's check, and the store's bound covers
+  the table.
+
+## A session's definitions by rep (2026-11-01; `heap-types.md`, step 4)
+
+- **The rep, not the type's index**: the session's checker keeps its store
+  between steps, so an index would do for a step; but a pending
+  definition is a heap value the program holds, committed steps later, so
+  it carries what is the type anywhere, as everything that crosses does.
+- **The text kept beside it**: `session-redefines` gives the program the
+  old and new types as strings, and the evaluator's re-runs and the Rust
+  checker's sessions read text.
+- **`%stage-type` taken out after a kept step**: a session's next step
+  binds its own; the definitions a step keeps stay.
+- **The evaluator runs the form untyped**: checked already, by the
+  session's checker; the evaluator checks no types, and reading a type it
+  does not use was a third of its step.
+- **The Rust checker's sessions as they were**: at parity already (61
+  ms), and their commit compiles the form's text, type included.
+
+## A program's `.fasl` by rep (2026-11-01; `heap-types.md`, step 5)
+
+- **One rep a file, not one a definition**: a rep has no abbreviations, so
+  alone each repeats every type it names (twelve times the text for
+  s7st); together, minimization shares them, as text's abbreviations do.
+- **The abbreviations' types in the rep too, and given at load**: a part
+  that is one's is the loader's type of it, where its digest says it means
+  the same; so the printer names it (it finds some kinds only by node).
+- **Each definition imported alone, with its own abbreviations**: two
+  equal abbreviations are one node; seeding it with one name would print
+  a definition written with the other wrongly.
+- **The stamps trusted, the check not**: the user chose to trust (and
+  enter unchecked); measured, an unchecked entry saved 10 ms more of 0.40
+  s, at the cost of a second place doing all a check does, so it was left
+  out, and said so; the stamps, 33 ms, are trusted, verified by
+  `FIXPT_FASL_VERIFY` across the `.fasl` tests.
+- **`import-types` makes no generative type**: the file's own must be
+  found, not made anew under a key that could differ; a file whose rep
+  names one not yet defined falls back to text.
+
+
+## The text paths removed (2026-11-01; `heap-types.md`, step 6)
+
+- **Free variables from a rep's holes**: the variables whose evidence a
+  staged form needs are its rep's holes (`Exported::holes`), not found by
+  printing its type with marks; where no rep takes the type (refused as it
+  runs), the printing is kept, so that the refusal at check time still
+  says which evidence is missing rather than becoming a refusal at run
+  time.
+- **A removed primitive taken out of the middle of the list**
+  (`%fx26-reify-text`): the layouts are regenerated (`FIXPT_BLESS`), and
+  the caches `prewarm` makes were remade and the suite passed on them; a
+  `.fasl` or dump made before is stale anyway, as after any rebuild.
+- **The Rust checker's session definitions' text kept**: it is read back
+  by the same checker only, never another or a stage; by rep it would
+  be one more import a definition, for nothing measured.

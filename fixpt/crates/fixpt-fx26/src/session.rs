@@ -17,6 +17,7 @@ use crate::lower::{Globals, lower};
 use crate::sx::{Code, Sx};
 use crate::top::Top;
 use fixpt_read::{FileId, Span, Sym, Syntax};
+use fixpt_heap::layout::cellular::{GLOBAL_VALUE, GLOBAL_WRITES};
 use fixpt_scheme::Session;
 
 /// The FX-26 run-time environment, as Scheme.
@@ -159,6 +160,18 @@ struct ProgramFasl {
     later: std::cell::RefCell<std::collections::HashMap<String, String>>,
     /// The names of all it keeps, what each is printed with to compare.
     alias_names: Vec<Sym>,
+    /// Its definitions' types as one rep (`Header::reps`), and, once
+    /// imported at its first definition, each checker's types of it: the
+    /// Rust checker's, and the one written in FX-26's, by id; none where
+    /// the import could not be (`docs/research/heap-types.md`, step 5).
+    reps: Option<Vec<u8>>,
+    rep_aliases: Vec<(String, usize)>,
+    alias_digests: std::collections::HashMap<String, u64>,
+    rust_rep: std::cell::RefCell<Option<Option<fixpt_reps::Rep>>>,
+    /// Each abbreviation of `rep_aliases`, once looked at: its type here, if
+    /// it means what it meant (its digest).
+    alias_types: std::cell::RefCell<std::collections::HashMap<String, Option<crate::ast::TyId>>>,
+    fx_types: std::cell::RefCell<Option<Option<Vec<i64>>>>,
 }
 
 /// A program's `.fasl`'s image, as its definitions are given their values.
@@ -767,11 +780,11 @@ fn sweep_cache(dir: &std::path::Path) {
     }
 }
 
-/// Each entry point in the product `pieces` (field `i + 1` its `i`th, in
-/// slot `i + 2`) in a global of its own, `{native}{name}`.
+/// Each entry point in the product `pieces` (its field `i + 1` the `i`th
+/// entry) in a global of its own, `{native}{name}`.
 fn set_entries(heap: &mut fixpt_heap::Heap, pieces: fixpt_heap::Value, entries: &[&str], native: &str) {
     for (i, name) in entries.iter().enumerate() {
-        let piece = heap.bloblet_slot(pieces, 2 + i);
+        let piece = heap.product_field(pieces, i + 1);
         let sym = heap.intern(&format!("{native}{name}"));
         let slot = heap.symbol_global_slot(sym);
         heap.set_global(slot, piece);
@@ -1487,7 +1500,6 @@ impl Fx26Session {
     /// expects. A write when the program runs counts on from it (`setglbl`),
     /// so that a guard expecting the stamp fails after one.
     fn definition_stamps(&mut self, top: &Top, form: &Syntax) -> Vec<(Sym, i64)> {
-        use std::hash::{Hash, Hasher};
         // Only compiled code keeps guards, and only the compiler written in
         // FX-26 finds its cells (`run_checked` loads it first).
         if self.strategy != Strategy::Cellular || !self.scheme.is_bound(&format!("{READER_PREFIX}compile-global-cell")) {
@@ -1498,27 +1510,53 @@ impl Fx26Session {
             Top::DefineRec { bindings, .. } => bindings.iter().map(|(n, t, _)| (*n, *t, None)).collect(),
             _ => return Vec::new(),
         };
-        let text = fixpt_read::write_syntax(form, &self.checker.interner);
+        let text = form_digest(form, &self.checker.interner);
         let mut out = Vec::new();
         for (name, ty, effect) in defined {
             if let Some(f) = self.checker.shared_files.get(&name) {
                 out.push((name, stamp_fixnum(f.stamp)));
                 continue;
             }
-            let reads: Option<Vec<Sym>> = match &effect {
-                None => Some(Vec::new()),
-                Some(e) => e.0.iter().map(|a| match a {
-                    crate::ast::Atom::Read(crate::ast::Region::Global(g)) => Some(g.clone()),
-                    _ => None,
-                }).collect(),
-            };
-            let Some(mut reads) = reads else {
-                out.push((name, process_stamp()));
-                continue;
-            };
+            let digest = self.checker.ty_digest(ty);
+            out.push((name, self.stamp_of(name, text, digest, effect.as_ref())));
+        }
+        out
+    }
+
+    /// What a stamp takes of `top` (`definition_stamps`): a `define`'s
+    /// effect, none for a `define-rec`'s; none at all where no stamps are
+    /// kept (each 0).
+    fn stamped_effect(&self, top: &Top) -> Option<Option<crate::ast::Effect>> {
+        if self.strategy != Strategy::Cellular || !self.scheme.is_bound(&format!("{READER_PREFIX}compile-global-cell")) {
+            return None;
+        }
+        match top {
+            Top::Define { effect, .. } => Some(Some(effect.clone())),
+            Top::DefineRec { .. } => Some(None),
+            _ => None,
+        }
+    }
+
+    /// The stamp of `name`'s definition: of its form's text's digest
+    /// ([`form_digest`]), its type's (`ty_digest`), and the write count of
+    /// each global its making reads (`effect`, none for a `define-rec`'s); a
+    /// stamp of this process alone if it reads more than globals. A
+    /// `.fasl`'s definition's from the digests it keeps
+    /// (`Def::stamp_parts`), which are these by its stamps.
+    fn stamp_of(&mut self, name: Sym, text: u64, digest: u64, effect: Option<&crate::ast::Effect>) -> i64 {
+        use std::hash::{Hash, Hasher};
+        let reads: Option<Vec<Sym>> = match effect {
+            None => Some(Vec::new()),
+            Some(e) => e.0.iter().map(|a| match a {
+                crate::ast::Atom::Read(crate::ast::Region::Global(g)) => Some(g.clone()),
+                _ => None,
+            }).collect(),
+        };
+        let Some(mut reads) = reads else { return process_stamp() };
+        {
             reads.sort_by_key(|g| self.checker.interner.name(*g).to_string());
             let mut h = std::collections::hash_map::DefaultHasher::new();
-            ("fixpt-stamp", self.checker.interner.name(name), &text, self.checker.ty_digest(ty)).hash(&mut h);
+            ("fixpt-stamp", self.checker.interner.name(name), text, digest).hash(&mut h);
             for g in reads {
                 let n = self.checker.interner.name(g).to_string();
                 let w = self.global_cell(&n).ok().flatten().map(|c| {
@@ -1532,9 +1570,8 @@ impl Fx26Session {
                 });
                 (n, w).hash(&mut h);
             }
-            out.push((name, stamp_fixnum(h.finish())));
+            stamp_fixnum(h.finish())
         }
-        out
     }
 
     /// `stamps` planned: a global the form writes again (`assigns`) left one
@@ -1869,7 +1906,7 @@ impl Fx26Session {
                 }
             };
             let Some(cell) = self.global_cell(&global)? else { return Ok(Err(fail(format!("it names `{global}`, which is not defined here")).message)) };
-            let h = if value { self.scheme.make(|m| { let c = m.get(cell); m.heap().bloblet_slot(c, 2) }) } else { cell };
+            let h = if value { self.scheme.make(|m| { let c = m.get(cell); m.heap().bloblet_slot(c, GLOBAL_VALUE) }) } else { cell };
             found.push((p, h));
         }
         let stamp = self.checker.shared_files.get(&name).map_or(0, |f| stamp_fixnum(f.stamp));
@@ -1922,7 +1959,7 @@ impl Fx26Session {
                 Some(c) if !natives.is_empty() => crate::fasl::native_procedures(heap, copy, c, &natives),
                 _ => copy,
             };
-            heap.set_bloblet_slot(g, 2, copy);
+            heap.set_bloblet_slot(g, GLOBAL_VALUE, copy);
             // Its definition's stamp, as its load from source leaves it
             // (`definition_stamps`), which the guards test.
             heap.set_bloblet_slot(g, fixpt_heap::layout::cellular::GLOBAL_WRITES, fixpt_heap::Value::fixnum(stamp));
@@ -2037,6 +2074,8 @@ impl Fx26Session {
             made,
             defs: Vec::new(),
             aliases,
+            reps: None,
+            rep_aliases: Vec::new(),
             globals: Vec::new(),
         };
         let (image, globals) = self.released(|s| s.fasl_image(&name, &dep_values)).map_err(|e| format!("`{path}`'s value cannot be kept: {e}"))?;
@@ -2148,9 +2187,9 @@ impl Fx26Session {
         let mut later = std::collections::HashMap::new();
         let names = self.checker.fasl_alias_names(&header.aliases);
         let changed = self.checker.with_fasl_selects(|c| {
-            for (n, t) in &header.aliases {
+            for (n, t, digest) in &header.aliases {
                 let a = c.interner.intern(n);
-                if c.fasl_alias_expansion(a, &names).map(|(t, _)| t).as_deref() == Some(t.as_str()) {
+                if c.fasl_alias_is(a, *digest) || c.fasl_alias_expansion(a, &names).map(|(t, _)| t).as_deref() == Some(t.as_str()) {
                     continue;
                 }
                 if !own.contains(&a) {
@@ -2212,7 +2251,7 @@ impl Fx26Session {
             defs.entry(d.form).or_default().push((d, i));
         }
         let (unsure, broken) = Default::default();
-        Some(ProgramFasl { defs, image, unsure, broken, later: std::cell::RefCell::new(later), alias_names: names })
+        Some(ProgramFasl { defs, image, unsure, broken, later: std::cell::RefCell::new(later), alias_names: names, reps: header.reps.clone(), rep_aliases: header.rep_aliases.clone(), alias_digests: header.aliases.iter().map(|(n, _, d)| (n.clone(), *d)).collect(), rust_rep: Default::default(), alias_types: Default::default(), fx_types: Default::default() })
     }
 
     /// A program's `.fasl`'s image `image` spliced into this session's
@@ -2352,20 +2391,27 @@ impl Fx26Session {
 
     /// Why `defs`' code is not right here, if it is not: a global it uses,
     /// not one the file defines (`defined`), not here, or not at the type
-    /// it had (printed as `fasl_program_type` prints it).
+    /// it had: its digest first (`fasl_use_digest`), each global's once;
+    /// where that differs, printed as `fasl_program_type` prints it.
     fn stale_use(&mut self, defs: &[crate::fasl::Def], defined: &std::collections::HashSet<String>) -> Option<String> {
         self.checker.with_fasl_selects(|c| Self::stale_use_in(c, defs, defined))
     }
 
     fn stale_use_in(checker: &mut Checker, defs: &[crate::fasl::Def], defined: &std::collections::HashSet<String>) -> Option<String> {
+        let mut digests: std::collections::HashMap<crate::ast::TyId, u64> = std::collections::HashMap::new();
         for d in defs {
-            for (u, t) in &d.uses {
+            for (u, t, digest) in &d.uses {
                 if defined.contains(u) {
                     continue;
                 }
                 let un = checker.interner.intern(u);
-                let now = checker.global_type(un).map(|g| checker.fasl_program_type(g));
-                if now.as_ref().is_none_or(|n| n.as_deref() != Ok(t.as_str())) {
+                let Some(g) = checker.global_type(un) else {
+                    return Some(format!("`{}` uses `{u}`, which is not here", d.name));
+                };
+                if *digests.entry(g).or_insert_with(|| checker.fasl_use_digest(g)) == *digest {
+                    continue;
+                }
+                if checker.fasl_program_type(g).as_deref() != Ok(t.as_str()) {
                     return Some(format!("`{}` uses `{u}`, which is not here at the type it was", d.name));
                 }
             }
@@ -2409,26 +2455,113 @@ impl Fx26Session {
             [(d, _)] if !d.rec => format!("(define {} {} {})", d.name, d.ty, d.init),
             _ => format!("(define-rec {})", group.iter().map(|(d, _)| format!("({} {} {})", d.name, d.ty, d.init)).collect::<Vec<_>>().join(" ")),
         };
-        let decl = self.checker.read_in(form.span.file, &text)?.pop().ok_or_else(|| fail("a definition".into()))?;
-        let done = self.checker.top_defining(&decl)?;
+        // By rep where each of the group has a type in the file's rep, which
+        // imports here, at its first definition, finding the generative
+        // types it names (`docs/research/heap-types.md`, step 5): its type
+        // named `%fasl-type-k`, not read again.
+        if p.rust_rep.borrow().is_none() {
+            let rep = p.reps.as_ref().and_then(|b| fixpt_reps::binary::decode(b, fixpt_reps::heap::validate_all()).ok());
+            *p.rust_rep.borrow_mut() = Some(rep);
+        }
+        // With `FIXPT_FASL_VERIFY` set, what the `.fasl` keeps is not
+        // trusted: its definitions checked by their text, and the stamps
+        // made as a run from source makes them, compared with its own.
+        let verify = std::env::var_os("FIXPT_FASL_VERIFY").is_some();
+        let places: Option<Vec<usize>> = group.iter().map(|(d, _)| d.rep_at).collect::<Option<_>>().filter(|_| !verify);
+        // Each its type's part of the file's rep, given the abbreviations its
+        // type names (`Def::types`) where they mean what they meant: as its
+        // text, read, would be.
+        let held = p.rust_rep.borrow();
+        let imported: Option<Vec<crate::ast::TyId>> = match (held.as_ref().and_then(Option::as_ref), &places) {
+            (Some(rep), Some(at)) => group
+                .iter()
+                .zip(at)
+                .map(|((d, _), i)| {
+                    let seeds = self.fasl_seeds(p, &d.types);
+                    self.checker.import_rep_part(rep, *i, &seeds).ok()
+                })
+                .collect(),
+            _ => None,
+        };
+        drop(held);
+        let named: Vec<String> = match &imported {
+            Some(_) => (0..group.len()).map(|k| format!("%fasl-type-{k}")).collect(),
+            None => Vec::new(),
+        };
+        let named_text = match &group[..] {
+            _ if named.is_empty() => text.clone(),
+            [(d, _)] if !d.rec => format!("(define {} {} {})", d.name, named[0], d.init),
+            _ => format!("(define-rec {})", group.iter().zip(&named).map(|((d, _), n)| format!("({} {n} {})", d.name, d.init)).collect::<Vec<_>>().join(" ")),
+        };
+        let depth = self.checker.dscope.len();
+        for (n, t) in named.iter().zip(imported.iter().flatten()) {
+            let n = self.checker.interner.intern(n);
+            self.checker.dscope.push((n, crate::parse::DScope::Rec(*t)));
+        }
+        let decl = self.checker.read_in(form.span.file, &named_text);
+        let done = decl.and_then(|mut d| d.pop().ok_or_else(|| fail("a definition".into()))).and_then(|decl| self.checker.top_defining(&decl));
+        self.checker.dscope.truncate(depth);
+        let done = done?;
         // The form, copied once for the group, as its run from source keeps it.
         let kept = std::rc::Rc::new(form.clone());
         for (d, _) in group {
             let name = self.checker.interner.intern(&d.name);
-            let uses = d.uses.iter().map(|(u, _)| self.checker.interner.intern(u)).collect();
+            let uses = d.uses.iter().map(|(u, _, _)| self.checker.interner.intern(u)).collect();
             self.checker.fasl_defined(name, kept.clone(), uses);
         }
         let top = done.run.into_iter().next().map(|(t, _)| t).ok_or_else(|| fail("a definition".into()))?;
-        // Each its definition's stamp, as its run from source leaves it.
-        let stamps: Vec<i64> = {
-            let all = self.definition_stamps(&top, form);
-            group.iter().map(|(d, _)| { let n = self.checker.interner.intern(&d.name); all.iter().find(|(m, _)| *m == n).map_or(0, |(_, s)| *s) }).collect()
+        // Each its definition's stamp, as its run from source leaves it: from
+        // the digests the `.fasl` keeps, which its stamps vouch for.
+        let kept_parts: Option<Vec<(u64, u64)>> = group.iter().map(|(d, _)| d.stamp_parts).collect();
+        let kept: Option<Vec<i64>> = match (kept_parts, self.stamped_effect(&top)) {
+            (Some(parts), Some(effect)) => Some(
+                group
+                    .iter()
+                    .zip(parts)
+                    .map(|((d, _), (text, digest))| {
+                        let n = self.checker.interner.intern(&d.name);
+                        self.stamp_of(n, text, digest, effect.as_ref())
+                    })
+                    .collect(),
+            ),
+            _ => None,
+        };
+        let stamps: Vec<i64> = match kept {
+            Some(kept) if !verify => kept,
+            kept => {
+                let all = self.definition_stamps(&top, form);
+                let made: Vec<i64> = group.iter().map(|(d, _)| { let n = self.checker.interner.intern(&d.name); all.iter().find(|(m, _)| *m == n).map_or(0, |(_, s)| *s) }).collect();
+                if kept.is_some_and(|k| k != made) {
+                    return Err(fail(format!("`FIXPT_FASL_VERIFY`: `{}`'s stamp is not what its `.fasl` keeps", group[0].0.name)));
+                }
+                made
+            }
         };
         self.own_pieces()?;
         let standard = self.next_standard()?;
         let value = self.released(|s| -> R<String> {
             let sfail = |e: fixpt_scheme::SessionError| FxError::at(form.span, e.to_string());
-            if let Err(why) = crate::syn::check_only(&mut s.scheme, standard, FileId(0), &format!("{text}\n"))? {
+            // The checker written in FX-26 likewise, by rep where it can be
+            // (it takes more forms, not a program's first), else by text.
+            if standard.is_none() && !named.is_empty() {
+                s.fasl_fx_types(p);
+            }
+            let ids: Option<Vec<i64>> = match (&*p.fx_types.borrow(), &places) {
+                (Some(Some(ids)), Some(at)) if !named.is_empty() => at.iter().map(|i| ids.get(*i).copied()).collect(),
+                _ => None,
+            };
+            let by_rep = match (&standard, ids) {
+                (None, Some(ids)) => {
+                    let typed: Vec<(String, i64)> = named.iter().cloned().zip(ids).collect();
+                    crate::syn::check_only_typed(&mut s.scheme, FileId(0), &format!("{named_text}\n"), &typed)?
+                }
+                _ => Err(String::new()),
+            };
+            let checked = match by_rep {
+                Ok(()) => Ok(()),
+                Err(_) => crate::syn::check_only(&mut s.scheme, standard, FileId(0), &format!("{text}\n"))?,
+            };
+            if let Err(why) = checked {
                 return Err(fail(format!("the checkers disagree: the Rust checker takes `{}`'s definition, and the one written in FX-26 refuses it: {why}", group[0].0.name)));
             }
             s.own_begun = true;
@@ -2448,7 +2581,7 @@ impl Fx26Session {
                         let heap = m.heap();
                         for (((_, at), g), stamp) in group.iter().zip(gs).zip(&stamps) {
                             let v = heap.obj_ref(vs, *at);
-                            heap.set_bloblet_slot(g, 2, v);
+                            heap.set_bloblet_slot(g, GLOBAL_VALUE, v);
                             heap.set_bloblet_slot(g, fixpt_heap::layout::cellular::GLOBAL_WRITES, fixpt_heap::Value::fixnum(*stamp));
                         }
                         fixpt_heap::Value::FALSE
@@ -2485,8 +2618,7 @@ impl Fx26Session {
                 if v.is_pair() {
                     todo.extend([from.car(v), from.cdr(v)]);
                 } else if from.obj_type(v) != Some(fixpt_heap::ObjType::Symbol) {
-                    let trailer = from.bloblet_has_trailer(v) as usize;
-                    todo.extend(((1 + trailer)..=from.bloblet_head(v).fields).map(|k| from.bloblet_slot(v, k)));
+                    todo.extend(from.bloblet_values(v));
                 }
             }
             // Its native code as it was kept: nothing compiled here; of
@@ -2520,7 +2652,7 @@ impl Fx26Session {
                     };
                     // What the group's definitions share, copied once.
                     given.extend(made);
-                    heap.set_bloblet_slot(g, 2, copy);
+                    heap.set_bloblet_slot(g, GLOBAL_VALUE, copy);
                     heap.set_bloblet_slot(g, fixpt_heap::layout::cellular::GLOBAL_WRITES, fixpt_heap::Value::fixnum(*stamp));
                 }
                 fixpt_heap::Value::FALSE
@@ -2578,6 +2710,8 @@ impl Fx26Session {
         // type abbreviations after it are not declared ahead: the form's.
         let included = forms.iter().position(|f| self.checker.include_forms(f).is_ok_and(|i| i.is_some())).unwrap_or(forms.len());
         let mut defs = Vec::new();
+        // Each definition's type's own rep, combined into the file's below.
+        let mut def_reps: Vec<Option<Vec<u8>>> = Vec::new();
         let mut names = Vec::new();
         self.checker.fasl_aliases_begin(self.checker.fasl_allowed_aliases(&forms));
         let mut kept_names: std::collections::HashSet<Sym> = std::collections::HashSet::new();
@@ -2617,6 +2751,10 @@ impl Fx26Session {
                 false => format!("(define {} {} {})", kept[0].0, kept[0].1, kept[0].2),
                 true => format!("(define-rec {})", kept.iter().map(|(n, t, init, _)| format!("({n} {t} {init})")).collect::<Vec<_>>().join(" ")),
             };
+            // And each type as a rep, for a load to enter (none where it names
+            // a variable).
+            let mut reps: Vec<Option<Vec<u8>>> = Vec::new();
+            let mut digests: Vec<u64> = Vec::new();
             let checks = match self.checker.read_in(FileId(0), &decl).ok().and_then(|mut v| v.pop()) {
                 Some(d) => self.checker.try_defining(&d).is_ok_and(|done| {
                     let tys: Vec<crate::ast::TyId> = match done.run.first() {
@@ -2624,7 +2762,12 @@ impl Fx26Session {
                         Some((Top::DefineRec { bindings, .. }, _)) => bindings.iter().map(|b| b.1).collect(),
                         _ => Vec::new(),
                     };
-                    tys.len() == kept.len() && tys.iter().zip(&kept).all(|(t, k)| self.checker.fasl_program_type(*t).as_deref() == Ok(k.1.as_str()))
+                    let ok = tys.len() == kept.len() && tys.iter().zip(&kept).all(|(t, k)| self.checker.fasl_program_type(*t).as_deref() == Ok(k.1.as_str()));
+                    if ok {
+                        reps = tys.iter().map(|t| self.checker.export_ty(*t).ok().filter(|ex| ex.holes.is_empty()).map(|ex| fixpt_reps::binary::encode(&ex.rep))).collect();
+                        digests = tys.iter().map(|t| self.checker.ty_digest(*t)).collect();
+                    }
+                    ok
                 }),
                 None => false,
             };
@@ -2632,9 +2775,12 @@ impl Fx26Session {
                 continue;
             }
             kept_names.extend(bindings.iter().map(|b| b.0));
-            for (n, (name, ty, init, uses)) in kept.into_iter().enumerate() {
+            // And what its stamp is made of but the globals' write counts.
+            let text = form_digest(&forms[*i], &self.checker.interner);
+            for (n, (((name, ty, init, uses), rep), digest)) in kept.into_iter().zip(reps).zip(digests).enumerate() {
                 let said = if n == 0 { said.clone() } else { Vec::new() };
-                defs.push(crate::fasl::Def { form: *i, rec, name: name.clone(), ty, init, uses, said, types: Vec::new() });
+                def_reps.push(rep);
+                defs.push(crate::fasl::Def { form: *i, rec, name: name.clone(), ty, init, uses, said, types: Vec::new(), rep_at: None, stamp_parts: Some((text, digest)) });
                 names.push(name);
             }
         }
@@ -2643,7 +2789,7 @@ impl Fx26Session {
         // Each definition notes those its type names, and those they name.
         let used = self.checker.fasl_aliases_end();
         let aliases = self.checker.fasl_alias_closure(used, &self.checker.fasl_allowed_aliases(&forms));
-        let kept: std::collections::HashMap<&str, &str> = aliases.iter().map(|(n, t)| (n.as_str(), t.as_str())).collect();
+        let kept: std::collections::HashMap<&str, &str> = aliases.iter().map(|(n, t, _)| (n.as_str(), t.as_str())).collect();
         for d in &mut defs {
             let mut types: Vec<String> = crate::fasl::symbols_in(&d.ty).into_iter().filter(|w| kept.contains_key(w.as_str())).collect();
             let mut i = 0;
@@ -2657,6 +2803,25 @@ impl Fx26Session {
             }
             d.types = types;
         }
+        // The definitions' types as one rep, what they share there once (as
+        // the text's abbreviations are), each definition its place in it;
+        // and the abbreviations' types too, so that where a definition's type
+        // has one's, the load gives that part the abbreviation's own type, as
+        // a run from source does (and printing names it so).
+        let alias_reps: Vec<Option<Vec<u8>>> = aliases
+            .iter()
+            .map(|(n, _, _)| {
+                let a = self.checker.interner.intern(n);
+                let t = self.checker.type_named(a)?;
+                self.checker.export_ty(t).ok().filter(|ex| ex.holes.is_empty()).map(|ex| fixpt_reps::binary::encode(&ex.rep))
+            })
+            .collect();
+        let n_defs = def_reps.len();
+        let (reps, places) = combined_reps(&[def_reps, alias_reps].concat());
+        for (d, a) in defs.iter_mut().zip(&places) {
+            d.rep_at = *a;
+        }
+        let rep_aliases: Vec<(String, usize)> = aliases.iter().zip(&places[n_defs..]).filter_map(|((n, _, _), a)| Some((n.clone(), (*a)?))).collect();
         let mut header = crate::fasl::Header {
             build: crate::fasl::build(),
             arch: std::env::consts::ARCH.to_string(),
@@ -2670,6 +2835,8 @@ impl Fx26Session {
             made: String::new(),
             defs,
             aliases,
+            reps,
+            rep_aliases,
             globals: Vec::new(),
         };
         let (image, globals) = self.released(|s| s.program_image(&names)).map_err(|e| format!("`{path}`'s definitions cannot be kept: {e}"))?;
@@ -2690,7 +2857,7 @@ impl Fx26Session {
     /// than once (`counts`), of a type that does not read back as itself,
     /// or that uses a load's hidden global, which the forms that load it
     /// make as they are checked.
-    fn kept_binding(&mut self, b: (Sym, crate::ast::TyId, crate::ast::ExpId), counts: &std::collections::HashMap<Sym, usize>, rec: bool, value: Option<&[Sym]>) -> Option<(String, String, String, Vec<(String, String)>)> {
+    fn kept_binding(&mut self, b: (Sym, crate::ast::TyId, crate::ast::ExpId), counts: &std::collections::HashMap<Sym, usize>, rec: bool, value: Option<&[Sym]>) -> Option<(String, String, String, Vec<(String, String, u64)>)> {
         let (name, tid, exp) = b;
         if counts.get(&name) != Some(&1) || !(value.is_some() || Self::names_its_word(&self.checker, exp)) {
             return None;
@@ -2703,7 +2870,14 @@ impl Fx26Session {
         if used.iter().any(|u| self.checker.interner.name(*u).starts_with("%shared:")) {
             return None;
         }
-        let uses = used.into_iter().filter_map(|u| Some((self.checker.interner.name(u).to_string(), self.checker.fasl_program_type(self.checker.global_type(u)?).ok()?))).collect();
+        let uses = self.checker.with_fasl_selects(|c| {
+            used.into_iter()
+                .filter_map(|u| {
+                    let g = c.global_type(u)?;
+                    Some((c.interner.name(u).to_string(), c.fasl_program_type(g).ok()?, c.fasl_use_digest(g)))
+                })
+                .collect()
+        });
         // The type, its `poly`s and procedures taken apart: as printed, if
         // that shows them, else written out (an abbreviation of a `poly`,
         // say), which can be much longer.
@@ -2746,7 +2920,7 @@ impl Fx26Session {
         let mut r = Err(String::new());
         let cellular = self.fasl_cellular;
         self.scheme.make(|m| {
-            let values: Vec<fixpt_heap::Value> = cells.iter().map(|c| { let c = m.get(*c); m.heap().bloblet_slot(c, 2) }).collect();
+            let values: Vec<fixpt_heap::Value> = cells.iter().map(|c| { let c = m.get(*c); m.heap().bloblet_slot(c, GLOBAL_VALUE) }).collect();
             let heap = m.heap();
             let mut list = fixpt_heap::Value::NULL;
             for v in values.iter().rev() {
@@ -2773,8 +2947,8 @@ impl Fx26Session {
         let mut r = Err(String::new());
         let cellular = self.fasl_cellular;
         self.scheme.make(|m| {
-            let value = { let c = m.get(cell); m.heap().bloblet_slot(c, 2) };
-            let deps: Vec<(String, fixpt_heap::Value)> = deps.iter().zip(&cells).map(|(d, c)| { let c = m.get(*c); (d.clone(), m.heap().bloblet_slot(c, 2)) }).collect();
+            let value = { let c = m.get(cell); m.heap().bloblet_slot(c, GLOBAL_VALUE) };
+            let deps: Vec<(String, fixpt_heap::Value)> = deps.iter().zip(&cells).map(|(d, c)| { let c = m.get(*c); (d.clone(), m.heap().bloblet_slot(c, GLOBAL_VALUE)) }).collect();
             let heap = m.heap();
             let adapter = adapter.and_then(|a| a(heap).ok());
             r = crate::fasl::image(heap, value, &deps, adapter, cellular);
@@ -2874,8 +3048,7 @@ impl Fx26Session {
             value = m.get(standard);
             value
         });
-        let compile = self.native_compiler.filter(|_| self.native_convention && self.native_fx.is_none());
-        crate::stage::settings(self.scheme.runtime_unrooted(), value, self.native_convention, self.register_code, compile);
+        crate::stage::settings(self.scheme.runtime_unrooted(), value, self.native_convention, self.register_code);
         if self.native_keeping.is_some() && self.front_end_native && self.strategy == Strategy::Cellular {
             self.scheme.runtime_unrooted().dump_heap = Some(dump_heap);
         }
@@ -2949,12 +3122,13 @@ impl Fx26Session {
 
     /// The front end's entry points the Rust side calls by name
     /// (`READER_PREFIX`), each rebound by [`Self::front_end_as_register_code`].
-    pub const FRONT_ENTRIES: [&'static str; 40] = [
+    pub const FRONT_ENTRIES: [&'static str; 45] = [
         "read-text-at", "check-program", "check-more", "checked-tops", "checked-extracts", "checked-effects", "check-conv-native!", "checked-withs!", "checked-reshapes!",
         "check-globals-effects!", "check-defer-reruns!", "check-hold-breaks!", "check-lines!", "parse-program", "loaded-files!", "includes-given!", "run-checked", "run-checked-more", "compile-program", "compile-checked", "compile-registers!", "compile-conv-native!",
         "compile-global-cell", "compile-new-global", "compile-adopt-globals!", "compile-adopt-broken?", "compile-name-word!", "compile-defining!", "compile-keep-global!", "compile-note-inline!", "compile-forget-globals!", "native-assemble",
         "check-built-in!", "check-syscalls!", "make-stage-check", "make-session-compiler",
         "native-assemble-x64", "native-assemble-x64-regs", "native-adapter-x64", "native-compile-x64-proc",
+        "checked-reps", "checked-reps-again", "check-more-typed", "import-types", "check-text-typed",
     ];
 
     /// The front end's checker and compilers run as register code, not as
@@ -3385,12 +3559,11 @@ fn names_its_word(c: &Checker, mut x: crate::ast::ExpId) -> bool {
         } {
             NativeRun::Ran(Ok(v)) => {
                 let g = rt.heap.root_at(at);
-                rt.heap.set_bloblet_slot(g, 2, v);
+                rt.heap.set_bloblet_slot(g, GLOBAL_VALUE, v);
                 // A write, as `global!`'s, which the guards count: the
                 // global may be one kept, defined again.
-                let w = fixpt_heap::layout::cellular::GLOBAL_WRITES;
-                let n = rt.heap.bloblet_slot(g, w).as_fixnum();
-                rt.heap.set_bloblet_slot(g, w, fixpt_heap::Value::fixnum(n + 1));
+                let n = rt.heap.bloblet_slot(g, GLOBAL_WRITES).as_fixnum();
+                rt.heap.set_bloblet_slot(g, GLOBAL_WRITES, fixpt_heap::Value::fixnum(n + 1));
                 Ok(())
             }
             other => Err(other),
@@ -3444,7 +3617,7 @@ fn names_its_word(c: &Checker, mut x: crate::ast::ExpId) -> bool {
             self.scheme.make(|m| {
                 let (g, t) = (m.get(g), m.get(target));
                 let heap = m.heap();
-                inlines = fixpt_runtime::disasm::inlines_global(heap, heap.bloblet_slot(g, 2), t);
+                inlines = fixpt_runtime::disasm::inlines_global(heap, heap.bloblet_slot(g, GLOBAL_VALUE), t);
                 fixpt_heap::Value::FALSE
             });
             if inlines {
@@ -3473,7 +3646,7 @@ fn names_its_word(c: &Checker, mut x: crate::ast::ExpId) -> bool {
             }
             let heap = m.heap();
             let g = heap.car(cells);
-            let v = heap.bloblet_slot(g, 2);
+            let v = heap.bloblet_slot(g, GLOBAL_VALUE);
             // A cellular closure; or, in the native convention, what
             // cellular code makes, a native closure that adapts one
             // (`nclosure`), which the compiler sees through (any other
@@ -3493,7 +3666,7 @@ fn names_its_word(c: &Checker, mut x: crate::ast::ExpId) -> bool {
                 // holds it still holds (`global-guard`).
                 match compiled {
                     Ok(native) => {
-                        heap.set_bloblet_slot(g, 2, native);
+                        heap.set_bloblet_slot(g, GLOBAL_VALUE, native);
                         r = Ok(true);
                     }
                     Err(why) => r = Err(why),
@@ -3510,7 +3683,7 @@ fn names_its_word(c: &Checker, mut x: crate::ast::ExpId) -> bool {
                 Ok(native) => {
                     s.scheme.make(|m| {
                         let (g, native) = (m.get(g), m.get(native));
-                        m.heap().set_bloblet_slot(g, 2, native);
+                        m.heap().set_bloblet_slot(g, GLOBAL_VALUE, native);
                         fixpt_heap::Value::FALSE
                     });
                     r = Ok(true);
@@ -3527,6 +3700,44 @@ fn names_its_word(c: &Checker, mut x: crate::ast::ExpId) -> bool {
     /// for work done for one form, whose handles would otherwise root what
     /// they hold for the rest of the session. Anything that must last (what
     /// a lazy load makes, `standard26`) is made before.
+    /// What a type of `p`'s rep naming abbreviations `names` is given of
+    /// them: each one's place among its rep's types, and its type here,
+    /// where it means what it meant.
+    fn fasl_seeds(&mut self, p: &ProgramFasl, names: &[String]) -> Vec<(usize, crate::ast::TyId)> {
+        let mut out = Vec::new();
+        for n in names {
+            let Some(&(_, i)) = p.rep_aliases.iter().find(|(m, _)| m == n) else { continue };
+            let known = p.alias_types.borrow().get(n).copied();
+            let t = match known {
+                Some(t) => t,
+                None => {
+                    let t = self.checker.with_fasl_selects(|c| {
+                        let a = c.interner.intern(n);
+                        let digest = p.alias_digests.get(n)?;
+                        c.fasl_alias_is(a, *digest).then_some(())?;
+                        c.type_named(a)
+                    });
+                    p.alias_types.borrow_mut().insert(n.clone(), t);
+                    t
+                }
+            };
+            if let Some(t) = t {
+                out.push((i, t));
+            }
+        }
+        out
+    }
+
+    /// The types of `p`'s rep in the checker written in FX-26, by id,
+    /// imported once (`import-types`); none if they could not be.
+    fn fasl_fx_types(&mut self, p: &ProgramFasl) {
+        if p.fx_types.borrow().is_some() {
+            return;
+        }
+        let ids = p.reps.as_ref().and_then(|b| crate::syn::import_types(&mut self.scheme, b).ok()).filter(|ids| !ids.is_empty());
+        *p.fx_types.borrow_mut() = Some(ids);
+    }
+
     fn released<T>(&mut self, f: impl FnOnce(&mut Self) -> T) -> T {
         let mark = self.scheme.root_mark();
         let r = f(self);
@@ -3570,6 +3781,46 @@ fn names_its_word(c: &Checker, mut x: crate::ast::ExpId) -> bool {
         r
     }
 
+    /// Each name the program the checker written in FX-26 checked last
+    /// defines, and its type's rep in its binary form (`checked-reps`,
+    /// `docs/research/heap-types.md`): for comparing the two checkers by
+    /// reps.
+    pub fn own_checked_reps(&mut self) -> R<Vec<(String, Vec<u8>)>> {
+        let fail = |e: fixpt_scheme::SessionError| FxError::at(Span::new(FileId(0), 0, 0), e.to_string());
+        let reps = self.scheme.call_global(&format!("{READER_PREFIX}checked-reps"), &[]).map_err(fail)?;
+        let mut out = Vec::new();
+        self.scheme.make(|m| {
+            let l = m.get(reps);
+            let heap = m.heap();
+            for p in heap.list_to_vec(l).unwrap_or_default() {
+                let name = heap.symbol_name(heap.product_field(p, 1));
+                let b = heap.product_field(p, 2);
+                out.push((name, (0..heap.bytevector_len(b)).map(|i| heap.bytevector_ref(b, i)).collect()));
+            }
+            fixpt_heap::Value::NULL
+        });
+        Ok(out)
+    }
+
+    /// The same, each rep imported by the checker written in FX-26 and
+    /// exported again (`checked-reps-again`): each name, the rep, and the
+    /// rep again.
+    pub fn own_checked_reps_again(&mut self) -> R<Vec<(String, Vec<u8>, Vec<u8>)>> {
+        let fail = |e: fixpt_scheme::SessionError| FxError::at(Span::new(FileId(0), 0, 0), e.to_string());
+        let reps = self.scheme.call_global(&format!("{READER_PREFIX}checked-reps-again"), &[]).map_err(fail)?;
+        let mut out = Vec::new();
+        self.scheme.make(|m| {
+            let l = m.get(reps);
+            let heap = m.heap();
+            let bytes = |b: fixpt_heap::Value| (0..heap.bytevector_len(b)).map(|i| heap.bytevector_ref(b, i)).collect::<Vec<u8>>();
+            for p in heap.list_to_vec(l).unwrap_or_default() {
+                out.push((heap.symbol_name(heap.product_field(p, 1)), bytes(heap.product_field(p, 2)), bytes(heap.product_field(p, 3))));
+            }
+            fixpt_heap::Value::NULL
+        });
+        Ok(out)
+    }
+
     /// What the checker written in FX-26 noted of the effects of what it
     /// last checked (`checked-effects`): each expression's start, end (in
     /// characters) and effect summary, newest first; two at one span apart.
@@ -3585,9 +3836,9 @@ fn names_its_word(c: &Checker, mut x: crate::ast::ExpId) -> bool {
                 let p = heap.car(l);
                 // Its expression's identity (`k-at`), and the summary
                 // (`n-summary`, a sum, its value a product of one field).
-                let (at, noted) = (heap.bloblet_slot(p, 2), heap.bloblet_slot(p, 3));
-                let summary = heap.bloblet_slot(heap.bloblet_slot(noted, 3), 2).as_fixnum();
-                out.push((heap.bloblet_slot(at, 2).as_fixnum(), heap.bloblet_slot(at, 3).as_fixnum(), summary));
+                let (at, noted) = (heap.product_field(p, 1), heap.product_field(p, 2));
+                let summary = heap.product_field(heap.sum_payload(noted), 1).as_fixnum();
+                out.push((heap.product_field(at, 1).as_fixnum(), heap.product_field(at, 2).as_fixnum(), summary));
                 l = heap.cdr(l);
             }
             fixpt_heap::Value::FALSE
@@ -3733,3 +3984,32 @@ fn compile_file_form(form: &Syntax, c: &Checker) -> Option<(String, bool)> {
     let fixpt_read::Datum::Str(path) = &path.datum else { return None };
     Some((path.clone(), program))
 }
+
+/// Reps `each` (binary forms, some none) as one rep of the types of those
+/// that are (`fixpt_reps::fill::combine`, its root `reps.rs`'s
+/// `FASL_TYPES`), and each one's place in it; none and none if none is.
+fn combined_reps(each: &[Option<Vec<u8>>]) -> (Option<Vec<u8>>, Vec<Option<usize>>) {
+    let decoded: Vec<Option<fixpt_reps::Rep>> = each.iter().map(|b| b.as_ref().and_then(|b| fixpt_reps::binary::decode(b, false).ok())).collect();
+    let mut at = Vec::with_capacity(each.len());
+    let mut parts = Vec::new();
+    for r in &decoded {
+        at.push(r.as_ref().map(|r| {
+            parts.push(r);
+            parts.len() - 1
+        }));
+    }
+    match fixpt_reps::fill::combine(crate::reps::FASL_TYPES, &parts) {
+        Ok(r) if !parts.is_empty() => (Some(fixpt_reps::binary::encode(&r)), at),
+        _ => (None, vec![None; each.len()]),
+    }
+}
+
+/// A definition's form's text's digest, as its stamp takes it
+/// (`definition_stamps`).
+fn form_digest(form: &Syntax, interner: &fixpt_read::Interner) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    fixpt_read::write_syntax(form, interner).hash(&mut h);
+    h.finish()
+}
+

@@ -82,6 +82,12 @@ pub(crate) const P_NAME: usize = 2;
 pub(crate) const P_TYPE: usize = 3;
 pub(crate) const P_FORM: usize = 4;
 pub(crate) const P_USED: usize = 5;
+/// The type's rep (a bytevector of its binary form), where the session's
+/// checker made one, and the form naming it `%stage-type`, which its
+/// commit checks (`sessions26.rs`; `docs/research/heap-types.md`, step 4);
+/// `#f` and `#f` if not.
+pub(crate) const P_REP: usize = 6;
+pub(crate) const P_REP_FORM: usize = 7;
 
 /// The conductor's entry that makes a session's compiler.
 const MAKE_COMPILER: &str = "fx26-native:make-session-compiler";
@@ -94,19 +100,14 @@ pub fn op(rt: &mut Runtime, op: &str, a: &[Value]) -> Result<Value, String> {
     }
     let base = rt.heap.push_root(a[0]);
     // On the machines of the compilers written in FX-26, a session is the
-    // checker written in FX-26's (`sessions26.rs`), unless its first step
-    // names a region of its own, which that checker cannot bind for a
-    // session's top level yet: then the Rust checker's, as before.
-    let on26 = |rt: &mut Runtime| {
-        let parts = staged_parts(rt, a[1], a[2]).map(|(p, _)| p);
-        crate::sessions26::takes(rt, a[0], parts.as_ref())
-    };
+    // checker written in FX-26's (`sessions26.rs`).
+    let on26 = |rt: &mut Runtime| crate::sessions26::takes(rt, a[0]);
     let out = match op {
         "lower" => lower(rt, base, a[1], a[2]),
         "commit-lower" => commit_lower(rt, base, a[1], a[2]),
         "check" if on26(rt) => crate::sessions26::check(rt, base, a[1], a[2]),
         "check" => check(rt, base, a[1], a[2]),
-        "eval-check" if crate::sessions26::takes(rt, a[0], None) => crate::sessions26::eval_check(rt, base, &a[1..]),
+        "eval-check" if crate::sessions26::takes(rt, a[0]) => crate::sessions26::eval_check(rt, base, &a[1..]),
         "eval-check" => eval_check(rt, base, &a[1..]),
         "eval-ready" if rt.heap.obj_ref(a[0], S_INDEX).as_fixnum() <= -2 => {
             let decision = text(rt, a[2]);
@@ -153,12 +154,12 @@ pub(crate) fn failed(rt: &mut Runtime, kind: &str, why: &str) -> Value {
 /// compiled, a compiler is made for the session, `m` put in its global,
 /// and theirs compiled and run now; or, evaluated, their texts run before
 /// the first step's (`State::seed_texts`), the evaluator binding `m`.
-///
-/// Each region of its own `parts` name (`docs/research/eval.md`,
-/// "Evidence") is bound in the session's checker the first time a step
-/// names it, as a region it can know nothing of, and stays.
 fn seeded<T>(rt: &mut Runtime, base: usize, parts: &Parts, mode: Mode, f: impl FnOnce(&mut Runtime, &mut State) -> T) -> Result<T, String> {
-    let mt = parts.mt.as_str();
+    // Its types by rep, each named for the step (`stage::step_reps`;
+    // `docs/research/heap-types.md`, step 6); its callers refuse a step
+    // with none (`step_reps_of`).
+    let reps = parts.rep.as_deref().and_then(crate::stage::step_reps);
+    let mt = crate::stage::MODULE_TYPE;
     let index = rt.heap.obj_ref(rt.heap.root_at(base), S_INDEX).as_fixnum();
     let index = if index >= 0 {
         index as usize
@@ -173,7 +174,10 @@ fn seeded<T>(rt: &mut Runtime, base: usize, parts: &Parts, mode: Mode, f: impl F
         checker.globals_effects = false;
         let mut state = State { checker, globals: Globals::with_prefix(&format!("fx26-session-{i}:")), generation: 0, seeds: Code::default(), seed_texts: Vec::new(), texts: HashMap::new() };
         let module = state.checker.interner.intern("stage-module");
-        define(&mut state, &format!("(define stage-module (the {mt} %fasl-value))"))?;
+        let depth = bind_step_names(&mut state.checker, reps.as_ref());
+        let seed = define(&mut state, &format!("(define stage-module (the {mt} %fasl-value))"));
+        state.checker.dscope.truncate(depth);
+        seed?;
         // The module's own global holds `m` itself, given here, not made.
         let m = rt.heap.obj_ref(rt.heap.root_at(base), S_MODULE);
         if compiled {
@@ -215,22 +219,44 @@ fn seeded<T>(rt: &mut Runtime, base: usize, parts: &Parts, mode: Mode, f: impl F
     Ok(SESSIONS.with(|ss| {
         let mut ss = ss.borrow_mut();
         let state = &mut ss[index];
-        bind_regions(&mut state.checker, &parts.regions);
-        f(rt, state)
+        let depth = bind_step_names(&mut state.checker, reps.as_ref());
+        let out = f(rt, state);
+        state.checker.dscope.truncate(depth);
+        out
     }))
 }
 
-/// Each of `regions` that checker `c` has not bound, bound, for good.
-fn bind_regions(c: &mut Checker, regions: &[String]) {
-    for r in regions {
-        let name = c.interner.intern(r);
-        if c.dscope.iter().any(|(n, _)| *n == name) {
-            continue;
-        }
-        let v = c.arena.dvar_of(name, crate::ast::Kind::Region);
-        c.dscope.push((name, crate::parse::DScope::Var(v, crate::ast::Kind::Region)));
+/// The names a step's text gives its types (`stage::StepReps`), each bound
+/// in checker `c` to its rep imported; how deep its description scope was
+/// before, to which the caller cuts it back after the step.
+fn bind_step_names(c: &mut Checker, reps: Option<&crate::stage::StepReps>) -> usize {
+    let depth = c.dscope.len();
+    for (n, bytes) in reps.map(|r| r.named.as_slice()).unwrap_or_default() {
+        let Ok(rep) = fixpt_reps::binary::decode(bytes, fixpt_reps::heap::validate_all()) else { continue };
+        let d = match c.import_desc(&rep) {
+            Ok(crate::ast::D::Effect(e)) => crate::parse::DScope::Eff(e),
+            Ok(crate::ast::D::Type(t)) => crate::parse::DScope::Rec(t),
+            _ => continue,
+        };
+        let n = c.interner.intern(n);
+        c.dscope.push((n, d));
     }
+    depth
 }
+
+/// Whether `parts` has its types by rep, as a step's (`stage::step_reps`):
+/// a step without is refused (`stage::no_rep`).
+fn has_step_reps(parts: &Parts) -> bool {
+    parts.rep.as_deref().and_then(crate::stage::step_reps).is_some()
+}
+
+/// An expression step's code wrapped, its type named (`%stage-result-type`,
+/// `(subr E () R)`).
+pub(crate) fn step_expression(text: &str) -> Wrapped {
+    let r = crate::stage::RESULT_TYPE;
+    Wrapped::of(format!("(the {r}\n(lambda ()\n"), text, "\n))\n", text, 0)
+}
+
 
 /// `text`, read in a file of the session's own, kept: its forms.
 fn read(state: &mut State, text: &str) -> Result<(FileId, Vec<Syntax>), crate::FxError> {
@@ -267,10 +293,6 @@ pub(crate) fn is_definition(rt: &Runtime, code: Value) -> bool {
     rt.heap.is_a(head, fixpt_heap::ObjType::Symbol) && rt.heap.symbol_name(head) == "define"
 }
 
-/// An expression, `text`, as it is checked: within `E`, of type `R`.
-pub(crate) fn expression(e: &str, r: &str, text: &str) -> Wrapped {
-    Wrapped::of(format!("(the (subr {e} () {r})\n(lambda ()\n"), text, "\n))\n", text, 0)
-}
 
 /// Lowered, what `%fx26-session-lower` does with the session at `base` and
 /// the product a form's code is: an expression, the datum whose value is the
@@ -278,11 +300,14 @@ pub(crate) fn expression(e: &str, r: &str, text: &str) -> Wrapped {
 /// (sum definition d))`, `d` pending; or the refusal.
 fn lower(rt: &mut Runtime, base: usize, staged: Value, given: Value) -> Result<Value, String> {
     let (parts, code) = staged_parts(rt, staged, given).ok_or("this machine cannot stage code")?;
+    if !has_step_reps(&parts) {
+        return Ok(crate::stage::no_rep(rt));
+    }
     let text = fixpt_runtime::print::write_value(&rt.heap, code);
     if is_definition(rt, code) {
         return check_define(rt, base, &parts, code, &text, Mode::Lowered);
     }
-    let w = expression(&parts.e, &parts.r, &text);
+    let w = step_expression(&text);
     let made = seeded(rt, base, &parts, Mode::Lowered, |rt, state| {
         let made = tried(rt, state, &w, |c, g, top, _| crate::session::lower_top(c, g, &top));
         made.map(|c| {
@@ -302,11 +327,14 @@ fn lower(rt: &mut Runtime, base: usize, staged: Value, given: Value) -> Result<V
 /// or the refusal.
 fn check(rt: &mut Runtime, base: usize, staged: Value, given: Value) -> Result<Value, String> {
     let (parts, code) = staged_parts(rt, staged, given).ok_or("this machine cannot stage code")?;
+    if !has_step_reps(&parts) {
+        return Ok(crate::stage::no_rep(rt));
+    }
     let text = fixpt_runtime::print::write_value(&rt.heap, code);
     if is_definition(rt, code) {
         return check_define(rt, base, &parts, code, &text, Mode::Compiled);
     }
-    let w = expression(&parts.e, &parts.r, &text);
+    let w = step_expression(&text);
     let found = seeded(rt, base, &parts, Mode::Compiled, |rt, state| tried(rt, state, &w, |c, _, top, file| FormFacts::of(c, &[&top], file, &w.whole, true)))?;
     let facts = match found {
         Ok(facts) => facts,
@@ -334,7 +362,7 @@ fn datum(rt: &mut Runtime, code: &Code) -> Value {
 /// the pending definition, `(sum ok (sum definition d))`, the checker as
 /// it was.
 fn check_define(rt: &mut Runtime, base: usize, against: &Parts, code: Value, text: &str, mode: Mode) -> Result<Value, String> {
-    let e = against.e.as_str();
+    let e = crate::stage::EFFECT;
     let len = text.chars().count() as i64;
     let usage = "a definition is `(define name init)` or `(define name type init)`";
     let parts = rt.heap.list_to_vec(code).unwrap_or_default();
@@ -382,28 +410,39 @@ fn check_define(rt: &mut Runtime, base: usize, against: &Parts, code: Value, tex
         Ok(f) => f,
         Err(refused) => return Ok(refused),
     };
-    let d = pending(rt, base, generation, &name, &ty, &form);
+    let d = pending(rt, base, generation, &name, &ty, &form, None);
     let d = sum(rt, "definition", d);
     Ok(sum(rt, "ok", d))
 }
 
 /// A pending definition of the session at `base`, checked at `generation`:
-/// `#(session generation name type form used)`, its strings made rooted.
-pub(crate) fn pending(rt: &mut Runtime, base: usize, generation: i64, name: &str, ty: &str, form: &str) -> Value {
+/// `#(session generation name type form used rep rep-form)`, its strings
+/// made rooted; `by_rep`, its type's rep and the form that names it.
+pub(crate) fn pending(rt: &mut Runtime, base: usize, generation: i64, name: &str, ty: &str, form: &str, by_rep: Option<(&[u8], &str)>) -> Value {
     let mark = rt.heap.push_root(Value::FALSE);
     for t in [name, ty, form] {
         let v = rt.heap.make_string(t);
         rt.heap.push_root(v);
     }
+    let (rep, rep_form) = match by_rep {
+        Some((bytes, checked)) => {
+            let b = rt.heap.make_bytevector(bytes);
+            rt.heap.push_root(b);
+            let f = rt.heap.make_string(checked);
+            rt.heap.push_root(f);
+            (rt.heap.root_at(mark + 4), rt.heap.root_at(mark + 5))
+        }
+        None => (Value::FALSE, Value::FALSE),
+    };
     let [name, ty, form] = [1, 2, 3].map(|i| rt.heap.root_at(mark + i));
     let s = rt.heap.root_at(base);
-    let d = rt.heap.vector_from(&[s, Value::fixnum(generation), name, ty, form, Value::FALSE]);
+    let d = rt.heap.vector_from(&[s, Value::fixnum(generation), name, ty, form, Value::FALSE, rep, rep_form]);
     rt.heap.pop_roots_to(mark);
     d
 }
 
 pub(crate) fn is_pending(rt: &Runtime, d: Value) -> bool {
-    rt.heap.is_a(d, fixpt_heap::ObjType::Vector) && rt.heap.obj_len(d) == 6
+    rt.heap.is_a(d, fixpt_heap::ObjType::Vector) && rt.heap.obj_len(d) == 8
 }
 
 pub(crate) fn text(rt: &Runtime, v: Value) -> String {
@@ -557,7 +596,7 @@ fn ready(rt: &mut Runtime, base: usize, d: Value, decision: Value) -> Result<Val
 
 /// A `session-decision`'s tag, as text; none if it is not one.
 pub(crate) fn decided(rt: &Runtime, decision: Value) -> String {
-    let tag = if decision.is_bloblet() { rt.heap.bloblet_slot(decision, 2) } else { Value::FALSE };
+    let tag = if decision.is_bloblet() { rt.heap.sum_tag(decision) } else { Value::FALSE };
     if tag.is_false() { String::new() } else { rt.heap.symbol_name(tag) }
 }
 
@@ -572,14 +611,18 @@ fn keeps(c: &Checker, top: &Top) -> Vec<String> {
 }
 
 /// Evaluated, what `%fx26-session-eval-check` does with the session at
-/// `base`, the module's type, the effect, the result type and the code as
-/// text, and the names of the variables those name and their evidence
-/// (`a`): an expression, `(sum run texts)`, the forms to run, the
+/// `base`, the code as text, the names of the variables its type names,
+/// that type as a rep and the evidence's reps' binary forms (`a`): an
+/// expression, `(sum run texts)`, the forms to run, the
 /// last's value the procedure that evaluates it; a definition, pending;
 /// or the refusal.
 fn eval_check(rt: &mut Runtime, base: usize, a: &[Value]) -> Result<Value, String> {
-    let [mt, e, r, text] = [a[0], a[1], a[2], a[3]].map(|v| self::text(rt, v));
-    let parts = Parts::of(&mt, &e, &r, &fixpt_runtime::evidence::Given::of(rt, a[4], a[5]));
+    let text = self::text(rt, a[0]);
+    let given = fixpt_runtime::evidence::Given::of_bytes(rt, a[1], a[3]);
+    let parts = Parts { rep: crate::stage::given_rep(rt, a[2], &given) };
+    if !has_step_reps(&parts) {
+        return Ok(crate::stage::no_rep(rt));
+    }
     let mut interner = std::mem::take(&mut rt.interner);
     let read = fixpt_read::Reader::new(&text, FileId(0), fixpt_read::SyntaxProfile::FX91, &mut interner).read_all();
     rt.interner = interner;
@@ -591,7 +634,7 @@ fn eval_check(rt: &mut Runtime, base: usize, a: &[Value]) -> Result<Value, Strin
     if is_definition(rt, code) {
         return check_define(rt, base, &parts, code, &text, Mode::Evaluated);
     }
-    let w = expression(&parts.e, &parts.r, &text);
+    let w = step_expression(&text);
     let made = seeded(rt, base, &parts, Mode::Evaluated, |rt, state| {
         tried(rt, state, &w, |_, _, _, _| ()).map(|()| {
             let mut texts = std::mem::take(&mut state.seed_texts);
@@ -660,7 +703,7 @@ fn compiler(rt: &mut Runtime, base: usize) -> Result<Value, String> {
 /// Entry `i` (from 1) of the session's compiler, `compiler`, called with
 /// `args`: its value.
 fn call(rt: &mut Runtime, compiler: Value, i: usize, args: &[Value]) -> Result<Value, String> {
-    let f = rt.heap.bloblet_slot(compiler, i + 1);
+    let f = rt.heap.product_field(compiler, i);
     let fuel = std::mem::replace(&mut rt.word_fuel, u64::MAX);
     let out = fixpt_runtime::prim::call_front_end(rt, f, args);
     rt.word_fuel = fuel;
@@ -685,8 +728,8 @@ fn compile_run(rt: &mut Runtime, base: usize, text: &str, facts: &FormFacts, def
     let [compiler, t, f, w] = [0, 1, 2, 3].map(|i| rt.heap.root_at(mark + i));
     rt.heap.pop_roots_to(mark);
     let made = call(rt, compiler, 1, &[t, f, w, r, Value::boolean(native), Value::boolean(registers), Value::boolean(deferred)])?;
-    let tag = rt.heap.bloblet_slot(made, 2);
-    let payload = rt.heap.bloblet_slot(made, 3);
+    let tag = rt.heap.sum_tag(made);
+    let payload = rt.heap.sum_payload(made);
     if tag != rt.heap.intern("made") {
         return Ok(Err(rt.heap.string_to_rust(payload)));
     }

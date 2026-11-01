@@ -31,7 +31,8 @@
        (check-synth-types (load-module "fx26:check-synth-types.fx"))
        (check-module-rules-types (load-module "fx26:check-module-rules-types.fx"))
        (check-subtype-types (load-module "fx26:check-subtype-types.fx"))
-       (reader-types (load-module "fx26:reader-types.fx")))
+       (reader-types (load-module "fx26:reader-types.fx"))
+       (check-reps-types (load-module "fx26:check-reps-types.fx")))
   ;; What it is given: the modules of the files before it that it uses.
   (lambda ((check-types (select check-types-types check-types-sig))
            (check-syntax (select check-syntax-types check-syntax-sig))
@@ -56,7 +57,9 @@
            (check-subtype (select check-subtype-types check-subtype-sig))
            (parser (select reader-types parser-sig))
            (check-modules-read (select check-modules-read-types check-modules-read-sig))
-           (check-print-parts (select check-print-parts-types check-print-parts-sig)))
+           (check-print-parts (select check-print-parts-types check-print-parts-sig))
+           ;; Its types as reps (`check-reps.fx`).
+           (check-reps (select check-reps-types check-reps-sig)))
     ;; Part of it in a file of its own (`check-program-defs.fx`), made of what
     ;; it is given.
     (let ((check-program-defs
@@ -130,26 +133,25 @@
     (let ((so (k-cat5 "calling `" name "` may read any global, `" name "` too, so `")))
       (k-cat3 so name k-must-spin))))
 ;; An error at `form` if calling the procedure `name`, of type `t`, may
-;; reach itself through a global: if it reads one of `ns`, or, if
-;; `redefining`, any global.
-(define k-not-reaching (->* (top string int k-names bool) unit)
-  (lambda (form name t ns redefining)
+;; reach itself through a global: if it reads one of `ns`, or any global.
+(define k-not-reaching (->* (top string int k-names) unit)
+  (lambda (form name t ns)
     (let* ((reads (k-latent-globals t))
            (m (k-first-read reads ns))
            (a (k-top-start form))
            (b (k-top-end form)))
       (cond ((not (null? m)) (k-fail (k-reads-itself name (symbol->string (car m))) a b))
-            ((and redefining (k-has-region-in? reads (r-globals))) (k-fail (k-reads-any name) a b))
+            ((k-has-region-in? reads (r-globals)) (k-fail (k-reads-any name) a b))
             (else #u)))))
 ;; Defining a global writes it: a procedure stored in global `f` whose calls
 ;; read `f` may reach itself through the global, which termination checking,
 ;; trusting every procedure of a type without `spin` to end, has not seen.
 ;; So it must say `spin`, as a procedure kept in a ref must, however it
 ;; reads `f`; one that stays `pure` binds itself with a local `letrec`. A
-;; group's members read each other so. Reading `@globals` may read `f` only
-;; once `f` is a global (`top.rs`, `no_reaching_itself`).
-(define k-no-reaching-itself (->* (top k-names bool) unit)
-  (lambda (form ns redefining)
+;; group's members read each other so. Reading `@globals` reads `f` too, at
+;; its first definition as at any other (`top.rs`, `no_reaching_itself`).
+(define k-no-reaching-itself (->* (top k-names) unit)
+  (lambda (form ns)
     (letrec ((each (subr (maxeff checks spin) (k-names) unit)
                (lambda (ms)
                  (if (null? ms)
@@ -157,9 +159,90 @@
                      (let* ((n (car ms)) (t (k-lookup-raw n)))
                        (if (k-type-spins? t)
                            (each (cdr ms))
-                           (begin (k-not-reaching form (symbol->string n) t ns redefining)
-                                  (each (cdr ms)))))))))
-      (each ns))))
+                           (begin (k-not-reaching form (symbol->string n) t ns)
+                                  (each (cdr ms))))))))
+             ;; What a global that is no procedure holds (`no_reaching_itself`).
+             (kept (subr (maxeff checks spin) (k-names) unit)
+               (lambda (ms)
+                 (if (null? ms)
+                     #u
+                     (let* ((n (car ms)) (t (k-lookup-raw n))
+                            (found (if (k-procedure? t) nil (k-kept-reading t ns nil))))
+                       (if (null? found)
+                           (kept (cdr ms))
+                           (k-fail (k-kept-message (symbol->string n) (extract (car found) 2)
+                                                   (k-show-ty (extract (car found) 1)))
+                                   (k-top-start form) (k-top-end form))))))))
+      (begin (each ns) (kept ns)))))
+;; Whether `t` is a procedure, under any `poly`.
+(define k-procedure? (->* (int) bool)
+  (lambda (t)
+    (tagcase (k-get (k-resolve t))
+      (ty-poly (bs body) (k-procedure? body))
+      (ty-subr (e ps r cv spc) #t)
+      (else y #f))))
+;; Why global `name`, keeping a procedure of type `t` that reads `read`,
+;; may reach itself.
+(define k-kept-message (->* (string string string) string)
+  (lambda (name read t)
+    (k-cat5 "`" name "` keeps a procedure that reads `" read
+            (string-append "`, so it could reach itself through a global: "
+                           (string-append "it must say `spin`, and it is a " t)))))
+;; What reaches itself through a global and says nothing of it.
+(define-type k-kept-found (listof (productof (1 int) (2 string)) acyclic))
+;; A procedure a value of type `t` keeps, kept in a global (a product's field,
+;; a list's element, a module's value, what a ref holds, …), whose calls read
+;; one of `ns`, or `@globals`, and that does not say `spin`: its
+;; type and what it reads; none or one. Not what a procedure takes or gives,
+;; kept nowhere yet. `path`, the types walked to here (`kept_reading`).
+(define-rec
+  (k-kept-reading (->* (int k-names k-ids) k-kept-found)
+    (lambda (t ns path)
+      (let ((t (k-resolve t)))
+        (if (k-has-id? path t)
+            (the k-kept-found nil)
+            (let ((path (the k-ids (cons t path)))
+                  (one (lambda ((x int)) (the k-ids (cons x nil)))))
+              (tagcase (k-get t)
+                (ty-subr (e ps r cv spc) (k-kept-read t e ns))
+                (ty-poly (bs body) (k-kept-reading body ns path))
+                (ty-ref (a r) (k-kept-reading a ns path))
+                (ty-array (a z r) (k-kept-reading a ns path))
+                (ty-icell (a r) (k-kept-reading a ns path))
+                (ty-markkey (a r) (k-kept-reading a ns path))
+                (ty-nlist (a z r) (k-kept-reading a ns path))
+                (ty-pair (a b r nl) (k-kept-in (the k-ids (cons a (one b))) ns path))
+                (ty-bloblet (fs z r) (k-kept-in fs ns path))
+                (ty-product (ps) (k-kept-in (k-parts-types ps) ns path))
+                (ty-sum (ps) (k-kept-in (k-parts-types ps) ns path))
+                (ty-union (ms) (k-kept-in ms ns path))
+                (ty-module (abs ds vs) (k-kept-in (k-parts-types vs) ns path))
+                (ty-named (g ds)
+                  (k-kept-in (the k-ids (cons (extract (k-gen-of g) 4) (k-desc-types ds)))
+                             ns path))
+                (ty-app (f ds) (k-kept-in (k-desc-types ds) ns path))
+                (else y (the k-kept-found nil))))))))
+  (k-kept-in (->* (k-ids k-names k-ids) k-kept-found)
+    (lambda (ts ns path)
+      (if (null? ts)
+          (the k-kept-found nil)
+          (let ((x (k-kept-reading (car ts) ns path)))
+            (if (null? x) (k-kept-in (cdr ts) ns path) x))))))
+;; Procedure type `t`, of effect `e`, kept in a global: what of `ns` it reads,
+;; or `@globals`, unless it says `spin`.
+(define k-kept-read (->* (int k-eff k-names) k-kept-found)
+  (lambda (t e ns)
+    (if (k-has-spin? e)
+        (the k-kept-found nil)
+        (let* ((reads (k-atoms-globals e)) (m (k-first-read reads ns)))
+          (cond ((not (null? m)) (list (product (1 t) (2 (symbol->string (car m))))))
+                ((k-has-region-in? reads (r-globals))
+                 (list (product (1 t) (2 "@globals"))))
+                (else (the k-kept-found nil)))))))
+;; The types of parts `ps`, in order.
+(define k-parts-types (->* (k-parts) k-ids)
+  (lambda (ps)
+    (if (null? ps) nil (the k-ids (cons (extract (car ps) 2) (k-parts-types (cdr ps)))))))
 ;; Note that `form` runs, assigning the globals it defines (`assigns`) or
 ;; making them new.
 (define k-note-run (->* (top bool) unit)
@@ -177,7 +260,7 @@
                (reset (set k-last-uses nil))
                (r (prompt k-tag
                     (let ((ls (k-top-lines (extract u 2))))
-                      (begin (k-no-reaching-itself (extract u 2) (extract u 1) #t) (k-ok ls)))
+                      (begin (k-no-reaching-itself (extract u 2) (extract u 1)) (k-ok ls)))
                     (lambda (r) r))))
           (tagcase r
             (k-ok (ls)
@@ -258,7 +341,7 @@
            (reset (set k-last-uses nil))
            (kept (if (get k-show-lines) (k-keep-atree!) #u))
            (lines (k-top-lines form))
-           (knot (k-no-reaching-itself form ns (not (null? olds))))
+           (knot (k-no-reaching-itself form ns))
            (assigns (and (not (null? olds)) (k-fits-old? olds)))
            (recorded (k-record form ns))
            (ran (k-note-run form assigns)))
@@ -394,31 +477,137 @@
 ;; or the first error.
 (define check-program (->* (syns-a k-tops) k-result)
   (lambda (standard forms)
-    (prompt k-tag
-      (begin (k-reset) (set k-broken-began (get k-broken)) (set k-syscall-expanding 0)
-             (k-standard standard)
-             (set k-std-dscope (get k-dscope))
-             (k-ahead forms)
-             (k-ok (k-forms forms (k-types-again forms))))
-      (lambda (r) r))))
+    (check-staged-program standard forms (the (bytevectorof @t) (make-bytevector 0 0)))))
+;; Names, each with a rep, in its binary form.
+(define-type k-named-reps (listof (productof (1 symbol) (2 (bytevectorof @t))) acyclic))
+;; A session's step's names, each its type or effect as a rep (`stage.rs`'s
+;; `step_reps`; `docs/research/heap-types.md`, step 6), bound for its check
+;; (`k-stage-type!`), as `session-step` sets them.
+(define k-step-named (ref k-named-reps @t) (new nil))
+(define set-step-named! (->* (k-named-reps) unit) (lambda (ns) (set k-step-named ns)))
+(define k-bind-step-named! (->* (k-named-reps) unit)
+  (lambda (ns)
+    (if (null? ns)
+        #u
+        (let ((d ((with check-reps k-rep-desc) (extract (car ns) 2))))
+          (begin (k-push-desc (extract (car ns) 1)
+                              (tagcase d
+                                (de (e) (ds-eff e))
+                                (dt (t) (ds-rec t))
+                                (else y (ds-rec 0))))
+                 (k-bind-step-named! (cdr ns)))))))
+(define k-unbind-step-named! (->* (k-named-reps) unit)
+  (lambda (ns)
+    (letrec ((named? (->* (symbol k-named-reps) bool)
+                     (lambda (s ns)
+                       (and (not (null? ns))
+                            (or (symbol=? s (extract (car ns) 1)) (named? s (cdr ns))))))
+             (drop (->* (k-scope) k-scope)
+                   (lambda (ds)
+                     (cond ((null? ds) nil)
+                           ((named? (car (car ds)) ns) (drop (cdr ds)))
+                           (else (cons (car ds) (drop (cdr ds))))))))
+      (if (null? ns) #u (set k-dscope (drop (get k-dscope)))))))
+;; For `stage` (`stage.rs`, `docs/research/heap-types.md`, step 3): `forms`
+;; checked as `check-program` checks them, the name `%stage-type` the type of
+;; `rep` imported (`k-rep-ty`), what the code is checked as, which the text
+;; then names, not spells out; nothing bound if `rep` is empty.
+(define check-staged-program (->* (syns-a k-tops (bytevectorof @t)) k-result)
+  (lambda (standard forms rep)
+    (let ((r (prompt k-tag
+               (begin (k-reset) (set k-broken-began (get k-broken)) (set k-syscall-expanding 0)
+                      (k-standard standard)
+                      (set k-std-dscope (get k-dscope))
+                      (k-stage-type! rep)
+                      (k-ahead forms)
+                      (k-ok (k-forms forms (k-types-again forms))))
+               (lambda (r) r))))
+      (begin (k-stage-type-gone! rep) r))))
 
 ;; The entry point for more of a program, form by form, as the REPL gives
 ;; them: checked in the environment the forms before left, which
 ;; `check-program` began. The facts for the compiler are only the new
 ;; forms', whose positions are in their own text.
 (define check-more (->* (k-tops) k-result)
-  (lambda (forms)
-    (prompt k-tag
-      (begin (set k-extracts nil)
-             (set k-syscall-expanding 0)
-             (set k-broken-began (get k-broken))
-             (set k-effect-notes nil)
-             (k-forget-withs)
-             (set k-reshapes nil)
-             (set k-runs nil)
-             (k-ahead forms)
-             (k-ok (k-forms forms nil)))
-      (lambda (r) r))))
+  (lambda (forms) (check-more-with forms (the (bytevectorof @t) (make-bytevector 0 0)))))
+;; The same, the name `%stage-type` first the type of rep `rep` imported
+;; (`k-rep-ty`), if not empty: as `check-staged-program` binds it.
+(define check-more-with (->* (k-tops (bytevectorof @t)) k-result)
+  (lambda (forms rep)
+    (let ((r (prompt k-tag
+               (begin (set k-extracts nil)
+                      (set k-syscall-expanding 0)
+                      (set k-broken-began (get k-broken))
+                      (set k-effect-notes nil)
+                      (k-forget-withs)
+                      (set k-reshapes nil)
+                      (set k-runs nil)
+                      (k-stage-type! rep)
+                      (k-ahead forms)
+                      (k-ok (k-forms forms nil)))
+               (lambda (r) r))))
+      ;; Kept or not, the name gone after: a session's next step binds its own.
+      (begin (k-stage-type-gone! rep) r))))
+;; For a load of a `.fasl` (`session.rs`'s `run_program_def`,
+;; `docs/research/heap-types.md`, step 5): the types of a rep of several,
+;; the file's definitions', imported once, in order, each finding the
+;; generative types it names here (none made); or none, if it cannot be.
+;; What `import-types` imported last; none if it could not.
+(define k-imported (ref k-ids @t) (new nil))
+(define import-types (->* ((bytevectorof @t)) k-ids)
+  (lambda (bytes)
+    (begin
+      (set k-imported nil)
+      (prompt k-tag
+        (begin ((with check-reps k-rep-making!) #f)
+               (set k-imported ((with check-reps k-rep-tys) bytes))
+               (k-ok nil))
+        (lambda (r) r))
+      ((with check-reps k-rep-making!) #t)
+      (get k-imported))))
+;; `forms` checked as `check-more` checks them, each of `named` its name
+;; bound to a type of this checker's, by its id (`import-types`); the
+;; names unbound after.
+(define-type k-named-ids (listof (productof (1 symbol) (2 int)) acyclic))
+(define check-more-typed (->* (k-tops k-named-ids) k-result)
+  (lambda (forms named)
+    (letrec ((bind (->* (k-named-ids) unit)
+                   (lambda (ns)
+                     (if (null? ns)
+                         #u
+                         (begin (k-push-desc (extract (car ns) 1) (ds-rec (extract (car ns) 2)))
+                                (bind (cdr ns))))))
+             (named? (->* (symbol k-named-ids) bool)
+                     (lambda (s ns)
+                       (and (not (null? ns))
+                            (or (symbol=? s (extract (car ns) 1)) (named? s (cdr ns))))))
+             (gone (->* (k-scope) k-scope)
+                   (lambda (ds)
+                     (cond ((null? ds) nil)
+                           ((named? (car (car ds)) named) (gone (cdr ds)))
+                           (else (cons (car ds) (gone (cdr ds))))))))
+      (let ((r (begin (bind named) (check-more forms))))
+        (begin (set k-dscope (gone (get k-dscope))) r)))))
+;; `%stage-type` bound to rep `rep` imported, if it is not empty.
+(define k-stage-type! (->* ((bytevectorof @t)) unit)
+  (lambda (rep)
+    (begin
+      (if (= (bytevector-length rep) 0)
+          #u
+          (k-push-desc '%stage-type (ds-rec ((with check-reps k-rep-ty) rep nil))))
+      (k-bind-step-named! (get k-step-named)))))
+;; And unbound again, its innermost binding taken out of the description
+;; scope (what a session's definition bound after it stays); and the
+;; step's names (`set-step-named!`).
+(define k-stage-type-gone! (->* ((bytevectorof @t)) unit)
+  (lambda (rep)
+    (letrec ((drop (->* (k-scope) k-scope)
+                   (lambda (ds)
+                     (cond ((null? ds) nil)
+                           ((symbol=? (car (car ds)) '%stage-type) (cdr ds))
+                           (else (cons (car ds) (drop (cdr ds))))))))
+      (begin (if (= (bytevector-length rep) 0) #u (set k-dscope (drop (get k-dscope))))
+             (k-unbind-step-named! (get k-step-named))))))
 
 ;; For a driver (a session's pending definition, `sessions26.rs`): `forms`
 ;; checked as `check-more` checks them, and the type global `n` then has,
@@ -426,20 +615,108 @@
 ;; left as it was: the bindings they made undone, and the definitions and
 ;; breaks they noted let go, as the Rust checker's `try_top`. Re-runs wait
 ;; meanwhile, so that nothing but their own names is bound.
-(define check-try (->* (k-tops symbol) (productof (1 k-result) (2 string)))
-  (lambda (forms n)
+(define check-try
+  (->* (k-tops symbol (bytevectorof @t)) (productof (1 k-result) (2 string) (3 (bytevectorof @t))))
+  (lambda (forms n rep)
     (let* ((mark (k-mark)) (defs (get k-defs)) (broken (get k-broken)) (runs (get k-runs))
            (uses (get k-last-uses)) (deferring (get k-defer-reruns))
-           (r (begin (set k-defer-reruns #t) (check-more forms)))
-           (t (tagcase r (k-ok (ls) (let ((t (k-lookup n))) (if (< t 0) "" (k-show-ty-whole t))))
-                (else y ""))))
+           (r (begin (set k-defer-reruns #t) (check-more-with forms rep)))
+           (found (tagcase r (k-ok (ls) (k-lookup n)) (else y -1)))
+           (t (if (< found 0) "" (k-show-ty-whole found)))
+           ;; And as a rep, for the steps after to name, not read
+           ;; (`docs/research/heap-types.md`, step 4); empty if none.
+           (tr (if (< found 0) (the (bytevectorof @t) (make-bytevector 0 0)) (k-try-rep found))))
       (begin (k-unbind-to mark) (set k-defs defs) (set k-broken broken) (set k-runs runs)
              (set k-last-uses uses) (set k-defer-reruns deferring)
-             (product (1 r) (2 t))))))
+             (product (1 r) (2 t) (3 tr))))))
+;; Type `t` as a rep, if a rep takes it and it names no variable; else
+;; empty.
+(define k-try-rep (->* (int) (bytevectorof @t))
+  (lambda (t)
+    (let ((bytes ((with check-reps k-ty-rep) t)))
+      (if (or ((with check-reps k-rep-declined?)) (not (null? ((with check-reps k-rep-holes)))))
+          (the (bytevectorof @t) (make-bytevector 0 0))
+          bytes))))
+
+;; `stage`'s (`stage.rs`; `docs/research/heap-types.md`, step 3): the
+;; standard environment entered once, by the first stage, and kept; each
+;; stage's forms checked as `check-more-with` checks them, then, once
+;; compiled, what they bound undone (`check-staged-undo!`), as `check-try`
+;; undoes a try's. The types a stage makes stay in the store, so once the
+;; stages have made it `k-stage-growth` times what the standard environment
+;; made, the next stage enters it again: the store stays bounded.
+(define k-stage-base (ref int @t) (new 0))
+(define k-stage-growth int 4)
+(define k-stage-mark (ref int @t) (new 0))
+(define k-stage-defs (ref (listof k-def acyclic) @t) (new nil))
+(define k-stage-broken (ref (listof k-break acyclic) @t) (new nil))
+(define k-stage-uses (ref k-names @t) (new nil))
+(define k-stage-dscope (ref k-scope @t) (new nil))
+(define check-staged (->* (syns-a k-tops (bytevectorof @t)) k-result)
+  (lambda (standard forms rep)
+    (begin
+      (if (and (> (get k-stage-base) 0) (< (get k-ntys) (* k-stage-growth (get k-stage-base))))
+          #u
+          (begin (check-staged-program standard nil (the (bytevectorof @t) (make-bytevector 0 0)))
+                 (set k-stage-base (get k-ntys))))
+      (set k-stage-mark (k-mark)) (set k-stage-defs (get k-defs))
+      (set k-stage-broken (get k-broken)) (set k-stage-uses (get k-last-uses))
+      (set k-stage-dscope (get k-dscope))
+      (check-more-with forms rep))))
+;; What the stage `check-staged` checked last bound, undone.
+(define check-staged-undo! (->* () unit)
+  (lambda ()
+    (begin (k-unbind-to (get k-stage-mark)) (set k-defs (get k-stage-defs))
+           (set k-broken (get k-stage-broken)) (set k-runs nil)
+           (set k-last-uses (get k-stage-uses)) (set k-dscope (get k-stage-dscope)))))
 
 ;; For a driver (a session on the evaluator, `sessions26.rs`): what the
 ;; last check runs (`checked-tops`), each by the first name it defines
 ;; ("" for none), and whether it assigns its names' globals.
+;; Each name the program checked last defines, in order, and its type as a
+;; rep, in its binary form (`check-reps.fx`): for the two checkers to be
+;; compared by reps (`docs/research/heap-types.md`, step 2).
+(define checked-reps (->* () (listof (productof (1 symbol) (2 (bytevectorof @t))) acyclic))
+  (lambda ()
+    (letrec ((names (->* (k-names (listof (productof (1 symbol) (2 (bytevectorof @t))) acyclic))
+                         (listof (productof (1 symbol) (2 (bytevectorof @t))) acyclic))
+                   (lambda (ns acc)
+                     (if (null? ns)
+                         acc
+                         (let* ((t (k-lookup-raw (car ns)))
+                                (r (if (< t 0)
+                                       (the (bytevectorof @t) (make-bytevector 0 0))
+                                       ((with check-reps k-ty-rep) t))))
+                           (names (cdr ns)
+                                  (if (or (< t 0) ((with check-reps k-rep-declined?)))
+                                      acc
+                                      (cons (product (1 (car ns)) (2 r)) acc)))))))
+             (defs (->* (k-def-list (listof (productof (1 symbol) (2 (bytevectorof @t))) acyclic))
+                        (listof (productof (1 symbol) (2 (bytevectorof @t))) acyclic))
+                   (lambda (ds acc)
+                     (if (null? ds)
+                         acc
+                         (defs (cdr ds) (names (reverse (extract (car ds) 1)) acc))))))
+      (defs (get k-defs) nil))))
+;; The same, each rep imported (`k-rep-ty`) and exported again: what the
+;; FX-26 checker's import is tested by (it gives back the rep it took).
+(define checked-reps-again
+  (->* () (listof (productof (1 symbol) (2 (bytevectorof @t)) (3 (bytevectorof @t))) acyclic))
+  (lambda ()
+    (letrec ((go (->* ((listof (productof (1 symbol) (2 (bytevectorof @t))) acyclic))
+                      (listof (productof (1 symbol) (2 (bytevectorof @t)) (3 (bytevectorof @t)))
+                              acyclic))
+                   (lambda (xs)
+                     (if (null? xs)
+                         nil
+                         (let* ((n (extract (car xs) 1))
+                                (t (k-lookup-raw n))
+                                (r ((with check-reps k-ty-rep) t))
+                                (holes ((with check-reps k-rep-holes)))
+                                (back ((with check-reps k-rep-ty) r holes))
+                                (again ((with check-reps k-ty-rep) back)))
+                           (cons (product (1 n) (2 r) (3 again)) (go (cdr xs))))))))
+      (go (checked-reps)))))
 (define checked-run-names (->* () (listof (productof (1 string) (2 bool)) acyclic))
   (lambda ()
     (letrec ((go (subr kreads ((listof k-run acyclic))

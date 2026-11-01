@@ -82,8 +82,8 @@ pub fn eval_more_with_fx26_evaluator(scheme: &mut Session, standard: Option<Hand
         let checked = check_in(s, standard, tops).map_err(|e| fail(e.to_string()))?;
         if let Some(m) = s.view(|v| {
             let r = v.get(checked);
-            (r.field(2).and_then(|t| t.symbol_name()).as_deref() == Some("k-err"))
-                .then(|| r.field(3).and_then(|p| p.field(2)).and_then(|m| m.string()).unwrap_or_default())
+            (r.sum_tag().and_then(|t| t.symbol_name()).as_deref() == Some("k-err"))
+                .then(|| r.sum_payload().and_then(|p| p.product_field(1)).and_then(|m| m.string()).unwrap_or_default())
         }) {
             return Ok(format!("!! check: {m}"));
         }
@@ -127,8 +127,8 @@ pub fn compile_with_fx26_compiler_showing(
         let checked = check_in(s, standard, tops).map_err(|e| fail(e.to_string()))?;
         if let Some(m) = s.view(|v| {
             let r = v.get(checked);
-            (r.field(2).and_then(|t| t.symbol_name()).as_deref() == Some("k-err"))
-                .then(|| r.field(3).and_then(|p| p.field(2)).and_then(|m| m.string()).unwrap_or_default())
+            (r.sum_tag().and_then(|t| t.symbol_name()).as_deref() == Some("k-err"))
+                .then(|| r.sum_payload().and_then(|p| p.product_field(1)).and_then(|m| m.string()).unwrap_or_default())
         }) {
             return Ok((format!("!! check: {m}"), None));
         }
@@ -139,17 +139,17 @@ pub fn compile_with_fx26_compiler_showing(
         s.runtime_unrooted().compile_nanos += start.elapsed().as_nanos() as u64;
         let (tag, word) = s.view(|v| {
             let r = v.get(result);
-            let tag = r.field(2).and_then(|t| t.symbol_name()).unwrap_or_default();
-            let payload = r.field(3).expect("a sum");
-            (tag, payload.field(2).map(|x| x.string()))
+            let tag = r.sum_tag().and_then(|t| t.symbol_name()).unwrap_or_default();
+            let payload = r.sum_payload().expect("a sum");
+            (tag, payload.product_field(1).map(|x| x.string()))
         });
         if tag == "c-err" {
             return Ok((format!("!! compile: {}", word.flatten().unwrap_or_default()), None));
         }
         let word = s.make(|m| {
             let r = m.get(result);
-            let payload = m.heap().bloblet_slot(r, 3);
-            m.heap().bloblet_slot(payload, 2)
+            let payload = m.heap().sum_payload(r);
+            m.heap().product_field(payload, 1)
         });
         let mut words = None;
         if show {
@@ -210,8 +210,7 @@ pub fn cell_words_reachable(heap: &fixpt_heap::Heap, word: Value) -> Vec<Value> 
         if entry != ROUTINE_DOCOL && entry < PRIMITIVES as u64 {
             continue;
         }
-        for k in WORD_CELL0..=heap.bloblet_head(w).fields {
-            let v = heap.bloblet_slot(w, k);
+        for v in heap.bloblet_fields_from(w, WORD_CELL0) {
             if heap.is_cellular_word(v) {
                 todo.push(v);
             } else if v.is_bloblet() && heap.bloblet_kind(v) == closure {
@@ -264,7 +263,7 @@ pub fn assemble_reachable_by_fx26(
         let assembled = assembled.map_err(|e| e.to_string())?;
         let (code, starts) = s.view(|v| {
             let r = v.get(assembled);
-            (ints_of(r.field(2)), ints_of(r.field(3)))
+            (ints_of(r.product_field(1)), ints_of(r.product_field(2)))
         });
         // arm64's instructions are words of 4 bytes, little-endian.
         let (code, starts): (Vec<u8>, Vec<i64>) = if x64 {
@@ -328,7 +327,7 @@ fn assemble_twin_by_fx26(
     let assembled = s.call_global(&format!("{READER_PREFIX}native-assemble-x64-regs"), &[rw]).map_err(|e| e.to_string())?;
     let (code, resume, err) = s.view(|v| {
         let r = v.get(assembled);
-        (ints_of(r.field(2)), ints_of(r.field(3)), r.field(4).and_then(|e| e.string()).unwrap_or_default())
+        (ints_of(r.product_field(1)), ints_of(r.product_field(2)), r.product_field(3).and_then(|e| e.string()).unwrap_or_default())
     });
     if !err.is_empty() {
         return Err(format!("register code: {err}"));
@@ -341,7 +340,7 @@ fn assemble_twin_by_fx26(
         let heap = m.heap();
         slot = heap.bloblet_slot(rw, WORD_ENTRY).as_fixnum();
         n = heap.bloblet_slot(rw, WORD_CELL0 + 1).as_fixnum();
-        cells = heap.bloblet_head(w).fields + 1 - WORD_CELL0;
+        cells = heap.bloblet_count_from(w, WORD_CELL0);
         Value::NULL
     });
     if n as usize > fixpt_heap::layout::regcode::REGS {
@@ -374,8 +373,8 @@ pub fn with_last_value<T>(
         let checked = check_in(s, standard, tops).map_err(|e| fail(e.to_string()))?;
         if let Some(m) = s.view(|v| {
             let r = v.get(checked);
-            (r.field(2).and_then(|t| t.symbol_name()).as_deref() == Some("k-err"))
-                .then(|| r.field(3).and_then(|p| p.field(2)).and_then(|m| m.string()).unwrap_or_default())
+            (r.sum_tag().and_then(|t| t.symbol_name()).as_deref() == Some("k-err"))
+                .then(|| r.sum_payload().and_then(|p| p.product_field(1)).and_then(|m| m.string()).unwrap_or_default())
         }) {
             return Ok(Err(format!("check: {m}")));
         }
@@ -415,12 +414,50 @@ pub fn check_only(scheme: &mut Session, standard: Option<Handle>, file: FileId, 
         let checked = check_in(s, standard, tops).map_err(|e| fail(e.to_string()))?;
         Ok(match s.view(|v| {
             let r = v.get(checked);
-            (r.field(2).and_then(|t| t.symbol_name()).as_deref() == Some("k-err"))
-                .then(|| r.field(3).and_then(|p| p.field(2)).and_then(|m| m.string()).unwrap_or_default())
+            (r.sum_tag().and_then(|t| t.symbol_name()).as_deref() == Some("k-err"))
+                .then(|| r.sum_payload().and_then(|p| p.product_field(1)).and_then(|m| m.string()).unwrap_or_default())
         }) {
             Some(m) => Err(m),
             None => Ok(()),
         })
+    })
+}
+
+/// The types of rep `bytes` (a rep of several, `reps.rs`'s `export_tys`)
+/// in the checker written in FX-26, by id, in order (`import-types`); none
+/// if it could not import them.
+pub fn import_types(scheme: &mut Session, bytes: &[u8]) -> Result<Vec<i64>, String> {
+    let b = scheme.make(|m| m.heap().make_bytevector(bytes));
+    let ids = scheme.call_global(&format!("{READER_PREFIX}import-types"), &[b]).map_err(|e| e.to_string())?;
+    Ok(scheme.view(|v| v.get(ids).list().unwrap_or_default().iter().filter_map(|x| x.fixnum()).collect()))
+}
+
+/// `check_only` of a definition that loads nothing, given more forms (no
+/// `standard`), each of `typed` a name the text gives a type by, bound to
+/// that type, by its id (`import_types`): read, parsed and checked in one
+/// call (`check-text-typed`); a `.fasl`'s definitions,
+/// `docs/research/heap-types.md`, step 5.
+pub fn check_only_typed(scheme: &mut Session, file: FileId, text: &str, typed: &[(String, i64)]) -> R<Result<(), String>> {
+    let fail = |m: String| FxError::at(Span::new(file, 0, 0), m);
+    scheme.scope(|s| {
+        let whole = s.make(|m| m.heap().make_string(text));
+        let list = s.make(|m| {
+            let mut l = fixpt_heap::Value::NULL;
+            for (n, id) in typed.iter().rev() {
+                let h = m.heap();
+                let base = h.push_root(l);
+                let sym = h.intern(n);
+                let p = h.make_frozen(fixpt_heap::layout::kind("product"), &[sym, fixpt_heap::Value::fixnum(*id)]);
+                h.push_root(p);
+                let (l0, p) = (h.root_at(base), h.root_at(base + 1));
+                l = h.cons(p, l0);
+                h.pop_roots_to(base);
+            }
+            l
+        });
+        let said = s.call_global(&format!("{READER_PREFIX}check-text-typed"), &[whole, list]).map_err(|e| fail(e.to_string()))?;
+        let said = s.view(|v| v.get(said).string().unwrap_or_default());
+        Ok(if said.is_empty() { Ok(()) } else { Err(said) })
     })
 }
 
@@ -471,14 +508,14 @@ pub fn check_with_fx26_checker(scheme: &mut Session, standard: Handle, file: Fil
         let at = |c: i64| offsets.get(c as usize).copied().unwrap_or(text.len()) as u32;
         Ok(s.view(|v| {
             let r = v.get(result);
-            let tag = r.field(2).and_then(|t| t.symbol_name()).unwrap_or_default();
-            let p = r.field(3).expect("a sum");
+            let tag = r.sum_tag().and_then(|t| t.symbol_name()).unwrap_or_default();
+            let p = r.sum_payload().expect("a sum");
             if tag == "k-ok" {
-                let lines = p.field(2).and_then(|l| l.list()).unwrap_or_default();
+                let lines = p.product_field(1).and_then(|l| l.list()).unwrap_or_default();
                 Ok(lines.into_iter().map(|l| l.string().unwrap_or_default()).collect())
             } else {
-                let message = p.field(2).and_then(|m| m.string()).unwrap_or_default();
-                let (a, b) = (p.field(3).and_then(|x| x.fixnum()).unwrap_or(0), p.field(4).and_then(|x| x.fixnum()).unwrap_or(0));
+                let message = p.product_field(1).and_then(|m| m.string()).unwrap_or_default();
+                let (a, b) = (p.product_field(2).and_then(|x| x.fixnum()).unwrap_or(0), p.product_field(3).and_then(|x| x.fixnum()).unwrap_or(0));
                 Err(FxError::at(Span::new(file, at(a), at(b)), message))
             }
         }))
@@ -620,15 +657,15 @@ pub fn compile_trees_to_word(scheme: &mut Session, file: FileId, tops: Handle, f
 fn word_of(scheme: &mut Session, result: Handle) -> R<Result<Handle, String>> {
     let err = scheme.view(|v| {
         let r = v.get(result);
-        (r.field(2).and_then(|t| t.symbol_name()).as_deref() == Some("c-err"))
-            .then(|| r.field(3).and_then(|p| p.field(2)).and_then(|m| m.string()).unwrap_or_default())
+        (r.sum_tag().and_then(|t| t.symbol_name()).as_deref() == Some("c-err"))
+            .then(|| r.sum_payload().and_then(|p| p.product_field(1)).and_then(|m| m.string()).unwrap_or_default())
     });
     Ok(match err {
         Some(m) => Err(m),
         None => Ok(scheme.make(|m| {
             let r = m.get(result);
-            let payload = m.heap().bloblet_slot(r, 3);
-            m.heap().bloblet_slot(payload, 2)
+            let payload = m.heap().sum_payload(r);
+            m.heap().product_field(payload, 1)
         })),
     })
 }
@@ -658,10 +695,10 @@ fn parse_syns_at(scheme: &mut Session, file: FileId, text: &str, syns: Handle, b
     let result = scheme.call_global(&format!("{READER_PREFIX}parse-program"), &[syns]).map_err(|e| fail(e.to_string()))?;
     let (tag, err) = scheme.view(|v| {
         let r = v.get(result);
-        let tag = r.field(2).and_then(|t| t.symbol_name()).unwrap_or_default();
-        let p = r.field(3).expect("a sum");
+        let tag = r.sum_tag().and_then(|t| t.symbol_name()).unwrap_or_default();
+        let p = r.sum_payload().expect("a sum");
         let err = (tag == "p-err").then(|| {
-            (p.field(2).and_then(|m| m.string()).unwrap_or_default(), p.field(3).and_then(|x| x.fixnum()).unwrap_or(0), p.field(4).and_then(|x| x.fixnum()).unwrap_or(0))
+            (p.product_field(1).and_then(|m| m.string()).unwrap_or_default(), p.product_field(2).and_then(|x| x.fixnum()).unwrap_or(0), p.product_field(3).and_then(|x| x.fixnum()).unwrap_or(0))
         });
         (tag, err)
     });
@@ -673,8 +710,8 @@ fn parse_syns_at(scheme: &mut Session, file: FileId, text: &str, syns: Handle, b
     debug_assert_eq!(tag, "p-ok");
     Ok(scheme.make(|m| {
         let r = m.get(result);
-        let payload = m.heap().bloblet_slot(r, 3);
-        m.heap().bloblet_slot(payload, 2)
+        let payload = m.heap().sum_payload(r);
+        m.heap().product_field(payload, 1)
     }))
 }
 
@@ -1036,14 +1073,14 @@ fn byte_offsets(text: &str) -> Vec<usize> {
     v
 }
 
-/// Field `i` (from 0) of a product: the object model's field `i + 2`.
+/// Value `i` (from 0) of a product: its field `i + 1`.
 fn part(product: Local<'_>, i: usize) -> Local<'_> {
-    product.field(i + 2).expect("a product's field")
+    product.value(i).expect("a product's field")
 }
 
 fn to_syntax(interner: &mut Interner, file: FileId, at: &dyn Fn(i64) -> u32, s: Local<'_>) -> R<Syntax> {
-    let tag = s.field(2).and_then(|t| t.symbol_name()).unwrap_or_default();
-    let p = s.field(3).expect("a sum");
+    let tag = s.sum_tag().and_then(|t| t.symbol_name()).unwrap_or_default();
+    let p = s.sum_payload().expect("a sum");
     let span = |a: Local<'_>, b: Local<'_>| Span::new(file, at(a.fixnum().unwrap_or(0)), at(b.fixnum().unwrap_or(0)));
     let many = |interner: &mut Interner, list: Local<'_>| -> R<Vec<Syntax>> {
         let items = list.list().expect("a list");

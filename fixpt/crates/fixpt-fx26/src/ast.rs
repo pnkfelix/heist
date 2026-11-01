@@ -319,7 +319,26 @@ impl Effect {
         self.0.is_empty()
     }
     pub fn union(&self, other: &Effect) -> Effect {
-        Effect(self.0.union(&other.0).copied().collect())
+        Effect(self.0.union(&other.0).copied().collect()).absorbed()
+    }
+    /// Whether this reads `@globals`, and writes it: what makes its reads
+    /// and writes of single globals nothing more ([`absorbed`](Self::absorbed)).
+    pub fn absorbs(&self) -> (bool, bool) {
+        (self.0.contains(&Atom::Read(Region::Globals)), self.0.contains(&Atom::Write(Region::Globals)))
+    }
+    /// This effect, its reads (writes) of single globals left out if it
+    /// reads (writes) `@globals` (the user's, 2026-10-31): within `@globals`
+    /// they say nothing more of what it does, and nothing of whether it
+    /// reaches itself through a global, since reading `@globals` may
+    /// (`arrow_star_spins`, `no_reaching_itself`). A program's types so stay
+    /// as long as their source says, not as long as the globals before them
+    /// (`TODO.md` §200). Both checkers (`k-absorbed`).
+    pub fn absorbed(mut self) -> Effect {
+        let (r, w) = self.absorbs();
+        if r || w {
+            self.0.retain(|a| !matches!((a, r, w), (Atom::Read(Region::Global(_)), true, _) | (Atom::Write(Region::Global(_)), _, true)));
+        }
+        self
     }
     /// Subeffecting: every atom of `self` is in `other`, or, if it reads or
     /// writes one global, `other` does so to `@globals`; an I-cell's fill,

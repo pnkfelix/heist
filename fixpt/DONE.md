@@ -4393,3 +4393,79 @@ checker alone, `main` defined again among them; a dump of changed sources
 refused. s7st's tests from a dump: 0.58 s, against 46.9 s
 (`fixpt-cli/tests/dumps.rs`; `docs/fx26.md`, "Heap dumps").
 
+## 2026-11-01: a `stage`'s type by rep (`TODO.md` §201 item 5, §202 step 3's first part)
+
+The type a `stage`'s code is checked as, exported as a rep where the FX-26
+checker notes the `stage`, kept as a constant of the compiled code, and
+imported by the stage's front end, which names it in the wrapping instead
+of reading it written out (`docs/research/heap-types.md`, "Step 3, its
+first part"). `'1` against a module of 60 alternatives and 40 procedures:
+250 to 3.9 ms a stage (332 KB of text, 1013 bytes of rep); Heist's s7st,
+`(define x 1)` against its sealed runtime, 12.3 to 5.7 ms. The text path
+stays where evidence is given, and on the machines whose checker is the
+Rust one. Found on the way: `fixpt-reps`'s heap form read the trailer as
+its first value (§205).
+
+## 2026-11-01: a bloblet's values by their index (`TODO.md` §205, the user's)
+
+The heap names a bloblet's values as it was made with them, from 0, past
+the trailer (`bloblet_value`, `bloblet_len`), and an FX-26 product's and
+sum's by what FX-26 calls them (`product_field`, `sum_tag`,
+`sum_payload`); the session's handles likewise. A lint keeps a field by
+number to the fixed layouts, by their constants, or marked `// fields:`
+with why (`fixpt_tidy::fields`). Every Rust reader of an FX-26 product or
+sum moved to them: `stage.rs`, the sessions, `syn.rs`, the CLI's FX-26
+driver, the tests; global cells read by `GLOBAL_VALUE` everywhere.
+
+## 2026-11-01: heap types, step 3 finished but for generative types (§202)
+
+A stage's front end keeps the standard environment between stages
+(`check-staged`, each stage undone after its compile, the store of types
+bounded by entering it again at four times its size): a stage of `'1` 3
+to 0.16 ms; s7st's `(define x 1)` 1.15 ms (12.3 ms by text). Evidence by
+rep: a piece of evidence a rep beside its text, holes filled by a graph
+substitution (`fixpt_reps::fill`: a type variable's occurrence is its
+evidence, an effect's joins the effect it is in). The Rust checker's
+stage paths by rep (`rs-scheme-vm`, `fx-ast-eval`). Left: generative
+types (§206).
+
+## 2026-11-01: staging against a module that names the program's generative types (§206)
+
+Refused on every path before, the stage checked in the standard
+environment alone. A rep carries each generative type's definition (its
+parameters, their variances, its representation) in a `gendef` node, and
+each checker's import makes the type from it where it has not got it.
+With it, heap types' step 3 is done.
+
+## 2026-11-01: heap types, step 4: a session's definitions by rep (§202)
+
+A definition's type found by its trial is a rep the steps after name
+(`%stage-type`) and its commit imports, not text read again: 20
+definitions against a module of a large value type 219 to 63 ms, 185 to
+62 ms on the evaluator. And a session now sees its module's values when
+the module's type has a sum or a recursive type (`module_values` read the
+printed type as FX-91 code, and found none).
+
+## 2026-11-01: heap types, step 5: a program's `.fasl` by rep, its stamps trusted (§200, §202)
+
+A program's `.fasl` keeps its definitions' types and its abbreviations'
+as one rep, what they share there once; a load imports each definition's
+type, given the abbreviations its type names (as its text would be read),
+in the Rust checker, and the file's types once in the FX-26 one, each
+definition checked by its types' ids in one call; and each definition's
+stamp made of digests the `.fasl` keeps. `FIXPT_FASL_VERIFY=1` checks
+everything as before and refuses a stamp that differs. s7st's warm start
+0.45 s to 0.42 s. Found: a rep for each definition was twelve times its
+text (abbreviations are text's sharing); and entering a definition
+unchecked would have saved 10 ms more, so it is checked.
+
+
+## 2026-11-01: heap types, step 6: the text paths removed
+
+What a `stage` or a session's step is checked against, and a `reify-…`'s
+evidence, is a rep alone, on every machine: no wrapping writes the types
+out, no evidence or staged fact carries their text, and a session's steps
+name their types for the step. The evaluator's evidence stages, 20 of
+them, 128 to 47 ms. Left as text: the Rust checker's session's own
+definitions' types, and a module `.fasl`'s type lines, which cross to
+nothing else.
