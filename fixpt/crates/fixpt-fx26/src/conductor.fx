@@ -362,6 +362,16 @@
          (native
           ((load-input "fx26:native.fx")
            (load-input "fx26:arm64.fx") layout (load-module "fx26:native-layout.fx")))
+         ;; And register code to arm64, over that assembler: its fast
+         ;; paths, then the rest.
+         (native-arm64-regs-ops
+          ((load-input "fx26:native-arm64-regs-ops.fx")
+           (load-input "fx26:arm64.fx") layout (load-module "fx26:native-layout.fx")
+           (load-module "fx26:native-arm64-regs-layout.fx") native))
+         (native-arm64-regs
+          ((load-input "fx26:native-arm64-regs.fx")
+           (load-input "fx26:arm64.fx") layout (load-module "fx26:native-layout.fx")
+           (load-module "fx26:native-arm64-regs-layout.fx") native native-arm64-regs-ops))
          ;; The same for x86_64.
          (native-x64
           ((load-input "fx26:native-x64.fx")
@@ -407,6 +417,33 @@
           ((load-input "fx26:native-direct-x64.fx")
            (load-input "fx26:x86_64.fx") native-direct-layout layout native-direct-asm native-reps
            native-direct-raw native-direct-proc native-direct-ops native-direct-prims))
+         ;; The same to arm64 (`direct.rs`'s `procedure`), where raw values
+         ;; are kept as on x86_64 (`native-reps.fx` is of no machine's).
+         (native-arm-layout (load-module "fx26:native-direct-arm64-layout.fx"))
+         (native-arm-asm
+          ((load-input "fx26:native-direct-arm64-asm.fx")
+           (load-input "fx26:arm64.fx") native-arm-layout))
+         (native-arm-raw
+          ((load-input "fx26:native-direct-arm64-raw.fx")
+           (load-input "fx26:arm64.fx") native-arm-layout native-arm-asm))
+         (native-arm-flat
+          ((load-input "fx26:native-direct-arm64-flat.fx")
+           (load-input "fx26:arm64.fx") native-arm-layout native-arm-asm))
+         (native-arm-proc
+          ((load-input "fx26:native-direct-arm64-proc.fx")
+           native-arm-layout layout native-arm-asm native-reps))
+         (native-arm-ops
+          ((load-input "fx26:native-direct-arm64-ops.fx")
+           (load-input "fx26:arm64.fx") native-arm-layout layout native-arm-asm native-reps
+           native-arm-raw native-arm-proc))
+         (native-arm-prims
+          ((load-input "fx26:native-direct-arm64-prims.fx")
+           (load-input "fx26:arm64.fx") native-arm-layout layout native-arm-asm native-reps
+           native-arm-raw native-arm-flat native-arm-proc))
+         (native-arm-direct
+          ((load-input "fx26:native-direct-arm64.fx")
+           (load-input "fx26:arm64.fx") native-arm-layout layout native-arm-asm native-reps
+           native-arm-raw native-arm-proc native-arm-ops native-arm-prims))
          ;; `stage` (`docs/research/eval.md`): code a running program gives,
          ;; wrapped as `stage.rs` wraps it, checked by this instance in the
          ;; standard environment alone, and compiled to the word that makes
@@ -587,7 +624,10 @@
              (native-assemble-x64 (with native-x64 native-assemble-x64))
              (native-assemble-x64-regs (with native-x64-regs native-assemble-x64-regs))
              (native-adapter-x64 (with native-x64-regs native-adapter-x64))
+             (native-assemble-arm64-regs (with native-arm64-regs native-assemble-arm64-regs))
+             (native-adapter-arm64 (with native-arm64-regs native-adapter-arm64))
              (native-compile-x64-proc (with native-direct native-compile-x64-proc))
+             (native-compile-arm64-proc (with native-arm-direct native-compile-arm64-proc))
              (compile-forget-globals! (with compile-programs compile-forget-globals!))
              (compile-keep-global! (with compile-programs compile-keep-global!))
              (compile-new-global (with compile-programs compile-new-global))
@@ -660,7 +700,10 @@
 (define native-assemble-x64 (extract front-end-entries native-assemble-x64))
 (define native-assemble-x64-regs (extract front-end-entries native-assemble-x64-regs))
 (define native-adapter-x64 (extract front-end-entries native-adapter-x64))
+(define native-assemble-arm64-regs (extract front-end-entries native-assemble-arm64-regs))
+(define native-adapter-arm64 (extract front-end-entries native-adapter-arm64))
 (define native-compile-x64-proc (extract front-end-entries native-compile-x64-proc))
+(define native-compile-arm64-proc (extract front-end-entries native-compile-arm64-proc))
 (define compile-forget-globals! (extract front-end-entries compile-forget-globals!))
 (define compile-keep-global! (extract front-end-entries compile-keep-global!))
 (define compile-new-global (extract front-end-entries compile-new-global))

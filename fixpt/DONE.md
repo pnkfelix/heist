@@ -4469,3 +4469,63 @@ name their types for the step. The evaluator's evidence stages, 20 of
 them, 128 to 47 ms. Left as text: the Rust checker's session's own
 definitions' types, and a module `.fasl`'s type lines, which cross to
 nothing else.
+
+## 2026-11-01: a `nat` an `int` of a type read from a `.fasl` (Heist's report)
+
+`fixpt-nat-int-from-fasl.md`: a `nat` was refused where an `int` read
+from a `.fasl`'s rep was expected, the Rust checker's rule knowing `int`
+by its id and its import making a base type anew. Its import now gives a
+base type the standard environment's own, as its name read does, and the
+rules for a `nat` and `#f` know `int` and `bool` by name, as their
+neighbour does. Test: both of the report's repros
+(`a_nat_is_an_int_of_a_type_read_from_a_fasl`).
+
+## 2026-11-01: a compiled word's code is its entry, in the heap's code area (§210, x86_64)
+
+The cellular machine kept what it compiled in a code space of its own,
+256 MB a thread, by slot number, and filled it with the front ends of a
+test's kept sessions (`processes`' `attempt` tests). Now, on x86_64, a
+compiled word's entry is a code bloblet whose suffix is its code, as a
+native procedure's code field is: the word keeps it alive, the heap
+collects it, a copy and an image carry it, and the machine keeps nothing
+of a word. Register code 38 to 34 ms on fib 32; compiled cells' calls
+some 10% dearer (the entry's tag tested). The arm64 machine compiles
+nothing until it is ported.
+
+## 2026-11-01: four of Heist's R4 findings (§211, 2–5)
+
+From Heist's editor's `eval`: a `stage`'s or a session's effect may be a
+module's, named by a `with`, a module parameter or a `select` (it was
+read as a type); a session's steps name its module's types, effects and
+abstract types (they saw only its values; an abstract one's alias also
+panicked); a `poly` in an equi-recursive type keeps its own binders
+under a substitution (instantiated, it went into its own nested copy, and
+found a knot where there is none); and a global read is generalizable, so
+a global of a `poly` type is given where one is wanted (it was "a
+polymorphic value must be pure"). Each in both checkers, with tests.
+
+## 2026-11-01: `attempt-within`, a budget for a cancellable body (§211, 1)
+
+For Heist's editor, where a form that does not end hung it: `(attempt-within
+ms e on-failure on-timeout)` is `attempt`, but `e` is cancelled once `ms`
+milliseconds are seen to have passed, at a wait or a time slice's end, and
+`(on-timeout)` is the value. In the scheduler written in FX-26, its
+deadline a clock event; on every machine; effect `nondet`, not
+`(io clock)`. Drop only: resuming what is left is not done.
+
+## 2026-11-01: resumable handlers already work (§211, 6)
+
+Heist's handler that resumes was refused by its own declared effect, not
+by Fixpt: in a region of the turn's own, the `letregion` masks the control
+the non-delimiting prompts leave, and the probe, its handler's type saying
+that control, runs on every machine. A deep handler test on every machine
+keeps it so (`programs/run/deep-handler.fx`).
+
+## 2026-11-01: the evaluator's standard environment complete (§211)
+
+Found on the way to Heist's handler probe: some seventy standard names the
+checkers accept were "unbound variable" on the evaluator written in FX-26,
+`reverse` among them. Each is now the evaluator's, as the machines have
+it, but the compilers' own (machine code and words), which it refuses as
+theirs, and two forms' names as values. A test runs every standard name
+there, and the new ones against the machines' answers.
