@@ -58,6 +58,8 @@ mod x64;
 mod fx;
 pub use fx::{describe, fx_abandon, fx_begin, fx_emitted, fx_finish, fx_next, fx_park, fx_unpark, Each, FxCompile, FxEmitted, FxRequest};
 pub use x64::{fx26_direct_module, fx26_direct_module_sig, oracle as oracle_x64};
+mod fx_arm64;
+pub use fx_arm64::{fx26_direct_arm64_module, fx26_direct_arm64_module_sig, oracle as oracle_arm64};
 pub use reps::oracle as reps_oracle;
 use reps::{Convert, RawOp, Rep};
 
@@ -674,12 +676,15 @@ fn callout_field(c: Callout) -> Value {
 
 /// Code bloblets a cache gave back, named as compiled code is for
 /// `FIXPT_SYMBOLS` and perf (`symbols`): by the cellular word each compiled
-/// (field 2, `CODE_SOURCE`), where it has one.
+/// (field 2, `CODE_SOURCE`), where it has one. Only procedures' (field 1,
+/// `CODE_SELF`, the bloblet itself): a cellular word's code, which a cache
+/// keeps as its entry, has none of these fields.
 pub fn note_cached_code(heap: &Heap, codes: &[Value]) {
     if !crate::symbols::enabled() {
         return;
     }
-    let named = codes.iter().map(|&c| {
+    let procedure = |c: Value| heap.bloblet_head(c).fields >= CODE_SOURCE && heap.bloblet_slot(c, CODE_SELF) == c;
+    let named = codes.iter().filter(|&&c| procedure(c)).map(|&c| {
         let source = heap.bloblet_slot(c, CODE_SOURCE);
         let name = if source.is_bloblet() && heap.is_cellular_word(source) {
             heap.symbol_name(heap.bloblet_slot(source, fixpt_heap::layout::cellular::WORD_NAME))

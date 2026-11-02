@@ -1453,7 +1453,8 @@ impl Checker {
             };
         }
         let items = self.items(s, "a description")?;
-        match self.head(items).unwrap_or("") {
+        let head = self.head(items).unwrap_or("").to_string();
+        match head.as_str() {
             "dlambda" => Ok(D::Fun(self.parse_fun(s, None)?)),
             "const" | "acyclic" => Ok(D::Region(self.parse_region(s)?)),
             "+" | "-" => Ok(D::Size(self.parse_size(s)?)),
@@ -1462,6 +1463,9 @@ impl Checker {
             "read" | "write" | "alloc" | "goto" | "comefrom" | "await" | "init" | "send" | "receive" | "io" | "maxeff" => {
                 Ok(D::Effect(self.parse_effect(s)?))
             }
+            // `(e d …)`, `e` a description function to an effect, applied:
+            // an effect, as in an effect (`effect_app`), not a type.
+            _ if self.names_effect_fun(&items) => Ok(D::Effect(self.parse_effect(s)?)),
             _ => Ok(D::Type(self.parse_type(s)?)),
         }
     }
@@ -1604,8 +1608,12 @@ impl Checker {
                     return Err(FxError::at(span, usage));
                 };
                 let given = self.given(given, span, usage)?;
-                let descs = vec![e.clone(), r.clone()];
                 let sym = |p: &mut Self, s: &str| Syntax::symbol(span, p.interner.intern(s));
+                // `E` as `(maxeff E)`, read as an effect: a name a `with` or a
+                // module's parameter gives, or a `select`, is its effect, not
+                // a type (as `parser-exps.fx`).
+                let e = Syntax::list(e.span, vec![sym(self, "maxeff"), e.clone()]);
+                let descs = vec![e, r.clone()];
                 let arm = |p: &mut Self, tag: &str, a: &Syntax| -> R<Syntax> {
                     match a.as_proper_list() {
                         Some([name, body @ ..]) if name.as_symbol().is_some() && !body.is_empty() => {
@@ -1754,7 +1762,7 @@ impl Checker {
                 self.parse_exp(&asked)
             }
             // Processes and `par` (`processes.rs`).
-            head @ ("spawn" | "spawn-monitored" | "send" | "receive" | "self" | "par" | "race" | "attempt" | "pselect" | "icell-get" | "icell-put!") => {
+            head @ ("spawn" | "spawn-monitored" | "send" | "receive" | "self" | "par" | "race" | "attempt" | "attempt-within" | "pselect" | "icell-get" | "icell-put!") => {
                 let head = head.to_string();
                 self.parse_process_form(span, &head, &items)
             }

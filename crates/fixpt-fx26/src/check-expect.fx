@@ -137,7 +137,20 @@
           (let ((beyond (k-uncovered (car g) (car w))))
             (if (null? beyond)
                 (k-spec-delta got want)
-                (k-cat3 k-newline "  beyond what is expected, it has " (k-show-effect beyond))))))))
+                (string-append
+                  (k-cat3 k-newline "  beyond what is expected, it has " (k-show-effect beyond))
+                  (if (k-has-control? beyond) (k-cat3 k-newline "  " k-undelimited) ""))))))))
+;; Whether `e` transfers control: what a `prompt` takes away where it
+;; delimits (`check.rs`'s `UNDELIMITED`, which says so).
+(define k-has-control? (->* (k-eff) bool)
+  (lambda (e)
+    (and (not (null? e))
+         (or (tagcase (car e) (a-goto (r) #t) (a-comefrom (r) #t) (else y #f))
+             (k-has-control? (cdr e))))))
+(define k-undelimited string
+  (string-append "a `prompt` masks the control on its tag's region only where no free variable "
+                 "of its body names that region but the tag (a continuation resumed under it "
+                 "does); a `letregion` that makes the region masks it"))
 ;; `got ≤ want`, or an error at `x` saying so.
 (define k-expect (->* (kx int int) unit)
   (lambda (x got want)
@@ -267,11 +280,22 @@
       (x-plambda (bs e a b abk) (k-rlambda-under? e))
       (x-the (t e a b abk) (k-rlambda-under? e))
       (else y #f))))
+;; A global read: the same whatever the binders, as the body is run once,
+;; so its value is every instance's (`check.rs`'s `generalizable`).
+(define k-global-read? (->* (k-atom) bool)
+  (lambda (a)
+    (tagcase a
+      (a-read (r) (tagcase r (r-global (s) #t) (r-globals () #t) (else y #f)))
+      (else y #f))))
 (define k-only-alloc? (->* (k-eff) bool)
   (lambda (e)
-    (or (null? e) (and (tagcase (car e) (a-alloc (r) #t) (else y #f)) (k-only-alloc? (cdr e))))))
+    (or (null? e)
+        (and (or (tagcase (car e) (a-alloc (r) #t) (else y #f)) (k-global-read? (car e)))
+             (k-only-alloc? (cdr e))))))
+(define k-only-global-reads? (->* (k-eff) bool)
+  (lambda (e) (or (null? e) (and (k-global-read? (car e)) (k-only-global-reads? (cdr e))))))
 (define k-generalizable? (->* (kx k-eff) bool)
-  (lambda (x e) (or (null? e) (and (k-rlambda-under? x) (k-only-alloc? e)))))
+  (lambda (x e) (or (k-only-global-reads? e) (and (k-rlambda-under? x) (k-only-alloc? e)))))
 (define k-letrec-not-lambda (->* (symbol) string)
   (lambda (n)
     (k-cat3 (k-quote (symbol->string n))

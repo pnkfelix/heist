@@ -2118,6 +2118,14 @@ do, or refused.
 
 ## 81. Register code to machine code, in FX-26: `fx-regs-fxjit-nativecc` (found 2026-10-11)
 
+Done for the native convention (2026-10-31, CLAUDES_CHOICES.md "The
+native convention compiled by FX-26 on arm64"): `native-direct-arm64.fx`
+and the files beside it, `procedure` step for step, every procedure of
+the front end and of every test program the same as Rust's;
+`fx-regs-fxjit-nativecc` runs on arm64. Left: register code to arm64 in
+FX-26 (`fx-regs-fxjit-cellcc`, x86_64 only); the driver, Rust's on both.
+What follows is the section as found.
+
 Naming the machines by who generates code, what code, and what runs it
 (§78) showed a gap: there is no `fx-regs-fxjit-nativecc`. `native.fx` ports only
 the cellular words' assembler (`fixpt-native/src/cellular.rs`'s
@@ -2132,6 +2140,12 @@ Rust compiler as its oracle, the same instructions for every procedure
 Size: about five times `native.fx`, and `direct.rs` is still moving
 (blobrefs, flat sums, raw `f64`s in §77's follow-ups), so a port is best
 started once it settles.
+
+Register code to arm64 is done (2026-10-31): `native-arm64-regs.fx`, the
+port of `cellular/regcode.rs` over `native.fx`'s assembler, every register
+word of the front end the same instructions as Rust's (CLAUDES_CHOICES.md
+"Register code compiled by FX-26 on arm64"), so `fx-regs-fxjit-cellcc`
+runs on arm64. Left: the native convention, `direct.rs`, above.
 
 ## 83. GADTs: constructors that refine their type's parameters (the user's, 2026-10-11)
 
@@ -2686,14 +2700,16 @@ reaches its fixpoint on all three. Left, in the order they would pay:
    convention. Register code is done (`native-x64-regs.fx`, CLAUDES_CHOICES.md
    "Register code compiled by FX-26 on x86_64"; every register word of the
    front end, about 4,000 of them, the same bytes as Rust's;
-   `fx-regs-fxjit-cellcc`). So is the native convention
+   `fx-regs-fxjit-cellcc`), and for arm64 too (`native-arm64-regs.fx`,
+   CLAUDES_CHOICES.md "Register code compiled by FX-26 on arm64"; 5,678
+   words, the same instructions as Rust's). So is the native convention
    (`native-direct-x64.fx` and the files beside it, CLAUDES_CHOICES.md
    "The native convention compiled by FX-26 on x86_64";
    `fx-regs-fxjit-nativecc`; every test program's procedures the same as
-   Rust's). Left of it: the driver (`compile`'s finding of procedures and
-   binding of globals) is still Rust's, as `syn.rs`'s is for register
-   code; and arm64's `direct.rs` has no FX-26 twin (§81), though
-   `native-reps.fx` is of no machine's and would serve it.
+   Rust's). ~~arm64's `direct.rs` has no FX-26 twin~~ (done, §81:
+   `native-direct-arm64.fx`, over `native-reps.fx`). Left of it: the
+   driver (`compile`'s finding of procedures and binding of globals) is
+   still Rust's, as `syn.rs`'s is for register code.
 5. **Smaller:** a 32-bit jump that could be 8 (relaxation) would shrink
    compiled words by about a fifth; `,disassemble-asm` for x86_64 shows
    bytes with the disassembler's text, which knows only the forms the
@@ -4817,3 +4833,227 @@ growing with what is defined already. In order:
    safety. The first measure (2026-11-01) skipped only the Rust checker's
    check of the stand-in body, the cheapest part, and saved 10 ms of 0.40
    s: it does not say what trusting both checkers' whole check would save.
+
+## 208. Benchmarks that say what the collector did while they ran (the user's, 2026-11-01)
+
+A timing that does not say how many collections fell inside it can
+mislead: step 6's last part (`heap-types.md`) timed a session's first step
+1.5 ms slower on the evaluator, while the whole run was 10% faster and
+allocated less; the cause looked like a minor collection that now landed
+inside the timed span, found only by `FIXPT_GC_SUMMARY`, which counts a
+whole run, not a span.
+
+1. **The benchmark strategy**: each timing reads the collector's counts,
+   major and minor (and words allocated, and time paused, where cheap),
+   before and after what it times, and reports their difference beside the
+   time; a comparison of two builds says when the counts differ, so that a
+   difference of time is not taken for a difference of work.
+2. **A paved path in Fixpt**: the counts given to FX-26 programs. The
+   heap keeps them apart (`gc_count`, major, and `minor_count`), and the
+   runtime has `%gc-count`, their sum, and `%gc-words-copied`, for Scheme
+   and the tests; but FX-26's standard environment has neither (`clock`
+   is all a benchmark has), and an eqtable needs none, its operations
+   reading `Heap::collections` in Rust (`eqtable.rs`). So: the counts,
+   major and minor apart, in the standard environment, and a library
+   procedure that times a thunk and gives its time and those counts
+   together, so that a benchmark written the easy way reports them out of
+   the box; the benchmarks in use (the scratch `s201` ones, Heist's
+   s7st timings) moved to it.
+
+## 209. The FX-26 checker's base types after its interning table is begun again (found 2026-11-01)
+
+`k-intern-reset` (`check-types.fx`, past `k-intern-budget` entries) lets
+the interning table go, the base types with it, so a `ty-base` made after
+it (a rep's import, `ri-ty-of`) is a new id, not `k-int`'s: a comparison
+by id (`check-specs.fx`'s `(= r k-int)`) would then fail, as the Rust
+checker's did before Heist's report (`fixpt-nat-int-from-fasl.md`). Not
+seen to happen. Either the reset enters the base types again, or the
+import finds them in `k-base` (which `check-reps.fx` does not see now).
+
+## 210. The cellular machine's code in its words' bloblets, as the native convention's is (the user's, 2026-11-01)
+
+The intention all along (PLAN.md, Phase A′: "a code bloblet's suffix is
+machine code, even for cellular code, where it is the inner
+interpreter"), which history left half done: a cellular word is a code
+bloblet in the heap's code area (`docs/research/code-stubs.md`), but its
+suffix is a stub that enters `foreign`; what the cellular machine
+compiles of it, and the interpretive loops themselves (`docol`, the
+routines), are in the machine's own `CodeSpace` (`cellular.rs`'s
+`NativeMachine`), reached through its table by slot, kept by weak
+references and collected by copying into a space as large, of a fixed
+256 MB. The interpretive loop is meant to be attached to the bloblet, as a
+Forth word's code field is.
+
+Found by its cost: `processes`' `an_attempts_failure_is_its_on_failures_value`
+fills the space (2026-11-01, after the arm64 modules joined the front
+end), a thread's machine keeping each live session's front end, some 74 MB
+each, three kept sessions' and a fourth's past 256 MB; the code space has
+no way to grow, and `install_bytes` takes a word's resume table with no
+collection first. In the code area, a word's code would be its heap's,
+marked and swept with it, the area sized as the heap is.
+
+What it asks, to be worked out: what the dispatch by slot becomes (a
+word's code reached from its bloblet, as a native call reaches a
+procedure's); the resume tables (by `k`, now beside the code); the
+machine's own code, once a heap's or shared; register code's adapters; and
+what the code area's growth and the minors' scans of it (`TODO.md`'s
+"Left: the minors") then cost.
+
+**Done on x86_64 (2026-11-01)**: a compiled word's entry is its code, a
+code bloblet in the heap's native part (`Heap::make_word_code`), run at
+its reference plus `State::code_delta`, its resume table in its suffix as
+offsets; register code calls a twin's entry, and an adapter jumps to it;
+the machine keeps nothing of a word (no slots, no copying collection), its
+code space its own code alone. `.fasl`s and the front end's caches let the
+code go. `docs/research/code-stubs.md`, "A compiled word's code in the code
+area too", with what it measured. **Left**:
+- **arm64** (the user's): its machine compiles nothing meanwhile and runs
+  every word's cells. `generate`'s `NEXT` and `enter_cur`, `regcode.rs`'s
+  calls and `assemble_adapter`, `native.fx` and `native-arm64-regs.fx`,
+  as x86_64's (`cellular/x64.rs`, `x64/regcode.rs`, `native-x64.fx`,
+  `native-x64-regs.fx`); then `compile_word`, `compile_register_word`,
+  `install_bytes` and `syn.rs`'s register code there, which decline now.
+- **`docol` a code bloblet too**, so that every word's entry is code and
+  `NEXT` need not test the tag (what compiled fib's calls pay, 0.77 to
+  0.85 ns a cell); and, the user's further aim, one entry for native and
+  cellular procedures alike.
+- **Caches keeping compiled code**, measured: whether a cellular
+  machine's start gains what mapping a larger image costs (142 MB to 59
+  for the default machine's, 3 ms of its start).
+
+## 211. Heist's R4: evaluating FX-26 inside the running editor (Heist's, 2026-11-01)
+
+Heist's `docs/fx26-for-yank.md`, "R4. Evaluating FX-26 inside the running
+editor", for Yank's `M-:`, `C-x C-e` and init file: a persistent
+environment, the host's modules imported with their types, every failure
+as a value, `io` redirected, time slices, and macros. Heist's first slice
+(`editor/eval.fx`) runs on `stage` and sessions (`docs/research/eval.md`);
+what it found in Fixpt, to look at:
+
+1. **Time slices** (their 5): a form that does not end hangs the editor.
+   Run for N ms and give back what is left, to resume or drop; perhaps a
+   process raced against a deadline, if an evaluation may run in one.
+2. **`session-check`'s effect imported from a module is refused** ("`e` is
+   bound as a Effect, and the description given is not one"): `eval.fx`
+   writes the effect out.
+3. **Staged code sees the module's values but not its types**, though it is
+   checked "as `(with m code)` would be": `(desc t T)` in the module's type,
+   and `t` is "not a type" to the code.
+4. **A `poly` in an equi-recursive type**, instantiated, substitutes into
+   the nested copy of itself too (a log holding commands of user code).
+5. **A `poly` value must be pure, so reading a global of one is refused**;
+   wrapped in a product it is not.
+6. **A handler that resumes cannot be seen to delimit**: a global tag's
+   region is named by user code's type; a tag made in a `letregion` has
+   the resumed continuation free under a prompt whose type names the
+   region. They work around it with a log passed as a capability.
+7. And their 6, **macros** (`define-command` and the rest), which they try
+   to do with procedures over tables first.
+
+Done when R4's own test passes: `(define (f x) (host-insert! x))` then `(f
+"hi")` in one environment, the host keeping `f` and calling it later, a
+refusal and a fault each a value.
+
+**2–5 done (2026-11-01)**, each with a test (`stage.rs`'s
+`a_stages_effect_may_be_a_modules` and `a_sessions_steps_name_its_modules_types`;
+`programs/higher-kinds/poly-in-itself.fx` and `poly-global-read.fx`):
+- 2: `stage`'s and `session-check`'s effect is read as `(maxeff E)`, an
+  effect, in both parsers: a `with`'s name, a module parameter's, and a
+  `select`, each the module's effect. **Left**: a `proj` of any other
+  `poly` whose effect binder is given such a name still reads it as a
+  type (`parse_d` cannot know the kind); `(maxeff e)` there is the way.
+- 3: a session's seed names its module's types, effects and abstract
+  types as an `import` would (`stage::module_descs`, from the rep), and
+  links them at once (`link_aliases`): linked first by a step's trial, an
+  abstract type's alias held a node the trial's end took back (a panic).
+  **Left**: a step that itself writes `(define-type x (select
+  stage-module t))` of an abstract `t` may meet the same, unlinked.
+- 4: a `poly`'s own binders shadow a substitution's (both checkers): in an
+  equi-recursive type the `poly` met again within itself binds the same
+  variables. The knot that was found where none is goes with it.
+- 5: an effect of only global reads is generalizable (both checkers, and
+  the typed-cells verifier): a `plambda` is erased, its body run once, and
+  a global's read is the same whatever the binders. So a global of a
+  `poly` type is given where one is wanted, and `(plambda ((r region))
+  (proj base r))` is a `poly`. **Left**: the verifier does not verify a
+  variable of a `poly` type generalized (a local's, before, as a global's
+  now): `KNOWN_GAPS`. And a procedure whose result type is a `poly`,
+  `(subr … () code)`, returning one is refused ("a (subr …) is expected
+  here, and this is a code"): not looked at.
+
+## 212. Review the `poly` changes of §211 (the user's, 2026-11-01)
+
+For the user to go over with care: what `d144eeb5` changed about `poly`
+types, and whether each fix is right, not only whether the suite passes.
+
+1. **Substitution and a `poly`'s own binders** (§211, 4): `subst_memo`
+   (`check.rs`) and `k-subst-memo` (`check-subst.fx`) now drop from the
+   map the variables a `poly` binds, leaving the `poly` as it is if none
+   are left. The claim: only a `poly` met again within an equi-recursive
+   type binds variables already in the map, every other binder being
+   fresh. Is that so everywhere a map is made (renaming, `proj`,
+   `plambda` against a `poly`, a module's abstract types)? And is the
+   knot refusal that went away (`poly-in-itself.fx`) truly spurious: a
+   command in a list in `r`, each `poly` in its own region?
+2. **Global reads generalizable** (§211, 5): `generalizable` (`check.rs`),
+   `k-generalizable?` and `k-only-alloc?` (`check-expect.fx`), and the
+   typed-cells verifier (`typed_cells.rs`'s `generalize`) let an effect of
+   only `(read (globals …))` or `(read @globals)` through where a value is
+   generalized, `plambda` bodies included. The argument: a `plambda` is
+   erased and its body run once, and a global read depends on no binder.
+   Does it hold for a global redefined, at another type or in a session,
+   after the `poly` value was made; for `(read @globals)`; and for a
+   global whose own type is not a `poly`?
+3. **The first attempt, abandoned**: a `poly` variable compared by
+   subtyping, not generalized, lost instantiation
+   (`distinct_region_binders`, a `.fasl` test). Whether subtyping between
+   `poly`s should take instantiation into account is a question of its own.
+4. **What was left**: the verifier's gap for a `poly` variable
+   generalized (`KNOWN_GAPS`, `poly-global-read.fx` `go`; a local's
+   before); a renaming of the value's binders that broke a verified word;
+   and a procedure returning a `poly`, `(subr … () code)`, refused with "a
+   (subr …) is expected here, and this is a code".
+
+**1 done (2026-11-01), drop only**: `(attempt-within ms e on-failure
+on-timeout)` (`docs/fx26.md`, "`attempt-within`"): `attempt`, `e`
+cancelled once its budget is seen spent, at a wait or a time slice's end.
+**Left**: giving back what is left to resume (a preempted task is parked
+already, so a handle to it could be); and the step limit, which is still
+the form's.
+
+**6 (2026-11-01): no change needed, found by Heist's own probe**
+(`docs/requests/bench/eval/handler-local-tag.fx` in Heist's repository):
+a handler that resumes works today, in a region of the turn's own.
+The prompts around a resumed continuation do not delimit (it is free, its
+type names the region), but the `letregion` that made the region and the
+tag masks the control on it, so the turn does nothing another could see.
+The probe was refused only because its `handled` declared `turn-eff`
+without `(goto r)` and `(comefrom r)`; with them it gives its requests on
+every machine but the evaluator (below). Test: `programs/run/deep-handler.fx`
+(`fixpt-cli/tests/handlers.rs`, every machine, in an `attempt`). Found on
+the way:
+- ~~**The evaluator lacks standard procedures**~~ (done 2026-11-01):
+  some seventy the checkers accept were "unbound variable" there. Now
+  each is the evaluator's (`eval-prims.fx`'s `ev-more-prims!`: characters
+  and strings, lists and arrays, data as read, vectors as `o-vec`, tables
+  by identity as association lists by `eq?`), or, the compilers' own (of
+  machine code and words: `tword-*`, `wcell-*`, `make-word`, `rep-*`,
+  `disassemble` …), refused as theirs. Tests: `evaluator_standard.rs`,
+  every standard name, and each found missing against the machines'
+  answers. **Left**: `icell-get` and `icell-put!` as values (their forms
+  run).
+- ~~**An effect family applied as a description**~~ (done 2026-11-01;
+  first noted, wrongly, as "in a `maxeff`", which works): `(proj run (rw
+  @h))`, `rw` a `dlambda` to an effect, was read as a type and refused,
+  "gives a description of kind effect, not a type". Both parsers now read
+  `(f d …)` as an effect where `f` names a description function to one
+  (`names_effect_fun`, `k-names-effect-fun?`). Tests:
+  `higher-kinds/effect-family-given*.fx`.
+- ~~**A better message would have saved Heist the trip**~~ (done
+  2026-11-01): where control is beyond what a procedure's type expects,
+  the refusal says when a `prompt` masks it and that a `letregion` making
+  the region does (`check::UNDELIMITED`, both checkers). And "it may not
+  end" is said only where the effect beyond what is expected is `spin`,
+  not wherever the types say `spin` (Heist's refusal said it of control).
+  **Left**: naming the prompt, and the free variable, that kept it from
+  delimiting.

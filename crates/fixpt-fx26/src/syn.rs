@@ -199,15 +199,14 @@ fn assemble_by_fx26(s: &mut Session, word: Handle) -> Result<(), String> {
 /// its cells and operands, `word` too if it is one: what `fixpt_native`'s
 /// `compile_reachable` compiles.
 pub fn cell_words_reachable(heap: &fixpt_heap::Heap, word: Value) -> Vec<Value> {
-    use fixpt_heap::layout::cellular::{CLOSURE_WORD, PRIMITIVES, ROUTINE_DOCOL, WORD_CELL0, WORD_ENTRY};
+    use fixpt_heap::layout::cellular::{CLOSURE_WORD, WORD_CELL0};
     let closure = const { fixpt_heap::layout::kind("cellular-closure") };
     let (mut todo, mut seen, mut found) = (vec![word], std::collections::HashSet::new(), Vec::new());
     while let Some(w) = todo.pop() {
         if !seen.insert(w.raw()) {
             continue;
         }
-        let entry = heap.bloblet_slot(w, WORD_ENTRY).as_fixnum() as u64;
-        if entry != ROUTINE_DOCOL && entry < PRIMITIVES as u64 {
+        if !heap.word_runs_cells(w) {
             continue;
         }
         for v in heap.bloblet_fields_from(w, WORD_CELL0) {
@@ -217,7 +216,7 @@ pub fn cell_words_reachable(heap: &fixpt_heap::Heap, word: Value) -> Vec<Value> 
                 todo.push(heap.bloblet_slot(v, CLOSURE_WORD));
             }
         }
-        if entry == ROUTINE_DOCOL {
+        if heap.word_code(w).is_none() {
             found.push(w);
         }
     }
@@ -229,9 +228,9 @@ pub fn cell_words_reachable(heap: &fixpt_heap::Heap, word: Value) -> Vec<Value> 
 /// this runs on by the compiler written in FX-26 (`native.fx`'s
 /// `native-assemble` for arm64, `native-x64.fx`'s `native-assemble-x64`
 /// for x86_64) and given to `place` with the heap: its bytes, and where
-/// each cell's code starts in them. On x86_64, a word with register code
-/// (its twin, `layout::regcode`) has that compiled instead
-/// (`native-x64-regs.fx`), and its entry is the adapter into it, as
+/// each cell's code starts in them. A word with register code (its twin,
+/// `layout::regcode`) has that compiled instead (`native-arm64-regs.fx`,
+/// `native-x64-regs.fx`), and its entry is the adapter into it, as
 /// `fixpt_native`'s `compile_register_word` does them.
 pub fn assemble_reachable_by_fx26(
     s: &mut Session,
@@ -252,7 +251,7 @@ pub fn assemble_reachable_by_fx26(
     let far = s.make(|_| Value::fixnum(0));
     let x64 = cfg!(target_arch = "x86_64");
     for w in words {
-        if x64 && assemble_twin_by_fx26(s, w, place)? {
+        if assemble_twin_by_fx26(s, w, place)? {
             continue;
         }
         let assembled = if x64 {
@@ -265,15 +264,22 @@ pub fn assemble_reachable_by_fx26(
             let r = v.get(assembled);
             (ints_of(r.product_field(1)), ints_of(r.product_field(2)))
         });
-        // arm64's instructions are words of 4 bytes, little-endian.
-        let (code, starts): (Vec<u8>, Vec<i64>) = if x64 {
-            (code.into_iter().map(|x| x as u8).collect(), starts)
-        } else {
-            (code.into_iter().flat_map(|x| (x as u32).to_le_bytes()).collect(), starts.into_iter().map(|s| if s < 0 { s } else { 4 * s }).collect())
-        };
+        let (code, starts) = machine_bytes(code, starts);
         place_in(s, w, &code, &starts, place)?;
     }
     Ok(())
+}
+
+/// Code as the compiler written in FX-26 gives it, ints, as bytes, and
+/// where its cells start in them: x86_64's are bytes already; arm64's
+/// instructions are words of 4 bytes, little-endian, and the starts count
+/// instructions.
+fn machine_bytes(code: Vec<i64>, starts: Vec<i64>) -> (Vec<u8>, Vec<i64>) {
+    if cfg!(target_arch = "x86_64") {
+        (code.into_iter().map(|x| x as u8).collect(), starts)
+    } else {
+        (code.into_iter().flat_map(|x| (x as u32).to_le_bytes()).collect(), starts.into_iter().map(|s| if s < 0 { s } else { 4 * s }).collect())
+    }
 }
 
 /// A list of ints, or none.
@@ -299,8 +305,9 @@ fn place_in(
 }
 
 /// Word `w`'s register code, if it has some not yet compiled, compiled
-/// to x86_64 by `native-x64-regs.fx` and placed, and the adapter into it
-/// as `w`'s entry: whether it was. Not a variadic procedure's, which is
+/// for the machine this runs on by `native-arm64-regs.fx` or
+/// `native-x64-regs.fx` and placed, and the adapter into it as `w`'s
+/// entry: whether it was. Not a variadic procedure's, which is
 /// for native code, nor, past `REGS` arguments, the adapter, which would
 /// have to make a list of the rest: `w` stays stack code then.
 fn assemble_twin_by_fx26(
@@ -308,14 +315,20 @@ fn assemble_twin_by_fx26(
     w: Handle,
     place: &mut dyn FnMut(&mut fixpt_heap::Heap, Value, &[u8], &[i64]) -> Result<(), String>,
 ) -> Result<bool, String> {
-    use fixpt_heap::layout::cellular::{WORD_CELL0, WORD_ENTRY, WORD_TWIN};
+    use fixpt_heap::layout::cellular::{WORD_CELL0, WORD_TWIN};
+    let x64 = cfg!(target_arch = "x86_64");
+    // Only on x86_64 for now: the arm64 machine is yet to take a word's code
+    // from its entry (`TODO.md` §210).
+    if !x64 {
+        return Ok(false);
+    }
     let mut twin = None;
     s.make(|m| {
         let w = m.get(w);
         let heap = m.heap();
         let rw = heap.bloblet_slot(w, WORD_TWIN);
         if heap.is_register_word(rw)
-            && heap.bloblet_slot(rw, WORD_ENTRY).as_fixnum() == 0
+            && heap.word_code(rw).is_none()
             && heap.bloblet_slot(rw, WORD_CELL0).as_fixnum() as usize != const { fixpt_heap::layout::regcode::op("vargs") }
         {
             twin = Some(rw);
@@ -324,7 +337,16 @@ fn assemble_twin_by_fx26(
     });
     let Some(rw) = twin else { return Ok(false) };
     let rw = s.make(|_| rw);
-    let assembled = s.call_global(&format!("{READER_PREFIX}native-assemble-x64-regs"), &[rw]).map_err(|e| e.to_string())?;
+    let assembled = if x64 {
+        s.call_global(&format!("{READER_PREFIX}native-assemble-x64-regs"), &[rw])
+    } else {
+        // As `native-assemble`, of a place it need not know; and the time
+        // slice, which arm64's register code has as a constant.
+        let far = s.make(|_| Value::fixnum(0));
+        let slice = s.make(|_| Value::fixnum(fixpt_runtime::sched::slice() as i64));
+        s.call_global(&format!("{READER_PREFIX}native-assemble-arm64-regs"), &[rw, far, far, slice])
+    };
+    let assembled = assembled.map_err(|e| e.to_string())?;
     let (code, resume, err) = s.view(|v| {
         let r = v.get(assembled);
         (ints_of(r.product_field(1)), ints_of(r.product_field(2)), r.product_field(3).and_then(|e| e.string()).unwrap_or_default())
@@ -332,13 +354,12 @@ fn assemble_twin_by_fx26(
     if !err.is_empty() {
         return Err(format!("register code: {err}"));
     }
-    let code: Vec<u8> = code.into_iter().map(|x| x as u8).collect();
+    let (code, resume) = machine_bytes(code, resume);
     place_in(s, rw, &code, &resume, place)?;
-    let (mut slot, mut n, mut cells) = (0, 0, 0);
+    let (mut n, mut cells) = (0, 0);
     s.make(|m| {
         let (rw, w) = (m.get(rw), m.get(w));
         let heap = m.heap();
-        slot = heap.bloblet_slot(rw, WORD_ENTRY).as_fixnum();
         n = heap.bloblet_slot(rw, WORD_CELL0 + 1).as_fixnum();
         cells = heap.bloblet_count_from(w, WORD_CELL0);
         Value::NULL
@@ -346,9 +367,9 @@ fn assemble_twin_by_fx26(
     if n as usize > fixpt_heap::layout::regcode::REGS {
         return Ok(false);
     }
-    let (n, slot) = (s.make(|_| Value::fixnum(n)), s.make(|_| Value::fixnum(slot)));
-    let adapter = s.call_global(&format!("{READER_PREFIX}native-adapter-x64"), &[n, slot]).map_err(|e| e.to_string())?;
-    let adapter: Vec<u8> = s.view(|v| ints_of(Some(v.get(adapter)))).into_iter().map(|x| x as u8).collect();
+    let n = s.make(|_| Value::fixnum(n));
+    let adapter = s.call_global(&format!("{READER_PREFIX}native-adapter-x64"), &[n]).map_err(|e| e.to_string())?;
+    let (adapter, _) = machine_bytes(s.view(|v| ints_of(Some(v.get(adapter)))), Vec::new());
     let mut starts = vec![-1i64; cells];
     starts[0] = 0;
     place_in(s, w, &adapter, &starts, place)?;
@@ -832,7 +853,7 @@ fn load_modules_at(f: &Syntax, interner: &Interner, out: &mut Vec<Load>) {
         out.push((f.span.start, p.to_string(), input, Some(file.to_string())));
     }
     let head = items.first().and_then(|h| h.as_symbol()).map(|h| interner.name(h));
-    if matches!(head, Some("spawn" | "spawn-monitored" | "send" | "receive" | "self" | "par" | "race" | "attempt" | "pselect" | "icell-get" | "icell-put!")) {
+    if matches!(head, Some("spawn" | "spawn-monitored" | "send" | "receive" | "self" | "par" | "race" | "attempt" | "attempt-within" | "pselect" | "icell-get" | "icell-put!")) {
         out.push((f.span.start, crate::check::PROCESSES.to_string(), false, None));
     }
     let rest = items.get(1..).unwrap_or_default();

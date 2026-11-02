@@ -3358,3 +3358,197 @@ of `TODO.md` §141, working on my own.
 - **The Rust checker's session definitions' text kept**: it is read back
   by the same checker only, never another or a stage; by rep it would
   be one more import a definition, for nothing measured.
+
+## Register code compiled by FX-26 on arm64 (`TODO.md` §81, 2026-10-31)
+
+1. **`native-arm64-regs.fx`, over `native.fx`'s assembler**, as
+   `native-x64-regs.fx` is over `native-x64.fx`'s (through
+   `native-arm64-asm-sig`), and two files for the same reason:
+   `native-arm64-regs-ops.fx`, of no state (`pure_call`, `int_fast`,
+   `shape_test`, `bump_words`, `inline_op` and `inline`), and
+   `native-arm64-regs.fx`, the rest, with the compile's state. Its steps
+   are `regcode.rs`'s, named `ar-` and the Rust name; their types and the
+   signatures in `native-arm64-regs-types.fx`, its own file, not
+   `native-types.fx`.
+2. **What `native.fx` gains is the Rust `Asm`'s, its words' code
+   unchanged**: `bl` (`fix-bl`), long branches (`n-long`, the opposite
+   condition over a `b`, as `long_branches`; `n-branches-fit?`), and
+   where a label is. Only register code sets `n-long`: `native.fx`'s
+   words have no long form yet, as they had none before.
+3. **What it knows of the machine, generated**
+   (`native-arm64-regs-layout.fx`, `cellular::fx26_regs_module`, kept by
+   `tests/layout.rs`): its registers and State fields, beyond
+   `native-layout.fx`'s; the tables (operand counts, the primitives it
+   names, which never collect, the shape tests' kinds) are x86_64's
+   generator's, its names' prefix given (`x64::fx26_regs_tables`), so the
+   two cannot drift.
+4. **The time slice an argument** (`native-assemble-arm64-regs`'s last):
+   arm64's register code takes its next slice as a constant, where
+   x86_64's reads it from the state (`State::slice`, "The x86_64 back end
+   rebased onto main" 3), and `FIXPT_SLICE` sets it at run time; `syn.rs`
+   passes `sched::slice()`, so the bytes are Rust's whatever it says,
+   without changing arm64's Rust code. `far`, vestigial, is taken as
+   `native-assemble` takes it, and not used.
+5. **Placed where `fx-compiled` places words** (`syn::assemble_twin_by_fx26`,
+   now of both machines): the instructions as 4-byte words, the starts and
+   resume points scaled, as the cellular path's are. The CLI no longer
+   refuses `fx-regs-fxjit-cellcc` on arm64; it still refuses
+   `fx-regs-fxjit-nativecc` there, the native convention having no FX-26
+   compiler for arm64 yet.
+6. **Checked instruction for instruction** (`tests/native.rs`): every
+   register word of the front end, 5,678 words and 9,913,060 instructions,
+   the same instructions and resume points as `assemble_register_word`;
+   the adapters for every count, at slots in and past one `ldr`'s reach;
+   and once with every branch long on both sides, agreeing too. The new
+   encodings (`add_lsl`, `sdiv`, `msub`, `eor`, `mul`, `smulh`, `and`,
+   `lslv`, `asrv`, `lsl_imm`, `ldur_w`, `nop`) each against the Rust
+   encoder (`tests/arm64.rs`). Every test program runs alike on the
+   machine (`tests/compiler.rs`), as do the CLI's tests of it.
+
+## The native convention compiled by FX-26 on arm64 (`TODO.md` §81, 2026-10-31)
+
+The user's: make `fx-regs-fxjit-nativecc` work on arm64, as on x86_64
+("The native convention compiled by FX-26 on x86_64"). The same design,
+the arm64 twin: `direct.rs`'s `procedure` ported step for step.
+
+1. **The driver is x86_64's**: `direct/fx.rs` unchanged. `procedure` asks
+   the driver what `prepare_x64` asks, in the same order (the frame too
+   large first, the callees, then `const`, `global`, `lambda` and the
+   captures' continuation), so the requests and their numbering serve
+   both; its `head`'s SSE4.1 is read and not used.
+2. **Eleven files, `native-direct-arm64*.fx`**, split by x86_64's lines,
+   each `direct.rs`'s functions under its own prefix: the assembler and
+   shared sequences (`-asm`, `ada-`; instructions, not bytes, and `Fix`'s
+   kinds, a branch to a `ret` that `ret`), raw values (`-raw`, `adr-`),
+   the heap's fast paths (`-flat`, `adf-`, given no raw module: they call
+   none), the procedure (`-proc`, `adp-`), its instructions (`-ops`,
+   `ado-`), the primitives', control's and call-outs' (`-prims`, `adq-`;
+   `pure_fast` and `string_eq` in `-strings`) and the loop
+   (`native-direct-arm64.fx`, `adx-`, the entry
+   `native-compile-arm64-proc`). The types shared with x86_64's
+   (`da-assembles`, `dr-int-slow`, `dp-edge`, `nr-…`) are its, imported;
+   `native-reps.fx` is of no machine's and given x86_64's layout.
+3. **The layout generated** (`native-direct-arm64-layout.fx`,
+   `fx26_direct_arm64_module`): x86_64's generator made one of a
+   machine's registers (`x64::fx26_direct_layout_of`), the rest by the
+   same names, so the two files differ only in registers. The encoder
+   (`arm64.fx`) gained what `direct.rs` uses (narrow and indexed memory,
+   `adr`, pages, division, shifts by a register, floating point,
+   `card_mark`), each against `arm64.rs`.
+4. **Ported in parallel, each piece against its Rust one by name**
+   (`direct::oracle_arm64`, `direct/fx_arm64/oracle_*.rs`; the tests
+   `native_direct_arm64*.rs`, over one harness): the assembler's pieces,
+   3,347 raw values' pieces, 6,356 of the heap's, 560 of the primitives'.
+   A piece runs in an assembler of its own, its call-outs numbered after
+   the machine's own (`OWN_CALLOUTS`), so that their loads from fields are
+   compared too.
+5. **Checked byte for byte**: `tests/native_x64.rs`'s `compare_direct`
+   compares the machine it runs on (`FIXPT_FX_DIRECT_ALONE` runs the
+   modules compiled alone, before the front end is rebuilt): every
+   register word of the front end, each as a closure, 6,014 procedures,
+   19.2 MB, the same (2 refused by both). `fixpt-cli`'s `fx_native.rs`
+   runs on arm64: every test program (859) on both machines, the oracle
+   on, the same and no difference (a byte changed in every instruction
+   makes all 47 `native` programs differ).
+6. **The machine**: the CLI calls this machine's compiler (`DIRECT_FX`);
+   `fx-native` is refused only where the native convention does not run.
+
+## A base type imported is the standard one (2026-11-01; Heist's `fixpt-nat-int-from-fasl.md`)
+
+- **Both the import and the rule**: the Rust checker's rep import gives a
+  base type the standard environment's id (`Checker::base`), which every
+  comparison by id (`== self.int`, in `specs.rs` and `smt_theory.rs` too)
+  then takes, the root of it; and the rules for `nat ≤ int` and `#f ≤
+  bool` compare names, as Heist asked and as the FX-26 checker's do, so
+  that a base type made anew elsewhere is not refused there either.
+- **The FX-26 checker's import left alone**: its store interns a base
+  type (`k-internable?`), so the import gives the standard id already;
+  only after `k-intern-reset` (past 400,000 entries) would it make one
+  anew, which `TODO.md` §209 keeps, as `check-reps.fx` cannot see the
+  base table (`k-base`, `check-env`) without new wiring.
+
+## A compiled word's code as its entry (2026-11-01; `TODO.md` §210)
+
+The user's direction: code in the code area, the entry as for a native
+procedure, x86_64 now and arm64 later, its slots broken if need be.
+- **The entry a code bloblet, `docol` still a fixnum**: every word is
+  made with `docol`'s number, in many places, the Rust interpreter's
+  among them; a code bloblet for `docol` too is the next step (`NEXT`
+  would test no tag), not this one.
+- **The resume table in the suffix, not the fields**: a front-end
+  register word has 365,682 fields, past a header's 2^18. Offsets, not
+  addresses, so that a copy or an image carries the code as it is; the
+  field's fixnum counts words, so that its bits are the bytes (no shift
+  in `enter_cur`).
+- **Aligned at 32**: the x86_64 compiler aligns where calls return from
+  the code's start, which the machine's code space gave it; a code
+  bloblet's suffix is only word-aligned (`make_code_bloblet_aligned`, the
+  slack free blocks the next sweep takes). It measured nothing either way
+  on fib, but keeps the compiler's alignment true.
+- **`add reg, [st + code_delta]`**: one instruction, in both encoders
+  already (`alu_rm`, `x86-alu-rm`), and no scratch register at a call.
+- **Placed in the native part**: it is machine code; what took the native
+  part for native procedures alone was told apart (`note_cached_code`
+  names those whose field 1 is themselves; the caches' list skips what
+  they let go).
+- **`.fasl`s and caches let the code go**, as they let slot numbers go:
+  the default machine's cache kept 80 MB of cellular code it never runs,
+  and started 3 ms slower for it. Keeping it for the cellular machines is
+  left to measure.
+- **arm64 compiles nothing meanwhile**, rather than install code its
+  machine would jump to by a number: correct, slower, until it is ported.
+
+## Heist's R4 findings (2026-11-01; `TODO.md` §211, 2–5)
+
+- **`(maxeff E)` at the desugaring, not kinds at `proj`**: the stage
+  forms know their first description is an effect; a `proj` in general
+  does not, and both parsers would need a description of unknown kind
+  carried to the check. The desugaring fixes Heist's case in both
+  checkers alike; the general case is noted, with its way round.
+- **The seed defines the module's types as `import` does**, from the
+  module type's rep (`module_descs`), so that both session checkers get
+  the same names; and links them at once, as a module's aliases are
+  linked when it is bound.
+- **Shadowing in substitution, not a different representation**: the
+  binders of a `poly` met again within itself are the same variables;
+  dropping them from the map is ordinary capture-avoidance, and every
+  other `poly`'s binders are fresh, so nothing else changes.
+- **Global reads generalizable, not a variable special-cased**: comparing
+  a `poly` variable by subtyping lost instantiation (a `(poly ((r
+  region) (t type)) …)` given for a `(poly ((k type)) …)`; two tests).
+  The value restriction is there because a `plambda` is erased and its
+  body run once: an effect that depends on no binder is safe, and a
+  global read is one. Only reads: an allocation or a write depends on
+  when.
+- **The verifier's gap recorded, not fixed**: renaming a `poly` value's
+  binders to the generalization's broke a word that verified; the gap was
+  there for a local variable already.
+
+## `attempt-within` (2026-11-01; `TODO.md` §211, 1)
+
+The user's direction: a best effort by fuel-driven interrupts, dropping
+first, resuming later if Yank needs it.
+- **Wall clock, looked at at slice ends, not a count of polls**: the
+  slice's end is where the runtime already decides to preempt; a poll's
+  cost differs between machines by tens of times, so a count would not be
+  Heist's 100 ms on any of them.
+- **In the library, as `attempt1` is**: a race branch, and a `sync` on its
+  outcome's cell or the deadline's clock event; the waiting task sees the
+  deadline whenever the body is preempted. One `%sched` operation more,
+  the deadline from now, since the library may not read the clock itself.
+- **`nondet`, not `(io clock)`**: the program never sees the clock, only
+  which way the form went, which differs from run to run.
+- **The step limit stays the form's**, as `attempt` leaves it: a budget is
+  not a way round it. The tests' spinning bodies take 1 ms, as native code
+  spends the default limit in about 20.
+
+## A closure's certificate takes its free variables' types by scope (2026-11-01)
+
+Found by `deep-handler.fx` verifying in five runs of eight: the guess of a
+closure's free variable's type (`cellular.rs`, as the certificate is made)
+took the first match from hash maps, a reference's type and then any
+lambda's binding of the name. Two references may be checked at types that
+differ, and another lambda's `tag` is not this one's. Now the earliest
+reference by place, then the innermost lambda around this one that binds
+it. The certificate is not trusted either way; this makes it the same
+from run to run, and right where the name is shadowed.
