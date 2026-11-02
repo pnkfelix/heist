@@ -1,5 +1,7 @@
 ;; Option 2 through a session: forms as a rewriter would write them, each a
-;; procedure of a region and a log in it.
+;; procedure of a region and a log in it. A command's body is user code, so
+;; the `poly` is within its own type: refused (a substitution into the nested
+;; copy) until Fixpt's d144eeb5. Runs at dd369934, `log` exported to staged code.
 (define-effect turn-eff (maxeff spin nondet (read @globals) (read @ed) (alloc @ed)))
 (define-type (log (r region)) (ref (listof request acyclic) r))
 (define-type user-code
@@ -7,11 +9,13 @@
 (define-type request (sumof (insert string) (message string) (command (productof (name string) (body user-code)))))
 (define-type requests (listof request acyclic))
 (define-type api-type
-  (moduleof (val insert (poly ((r region)) (subr (maxeff (read r) (write r)) ((log r) string) unit)))
+  (moduleof (desc log (dlambda ((r region)) (ref (listof request acyclic) r)))
+            (val insert (poly ((r region)) (subr (maxeff (read r) (write r)) ((log r) string) unit)))
             (val message (poly ((r region)) (subr (maxeff (read r) (write r)) ((log r) string) unit)))
             (val define-command (poly ((r region)) (subr (maxeff (read r) (write r)) ((log r) string user-code) unit)))))
 (define api api-type
   (module
+    (define-type (log (r region)) (ref (listof request acyclic) r))
     (define insert (poly ((r region)) (subr (maxeff (read r) (write r)) ((log r) string) unit))
       (plambda ((r region)) (lambda ((l (log r)) (s string)) (set l (cons (sum insert s) (get l))))))
     (define message (poly ((r region)) (subr (maxeff (read r) (write r)) ((log r) string) unit))

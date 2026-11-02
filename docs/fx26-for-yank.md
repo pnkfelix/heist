@@ -329,16 +329,20 @@ Emacs's does, while the turn still writes nothing another could see:
   ones; and a definition must have its whole type written, by the
   rewriter, structurally, since staged code sees none of the module's
   types (below).
-- **Found in Fixpt on the way:** (a) staged code sees the module's values
-  but not its types, though it is checked "as `(with m code)` would be",
-  and `with` gives them: `(desc t T)` in the module's type, and `t` is
-  "not a type" to the code. (b) A `poly` inside an equi-recursive type,
-  instantiated, substitutes into the nested copy of itself too (user code
-  whose log holds commands of user code): worked around by keeping a
-  command's body as a plain thunk. (c) A `poly` value must be pure, so
-  reading a global of one is refused; wrapped in a product it is not.
+- **Found in Fixpt on the way, all fixed by Fixpt at dd369934** (pulled
+  2026-11-01; its d144eeb5): (a) staged code saw the module's values but
+  not its types, though it is checked "as `(with m code)` would be": now
+  a session's steps see them (`staged-module-types.fx`, `greet` naming
+  `reqs`). (b) A `poly` inside an equi-recursive type, instantiated,
+  substituted into the nested copy of itself too: now a command's body
+  may be user code itself (`poly-in-recursive-type.fx`, `log` exported
+  for it). (c) A global of a `poly` type could not be read ("a
+  polymorphic value must be pure"): now an effect of only global reads
+  is generalizable. Also a module's effect as a stage's `E`, which
+  eval.fx's local `user-eff` works around.
 
-Still to do: 5 (a form that does not end hangs the editor), user code
+Still to do: 5 (a form that does not end hangs the editor; Fixpt's
+`attempt-within` now gives a turn a time limit), user code
 reading the editor's state (point, the buffer's text), `C-x C-e` and an
 init file over the same session, and 6.
 

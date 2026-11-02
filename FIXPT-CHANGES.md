@@ -8,7 +8,15 @@ do it, and what it cost. Kayak will need the same changes later
 
 ## Base
 
-- Fixpt `main` at 63b95ef0 (2026-11-01), pulled from GitHub, which has
+- Fixpt `main` at dd369934 (2026-11-01), pulled from GitHub, which has
+  the fixes of Heist's reports (Upstream, below), `attempt-within`, the
+  evaluator's missing standard procedures, and FX-26's native compiler
+  on arm64. Heist needed no change to its code but to drop the CFA's
+  `the int`; `fixpt/` is Fixpt's tree exactly. After `fixpt prewarm` and
+  `bin/heist-compile all`, all 186 tests pass, with dumps (9.1 s) and
+  without (15.2 s); ratfink's corpus 123 of 124, playback 12 of 12, its
+  FX-26 tests' reports unchanged.
+- Before: Fixpt `main` at 63b95ef0 (2026-11-01), pulled from GitHub, which has
   Heist's F8 (staged code native, compiling while native code runs, a
   sealed module staged against) done Fixpt's way, without Heist's
   raw-pointer borrow; and heap types (a stage's, a session's and a
@@ -255,16 +263,19 @@ differs from what Heist had:
   (506–508).
 - F4: `(io process)` is the twelfth I/O kind, code 11, after `(io sys)`.
 
-Found at 63b95ef0, not yet reported to Fixpt:
+Reported by Heist and fixed by Fixpt, as of dd369934:
 
-- **A `nat` refused where an `int` is expected, loading a `.fasl`.**
-  cfa/fx26.fx's `(fx-constructor file x tag (list-length l))`, the last
-  parameter an `int`, is accepted by `compile-file` and from source
-  (`FIXPT_NO_FASL=1`), but run from the CFA's `.fasl`s: "argument 4 is a
-  nat, where a int is expected". Every `nat` is an `int` (`docs/fx26.md`,
-  "Naturals"). Worked around with `(the int …)`. Reproduced in one file,
-  and the cause found (the rule compares type ids, and a type read from a
-  rep is a new one): `docs/requests/fixpt-nat-int-from-fasl.md`.
+- **A `nat` refused where an `int` is expected, loading a `.fasl`**
+  (`docs/requests/fixpt-nat-int-from-fasl.md`): Fixpt's 1d721773, the
+  import gives the standard base types and `nat ≤ int` compares names.
+  cfa/fx26.fx's `(the int …)` dropped.
+- **R4's findings from the editor's `eval`** (`docs/fx26-for-yank.md`,
+  R4): Fixpt's d144eeb5 (a session's steps see the module's types; a
+  `poly` within an equi-recursive type; a global of a `poly` type read;
+  a module's effect as a stage's), 3e026d63 (`attempt-within`, a time
+  limit, for a form that does not end), and b6906ca2 with dd369934 (a
+  resuming handler works, its control declared; the refusal now says why
+  a prompt does not mask). Heist's probes: `docs/requests/bench/eval/`.
 
 Still open in Fixpt's `TODO.md`:
 

@@ -1,6 +1,9 @@
 # Request to Fixpt: a `nat` refused as an `int` of a type read from a `.fasl`
 
-Status: open. Drafted 2026-11-01 by Heist, for the user to take to the
+Status: done by Fixpt in 1d721773 (2026-11-01): the import gives the
+standard base types, and `nat ≤ int` and `#f ≤ bool` compare names; both
+repros are its tests. Pulled by Heist at dd369934, the CFA's workaround
+dropped. Drafted 2026-11-01 by Heist, for the user to take to the
 Fixpt team. Against Fixpt 63b95ef0 (Heist's `fixpt/` subtree), x86_64
 Linux. Found when 63b95ef0's `length` and `list-length` began to give a
 `nat`: the CFA (`cfa/fx26.fx`) passes one to a procedure of its own taking

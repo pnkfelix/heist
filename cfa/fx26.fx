@@ -360,9 +360,7 @@ to a lambda making `(sum tag (product (1 p1) … (n pn)))`."
                              (lambda (vs) (if (null? vs) nil
                                               (let ((is (fx-items (car vs))))
                                                 (if (pair? is)
-                                                    ;; `the int`: from its .fasl, Fixpt 63b95ef0 refuses the
-                                                    ;; `nat` here, "where a int is expected" (FIXPT-CHANGES.md).
-                                                    (let ((c (fx-constructor file (car vs) (fx-sym (car is)) (the int (list-length (cdr is))))))
+                                                    (let ((c (fx-constructor file (car vs) (fx-sym (car is)) (length (cdr is)))))
                                                       (cons c (variants (cdr vs))))
                                                     (variants (cdr vs))))))))
                     (variants (if (pair? rest) (cdr rest) nil)))))

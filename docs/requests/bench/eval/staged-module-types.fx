@@ -1,5 +1,6 @@
-;; Staged code sees the module's values, not its types: `reqs`, a `(desc reqs requests)`
-;; of the module's type, is "not a type" to the definition of `greet` below.
+;; Staged code saw the module's values, not its types: `reqs`, a `(desc reqs requests)`
+;; of the module's type, was "not a type" to the definition of `greet` below,
+;; until Fixpt's d144eeb5. Runs at dd369934.
 ;; Option 2 through a session: forms as a rewriter would write them, each a
 ;; procedure of a region and a log in it.
 (define-effect turn-eff (maxeff spin nondet (read @globals) (read @ed) (alloc @ed)))
