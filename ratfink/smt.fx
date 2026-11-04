@@ -118,7 +118,10 @@ symbol) if the deadline (ms, or -1) passed first."
   (lambda (s deadline)
     (letrec ((loop (subr rf-eff (int) rf-value)
                (lambda (wait)
-                 (let* ((more (process-output (get (extract s pid))))
+                 ;; Whether it ended, asked before its output is taken: output
+                 ;; written in between is in `more`.
+                 (let* ((ended (exited? (get (extract s pid))))
+                        (more (process-output (get (extract s pid))))
                         (text (string-append (get (extract s buffer)) more))
                         (end (datum-end text)))
                    (begin
@@ -127,7 +130,7 @@ symbol) if the deadline (ms, or -1) passed first."
                          (let ((forms (read-text* (substring text 0 end) "z3" #f #f)))
                            (begin (set (extract s buffer) (substring text end (string-length text)))
                                   (if (null? forms) rf-eof (car forms))))
-                         (cond ((and (string=? more "") (exited? (get (extract s pid)))) rf-eof)
+                         (cond ((and (string=? more "") ended) rf-eof)
                                ((and (>= deadline 0) (> (now-ms) deadline)) (rf-sym 'stopped))
                                (else (begin (pause wait) (loop (if (< wait 2000) (* wait 2) wait)))))))))))
       (loop 20))))

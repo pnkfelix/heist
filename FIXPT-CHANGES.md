@@ -8,7 +8,19 @@ do it, and what it cost. Kayak will need the same changes later
 
 ## Base
 
-- Fixpt `main` at dd369934 (2026-11-01), pulled from GitHub, which has
+- Fixpt `main` at ec10e701 (2026-11-03), pulled from GitHub: `+` and `-`
+  name the argument that is wrong, as every other call does (82fedd92);
+  process programs ask the status before taking the output (19b31f10);
+  cellular code in its words' bloblets on arm64. Heist needed: the
+  `eval-refused` screen's new wording (M-: now refuses `(+ 1 "x")` as it
+  says, no longer taking it for a form of another type), and the status
+  asked first wherever output was taken before it (the editor's CFA and
+  s7st servers, s7st's `rm`, ratfink's z3), lest the last output be lost.
+  `fixpt/` is Fixpt's tree exactly. After `fixpt prewarm` and
+  `bin/heist-compile all`, all 186 tests pass, with dumps (9.2 s) and
+  without (15.9 s); ratfink's corpus 123 of 124, playback 12 of 12, its
+  FX-26 tests' reports unchanged.
+- Before: Fixpt `main` at dd369934 (2026-11-01), pulled from GitHub, which has
   the fixes of Heist's reports (Upstream, below), `attempt-within`, the
   evaluator's missing standard procedures, and FX-26's native compiler
   on arm64. Heist needed no change to its code but to drop the CFA's

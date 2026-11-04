@@ -340,7 +340,10 @@ the main loop to look again in 50 ms."
   (lambda ()
     (let ((s (get s7-server)))
       (if (null? s) #f
-          (let ((text (string-append (get s7-partial) (process-output (car s)))))
+          ;; The status first: output after the last `process-output` is
+          ;; kept only for one taken after it.
+          (let* ((status (process-status (car s)))
+                 (text (string-append (get s7-partial) (process-output (car s)))))
             (letrec ((lines (subr cmd-eff (int) unit)
                        (lambda (from)
                          (let ((e (string-search text "\n" from)))
@@ -348,7 +351,7 @@ the main loop to look again in 50 ms."
                                (begin (s7-answer! (substring text from e)) (lines (+ e 1))))))))
               (begin
                 (lines 0)
-                (tagcase (process-status (car s))
+                (tagcase status
                   (running u #u)
                   (else y (begin (set s7-server nil)
                             (tagcase (get s7-client-now)

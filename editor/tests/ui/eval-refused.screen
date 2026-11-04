@@ -9,5 +9,5 @@ alpha                                   |
                                         |
                                         |
 ---- a.txt   L1                         |
-a int is expected here, and this is a st|
+argument 2 is a string, where a int is e|
 cursor 0,0

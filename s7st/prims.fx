@@ -1297,8 +1297,8 @@ and when what runs ends."
                                                                      ;; its status is no longer running (F6).
                                                                      (letrec ((said (subr s7-eff (string) string)
                                                                                 (lambda (acc)
-                                                                                  (let ((acc (string-append acc (process-output id))))
-                                                                                    (tagcase (process-status id) (running u (said acc)) (else y acc))))))
+                                                                                  (let* ((st (process-status id)) (acc (string-append acc (process-output id))))
+                                                                                    (tagcase st (running u (said acc)) (else y acc))))))
                                                                        (let* ((out (said "")) (nl (string-search out "\n" 0)))
                                                                          (fail (if (< nl 0) out (substring out 0 nl)))))))
                                                        (else y (fail "rm did not end well")))))
