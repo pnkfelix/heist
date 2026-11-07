@@ -10,11 +10,11 @@
 ;;; `(kbd "C-x C-f")` turns Emacs's notation into a list of keys, and
 ;;; `key->string` turns one back.
 
-(define-type key (union char symbol))
+(define-type key (oneof char symbol))
 (define-type keys (listof key acyclic))
 "A source of bytes: the next byte, or #f if none comes within the
 milliseconds given. A terminal's, or a test's list."
-(define-type (byte-source (e effect)) (subr e (int) (union false int)))
+(define-type (byte-source (e effect)) (subr e (int) (oneof false int)))
 
 (hide
   (define symbol-append (subr pure (string string) symbol)
@@ -82,7 +82,7 @@ milliseconds given. A terminal's, or a test's list."
                       (if (= 1 (remainder mods 2)) "S-" "")
                       (symbol->string k)))))
 
-  (define tilde-key (subr pure (int) (union false symbol))
+  (define tilde-key (subr pure (int) (oneof false symbol))
     (lambda (n)
       (case n
         ((1 7) 'home) ((2) 'insert) ((3) 'delete) ((4 8) 'end)
@@ -96,7 +96,7 @@ milliseconds given. A terminal's, or a test's list."
   ;; meta, 4 control).
   (define csi-key (subr spin (char (listof int acyclic)) key)
     (lambda (final params)
-      (let ((base (the (union false symbol)
+      (let ((base (the (oneof false symbol)
                        (case final
                          ((#\A) 'up) ((#\B) 'down) ((#\C) 'right) ((#\D) 'left)
                          ((#\H) 'home) ((#\F) 'end) ((#\Z) 'backtab)
@@ -146,7 +146,7 @@ modifiers (<f5>, C-<left>)."
 
 "The next key from `next-byte`, or #f if no input comes within `timeout`
 milliseconds."
-(define read-key (poly ((e effect)) (subr (maxeff e spin) ((byte-source e) int) (union false key)))
+(define read-key (poly ((e effect)) (subr (maxeff e spin) ((byte-source e) int) (oneof false key)))
   (plambda ((e effect))
     (lambda (next-byte timeout)
       (letrec ((byte->key (subr (maxeff e spin) (int) key)

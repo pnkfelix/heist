@@ -219,7 +219,7 @@ was.
 |---|---|---|
 | `editor/core.fx` | `(yank actor core)` | Actors, turns under `attempt`, and commands run after a turn. No scheduling classes, activities or timers yet. |
 | `editor/rope.fx` | `(yank actor rope)` | The persistent rope, as a `define-datatype`. |
-| `editor/keys.fx` | `(yank keys)` | Keys as `(union char symbol)`, `kbd`, and decoding from a byte source. |
+| `editor/keys.fx` | `(yank keys)` | Keys as `(oneof char symbol)`, `kbd`, and decoding from a byte source. |
 | `editor/screen.fx` | `(yank screen)` | Immutable rows with face spans; `screen-update` redraws the rows that changed. |
 | `editor/main.fx` | `(yank actor main)`, a little of buffer, view, frame and commands | The slice. |
 
@@ -242,7 +242,7 @@ is a property of the types, not a convention as it was in cahoots.
   `else`.
 - A type imported from a module file has no shape known at run time, so
   it can't be a member of a union outside that module. `screen.fx` uses
-  `no-screen` instead of `(union false screen)`.
+  `no-screen` instead of `(oneof false screen)`.
 - `spawn` and `send` are FX-26's process forms, so the core's are
   named `spawn-actor` and `tell`.
 - A definition sees only those before it. The actors are wired up after

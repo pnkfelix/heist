@@ -93,7 +93,7 @@ number->string writes an exact integer."
                (string-append (if (< n 0) "-" "") (list->string (go m nil (bit-bound m))))))))))
 
 "The value of digit `c` in `radix` (0-9, then a-z or A-Z), or #f."
-(define radix-digit (subr pure (char int) (union false nat))
+(define radix-digit (subr pure (char int) (oneof false nat))
   (lambda (c radix)
     (let* ((k (char->integer c))
            (d (cond ((and (>= k 48) (<= k 57)) (- k 48))
@@ -105,11 +105,11 @@ number->string writes an exact integer."
 "The integer `s` writes in `radix` (2 to 36): an optional sign, then one
 digit or more; #f if it is not one. (R7RS's string->number, for exact
 integers, with no prefix.)"
-(define string->integer (subr pure (string int) (union false int))
+(define string->integer (subr pure (string int) (oneof false int))
   (lambda (s radix)
     (let* ((n (string-length s))
            (sign (if (and (> n 0) (or (char=? (string-ref s 0) #\-) (char=? (string-ref s 0) #\+))) 1 0)))
-      (letrec ((go (subr pure (int int) (union false int))
+      (letrec ((go (subr pure (int int) (oneof false int))
                  (lambda (i acc)
                    (if (>= i n) (if (and (= sign 1) (char=? (string-ref s 0) #\-)) (- 0 acc) acc)
                        (let ((d (radix-digit (string-ref s i) radix)))

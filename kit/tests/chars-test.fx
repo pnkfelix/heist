@@ -3,11 +3,11 @@
 (define chars (load-module "../chars.fx"))
 (import chars digit-value char-delimiter? char-name name->char written-char)
 
-(define digit-is (subr pure ((union false nat) int) bool)
+(define digit-is (subr pure ((oneof false nat) int) bool)
   (lambda (x n) (if (bool? x) #f (= x n))))
-(define char-is (subr pure ((union false char) char) bool)
+(define char-is (subr pure ((oneof false char) char) bool)
   (lambda (x c) (if (bool? x) #f (char=? x c))))
-(define name-is (subr pure ((union false string) string) bool)
+(define name-is (subr pure ((oneof false string) string) bool)
   (lambda (x s) (if (bool? x) #f (string=? x s))))
 
 (define* check (subr pure () unit)

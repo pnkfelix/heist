@@ -120,7 +120,7 @@ keys is laid out once, at its end; idle actors only when neither waits."
     (lambda (c) (and (null? (array-ref qin c)) (null? (array-ref qout c)))))
 
   ;; The next runner of class `c`, if any.
-  (define dequeue-of! (subr (maxeff (read ed) (write ed)) (int) (union false runner))
+  (define dequeue-of! (subr (maxeff (read ed) (write ed)) (int) (oneof false runner))
     (lambda (c)
       (begin
         (if (null? (array-ref qout c))

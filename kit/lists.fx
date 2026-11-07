@@ -10,7 +10,7 @@
 ;;; checker allows it) or a writable one. A procedure given is of any effect
 ;;; `e`, which the call has too.
 ;;;
-;;; What is not found is #f, as in R7RS: an index is a `(union false nat)`,
+;;; What is not found is #f, as in R7RS: an index is a `(oneof false nat)`,
 ;;; taken apart by `bool?`; an element, of a type variable, which no union
 ;;; may hold, is `none` or `(some x)`; `member` gives the tail from the
 ;;; element found, so nil when there is none.
@@ -163,10 +163,10 @@ from the first element over the rest."
 "The index of the first element `pred` is true of, or #f."
 (define list-index
   (poly ((p place) (a type) (e effect))
-    (subr (maxeff e (read (acyclic p))) ((subr e (a) bool) (listof a (acyclic p))) (union false nat)))
+    (subr (maxeff e (read (acyclic p))) ((subr e (a) bool) (listof a (acyclic p))) (oneof false nat)))
   (plambda ((p place) (a type) (e effect))
     (lambda (pred l)
-      (letrec ((go (subr (maxeff e (read (acyclic p))) ((listof a (acyclic p)) nat) (union false nat))
+      (letrec ((go (subr (maxeff e (read (acyclic p))) ((listof a (acyclic p)) nat) (oneof false nat))
                  (lambda (l i) (cond ((null? l) #f) ((pred (car l)) i) (else (go (cdr l) (+ i 1)))))))
         (go l 0)))))
 

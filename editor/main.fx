@@ -39,19 +39,19 @@ after which the terminal's size is looked at."
 
 "The next byte typed, or #f if none comes within `timeout` ms (0: only
 one already there), or a process has news first (`news-came`)."
-(define* next-byte (subr (maxeff (io stdin) (io clock) (io process) (read @ed) (write @ed) nondet spin) (int) (union false int))
+(define* next-byte (subr (maxeff (io stdin) (io clock) (io process) (read @ed) (write @ed) nondet spin) (int) (oneof false int))
   (lambda (timeout)
     (let ((of (lambda ((r (sumof (byte u8) (eof unit) (failed io-error))))
-                (the (union false int)
+                (the (oneof false int)
                      (tagcase r
                        (byte u (begin (set bytes-read (+ 1 (get bytes-read))) (u8->int u)))
                        ;; The input ended (or failed): the editor ends.
                        (else y (begin (set running #f) #f)))))))
       (if (<= timeout 0)
-          (if (stdin-ready?) (of (read-byte)) (the (union false int) #f))
+          (if (stdin-ready?) (of (read-byte)) (the (oneof false int) #f))
           (pselect ((read-byte) r (of r))
-            ((process-news) p (begin (set news-came #t) (the (union false int) #f)))
-            ((sleep-until (i64+ (clock) (int->i64 (* timeout 1000000)))) u (the (union false int) #f)))))))
+            ((process-news) p (begin (set news-came #t) (the (oneof false int) #f)))
+            ((sleep-until (i64+ (clock) (int->i64 (* timeout 1000000)))) u (the (oneof false int) #f)))))))
 
 "The keys typed and not yet sent, oldest first; and the activity of the
 one being handled (-1: none). A key is sent to the frame as an activity,

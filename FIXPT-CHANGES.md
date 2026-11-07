@@ -8,7 +8,21 @@ do it, and what it cost. Kayak will need the same changes later
 
 ## Base
 
-- Fixpt `main` at ec10e701 (2026-11-03), pulled from GitHub: `+` and `-`
+- Fixpt `main` at 26ee4ad1 (2026-11-07), pulled from GitHub: true unions
+  and intersections (`oneof`, which `union` was and is still read as;
+  `anyof`; `allof`); `tupleof` and `tuple`, and `tagcase` taking apart by
+  position only a tuple's fields; `(listof T)` acyclic by default; no
+  variant named by a type form; typed macros (a prototype); the three
+  keys of loads and places; a module reshaped once. Heist needed no
+  change to run: nothing of ours took a named product apart by position.
+  But its 41 `(union …)` types are `(oneof …)` now (ratfink's `union` is
+  a variant's name, kept), and the editor's lists of FX-26's words gained
+  `oneof`, `anyof`, `allof`, `tupleof`, `restrict`, `tuple` and
+  `attempt-within`. `fixpt/` is Fixpt's tree exactly. After `fixpt
+  prewarm` and `bin/heist-compile all`, all 186 tests pass, with dumps
+  (9.2 s) and without (15.5 s); ratfink's corpus 123 of 124, playback 12
+  of 12, its FX-26 tests' reports unchanged.
+- Before: Fixpt `main` at ec10e701 (2026-11-03), pulled from GitHub: `+` and `-`
   name the argument that is wrong, as every other call does (82fedd92);
   process programs ask the status before taking the output (19b31f10);
   cellular code in its words' bloblets on arm64. Heist needed: the

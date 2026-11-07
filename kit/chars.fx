@@ -22,10 +22,10 @@ points, 0 to 9 (Unicode 16; s7st's table)."
 
 "R7RS's digit-value: the value of the decimal digit `c` (Unicode's, any
 script), or #f."
-(define digit-value (subr pure (char) (union false nat))
+(define digit-value (subr pure (char) (oneof false nat))
   (lambda (c)
     (let ((k (char->integer c)))
-      (letrec ((go (subr pure ((listof int acyclic)) (union false nat))
+      (letrec ((go (subr pure ((listof int acyclic)) (oneof false nat))
                  (lambda (l)
                    (cond ((null? l) #f)
                          ((and (>= k (car l)) (< k (+ (car l) 10))) (confirm-nat (- k (car l)) (n n) #f))
@@ -48,10 +48,10 @@ line."
         (product (name "tab") (code 9))))
 
 "`c`'s R7RS name (#\\space's \"space\"), or #f."
-(define char-name (subr pure (char) (union false string))
+(define char-name (subr pure (char) (oneof false string))
   (lambda (c)
     (let ((k (char->integer c)))
-      (letrec ((go (subr pure ((listof (productof (name string) (code int)) acyclic)) (union false string))
+      (letrec ((go (subr pure ((listof (productof (name string) (code int)) acyclic)) (oneof false string))
                  (lambda (l) (cond ((null? l) #f) ((= (extract (car l) code) k) (extract (car l) name)) (else (go (cdr l)))))))
         (go char-names)))))
 
@@ -66,14 +66,14 @@ line."
 
 "The character `text` names after R7RS's #\\ -- one character, a name
 (\"space\"), or x and hex digits (\"x41\") -- or #f."
-(define name->char (subr pure (string) (union false char))
+(define name->char (subr pure (string) (oneof false char))
   (lambda (text)
     (let ((n (string-length text)))
-      (letrec ((named (subr pure ((listof (productof (name string) (code int)) acyclic)) (union false char))
+      (letrec ((named (subr pure ((listof (productof (name string) (code int)) acyclic)) (oneof false char))
                  (lambda (l) (cond ((null? l) #f)
                                    ((string=? (extract (car l) name) text) (integer->char (extract (car l) code)))
                                    (else (named (cdr l))))))
-               (hex (subr pure (int int) (union false char))
+               (hex (subr pure (int int) (oneof false char))
                  (lambda (i acc)
                    (cond ((>= i n) (if (<= acc 1114111) (integer->char acc) #f))
                          ((< (hex-value (string-ref text i)) 0) #f)

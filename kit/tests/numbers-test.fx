@@ -5,7 +5,7 @@
 (import numbers abs gcd lcm floor-quotient floor-remainder truncate-quotient truncate-remainder expt
         integer-length exact-integer-sqrt number->string radix-digit string->integer ratio->f64)
 
-(define is (subr pure ((union false int) int) bool)
+(define is (subr pure ((oneof false int) int) bool)
   (lambda (x n) (if (bool? x) #f (= x n))))
 
 (define* check (subr pure () unit)

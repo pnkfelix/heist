@@ -3,7 +3,7 @@
 (import k kbd key->string keys->string read-key key=? meta-key (type key keys byte-source))
 
 (define pending (ref (listof int acyclic) @t) (new nil))
-(define* next (subr (maxeff (read @t) (write @t)) (int) (union false int))
+(define* next (subr (maxeff (read @t) (write @t)) (int) (oneof false int))
   (lambda (timeout)
     (let ((p (get pending)))
       (if (null? p) #f (begin (set pending (cdr p)) (car p))))))

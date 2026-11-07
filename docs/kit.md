@@ -34,7 +34,7 @@ escapes.
 - **Lists made are at a region `r` the caller chooses**. No procedure here
   writes `r`, so the checker lets a caller choose `acyclic` (`(the (listof
   int acyclic) (map f l))`), or a writable region.
-- **Not found is `#f`**, as in R7RS: an index or a digit is a `(union false
+- **Not found is `#f`**, as in R7RS: an index or a digit is a `(oneof false
   nat)`, taken apart by `bool?`. An element of a type variable cannot be in
   a union (no shape is known), so `find` gives `none` or `(some x)`.
   `member` gives the tail from the element found, so nil when none is.

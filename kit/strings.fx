@@ -23,17 +23,17 @@
       (and (<= k n) (string=? (substring s (- n k) n) suffix)))))
 
 "The index of the first `c` in `s` at or after `start`, or #f."
-(define string-index-from (subr pure (string char int) (union false nat))
+(define string-index-from (subr pure (string char int) (oneof false nat))
   (lambda (s c start)
     (let ((n (string-length s)))
-      (letrec ((go (subr pure (int) (union false nat))
+      (letrec ((go (subr pure (int) (oneof false nat))
                  (lambda (i) (cond ((>= i n) #f)
                                    ((char=? (string-ref s i) c) (confirm-nat i (k k) #f))
                                    (else (go (+ i 1)))))))
         (go (if (< start 0) 0 start))))))
 
 "The index of the first `c` in `s`, or #f."
-(define string-index (subr pure (string char) (union false nat))
+(define string-index (subr pure (string char) (oneof false nat))
   (lambda (s c) (string-index-from s c 0)))
 
 "The strings of `ss`, one after another."

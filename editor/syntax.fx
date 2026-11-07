@@ -25,10 +25,10 @@
         "letregion" "letrena" "letreap" "letfreeze" "if" "cond" "case" "and" "or" "begin"
         "tagcase" "typecase" "else" "the" "proj" "with" "module" "import" "hide" "include"
         "extend" "load-module" "load-input" "module-parameters" "set" "get" "new" "spawn"
-        "spawn-monitored" "send" "receive" "pselect" "race" "par" "attempt" "prompt" "product"
-        "sum" "extract" "quote" "quasiquote" "acyclic" "icell-get" "icell-put!" "self"))
+        "spawn-monitored" "send" "receive" "pselect" "race" "par" "attempt" "attempt-within" "prompt" "product"
+        "tuple" "sum" "extract" "quote" "quasiquote" "acyclic" "icell-get" "icell-put!" "self"))
 (define type-words strings
-  (list "subr" "poly" "productof" "sumof" "listof" "pairof" "arrayof" "ref" "union" "maxeff"
+  (list "subr" "poly" "productof" "sumof" "listof" "pairof" "arrayof" "ref" "union" "oneof" "anyof" "allof" "tupleof" "maxeff"
         "moduleof" "->" "->*" "vsubr" "icell" "addr" "inbox" "bytevectorof" "flatarrayof" "mu"
         "select" "nlist" "dlambda"))
 (define definers strings

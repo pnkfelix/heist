@@ -124,7 +124,7 @@ multiplication) or `rop` (as floats, if either is one)."
         (slow))))
 "An int's digits in `radix`."
 "Integer `v`'s value, or #f: an int, or a float with no fraction."
-(define* s7-integer-of (subr pure (s7-value) (union false int))
+(define* s7-integer-of (subr pure (s7-value) (oneof false int))
   (lambda (v)
     (tagcase v
       (int i i)
@@ -500,12 +500,12 @@ folded to ss."
 if `chars`), case folded if `fold`."
 (define* s7-chain (subr s7-eff (string bool bool (subr pure (string string) bool) s7-values) s7-out)
   (lambda (who chars fold op l)
-    (letrec ((text (subr s7-eff (s7-value) (union false string))
+    (letrec ((text (subr s7-eff (s7-value) (oneof false string))
                (lambda (v)
-                 (let ((s (the (union false string)
+                 (let ((s (the (oneof false string)
                               (tagcase v
-                                (str s (if chars (the (union false string) #f) (get s)))
-                                (char c (if chars (char->string c) (the (union false string) #f)))
+                                (str s (if chars (the (oneof false string) #f) (get s)))
+                                (char c (if chars (char->string c) (the (oneof false string) #f)))
                                 (else y #f)))))
                    (typecase s (string t (if fold (s7-string-foldcase t) t)) (else y #f)))))
              (go (subr s7-eff (s7-values) s7-out)
@@ -536,7 +536,7 @@ or an error."
 (define* s7-string-map-chars (subr spin (string (subr pure (char) char)) string)
   (lambda (s f) (list->string (map f (the (listof char acyclic) (string->list s))))))
 "The characters of `l`, or #f if one is not."
-(define* s7-values->chars (subr spin (s7-values) (union false (listof char acyclic)))
+(define* s7-values->chars (subr spin (s7-values) (oneof false (listof char acyclic)))
   (lambda (l)
     (if (null? l) (the (listof char acyclic) nil)
         (tagcase (car l)

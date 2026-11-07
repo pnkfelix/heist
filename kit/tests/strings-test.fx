@@ -5,7 +5,7 @@
         string-split string-tokenize string-pad-right string-pad written-string
         reverse-list->string)
 
-(define index-is (subr pure ((union false nat) int) bool)
+(define index-is (subr pure ((oneof false nat) int) bool)
   (lambda (x n) (if (bool? x) #f (= x n))))
 "Two lists of strings, the same."
 (define same-strings (subr pure ((listof string acyclic) (listof string acyclic)) bool)
