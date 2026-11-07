@@ -37,8 +37,48 @@ fn located(name: &str, text: &str, e: &fixpt_fx26::FxError) -> String {
     if e.span.file == fixpt_fx26::FRONT_END_FILE {
         return e.message.clone();
     }
-    let (line, col) = line_col(text, e.span.start as usize);
-    format!("{name}:{line}:{col}: {}", e.message)
+    let mut out = format!("{}: {}", place(name, text, e.span), e.message);
+    // Text a macro's template made: each use that made it, innermost first.
+    for use_ in fixpt_read::expansion_trace(e.span) {
+        out.push_str(&format!("\n  in the expansion of `{}` at {}", use_.name, place(name, text, use_.at)));
+    }
+    out
+}
+
+/// `e`, an error in what the REPL read, said where it is in the session's
+/// text (`Fx26Session::place`: which entry, its line and column), then at
+/// each use of a macro that made its text, innermost first. One in a file
+/// loaded, as [`located`] says it.
+fn located_in(session: &Fx26Session, name: &str, text: &str, e: &fixpt_fx26::FxError) -> String {
+    if e.span.file != FileId(0) {
+        return located(name, text, e);
+    }
+    let at = |s: fixpt_read::Span| {
+        let (n, line, col) = session.place(s);
+        format!("{n}:{line}:{col}")
+    };
+    let mut out = format!("{}: {}", at(e.span), e.message);
+    for use_ in fixpt_read::expansion_trace(e.span) {
+        out.push_str(&format!("\n  in the expansion of `{}` at {}", use_.name, at(use_.at)));
+    }
+    out
+}
+
+/// Where `span` is: in `text`, named `name`; or, of text a macro's template
+/// made, in the text its definition was read from, if that is another (an
+/// earlier REPL entry's), named for the macro.
+fn place(name: &str, text: &str, span: fixpt_read::Span) -> String {
+    let made = fixpt_read::expansion(span.expansion);
+    match made.as_ref().and_then(|m| m.text.as_ref().map(|t| (m, t))) {
+        Some((m, t)) if &**t != text => {
+            let (line, col) = line_col(t, span.start as usize);
+            format!("`{}`'s definition:{line}:{col}", m.name)
+        }
+        _ => {
+            let (line, col) = line_col(text, span.start as usize);
+            format!("{name}:{line}:{col}")
+        }
+    }
 }
 
 /// A warning, on the standard error, for each type a whole program defines
@@ -539,10 +579,10 @@ pub fn repl(backend: Backend) -> i32 {
             Some((file, line, col)) => (file, format!("{}{}{text}", "\n".repeat(line - 1), " ".repeat(col - 1))),
             None => (format!("<fx26:{n}>"), text),
         };
-        let forms = match session.checker.read_in(FileId(0), &text) {
+        let forms = match session.read_entry(&name, &text) {
             Ok(f) => f,
             Err(e) => {
-                eprintln!("read error: {}", located(&name, &text, &e));
+                eprintln!("read error: {}", located_in(&session, &name, &text, &e));
                 continue;
             }
         };
@@ -579,12 +619,15 @@ pub fn repl(backend: Backend) -> i32 {
                 GcStats::end_form(&mut session, &b);
             }
             if ran.is_ok() {
-                let (start, end) = (form.span.start as usize, form.span.end as usize);
-                program += &text[start..end];
+                program += session.session_text_at(form.span);
                 program.push('\n');
-                // What comes before it blank, so that its places are its own.
+                // What comes before it in its entry blank, so that its places
+                // are its own there.
+                let entry = session.entry_start(form.span);
+                let start = (form.span.start as usize - entry).min(text.len());
                 let before: String = text[..start].chars().map(|c| if c == '\n' { c } else { ' ' }).collect();
-                sources.push(fixpt_fx26::query::Source { name: name.clone(), text: before + &text[start..end], base: session.checker.base_dir.clone() });
+                let own = before + session.session_text_at(form.span);
+                sources.push(fixpt_fx26::query::Source { name: name.clone(), text: own, base: session.checker.base_dir.clone() });
             }
             match ran {
                 // A top-level `include`'s forms, each shown.
@@ -597,7 +640,7 @@ pub fn repl(backend: Backend) -> i32 {
                     }
                 }
                 Err(e) => {
-                    eprintln!("{}", located(&name, &text, &e));
+                    eprintln!("{}", located_in(&session, &name, &text, &e));
                     if let Some(note) = pending_note(&mut session, &e.message) {
                         eprintln!("{note}");
                     }
@@ -635,13 +678,13 @@ fn complete_pending(session: &mut Fx26Session, forms: &[Syntax], names: &[String
             for o in outs {
                 match o {
                     Ok(out) => show(session, &out, show_code),
-                    Err(e) => eprintln!("{}", located(name, text, &e)),
+                    Err(e) => eprintln!("{}", located_in(session, name, text, &e)),
                 }
             }
             let names: Vec<String> = names.iter().map(|n| format!("`{n}`")).collect();
             println!("; no longer pending: {}", names.join(", "));
         }
-        Err(e) => eprintln!("{}", located(name, text, &e)),
+        Err(e) => eprintln!("{}", located_in(session, name, text, &e)),
     }
 }
 
@@ -1155,6 +1198,57 @@ pub fn check(backend: Backend, name: &str, text: &str) -> i32 {
         say(&rust, "Rust:  ");
         println!("; the checkers disagree");
         1
+    }
+}
+
+/// `fixpt check --reps`: each name the program defines, in order, with its
+/// type's rep as the Rust checker exports it (`NAME HEX`, the binary form
+/// in lowercase hexadecimal, or with `text` the readable form), or `NAME
+/// declined`; then, where the FX-26 checker's rep of the name's latest
+/// definition is another, `NAME differs REP` (kayak's request,
+/// `docs/fx26.md`). A form refused ends them, said on the standard error,
+/// and then 1.
+pub fn check_reps(backend: Backend, name: &str, text: &str, readable: bool) -> i32 {
+    let mut session = match start(backend) {
+        Ok(s) => s,
+        Err(code) => return code,
+    };
+    session.checker.base_dir = std::path::Path::new(name).parent().map(|d| d.to_path_buf());
+    let mut c = session.fresh_checker();
+    let (rust, refused) = fixpt_fx26::compare::rust_reps(&mut c, text);
+    // The FX-26 checker's, if it takes the whole program, told of the
+    // `include`s as `both_checkers` tells it.
+    fixpt_fx26::syn::set_includes(fixpt_fx26::compare::includes_given(&mut c, text));
+    let ours = match session.check_with_own_checker(text) {
+        Ok(Ok(_)) => session.own_checked_reps().unwrap_or_default(),
+        _ => Vec::new(),
+    };
+    let show = |b: &[u8]| {
+        if readable {
+            fixpt_reps::binary::decode(b, true).map(|r| fixpt_reps::text::write(&r)).unwrap_or_else(|e| format!("unreadable: {e}"))
+        } else {
+            b.iter().map(|x| format!("{x:02x}")).collect()
+        }
+    };
+    for (i, (n, rep)) in rust.iter().enumerate() {
+        match rep {
+            Some(b) => println!("{n} {}", show(b)),
+            None => println!("{n} declined"),
+        }
+        // The FX-26 checker's is of the name's latest definition only.
+        let latest = !rust[i + 1..].iter().any(|(m, _)| m == n);
+        if let Some((_, theirs)) = ours.iter().rev().find(|(m, _)| m == n).filter(|_| latest) {
+            if rep.as_ref() != Some(theirs) {
+                println!("{n} differs {}", show(theirs));
+            }
+        }
+    }
+    match refused {
+        Some(e) => {
+            eprintln!("fixpt: {}", located(name, text, &e));
+            1
+        }
+        None => 0,
     }
 }
 
@@ -1686,8 +1780,16 @@ fn speculative_notes(session: &mut Fx26Session, text: &str, p: &crate::speculate
 }
 
 fn speculative_notes_now(session: &mut Fx26Session, text: &str, p: &crate::speculate::Partial) -> Vec<Note> {
-    let c = &mut session.checker;
-    let Ok(forms) = c.read_in(FileId(0), &p.closed) else { return Vec::new() };
+    // A macro defined in what is typed is defined for it alone.
+    let kept = session.checker.macros_kept();
+    let notes = speculative_notes_read(session, text, p);
+    session.checker.macros_put_back(kept);
+    notes
+}
+
+fn speculative_notes_read(session: &mut Fx26Session, text: &str, p: &crate::speculate::Partial) -> Vec<Note> {
+    // Read as the next entry would be, its places past the session's text.
+    let Ok((forms, base)) = session.read_trial(&p.closed) else { return Vec::new() };
     // A finished entry of types that names types not defined yet would wait,
     // or complete what is waiting: said before what checking it alone finds.
     if p.finished(text) {
@@ -1706,9 +1808,11 @@ fn speculative_notes_now(session: &mut Fx26Session, text: &str, p: &crate::specu
     // Each form is tried in the environment the ones before it would make,
     // and all of it is forgotten afterwards.
     let error = try_all(c, &forms, &mut |e| {
-        let (start, end) = (e.span.start as usize, e.span.end as usize);
-        (p.finished(text) || p.believe(start, end)).then(|| Note {
-            span: char_span(text, start, end),
+        // In what is typed, or (of a macro's template, typed before) not.
+        let typed = e.span.start as usize >= base && e.span.file == FileId(0);
+        let (start, end) = (e.span.start as usize - if typed { base } else { 0 }, e.span.end as usize - if typed { base } else { 0 });
+        (p.finished(text) || (typed && p.believe(start, end))).then(|| Note {
+            span: if typed { char_span(text, start, end) } else { None },
             message: e.message.clone(),
             error: true,
         })
@@ -1797,7 +1901,7 @@ mod speculative {
         assert!(n[0].error);
         // The argument itself, and the pair `+` needs one element of.
         assert_eq!(n[0].span, Some((10, 11)), "{n:?}");
-        assert_eq!(n[0].message, "argument 1 is a int, where a (union nil (pairof int ? r)) is expected");
+        assert_eq!(n[0].message, "argument 1 is a int, where a (oneof nil (pairof int ? r)) is expected");
     }
 
     #[test]
@@ -1805,6 +1909,28 @@ mod speculative {
         for text in ["(if", "(if #t", "(+ 1", "(lambda ((x int))"] {
             assert!(notes(text).iter().all(|n| !n.error), "{text:?}: {:?}", notes(text));
         }
+    }
+
+    /// An error in text a macro's template made names each use that made
+    /// it, innermost first, after its own place in the template.
+    #[test]
+    fn an_error_in_an_expansion_names_its_uses() {
+        let text = include_str!("../../fixpt-fx26/tests/programs/macros/nested-error.fx");
+        let mut s = session();
+        let e = s.run_program(text).err().expect("refused");
+        let lines: Vec<String> = located("p.fx", text, &e).lines().map(String::from).collect();
+        assert_eq!(lines[0], "p.fx:6:15: argument 2 is a bool, where a int is expected");
+        assert_eq!(lines[1..], ["  in the expansion of `add-one` at p.fx:9:10", "  in the expansion of `twice-add` at p.fx:10:1"]);
+    }
+
+    /// A macro defined in what is typed is used there, and is not defined
+    /// once it is gone (`typed-macros.md`, item 6).
+    #[test]
+    fn a_macro_typed_is_defined_for_it_alone() {
+        let mut s = session();
+        let n = notes_in(&mut s, "(define-syntax m (expr) ((_ e) e)) (m 5)");
+        assert!(n.iter().all(|n| !n.error), "{n:?}");
+        assert!(notes_in(&mut s, "(m 5)").first().is_some_and(|n| n.error));
     }
 
     #[test]
@@ -1845,7 +1971,7 @@ mod speculative {
     /// an int, its pair's first element is known, and the second is not.
     #[test]
     fn the_hint_solves_what_the_arguments_so_far_determine() {
-        assert_eq!(notes("(car ")[0].message, "argument 1 of car wants (union nil (pairof t1 t2 r))");
+        assert_eq!(notes("(car ")[0].message, "argument 1 of car wants (oneof nil (pairof t1 t2 r))");
         assert_eq!(notes("(set-car! (cons 1 #t) ")[0].message.split(" wants ").nth(1), Some("int"));
     }
 

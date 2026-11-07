@@ -8,6 +8,7 @@
 //! [`Span`], and are converted with the text.
 
 use crate::error::{FxError, R};
+use crate::ids::State;
 use crate::session::READER_PREFIX;
 use fixpt_heap::Value;
 use fixpt_read::{Datum, FileId, Interner, Num, Span, Syntax};
@@ -55,9 +56,15 @@ pub fn read_with_fx26_reader(scheme: &mut Session, interner: &mut Interner, file
 /// Parse `text` with the reader and the parser written in FX-26: each
 /// top-level form's tree, as [`crate::sexp::show_value`] prints it.
 pub fn parse_with_fx26_parser(scheme: &mut Session, file: FileId, text: &str) -> R<Vec<String>> {
+    parse_with_fx26_parser_from(scheme, file, text).map(|(trees, _)| trees)
+}
+
+/// The same, and how many expressions the parser had walked before it:
+/// where `path`'s numbers of these begin.
+pub fn parse_with_fx26_parser_from(scheme: &mut Session, file: FileId, text: &str) -> R<(Vec<String>, i64)> {
     scheme.scope(|s| {
         let tops = parse_to_trees(s, file, text)?;
-        Ok(s.view(|v| v.get(tops).list().expect("a list").into_iter().map(crate::sexp::show_value).collect()))
+        Ok((s.view(|v| v.get(tops.tops).list().expect("a list").into_iter().map(crate::sexp::show_value).collect()), tops.base))
     })
 }
 
@@ -66,27 +73,27 @@ pub fn parse_with_fx26_parser(scheme: &mut Session, file: FileId, text: &str) ->
 /// checker says the program runs (`checked-tops`, under redefinition): its
 /// value as Scheme would write it, or `!! ` and its error.
 pub fn eval_with_fx26_evaluator(scheme: &mut Session, standard: Handle, file: FileId, text: &str) -> R<String> {
-    eval_more_with_fx26_evaluator(scheme, Some(standard), file, text, 0)
+    eval_more_with_fx26_evaluator(scheme, Some(standard), file, text, 0, &mut State::begun())
 }
 
 /// [`eval_with_fx26_evaluator`], or, `standard` none, `text` as more of the
 /// program the evaluator ran before: checked after the forms before, and
 /// run with the globals they made (`run-checked-more`). Its positions are
 /// counted from `base`, past every text given before, so that what the
-/// checker says of a place is said of no other form's.
-pub fn eval_more_with_fx26_evaluator(scheme: &mut Session, standard: Option<Handle>, file: FileId, text: &str, base: i64) -> R<String> {
+/// checker says of a place is said of no other form's. Read in `state`,
+/// which it leaves the state after, if the checker keeps `text`
+/// ([`State`]).
+pub fn eval_more_with_fx26_evaluator(scheme: &mut Session, standard: Option<Handle>, file: FileId, text: &str, base: i64, state: &mut State) -> R<String> {
     let fail = |m: String| FxError::at(Span::new(file, 0, 0), m);
     let entry = if standard.is_some() { "run-checked" } else { "run-checked-more" };
     scheme.scope(|s| {
-        let tops = parse_to_trees_at(s, file, text, base)?;
+        let parsed = parse_to_trees_at(s, file, text, base, state)?;
+        let (tops, after) = (parsed.tops, parsed.after);
         let checked = check_in(s, standard, tops).map_err(|e| fail(e.to_string()))?;
-        if let Some(m) = s.view(|v| {
-            let r = v.get(checked);
-            (r.sum_tag().and_then(|t| t.symbol_name()).as_deref() == Some("k-err"))
-                .then(|| r.sum_payload().and_then(|p| p.product_field(1)).and_then(|m| m.string()).unwrap_or_default())
-        }) {
+        if let Some(m) = refusal(s, checked) {
             return Ok(format!("!! check: {m}"));
         }
+        state.at = after.at;
         let runs = s.call_global(&format!("{READER_PREFIX}checked-tops"), &[]).map_err(|e| fail(e.to_string()))?;
         // A primitive the evaluator calls may fail, as the program's own
         // failure (`DONE.md` §85).
@@ -104,16 +111,19 @@ pub fn eval_more_with_fx26_evaluator(scheme: &mut Session, standard: Option<Hand
 /// compiler written in FX-26, and run the word it makes on the cellular
 /// machine: the value, as Scheme writes it; or `!! ` and why it failed.
 pub fn compile_with_fx26_compiler(scheme: &mut Session, standard: Handle, file: FileId, text: &str) -> R<String> {
-    compile_with_fx26_compiler_showing(scheme, Some(standard), file, text, false, None).map(|(out, _)| out)
+    compile_with_fx26_compiler_showing(scheme, Some(standard), &mut State::begun(), file, text, false, None).map(|(out, _)| out)
 }
 
 /// The same, and, if `show`, the word made, and every word it reaches,
 /// disassembled before it runs; the run limited to `steps`, if given.
 /// `standard` begins the checker's state; without it, `text` is checked
-/// after the forms checked before (`check-more`), as the REPL gives them.
+/// after the forms checked before (`check-more`), as the REPL gives them,
+/// read in `state`, which it leaves the state after, if the checker keeps
+/// `text` ([`State`]).
 pub fn compile_with_fx26_compiler_showing(
     scheme: &mut Session,
     standard: Option<Handle>,
+    state: &mut State,
     file: FileId,
     text: &str,
     show: bool,
@@ -121,21 +131,20 @@ pub fn compile_with_fx26_compiler_showing(
 ) -> R<(String, Option<String>)> {
     let fail = |m: String| FxError::at(Span::new(file, 0, 0), m);
     scheme.scope(|s| {
-        let tops = parse_to_trees(s, file, text)?;
+        let parsed = parse_to_trees_at(s, file, text, 0, state)?;
+        let (tops, after) = (parsed.tops, parsed.after);
         // Checked first, by the checker written in FX-26, which says where
         // each `extract`'s field is.
         let checked = check_in(s, standard, tops).map_err(|e| fail(e.to_string()))?;
-        if let Some(m) = s.view(|v| {
-            let r = v.get(checked);
-            (r.sum_tag().and_then(|t| t.symbol_name()).as_deref() == Some("k-err"))
-                .then(|| r.sum_payload().and_then(|p| p.product_field(1)).and_then(|m| m.string()).unwrap_or_default())
-        }) {
+        if let Some(m) = refusal(s, checked) {
             return Ok((format!("!! check: {m}"), None));
         }
+        state.at = after.at;
         let facts = s.call_global(&format!("{READER_PREFIX}checked-extracts"), &[]).map_err(|e| fail(e.to_string()))?;
         let runs = s.call_global(&format!("{READER_PREFIX}checked-tops"), &[]).map_err(|e| fail(e.to_string()))?;
         let start = std::time::Instant::now();
-        let result = s.call_global(&format!("{READER_PREFIX}compile-checked"), &[runs, facts]).map_err(|e| fail(e.to_string()))?;
+        let own = own_numbering(s).map_err(fail)?;
+        let result = s.call_global(&format!("{READER_PREFIX}compile-checked"), &[runs, facts, own]).map_err(|e| fail(e.to_string()))?;
         s.runtime_unrooted().compile_nanos += start.elapsed().as_nanos() as u64;
         let (tag, word) = s.view(|v| {
             let r = v.get(result);
@@ -378,6 +387,7 @@ fn assemble_twin_by_fx26(
 pub fn with_last_value<T>(
     scheme: &mut Session,
     standard: Option<Handle>,
+    state: &mut State,
     file: FileId,
     text: &str,
     native: Option<crate::session::NativeFx>,
@@ -385,15 +395,13 @@ pub fn with_last_value<T>(
 ) -> R<Result<T, String>> {
     let fail = |m: String| FxError::at(Span::new(file, 0, 0), m);
     scheme.scope(|s| {
-        let tops = parse_to_trees(s, file, text)?;
+        let parsed = parse_to_trees_at(s, file, text, 0, state)?;
+        let (tops, after) = (parsed.tops, parsed.after);
         let checked = check_in(s, standard, tops).map_err(|e| fail(e.to_string()))?;
-        if let Some(m) = s.view(|v| {
-            let r = v.get(checked);
-            (r.sum_tag().and_then(|t| t.symbol_name()).as_deref() == Some("k-err"))
-                .then(|| r.sum_payload().and_then(|p| p.product_field(1)).and_then(|m| m.string()).unwrap_or_default())
-        }) {
+        if let Some(m) = refusal(s, checked) {
             return Ok(Err(format!("check: {m}")));
         }
+        state.at = after.at;
         let facts = s.call_global(&format!("{READER_PREFIX}checked-extracts"), &[]).map_err(|e| fail(e.to_string()))?;
         let word = match compile_checked_to_word(s, file, facts)? {
             Ok(w) => w,
@@ -423,19 +431,30 @@ pub fn with_last_value<T>(
 
 /// `text` checked by the checker written in FX-26 (after the forms before,
 /// without `standard`), and nothing more: what it found wrong, if anything.
-pub fn check_only(scheme: &mut Session, standard: Option<Handle>, file: FileId, text: &str) -> R<Result<(), String>> {
+/// Read in `state`, which it leaves the state after, if the checker keeps
+/// `text` ([`State`]).
+pub fn check_only(scheme: &mut Session, standard: Option<Handle>, state: &mut State, file: FileId, text: &str) -> R<Result<(), String>> {
     let fail = |m: String| FxError::at(Span::new(file, 0, 0), m);
     scheme.scope(|s| {
-        let tops = parse_to_trees(s, file, text)?;
+        let parsed = parse_to_trees_at(s, file, text, 0, state)?;
+        let (tops, after) = (parsed.tops, parsed.after);
         let checked = check_in(s, standard, tops).map_err(|e| fail(e.to_string()))?;
-        Ok(match s.view(|v| {
-            let r = v.get(checked);
-            (r.sum_tag().and_then(|t| t.symbol_name()).as_deref() == Some("k-err"))
-                .then(|| r.sum_payload().and_then(|p| p.product_field(1)).and_then(|m| m.string()).unwrap_or_default())
-        }) {
+        Ok(match refusal(s, checked) {
             Some(m) => Err(m),
-            None => Ok(()),
+            None => {
+                state.at = after.at;
+                Ok(())
+            }
         })
+    })
+}
+
+/// Why the checker refused, if its result `checked` is a `k-err`.
+fn refusal(s: &mut Session, checked: Handle) -> Option<String> {
+    s.view(|v| {
+        let r = v.get(checked);
+        (r.sum_tag().and_then(|t| t.symbol_name()).as_deref() == Some("k-err"))
+            .then(|| r.sum_payload().and_then(|p| p.product_field(1)).and_then(|m| m.string()).unwrap_or_default())
     })
 }
 
@@ -452,8 +471,10 @@ pub fn import_types(scheme: &mut Session, bytes: &[u8]) -> Result<Vec<i64>, Stri
 /// `standard`), each of `typed` a name the text gives a type by, bound to
 /// that type, by its id (`import_types`): read, parsed and checked in one
 /// call (`check-text-typed`); a `.fasl`'s definitions,
-/// `docs/research/heap-types.md`, step 5.
-pub fn check_only_typed(scheme: &mut Session, file: FileId, text: &str, typed: &[(String, i64)]) -> R<Result<(), String>> {
+/// `docs/research/heap-types.md`, step 5. Read in `state` (the checker
+/// written in FX-26 folds its own switches, `check-text-typed`), which it
+/// leaves the state after if the checker keeps `text` ([`State`]).
+pub fn check_only_typed(scheme: &mut Session, state: &mut State, file: FileId, text: &str, typed: &[(String, i64)]) -> R<Result<(), String>> {
     let fail = |m: String| FxError::at(Span::new(file, 0, 0), m);
     scheme.scope(|s| {
         let whole = s.make(|m| m.heap().make_string(text));
@@ -471,9 +492,18 @@ pub fn check_only_typed(scheme: &mut Session, file: FileId, text: &str, typed: &
             }
             l
         });
-        let said = s.call_global(&format!("{READER_PREFIX}check-text-typed"), &[whole, list]).map_err(|e| fail(e.to_string()))?;
-        let said = s.view(|v| v.get(said).string().unwrap_or_default());
-        Ok(if said.is_empty() { Ok(()) } else { Err(said) })
+        let int = |s: &mut Session, n: i64| s.make(|_| Value::fixnum(n));
+        let args = [int(s, crate::ids::mode() as i64), int(s, state.at), whole, list];
+        let said = s.call_global(&format!("{READER_PREFIX}check-text-typed"), &args).map_err(|e| fail(e.to_string()))?;
+        let (said, at) = s.view(|v| {
+            let r = v.get(said);
+            (r.product_field(1).and_then(|m| m.string()).unwrap_or_default(), r.product_field(2).and_then(|x| x.fixnum()).unwrap_or(0))
+        });
+        if !said.is_empty() {
+            return Ok(Err(said));
+        }
+        state.at = at;
+        Ok(Ok(()))
     })
 }
 
@@ -518,7 +548,7 @@ pub fn check_with_fx26_checker(scheme: &mut Session, standard: Handle, file: Fil
         let tops = parse_to_trees(s, file, text)?;
         phase("program parsed");
         lines(s, true).map_err(|e| fail(e.to_string()))?;
-        let result = s.call_global(&format!("{READER_PREFIX}check-program"), &[standard, tops]).map_err(|e| fail(e.to_string()))?;
+        let result = s.call_global(&format!("{READER_PREFIX}check-program"), &[standard, tops.tops]).map_err(|e| fail(e.to_string()))?;
         phase("checked");
         let offsets = byte_offsets(text);
         let at = |c: i64| offsets.get(c as usize).copied().unwrap_or(text.len()) as u32;
@@ -652,20 +682,31 @@ pub fn compile_checked_to_word(scheme: &mut Session, file: FileId, facts: Handle
     let fail = |m: String| FxError::at(Span::new(file, 0, 0), m);
     let runs = scheme.call_global(&format!("{READER_PREFIX}checked-tops"), &[]).map_err(|e| fail(e.to_string()))?;
     let start = std::time::Instant::now();
-    let result = scheme.call_global(&format!("{READER_PREFIX}compile-checked"), &[runs, facts]).map_err(|e| fail(e.to_string()))?;
+    let own = own_numbering(scheme).map_err(fail)?;
+    let result = scheme.call_global(&format!("{READER_PREFIX}compile-checked"), &[runs, facts, own]).map_err(|e| fail(e.to_string()))?;
     scheme.runtime_unrooted().compile_nanos += start.elapsed().as_nanos() as u64;
     word_of(scheme, result)
 }
 
+/// The numbering the compiler is given with the facts of the checker written
+/// in FX-26, which are the trees' own keys (`compile-checked`): the mode's,
+/// for `validate`, none to place.
+fn own_numbering(scheme: &mut Session) -> Result<Handle, String> {
+    let mode = crate::ids::mode() as i64;
+    let fields = [37, mode, 0].map(|n| scheme.make(|_| Value::fixnum(n)));
+    let nil = scheme.make(|_| Value::NULL);
+    scheme.call_global("%make-frozen", &[fields[0], fields[1], fields[2], nil]).map_err(|e| e.to_string())
+}
+
 pub fn compile_to_word(scheme: &mut Session, file: FileId, text: &str, facts: Handle) -> R<Result<Handle, String>> {
-    let tops = parse_to_trees(scheme, file, text)?;
-    compile_trees_to_word(scheme, file, tops, facts)
+    let parsed = parse_to_trees(scheme, file, text)?;
+    compile_trees_to_word(scheme, file, &parsed, facts)
 }
 
 /// The same, from the program's trees ([`parse_syns`]).
-pub fn compile_trees_to_word(scheme: &mut Session, file: FileId, tops: Handle, facts: Handle) -> R<Result<Handle, String>> {
+pub fn compile_trees_to_word(scheme: &mut Session, file: FileId, parsed: &Parsed, facts: Handle) -> R<Result<Handle, String>> {
     let fail = |m: String| FxError::at(Span::new(file, 0, 0), m);
-    let result = scheme.call_global(&format!("{READER_PREFIX}compile-program"), &[tops, facts]).map_err(|e| fail(e.to_string()))?;
+    let result = scheme.call_global(&format!("{READER_PREFIX}compile-program"), &[parsed.tops, facts, parsed.numbering]).map_err(|e| fail(e.to_string()))?;
     word_of(scheme, result)
 }
 
@@ -688,35 +729,60 @@ fn word_of(scheme: &mut Session, result: Handle) -> R<Result<Handle, String>> {
 
 /// The parser's trees for `text`: a list of `top`s, as a handle in the
 /// caller's scope.
-fn parse_to_trees(scheme: &mut Session, file: FileId, text: &str) -> R<Handle> {
-    parse_to_trees_at(scheme, file, text, 0)
+fn parse_to_trees(scheme: &mut Session, file: FileId, text: &str) -> R<Parsed> {
+    parse_to_trees_at(scheme, file, text, 0, &State::begun())
 }
 
-/// [`parse_to_trees`], its positions counted from `base`.
-fn parse_to_trees_at(scheme: &mut Session, file: FileId, text: &str, base: i64) -> R<Handle> {
+/// What the parser written in FX-26 made of a text: its trees, and how it
+/// numbered them (`numbering`, as the compiler takes it with facts numbered
+/// by their place in the walk: `c-set-facts!`), after how many expressions
+/// the parser walked before (`base`); and the session's state after it, if
+/// it is kept (`after`).
+pub struct Parsed {
+    pub tops: Handle,
+    pub numbering: Handle,
+    pub base: i64,
+    pub after: State,
+}
+
+/// [`parse_to_trees`], its positions counted from `base`, read in `state`.
+fn parse_to_trees_at(scheme: &mut Session, file: FileId, text: &str, base: i64, state: &State) -> R<Parsed> {
     supply_loaded_at(scheme, file, text, base)?;
     let syns = read_to_syns_at(scheme, file, text, base)?;
-    parse_syns_at(scheme, file, text, syns, base)
+    parse_syns_at(scheme, file, text, syns, base, state)
 }
 
 /// What the parser written in FX-26 makes of `syns`, read from `text`
-/// ([`read_to_syns`]): the program's trees, or where it is wrong.
-pub fn parse_syns(scheme: &mut Session, file: FileId, text: &str, syns: Handle) -> R<Handle> {
-    parse_syns_at(scheme, file, text, syns, 0)
+/// ([`read_to_syns`]): the program's trees, or where it is wrong; read in
+/// the standard environment's state, by the default switches.
+pub fn parse_syns(scheme: &mut Session, file: FileId, text: &str, syns: Handle) -> R<Parsed> {
+    parse_syns_at(scheme, file, text, syns, 0, &State::begun())
 }
 
-/// [`parse_syns`], the positions read counted from `base`.
-fn parse_syns_at(scheme: &mut Session, file: FileId, text: &str, syns: Handle, base: i64) -> R<Handle> {
+/// [`parse_syns`], the positions read counted from `base`, read in `state`
+/// by the process's mode (`parser-types.fx`'s `keys`).
+fn parse_syns_at(scheme: &mut Session, file: FileId, text: &str, syns: Handle, base: i64, state: &State) -> R<Parsed> {
     let fail = |m: String| FxError::at(Span::new(file, 0, 0), m);
-    let result = scheme.call_global(&format!("{READER_PREFIX}parse-program"), &[syns]).map_err(|e| fail(e.to_string()))?;
-    let (tag, err) = scheme.view(|v| {
-        let r = v.get(result);
+    let mode = crate::ids::mode() as i64;
+    let settings = state.settings.text();
+    let product = |sc: &mut Session, fields: &[Handle]| {
+        let mut all = vec![sc.make(|_| Value::fixnum(fixpt_heap::layout::kind("product") as i64))];
+        all.extend_from_slice(fields);
+        sc.call_global("%make-frozen", &all).map_err(|e| fail(e.to_string()))
+    };
+    let int = |sc: &mut Session, n: i64| sc.make(|_| Value::fixnum(n));
+    let fields = [int(scheme, mode), int(scheme, state.at), scheme.make(|m| m.heap().make_string(&settings))];
+    let keys = product(scheme, &fields)?;
+    let keyed = scheme.call_global(&format!("{READER_PREFIX}parse-program"), &[keys, syns]).map_err(|e| fail(e.to_string()))?;
+    let (tag, err, at, walked) = scheme.view(|v| {
+        let k = v.get(keyed);
+        let r = k.product_field(1).expect("a parse");
         let tag = r.sum_tag().and_then(|t| t.symbol_name()).unwrap_or_default();
         let p = r.sum_payload().expect("a sum");
         let err = (tag == "p-err").then(|| {
             (p.product_field(1).and_then(|m| m.string()).unwrap_or_default(), p.product_field(2).and_then(|x| x.fixnum()).unwrap_or(0), p.product_field(3).and_then(|x| x.fixnum()).unwrap_or(0))
         });
-        (tag, err)
+        (tag, err, k.product_field(2).and_then(|x| x.fixnum()).unwrap_or(0), k.product_field(3).and_then(|x| x.fixnum()).unwrap_or(0))
     });
     if let Some((msg, a, b)) = err {
         let offsets = byte_offsets(text);
@@ -724,11 +790,19 @@ fn parse_syns_at(scheme: &mut Session, file: FileId, text: &str, syns: Handle, b
         return Err(FxError::at(Span::new(file, at(a), at(b)), msg));
     }
     debug_assert_eq!(tag, "p-ok");
-    Ok(scheme.make(|m| {
-        let r = m.get(result);
+    let tops = scheme.make(|m| {
+        let k = m.get(keyed);
+        let r = m.heap().product_field(k, 1);
         let payload = m.heap().sum_payload(r);
         m.heap().product_field(payload, 1)
-    }))
+    });
+    let given = scheme.make(|m| {
+        let k = m.get(keyed);
+        m.heap().product_field(k, 4)
+    });
+    let fields = [int(scheme, mode), int(scheme, walked), given];
+    let numbering = product(scheme, &fields)?;
+    Ok(Parsed { tops, numbering, base: walked, after: State { at, settings: state.settings } })
 }
 
 thread_local! {
@@ -895,15 +969,17 @@ fn load_modules_at(f: &Syntax, interner: &Interner, out: &mut Vec<Load>) {
 /// was not read), its path, why not, its forms and its text. A file read is
 /// a module's in order, as the Rust checker numbers them.
 pub fn supply_loaded(scheme: &mut Session, file: FileId, text: &str) -> R<()> {
-    supply_loaded_at(scheme, file, text, 0)
+    supply_loaded_at(scheme, file, text, 0).map(|_| ())
 }
 
 /// [`supply_loaded`], `text`'s positions counted from `base`. And what
 /// each top-level `include` of it gives (`includes-given!`), as
-/// [`set_includes`] said, then forgotten.
-fn supply_loaded_at(scheme: &mut Session, file: FileId, text: &str, base: i64) -> R<()> {
+/// [`set_includes`] said, then forgotten. Each file read, by its key, and
+/// its text (or why it could not be read), in the order read: what a
+/// reading folds of them ([`crate::ids::read_in`]).
+fn supply_loaded_at(scheme: &mut Session, file: FileId, text: &str, base: i64) -> R<Vec<(String, String)>> {
     let fail = |m: String| FxError::at(Span::new(file, 0, 0), m);
-    let list = loaded_files_at(scheme, file, text, base)?;
+    let (list, loads) = loaded_files_at(scheme, file, text, base)?;
     scheme.call_global(&format!("{READER_PREFIX}loaded-files!"), &[list]).map_err(|e| fail(e.to_string()))?;
     let offsets = byte_offsets(text);
     let mut list = scheme.make(|_| Value::NULL);
@@ -926,7 +1002,7 @@ fn supply_loaded_at(scheme: &mut Session, file: FileId, text: &str, base: i64) -
         list = scheme.call_global("cons", &[one, list]).map_err(|e| fail(e.to_string()))?;
     }
     scheme.call_global(&format!("{READER_PREFIX}includes-given!"), &[list]).map_err(|e| fail(e.to_string()))?;
-    Ok(())
+    Ok(loads)
 }
 
 thread_local! {
@@ -959,16 +1035,17 @@ pub fn set_includes(given: Vec<IncludeGiven>) {
 /// its own (`tests/bootstrap.rs`, whose front end reads the front end's
 /// built-in module files).
 pub fn loaded_files(scheme: &mut Session, file: FileId, text: &str) -> R<fixpt_scheme::Handle> {
-    loaded_files_at(scheme, file, text, 0)
+    loaded_files_at(scheme, file, text, 0).map(|(list, _)| list)
 }
 
-fn loaded_files_at(scheme: &mut Session, file: FileId, text: &str, base: i64) -> R<fixpt_scheme::Handle> {
+fn loaded_files_at(scheme: &mut Session, file: FileId, text: &str, base: i64) -> R<(fixpt_scheme::Handle, Vec<(String, String)>)> {
     let base_dir = LOAD_BASE.with(|b| b.borrow().clone());
     let mut list = scheme.make(|_| Value::NULL);
     let mut read = 0;
     let mut seen = HashMap::new();
-    supply_loaded_in(scheme, file, text, base, base_dir, &mut read, &mut seen, &mut list)?;
-    Ok(list)
+    let mut order = Vec::new();
+    supply_loaded_in(scheme, file, text, base, base_dir, &mut read, &mut seen, &mut order, &mut list)?;
+    Ok((list, order))
 }
 
 /// [`supply_loaded`] for the `load-module`s of `text`, a program or a file
@@ -983,6 +1060,7 @@ fn supply_loaded_in(
     dir: Option<std::path::PathBuf>,
     read: &mut u32,
     seen: &mut HashMap<String, Read>,
+    order: &mut Vec<(String, String)>,
     list: &mut fixpt_scheme::Handle,
 ) -> R<()> {
     let fail = |m: String| FxError::at(Span::new(file, 0, 0), m);
@@ -1033,6 +1111,8 @@ fn supply_loaded_in(
         // Made by a form before, and loaded here, not defined (a
         // `%loaded` is its definition).
         if resolved.is_none() && SHARED_MADE.with(|m| m.borrow().contains(&shared)) {
+            // Its text in the reading of the form that made it.
+            order.push((shared.clone(), String::new()));
             let nil = scheme.make(|_| Value::NULL);
             entry(scheme, list, &Read { base: -1, why: String::new(), syns: nil, text: String::new(), fasl: false })?;
             continue;
@@ -1061,11 +1141,12 @@ fn supply_loaded_in(
         };
         let r = Read { base: file_base, why, syns, text: ftext, fasl: fasl.is_some() };
         entry(scheme, list, &r)?;
+        order.push((shared.clone(), if r.why.is_empty() { r.text.clone() } else { r.why.clone() }));
         let ftext = r.text.clone();
         seen.insert(shared, r);
         // The files it loads, from its directory, at its positions.
         if file_base > 0 {
-            supply_loaded_in(scheme, FileId(1000 + *read), &ftext, file_base, at.parent().map(|d| d.to_path_buf()), read, seen, list)?;
+            supply_loaded_in(scheme, FileId(1000 + *read), &ftext, file_base, at.parent().map(|d| d.to_path_buf()), read, seen, order, list)?;
         }
     }
     Ok(())

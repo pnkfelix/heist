@@ -21,6 +21,19 @@ mod regcode;
 use fixpt_heap::{Heap, Value};
 use fixpt_read::Sym;
 
+/// Which of checking's facts of an expression a note or operation was made
+/// of (`Compiler::fact_of`): its type (as a note, or as the first of an
+/// operation's: of data made), its instantiations (a `list-copy`'s first
+/// three), or those of a polymorphic value used.
+#[derive(Clone, Copy)]
+enum Fact {
+    Type,
+    Made,
+    Insts,
+    Copied,
+    ValueInsts,
+}
+
 /// One item of a word being built: a cell, a label, or a branch to one;
 /// or, for typed cellular code, an assertion before the next cell (by its
 /// number in `Compiler::notes`).
@@ -127,6 +140,9 @@ fn find(e: &[(Sym, Loc)], n: Sym) -> Option<Loc> {
 pub struct Compiler<'a> {
     heap: &'a mut Heap,
     c: &'a Checker,
+    /// Each expression's parent (`ids::parents`), made when first wanted:
+    /// what lambdas are around one, for its certificate.
+    parents: std::cell::OnceCell<HashMap<ExpId, ExpId>>,
     /// The program's text, for naming each lambda by where its body starts,
     /// in characters, as the compiler written in FX-26 does.
     char_at: Vec<u32>,
@@ -238,6 +254,13 @@ pub struct Compiler<'a> {
     last_notes: Vec<(usize, Vec<crate::typed_cells::Prop>)>,
     ops: Vec<(String, Vec<crate::ast::D>)>,
     last_ops: Vec<(usize, String, Vec<crate::ast::D>)>,
+    /// Of the notes and operations made of what checking found of an
+    /// expression, by index: the expression, and which fact. Of those of
+    /// the word assembled last, as `last_notes` and `last_ops` are: an
+    /// `allof`'s word is certified at each member with them made of that
+    /// member's facts (`Compiler::at_member`).
+    fact_of: HashMap<(bool, usize), (ExpId, Fact)>,
+    last_facts: (Vec<Option<(ExpId, Fact)>>, Vec<Option<(ExpId, Fact)>>),
     gens: Vec<Vec<(crate::ast::DVar, crate::ast::Kind)>>,
     packs: Vec<Vec<(crate::ast::DVar, TyId)>>,
     last_packs: Vec<(usize, Vec<(crate::ast::DVar, TyId)>)>,
@@ -362,7 +385,7 @@ impl<'a> Compiler<'a> {
             n += 1;
         }
         char_at[text.len()] = n;
-        Compiler { heap, c, char_at, labels: 0, genv: Vec::new(), genv_index: Default::default(), this: None, registers: false,
+        Compiler { heap, c, parents: Default::default(), char_at, labels: 0, genv: Vec::new(), genv_index: Default::default(), this: None, registers: false,
             register_report: Vec::new(),
             made: Vec::new(),
             reuse: Vec::new(),
@@ -400,6 +423,8 @@ impl<'a> Compiler<'a> {
             last_notes: Vec::new(),
             ops: Vec::new(),
             last_ops: Vec::new(),
+            fact_of: HashMap::new(),
+            last_facts: (Vec::new(), Vec::new()),
             gens: Vec::new(),
             last_gens: Vec::new(),
             packs: Vec::new(),
@@ -494,6 +519,7 @@ impl<'a> Compiler<'a> {
         let mut pos = 0;
         self.last_notes.clear();
         self.last_ops.clear();
+        self.last_facts = (Vec::new(), Vec::new());
         self.last_gens.clear();
         self.last_packs.clear();
         self.last_regions.clear();
@@ -508,10 +534,14 @@ impl<'a> Compiler<'a> {
             match i {
                 Item::Cell(x) => cells.push(*x),
                 Item::Label(_) => {}
-                Item::Note(k) => self.last_notes.push((pos as usize, self.notes[*k].clone())),
+                Item::Note(k) => {
+                    self.last_notes.push((pos as usize, self.notes[*k].clone()));
+                    self.last_facts.0.push(self.fact_of.get(&(false, *k)).copied());
+                }
                 Item::Op(k) => {
                     let (name, inst) = self.ops[*k].clone();
                     self.last_ops.push((pos as usize, name, inst));
+                    self.last_facts.1.push(self.fact_of.get(&(true, *k)).copied());
                 }
                 Item::Pack(k) => self.last_packs.push((pos as usize, self.packs[*k].clone())),
                 Item::Open(k) => {
@@ -788,6 +818,7 @@ impl<'a> Compiler<'a> {
             && let Some(inst) = self.c.facts.value_insts.get(&x).cloned()
         {
             self.ops.push(("%inst".to_string(), inst));
+            self.fact_of.insert((true, self.ops.len() - 1), (x, Fact::ValueInsts));
             code.push(Item::Op(self.ops.len() - 1));
         }
         // Where ways join inside it, its value's type, asserted where it
@@ -798,6 +829,7 @@ impl<'a> Compiler<'a> {
             && let Some(&t) = self.c.facts.types.get(&x)
         {
             self.notes.push(vec![crate::typed_cells::Prop::Has(crate::typed_cells::Term::Slot(depth), t)]);
+            self.fact_of.insert((false, self.notes.len() - 1), (x, Fact::Type));
             code.push(Item::Note(self.notes.len() - 1));
         }
         Ok(())
@@ -1963,6 +1995,7 @@ impl<'a> Compiler<'a> {
                     && let Some(inst) = self.c.facts.insts.get(&x).cloned()
                 {
                     self.ops.push(("%call".to_string(), inst));
+                    self.fact_of.insert((true, self.ops.len() - 1), (x, Fact::Insts));
                     code.push(Item::Op(self.ops.len() - 1));
                 }
                 // In the callee's convention, as its type says
@@ -2003,6 +2036,7 @@ impl<'a> Compiler<'a> {
                     && inst.len() == 4
                 {
                     self.ops.push(("%copy".to_string(), inst[..3].to_vec()));
+                    self.fact_of.insert((true, self.ops.len() - 1), (x, Fact::Copied));
                     code.push(Item::Op(self.ops.len() - 1));
                 }
                 self.prim(code, "%fx26-list-copy", 1)?;
@@ -2343,6 +2377,7 @@ impl<'a> Compiler<'a> {
                 None => vec![crate::ast::D::Type(t)],
             };
             self.ops.push(("%make".to_string(), made));
+            self.fact_of.insert((true, self.ops.len() - 1), (x, Fact::Made));
             code.push(Item::Op(self.ops.len() - 1));
             if let Some(packs) = self.c.facts.packs.get(&x) {
                 self.packs.push(packs.clone());
@@ -2358,6 +2393,7 @@ impl<'a> Compiler<'a> {
             && let Some(&t) = self.c.facts.types.get(&x)
         {
             self.ops.push(("%flat".to_string(), vec![crate::ast::D::Type(t)]));
+            self.fact_of.insert((true, self.ops.len() - 1), (x, Fact::Made));
             code.push(Item::Op(self.ops.len() - 1));
         }
     }
@@ -2371,6 +2407,7 @@ impl<'a> Compiler<'a> {
         if self.certs.is_some() && standard_primitive(name) != Some("%fx26-identity") {
             let inst = self.c.facts.insts.get(&x).cloned().unwrap_or_default();
             self.ops.push((name.to_string(), inst));
+            self.fact_of.insert((true, self.ops.len() - 1), (x, Fact::Insts));
             code.push(Item::Op(self.ops.len() - 1));
         }
     }
@@ -2737,7 +2774,9 @@ impl<'a> Compiler<'a> {
     /// free value's type by name (a lifted procedure's added parameters are
     /// the free variables it would have captured).
     fn certify_lambda(&mut self, w: Value, params: &[Sym], body: ExpId, fv: &[Sym]) {
-        let Some(certs) = &mut self.certs else { return };
+        if self.certs.is_none() {
+            return;
+        }
         // A `prompt`'s body, which the compiler makes a thunk: of the type
         // and effect checking found the body of.
         let thunk;
@@ -2750,6 +2789,52 @@ impl<'a> Compiler<'a> {
             }
             None => return,
         };
+        let Some(mut cert) = self.lambda_cert(params, body, fv, sig) else { return };
+        // An `allof`'s lambda, and each inside one: verified at each
+        // member's signature too (`NodeFacts::lambda_variants`), its
+        // closures of their `allof`.
+        if let Some(vs) = self.c.facts.lambda_variants.get(&body) {
+            cert.variants = vs.iter().filter_map(|(v, m)| self.lambda_cert(params, body, fv, v).map(|c| self.at_member(c, m))).collect();
+        }
+        if let Some(certs) = &mut self.certs {
+            certs.words.insert(w.raw(), cert);
+        }
+    }
+
+    /// Certificate `cert` of the word assembled last, its notes and
+    /// operations made of what checking found at member `m` where they are
+    /// made of what checking found (`fact_of`): one where `m` found nothing
+    /// kept as the last member's check left it.
+    fn at_member(&self, mut cert: crate::typed_cells::Cert, m: &crate::check::MemberFacts) -> crate::typed_cells::Cert {
+        use crate::typed_cells::{Prop, Term};
+        for (note, fact) in cert.notes.iter_mut().zip(&self.last_facts.0) {
+            if let (Some((x, Fact::Type)), [Prop::Has(Term::Slot(d), _)]) = (fact, &note.1[..])
+                && let Some(&t) = m.types.get(x)
+            {
+                note.1 = vec![Prop::Has(Term::Slot(*d), t)];
+            }
+        }
+        for (op, fact) in cert.ops.iter_mut().zip(&self.last_facts.1) {
+            let found = match fact {
+                Some((x, Fact::Insts)) => m.insts.get(x).cloned(),
+                Some((x, Fact::ValueInsts)) => m.value_insts.get(x).cloned(),
+                Some((x, Fact::Copied)) => m.insts.get(x).filter(|i| i.len() == 4).map(|i| i[..3].to_vec()),
+                _ => None,
+            };
+            if let Some(inst) = found {
+                op.2 = inst;
+            }
+            if let Some((x, Fact::Made)) = fact
+                && let Some(&t) = m.types.get(x)
+            {
+                op.2[0] = crate::ast::D::Type(t);
+            }
+        }
+        cert
+    }
+
+    /// Word `w`'s certificate (`certify_lambda`), from signature `sig`.
+    fn lambda_cert(&self, params: &[Sym], body: ExpId, fv: &[Sym], sig: &crate::check::LambdaSig) -> Option<crate::typed_cells::Cert> {
         // A name its lambda does not bind or see: a lifted procedure's added
         // parameter (free in a sibling), or a module's member (seen through
         // `%include`); its type as another lambda saw it, or a global's.
@@ -2766,39 +2851,31 @@ impl<'a> Compiler<'a> {
             })
         };
         // Else as a reference to it in the body was checked: the binding the
-        // body saw (a parameter that hides it is found first, above).
-        let span = c.arena.span_of(body);
+        // body saw (a parameter that hides it is found first, above). In the
+        // body by the trees' structure, not by where it is written
+        // (`ids::subtrees`).
+        let inside = crate::ids::subtrees(c, &[body]);
         // The first such reference, by where it is: the facts are a map, and
         // two references may have been checked at types that differ.
         let referred = |n: &Sym| {
-            c.facts
-                .types
+            inside
                 .iter()
-                .filter_map(|(e, t)| {
-                    let at = c.arena.span_of(*e);
-                    (at.file == span.file && at.start >= span.start && at.end <= span.end && matches!(c.arena.exp_at(*e), Exp::Var(m) if m == n))
-                        .then_some(((at.start, e.0), *t))
-                })
+                .filter(|e| matches!(c.arena.exp_at(**e), Exp::Var(m) if m == n))
+                .filter_map(|e| c.facts.types.get(e).map(|t| ((c.arena.span_of(*e).start, e.0), *t)))
                 .min_by_key(|(k, _)| *k)
                 .map(|(_, t)| t)
         };
         // Else as the innermost lambda around this one that binds it has it:
         // another lambda's of the name (another `tag`, say) is not this one's.
+        let parents = self.parents.get_or_init(|| crate::ids::parents(c));
         let around = |n: &Sym| {
-            c.facts
-                .lambdas
-                .iter()
-                .filter(|(e, _)| {
-                    let at = c.arena.span_of(**e);
-                    at.file == span.file && at.start <= span.start && at.end >= span.end
-                })
-                .filter_map(|(e, s)| s.params.iter().chain(&s.frees).find(|(m, _)| m == n).map(|(_, t)| ((c.arena.span_of(*e).start, e.0), *t)))
-                .max_by_key(|(k, _)| *k)
-                .map(|(_, t)| t)
+            std::iter::successors(Some(body), |x| parents.get(x).copied())
+                .filter_map(|e| c.facts.lambdas.get(&e))
+                .find_map(|s| s.params.iter().chain(&s.frees).find(|(m, _)| m == n).map(|(_, t)| *t))
         };
         let elsewhere = |n: &Sym| referred(n).or_else(|| around(n)).or_else(|| c.global_type(*n));
         let by_name = |n: &Sym| sig.params.iter().rev().chain(sig.frees.iter()).find(|(m, _)| m == n).map(|(_, t)| *t).or_else(|| included(n)).or_else(|| elsewhere(n));
-        let (Some(ps), Some(fs)) = (params.iter().map(by_name).collect::<Option<Vec<_>>>(), fv.iter().map(by_name).collect::<Option<Vec<_>>>()) else { return };
+        let (Some(ps), Some(fs)) = (params.iter().map(by_name).collect::<Option<Vec<_>>>(), fv.iter().map(by_name).collect::<Option<Vec<_>>>()) else { return None };
         let poly = self.c.facts.generalized.get(&body).cloned().unwrap_or_default();
         let conversion = self.c.facts.conversions.get(&body).copied();
         // Each of the lambda's own parameters as bound inside it; an added
@@ -2835,8 +2912,9 @@ impl<'a> Compiler<'a> {
             own_ops: Vec::new(),
             vsubr: None,
             spec,
+            variants: Vec::new(),
         };
-        certs.words.insert(w.raw(), cert);
+        Some(cert)
     }
 
     /// A literal, under ascriptions: what a module's member may be to be

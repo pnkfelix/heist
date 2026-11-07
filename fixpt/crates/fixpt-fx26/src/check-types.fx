@@ -41,15 +41,16 @@
         cv-native cv-fx cv-var sz-finite sz-lin dr de dt dz dc df ty-base ty-void ty-var ty-subr
         ty-poly ty-ref ty-pair ty-tag ty-comp ty-markkey ty-product ty-sum ty-array ty-icell
         ty-place ty-bloblet ty-link ty-named ty-nlist ty-nat ty-module ty-select ty-param ty-lam
-        ty-app ty-nil ty-union ty-false ds-gen ds-size ds-var ds-rec ds-abbrev ds-region ds-eff
+        ty-app ty-nil ty-union ty-allof ty-false
+        ds-gen ds-size ds-var ds-rec ds-abbrev ds-region ds-eff
         ds-conv ds-fun x-var x-const x-lambda x-app x-plambda x-letregion x-rlambda x-proj x-if
         x-letrec x-let x-begin x-prompt x-the x-convention x-bloblet x-product x-extract x-sum
         x-tagcase x-module x-with k-ok k-err k-done st-car st-cdr st-field (type k-region k-atom
         k-eff k-vsub k-ids k-term k-prop k-props k-binders k-parts k-names k-strings k-conv k-terms
         k-size k-desc k-descs k-ty k-map k-ds kx kxs k-item k-items k-te k-result k-narrows
         k-pendings k-cert-len k-arrow-kind k-bounded k-nesting k-named k-settleds k-gen k-hyps
-        k-lemma k-regions k-step k-steps k-path-fact k-path-facts) (effect kstate checks kreads
-        kbuilds))
+        k-lemma k-regions k-step k-steps k-path-fact k-path-facts k-member-spin-list k-at)
+        (effect kstate checks kreads kbuilds))
 ;; The types it uses of the files before it.
 (define-type chars (select eager-reader-types chars))
 (define-type table (select table-types table))
@@ -59,7 +60,10 @@
 
 (define k-te (subr pure (int k-eff) k-te) (lambda (t e) (product (1 t) (2 e))))
 
-(define k-tag (prompt-tag k-result k-result (maxeff spin (read @s) kstate) @z)
+;; A check may read the syntax (`@s`), and write it to read a form again: a
+;; definition checked again is read again, its keys new (`k-rerun`,
+;; `read-again`), which advances the parser's count.
+(define k-tag (prompt-tag k-result k-result (maxeff spin (read @s) (write @s) (alloc @s) kstate) @z)
   (make-continuation-prompt-tag))
 (define k-fail (subr checks (string int int) void)
   (lambda (m a b) (abort-current-continuation k-tag (k-err m a b))))
@@ -255,6 +259,7 @@
         (ty-array (x m r) (ty-array (k-resolve x) m r))
         (ty-nlist (x m r) (ty-nlist (k-resolve x) m r))
         (ty-union (ms) (ty-union (ids ms)))
+        (ty-allof (ms) (ty-allof (ids ms)))
         (ty-module (abs ds vs) (ty-module abs (parts ds) (parts vs)))
         (else y n)))))
 ;; Type `t`'s node again, as one of its own, which interning never gives:
@@ -328,6 +333,7 @@
         (ty-named (g ds) (descs ds))
         (ty-nlist (x m r) (list x))
         (ty-union (ms) ms)
+        (ty-allof (ms) ms)
         (ty-module (abs ds vs) (parts ds (parts vs nil)))
         (else y nil)))))
 ;; Node `n`, each of those parts `x` as `(f x)`.
@@ -358,6 +364,7 @@
         (ty-named (g ds) (ty-named g (descs ds)))
         (ty-nlist (x m r) (ty-nlist (f x) m r))
         (ty-union (ms) (ty-union (ids ms)))
+        (ty-allof (ms) (ty-allof (ids ms)))
         (ty-module (abs ds vs) (ty-module abs (parts ds) (parts vs)))
         (else y n)))))
 
@@ -794,6 +801,37 @@
   (lambda (r) (let ((v (k-region-var r))) (and (>= v 0) (k-gen-param? v)))))
 ;; Why each member of a recursive group that may not end may not.
 (define k-spin-why (ref (listof (productof (1 symbol) (2 int) (3 string)) acyclic) @t) (new nil))
+;; Of each binding of a recursive group with an `allof`, for each member (one
+;; for a binding of no `allof`), whether a call of it at that member may not
+;; end (`k-termination-by-member`): a call says `spin` only for the members
+;; it fits that may not. Newest first; as Rust's `member_spins`.
+(define k-member-spins (ref k-member-spin-list @t) (new nil))
+;; Expressions taken as one member of their union's type while a call is
+;; taken apart by an argument that is no variable (rule 5): each, by its
+;; place, as that member wherever it is synthesized, or checked as a call.
+;; As Rust's `pinned`.
+(define k-pinned (ref (listof (productof (1 k-at) (2 int)) acyclic) @t) (new nil))
+(define k-pinned-of (subr kreads (k-at) int)
+  (lambda (at)
+    (letrec ((find (subr kreads ((listof (productof (1 k-at) (2 int)) acyclic)) int)
+                   (lambda (ps)
+                     (cond ((null? ps) -1)
+                           ((let ((p (extract (car ps) 1)))
+                              (and (= (extract p 1) (extract at 1)) (= (extract p 2) (extract at 2))
+                                   (= (extract p 3) (extract at 3))))
+                            (extract (car ps) 2))
+                           (else (find (cdr ps)))))))
+      (find (get k-pinned)))))
+;; `n` at `t`'s, or none.
+(define k-member-spins-of (subr kreads (symbol int) (listof bool acyclic))
+  (lambda (n t)
+    (letrec ((find (subr kreads (k-member-spin-list) (listof bool acyclic))
+                   (lambda (ms)
+                     (cond ((null? ms) nil)
+                           ((and (symbol=? (extract (car ms) 1) n) (= (extract (car ms) 2) t))
+                            (extract (car ms) 3))
+                           (else (find (cdr ms)))))))
+      (find (get k-member-spins)))))
 (define k-named-has? (subr kreads (k-named symbol int) bool)
   (lambda (ns n t)
     (and (not (null? ns))

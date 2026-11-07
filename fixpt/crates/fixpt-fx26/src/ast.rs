@@ -457,19 +457,26 @@ pub enum Ty {
     /// continuation, here — and a subtype of every type.
     Void,
     /// `nil`'s own type: the empty list alone, a member of unions
-    /// (`(union nil int)`), and below every pair that may be `nil`
+    /// (`(oneof nil int)`), and below every pair that may be `nil`
     /// (`docs/research/logical-types.md`, L1).
     Nil,
     /// `false`: `#f` alone, below `bool`, of `bool`'s shape (a member of
-    /// unions, `(union false int)`; `docs/research/logical-types.md`, L1's
+    /// unions, `(oneof false int)`; `docs/research/logical-types.md`, L1's
     /// stage 3). `#f` is a `bool`, and checks as a `false` where one is
     /// expected.
     False,
-    /// `(union T …)`: a value of one of the members, whose shapes at run
-    /// time (`Checker::shape`) are disjoint, so that the shape says which.
+    /// `(oneof T …)` or `(anyof T …)`: a value of one of the members. Of a
+    /// `oneof` their shapes at run time (`Checker::shape`) are disjoint, so
+    /// that the shape says which; of an `anyof` they may overlap, one type
+    /// for both, printed `oneof` where disjoint (`logical-types.md` §8.5).
     /// Kept normalized: no member a union, and `nil` with a pair that is not
     /// `nil` made the pair that may be (`Checker::union_of`).
     Union(Vec<TyId>),
+    /// `(allof (subr …) …)`: one procedure with each member's type, its body
+    /// checked against each; a call takes every member it fits, its result
+    /// their meet (`docs/research/logical-types.md`, §8.5, U1). Members
+    /// are monomorphic `subr` types of one convention, two or more.
+    AllOf(Vec<TyId>),
     Var(DVar),
     /// `(subr E (P …) Q (requires p) (ensures r q))`: with a specification
     /// (`spec`), Hoare logic's for procedures, which the cells' verifier
@@ -479,7 +486,7 @@ pub enum Ty {
     Poly { binders: Vec<(DVar, Kind)>, body: TyId },
     Ref(TyId, Region),
     /// `(pairof A B R)`, a pair, when the last is false; when it is true,
-    /// a pair or `nil` (`(union nil (pairof A B R))`), as `listof`'s pairs
+    /// a pair or `nil` (`(oneof nil (pairof A B R))`), as `listof`'s pairs
     /// are (`docs/research/logical-types.md`, L0).
     Pair(TyId, TyId, Region, bool),
     /// `(prompt-tag A H D R)`: a tag in region `R` whose prompts deliver an
@@ -956,6 +963,11 @@ impl Arena {
     pub fn exp(&mut self, span: Span, e: Exp) -> ExpId {
         self.exps.push((span, e));
         ExpId(last_id(self.exps.len(), "expressions"))
+    }
+
+    /// Every expression made, in order.
+    pub fn exp_ids(&self) -> impl Iterator<Item = ExpId> + use<> {
+        (0..self.exps.len()).map(|i| ExpId(i as u32))
     }
 
     /// Node `id` made `e`, its span kept: a parser rewriting what it made.

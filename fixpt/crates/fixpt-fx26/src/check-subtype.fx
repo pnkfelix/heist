@@ -19,7 +19,8 @@
        (check-proving-types (load-module "fx26:check-proving-types.fx"))
        (check-modules-types (load-module "fx26:check-modules-types.fx"))
        (check-read-helpers-types (load-module "fx26:check-read-helpers-types.fx"))
-       (check-logic-types (load-module "fx26:check-logic-types.fx")))
+       (check-logic-types (load-module "fx26:check-logic-types.fx"))
+       (check-unions-types (load-module "fx26:check-unions-types.fx")))
   ;; What it is given: the modules of the files before it that it uses.
   (lambda ((check-types (select check-types-types check-types-sig))
            (check-resolve (select check-resolve-types check-resolve-sig))
@@ -32,7 +33,8 @@
            (check-modules (select check-modules-types check-modules-sig))
            (check-print-parts (select check-print-parts-types check-print-parts-sig))
            (check-read-helpers (select check-read-helpers-types check-read-helpers-sig))
-           (check-logic (select check-logic-types check-logic-sig)))
+           (check-logic (select check-logic-types check-logic-sig))
+           (check-unions (select check-unions-types check-unions-sig)))
     (module
 (hide (include check-subtype-types) (include check-types-types) (include check-subst-types)
       (include check-env-types))
@@ -43,6 +45,9 @@
       (include check-subst) (include check-modules))
 (import check-read-helpers k-unsized-length k-with-unsized-length)
 (import check-logic k-specs=? k-spec-within?)
+(import check-unions k-sums-joined-raw k-shaped-like k-split-fields k-kin-fields k-union-ty?
+                    k-members-of k-kin-agree? k-with-field)
+(import check-unions-types (type k-idss))
 ;; A blobref's (generative 5) arguments `xs`, to an array that runs to the
 ;; end of the suffix, its length named where it was bound, as one of
 ;; length `finite`, which means just that, where `ys`'s is (`TODO.md` §77).
@@ -126,6 +131,11 @@
         -1)))
 
 ;; Whether effects `d` and `e` are the same, each by its side's environment.
+;; How many more times the subtype question being asked may split a type
+;; at a field to show it below a union (`k-split-below`; as Rust's
+;; `SPLIT_BUDGET`, `logical-types.md` §8.8, question 17).
+(define k-split-budget int 64)
+(define k-splits-left (ref int @t) (new 64))
 (define k-benv-eff=? (->* (k-eff k-eff k-benv k-benv) bool)
   (lambda (d e ea eb) (k-eff=? (k-benv-effect ea d) (k-benv-effect eb e))))
 (define-rec
@@ -200,8 +210,10 @@
             #t
             (let* ((trail (the k-strail (new nil)))
                    (begun (k-question-begin!))
+                   (outer (get k-splits-left))
+                   (budget (set k-splits-left k-split-budget))
                    (r (k-sub a b (the k-benv nil) (the k-benv nil) trail (the k-labels (new nil)))))
-              (begin (k-strail-drop (get trail) nil) (k-question-end!)
+              (begin (k-strail-drop (get trail) nil) (k-question-end!) (set k-splits-left outer)
                      (if (and r kept) (k-prove! ra rb) #u)
                      r))))))
   (k-module-ty? (->* (int) bool)
@@ -265,6 +277,10 @@
             (ty-union (xs)
               (tagcase tt
                 (ty-union (ys) (and (= (k-length xs) (k-length ys)) (k-match-list l xs ys m seen)))
+                (else z (same))))
+            (ty-allof (xs)
+              (tagcase tt
+                (ty-allof (ys) (and (= (k-length xs) (k-length ys)) (k-match-list l xs ys m seen)))
                 (else z (same))))
             (ty-ref (x r) (tagcase tt (ty-ref (y q) (and (mr r q) (mt x y))) (else z (same))))
             (ty-array (x nz r)
@@ -356,25 +372,81 @@
           ((and (not closed) (k-open-named? tb))
            (tagcase tb (ty-named (g ys) (k-sub a (k-unfold g ys) ea eb trail labels)) (else z #f)))
           (else (k-sub-shapes a b ta tb ea eb trail labels))))))
-  ;; `a ≤ b`, their nodes `ta` and `tb`, by their shapes. A union is below
-  ;; what each of its members is; a type is below a union if below a
-  ;; member, or, a pair that may be `nil`, if `nil` and the pair that is
-  ;; not are each below one.
+  ;; `a ≤ b`, their nodes `ta` and `tb`, by their shapes. A type is below
+  ;; an `allof` if below each member; an `allof` is below what one of its
+  ;; members is (`logical-types.md` §8.5). A union is below what each of
+  ;; its members is; a type is below a union if below a member, or, a pair
+  ;; that may be `nil`, if `nil` and the pair that is not are each below one.
   (k-sub-shapes (->* (int int k-ty k-ty k-benv k-benv k-strail k-labels) bool)
     (lambda (a b ta tb ea eb trail labels)
-      (tagcase ta
-        (ty-void () #t)
-        (ty-union (ms) (k-sub-all ms b ea eb trail labels))
-        (else z
-          (tagcase tb
-            (ty-union (ns)
-              (or (k-below-one a ns ea eb trail labels)
-                  (tagcase ta
-                    (ty-pair (x y r nl)
-                      (and nl (k-below-one (k-ty-new (ty-nil)) ns ea eb trail labels)
-                           (k-below-one (k-ty-new (ty-pair x y r #f)) ns ea eb trail labels)))
-                    (else w #f))))
-            (else w (k-sub-plain a b ta tb ea eb trail labels)))))))
+      (tagcase tb
+        (ty-allof (ns) (k-sub-each a ns ea eb trail labels))
+        (else w0
+          (tagcase ta
+            (ty-allof (ms) (k-one-below ms b ea eb trail labels))
+            (ty-void () #t)
+            (ty-union (ms) (k-sub-all ms b ea eb trail labels))
+            (else z
+              (tagcase tb
+                (ty-union (ns0)
+                  ;; Only the members of `a`'s own shapes may hold it.
+                  (let ((ns (k-shaped-like a ns0)))
+                    (or (k-below-one a ns ea eb trail labels)
+                        (tagcase ta
+                          (ty-pair (x y r nl)
+                            (if nl
+                                (let ((pair (k-ty-new (ty-pair x y r #f))))
+                                  (and (k-below-one (k-ty-new (ty-nil)) ns ea eb trail labels)
+                                       (k-below-one pair ns ea eb trail labels)))
+                                (k-split-below a ns b ea eb trail labels)))
+                          ;; A sum below the union's sums made one: its tags
+                          ;; may be some of one member's, some of another's.
+                          (ty-sum (ps) (or (k-below-joined a ns ea eb trail labels)
+                                           (k-split-below a ns b ea eb trail labels)))
+                          (else w (k-split-below a ns b ea eb trail labels))))))
+                (else w (k-sub-plain a b ta tb ea eb trail labels)))))))))
+  (k-sub-each (->* (int k-ids k-benv k-benv k-strail k-labels) bool)
+    (lambda (a ns ea eb trail labels)
+      (or (null? ns)
+          (and (k-sub a (car ns) ea eb trail labels) (k-sub-each a (cdr ns) ea eb trail labels)))))
+  ;; Whether one of `ms` is below `b`, what a failed try learnt forgotten.
+  (k-one-below (->* (k-ids int k-benv k-benv k-strail k-labels) bool)
+    (lambda (ms b ea eb trail labels)
+      (and (not (null? ms))
+           (let ((st (get trail)) (sl (get labels)))
+             (or (k-sub (car ms) b ea eb trail labels)
+                 (begin (k-restore trail labels st sl)
+                        (k-one-below (cdr ms) b ea eb trail labels)))))))
+;; `a` below union `b`, of candidates `ns`, none of which takes it whole
+  ;; (`logical-types.md` §8.8): `a`, a product, a sum or a frozen pair that
+  ;; is not `nil`, split at its first field whose type is a union and on
+  ;; which two candidates of its kind differ, each piece below `b`. Each
+  ;; split spends one of the question's `k-splits-left`. As Rust's
+  ;; `split_below`.
+  (k-split-below (->* (int k-ids int k-benv k-benv k-strail k-labels) bool)
+    (lambda (a ns b ea eb trail labels)
+      (let ((fs (k-split-fields a)) (kin (k-kin-fields a ns)))
+        (and (> (get k-splits-left) 0) (not (null? fs)) (not (null? kin)) (not (null? (cdr kin)))
+             (k-split-at a (car fs) kin 0 b ea eb trail labels)))))
+  (k-split-at (->* (int k-ids k-idss int int k-benv k-benv k-strail k-labels) bool)
+    (lambda (a fs kin i b ea eb trail labels)
+      (cond ((null? fs) #f)
+            ((and (k-union-ty? (car fs)) (not (k-kin-agree? kin i)))
+             (begin (set k-splits-left (- (get k-splits-left) 1))
+                    (k-pieces-below a i (k-members-of (car fs)) b ea eb trail labels)))
+            (else (k-split-at a (cdr fs) kin (+ i 1) b ea eb trail labels)))))
+  (k-pieces-below (->* (int int k-ids int k-benv k-benv k-strail k-labels) bool)
+    (lambda (a i ms b ea eb trail labels)
+      (or (null? ms)
+          (and (k-sub (k-with-field a i (car ms)) b ea eb trail labels)
+               (k-pieces-below a i (cdr ms) b ea eb trail labels)))))
+  (k-below-joined (->* (int k-ids k-benv k-benv k-strail k-labels) bool)
+    (lambda (a ns ea eb trail labels)
+      (let ((j (k-sums-joined-raw ns)))
+        (and (>= j 0)
+             (let ((st (get trail)) (sl (get labels)))
+               (or (k-sub a j ea eb trail labels)
+                   (begin (k-restore trail labels st sl) #f)))))))
   (k-sub-all (->* (k-ids int k-benv k-benv k-strail k-labels) bool)
     (lambda (ms b ea eb trail labels)
       (or (null? ms)
@@ -797,13 +869,32 @@
       (else z nil))))
 ;; The positions `at` of a module made already of another's (`rs`'s first,
 ;; if it is `x`'s, an `extend`'s): theirs, the two at once; and the rest of
-;; `rs`. As Rust's `Checker::expect`.
+;; `rs`. Checked again (a call's arguments are, as its operator is
+;; instantiated and then called), onto what it was made of then
+;; (`k-reshape-bases`). As Rust's `Checker::expect`.
 (define k-reshape-onto
   (->* (kx k-ids k-reshape-list) k-reshape-list)
   (lambda (x at rs)
-    (if (and (not (null? rs)) (k-at-is? (extract (car rs) 1) (k-start x) (k-end x) (k-kth x)))
-        (cons (product (1 (k-at-of x)) (2 (k-vals-picked (extract (car rs) 2) at))) (cdr rs))
-        (cons (product (1 (k-at-of x)) (2 (k-picks-of at))) rs))))
+    (let* ((own (and (not (null? rs)) (k-at-x? (extract (car rs) 1) x)))
+           (found (k-base-of x (get k-reshape-bases)))
+           (base (cond ((not (null? found)) (car found))
+                       (own (list (extract (car rs) 2)))
+                       (else nil)))
+           (noted (if (null? found)
+                      (set k-reshape-bases
+                           (cons (product (1 (k-at-of x)) (2 base)) (get k-reshape-bases)))
+                      #u))
+           (picks (if (null? base) (k-picks-of at) (k-vals-picked (car base) at))))
+      (cons (product (1 (k-at-of x)) (2 picks)) (if own (cdr rs) rs)))))
+;; What `k-reshape-bases` holds for `x`, if anything.
+(define k-base-of (->* (kx k-reshape-base-list) (listof (listof k-picks acyclic) acyclic))
+  (lambda (x bs)
+    (cond ((null? bs) nil)
+          ((k-at-x? (extract (car bs) 1) x) (list (extract (car bs) 2)))
+          (else (k-base-of x (cdr bs))))))
+;; Whether `at` is `x`'s.
+(define k-at-x? (->* (k-at kx) bool)
+  (lambda (at x) (k-at-is? at (k-start x) (k-end x) (k-kth x) (k-reading x))))
 ;; Positions `at` of the values `inner` takes.
 (define k-vals-picked (->* (k-picks k-ids) k-picks)
   (lambda (inner at)

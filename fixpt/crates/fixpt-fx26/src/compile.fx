@@ -62,6 +62,7 @@
 ;; What the checker found, by expression (`compile-facts.fx`): all it
 ;; defines, given on.
 (import compile-facts c-facts c-int-hash c-int=? c-span-key c-at-hash c-at-is? c-at=? c-noted-in
+        c-absolute-at c-set-numbering! c-validate-facts!
         c-noted-at c-noted-of c-note! c-new-by-at c-fact-table c-lifts c-lift-count c-lifted
         c-lifting-added c-summary-table c-convert-table c-conversion-at c-staged-texts c-staged-at
         c-staged-find c-shares-table c-frozen-table c-plain-table c-plain-fx-at c-frozen-define-at
@@ -313,41 +314,58 @@
           (begin
             (tagcase (extract (car fs) 2)
               (n-datum (d)
-                (let ((a (extract at 1)))
-                  (table-set! (get c-fact-table) a
+                (let ((k (extract at 3)))
+                  (table-set! (get c-fact-table) k
                               (the (listof c-datum-noted acyclic)
                                 (cons (product (1 at) (2 d))
-                                      (table-ref (get c-fact-table) a nil))))))
+                                      (table-ref (get c-fact-table) k nil))))))
               (n-apply-shares () (c-note! (get c-shares-table) at 0))
               (n-frozen-define () (c-note! (get c-frozen-table) at 0))
               (n-plain-fx () (c-note! (get c-plain-table) at 0))
               (n-conversion (code) (c-note! (get c-convert-table) at code))
-              (n-staged (fr ns rp)
+              (n-staged (fr ns rp rd)
                 (set c-staged-texts
                      (cons (product (1 at) (2 fr) (3 ns) (4 rp)) (get c-staged-texts))))
               (n-call (cv)
-                (let ((a (extract at 1)))
-                  (table-set! (get c-call-table) a
+                (let ((k (extract at 3)))
+                  (table-set! (get c-call-table) k
                               (the (listof c-conv-noted acyclic)
                                 (cons (product (1 at) (2 cv))
-                                      (table-ref (get c-call-table) a nil))))))
+                                      (table-ref (get c-call-table) k nil))))))
               ;; The greatest summary, per expression.
               (n-summary (s)
                 (let ((known (c-noted-at (get c-summary-table) (extract at 1) (extract at 2)
-                                         (extract at 3) -1)))
+                                         (extract at 3) (extract at 4) -1)))
                   (c-note! (get c-summary-table) at (if (> s known) s known)))))
             (c-fill-facts (cdr fs)))))))
 
 ;; The effect summary of the expression `a` `b` `k` (3, the most, if none was
 ;; noted: `checked-extracts`).
-(define c-summary-at (->* (int int int) int)
-  (lambda (a b k) (let ((s (c-noted-at (get c-summary-table) a b k -1))) (if (< s 0) 3 s))))
+(define c-summary-at (->* (int int int int) int)
+  (lambda (a b k kr) (let ((s (c-noted-at (get c-summary-table) a b k kr -1))) (if (< s 0) 3 s))))
 
-;; `c-facts` into `c-fact-table`.
-(define c-set-facts! (->* (k-facts) unit)
+;; Facts `fs` with their numbers the reading's (`c-absolute-at`).
+(define c-absolute-facts (->* (k-facts) k-facts)
   (lambda (fs)
+    (letrec ((onto (subr (maxeff (alloc @k) (read @globals) (read @k) spin)
+                         (k-facts k-facts)
+                         k-facts)
+               (lambda (xs out)
+                 (if (null? xs)
+                     out
+                     (onto (cdr xs)
+                           (cons (product (1 (c-absolute-at (extract (car xs) 1)))
+                                          (2 (extract (car xs) 2)))
+                                 out))))))
+      ;; Twice, so that they are in the order given.
+      (onto (onto fs nil) nil))))
+;; `c-facts` into `c-fact-table`, those numbered by their place in the walk
+;; given the keys `w` gave there (`c-absolute-at`).
+(define c-set-facts! (->* (k-facts numbering) unit)
+  (lambda (fs w)
     (begin
-      (set c-facts fs)
+      (c-set-numbering! w)
+      (set c-facts (c-absolute-facts fs))
       (set c-fact-table (make-table c-int-hash c-int=?))
       (set c-call-table (make-table c-int-hash c-int=?))
       (set c-convert-table (c-new-by-at))
@@ -367,7 +385,12 @@
       (set c-included-index (make-table c-int-hash c-int=?))
       (set c-reshape-index (make-table c-int-hash c-int=?))
       (c-index-reshapes! (get k-reshapes))
-      (c-fill-facts fs))))
+      (c-fill-facts (get c-facts))
+      ;; `validate`: each key with the facts it had before (`c-validate-facts!`).
+      (if (= (extract w 1) 3)
+          (let ((why (c-validate-facts! fs (get k-with-vals) (get k-reshapes))))
+            (if (string=? why "") #u (c-fail why)))
+          #u))))
 
 (define c-member? (->* (syms symbol) bool)
   (lambda (xs n) (and (not (null? xs)) (or (symbol=? (car xs) n) (c-member? (cdr xs) n)))))
@@ -417,22 +440,22 @@
 ;; once, where it is made (`c-note-included!`): they bind nothing. As the
 ;; Rust compiler's `included_withs`.
 (define c-included-index (ref c-with-table @k) (new (make-table c-int-hash c-int=?)))
-(define c-included? (->* (int int int) bool)
-  (lambda (a b k) (not (null? (c-with-in (table-ref (get c-included-index) a nil) a b k)))))
+(define c-included? (->* (int int int int) bool)
+  (lambda (a b k kr) (not (null? (c-with-in (table-ref (get c-included-index) k nil) a b k kr)))))
 ;; Item value `x`'s `(with %include …)` (`with_includes`), in a list of one.
 ;; A parameter of its lambda shadows the included names, and the `with`
 ;; binds none of its (`k-include-free`).
 (define c-include-with (->* (exp) exps)
   (lambda (x)
     (tagcase x
-      (e-with (m body a b abk)
-        (if (and (string=? (symbol->string m) "%include") (not (null? (c-with-at a b abk))))
+      (e-with (m body a b abk abkr)
+        (if (and (string=? (symbol->string m) "%include") (not (null? (c-with-at a b abk abkr))))
             (the exps (cons x nil))
             nil))
-      (e-lambda (qs body a b abk) (c-include-with body))
-      (e-plambda (d body a b abk) (c-include-with body))
-      (e-the (d body a b abk) (c-include-with body))
-      (e-rlambda (r l a b abk) (c-include-with l))
+      (e-lambda (qs body a b abk abkr) (c-include-with body))
+      (e-plambda (d body a b abk abkr) (c-include-with body))
+      (e-the (d body a b abk abkr) (c-include-with body))
+      (e-rlambda (r l a b abk abkr) (c-include-with l))
       (else y nil))))
 ;; Names `ns` at positions `ps` onto `names` and `places`, newest first,
 ;; each not `seen` yet (by position: a name has one).
@@ -454,9 +477,9 @@
            (if (null? w)
                acc
                (tagcase (car w)
-                 (e-with (m body a b abk)
-                   (let ((more (c-included-add (car (c-with-at a b abk))
-                                               (car (c-with-places-at a b abk))
+                 (e-with (m body a b abk abkr)
+                   (let ((more (c-included-add (car (c-with-at a b abk abkr))
+                                               (car (c-with-places-at a b abk abkr))
                                                (extract acc 1) (extract acc 2) seen)))
                      (product (1 (extract more 1)) (2 (extract more 2))
                               (3 (the exps (cons (car w) (extract acc 3)))))))
@@ -502,15 +525,16 @@
         #u
         (begin
           (tagcase (car ws)
-            (e-with (m body a b abk)
-              (if (c-included? a b abk)
+            (e-with (m body a b abk abkr)
+              (if (c-included? a b abk abkr)
                   #u
-                  (let ((at (c-with-in (table-ref (get c-with-index) a nil) a b abk)))
+                  (let ((at (c-with-in (table-ref (get c-with-index) abk nil) a b abk abkr)))
                     (if (null? at)
                         #u
-                        (table-set! (get c-included-index) a
+                        (table-set! (get c-included-index) abk
                                     (the k-with-list
-                                      (cons (car at) (table-ref (get c-included-index) a nil))))))))
+                                      (cons (car at)
+                                            (table-ref (get c-included-index) abk nil))))))))
             (else y #u))
           (c-note-withs! (cdr ws))))))
 ;; `c-included-names`, its `with`s noted as binding nothing.
@@ -525,40 +549,42 @@
   (c-free (->* (exp syms syms) syms)
     (lambda (x bound acc)
       (tagcase x
-        (e-var (n a b abk) (if (c-member? bound n) acc (c-adjoin acc n)))
-        (e-lambda (ps body a b abk) (c-free body (c-bind-params ps bound) acc))
-        (e-app (f args a b abk) (c-free f bound (c-free-all args bound acc)))
-        (e-plambda (d body a b abk) (c-free body bound acc))
-        (e-letregion (k r i body a b abk) (c-free body (cons r bound) acc))
-        (e-rlambda (r l a b abk) (c-free r bound (c-free l bound acc)))
-        (e-proj (body ds a b abk) (c-free body bound acc))
-        (e-the (d body a b abk) (c-free body bound acc))
-        (e-convention (cnv body a b abk) (c-free body bound acc))
-        (e-if (t th el a b abk) (c-free t bound (c-free th bound (c-free el bound acc))))
-        (e-letrec (bs body a b abk)
+        (e-var (n a b abk abkr) (if (c-member? bound n) acc (c-adjoin acc n)))
+        (e-lambda (ps body a b abk abkr) (c-free body (c-bind-params ps bound) acc))
+        (e-app (f args a b abk abkr) (c-free f bound (c-free-all args bound acc)))
+        (e-plambda (d body a b abk abkr) (c-free body bound acc))
+        (e-letregion (k r i body a b abk abkr) (c-free body (cons r bound) acc))
+        (e-rlambda (r l a b abk abkr) (c-free r bound (c-free l bound acc)))
+        (e-proj (body ds a b abk abkr) (c-free body bound acc))
+        (e-the (d body a b abk abkr) (c-free body bound acc))
+        (e-convention (cnv body a b abk abkr) (c-free body bound acc))
+        (e-if (t th el a b abk abkr) (c-free t bound (c-free th bound (c-free el bound acc))))
+        (e-letrec (bs body a b abk abkr)
           (let ((inner (c-bind-letrec bs bound)))
             (c-free body inner (c-free-all (c-rec-exps bs) inner acc))))
-        (e-let (bs body a b abk)
+        (e-let (bs body a b abk abkr)
           (c-free body (c-bind-let bs bound) (c-free-all (c-bound-exps bs) bound acc)))
-        (e-begin (es a b abk) (c-free-all es bound acc))
-        (e-prompt (t body h a b abk) (c-free t bound (c-free body bound (c-free h bound acc))))
-        (e-bloblet (op i args got a b abk) (c-free-all args bound acc))
-        (e-product (fs a b abk) (c-free-all (c-bound-exps fs) bound acc))
-        (e-extract (p l got a b abk) (c-free p bound acc))
-        (e-sum (t v a b abk) (c-free v bound acc))
-        (e-tagcase (s arms els got a b abk)
+        (e-begin (es a b abk abkr) (c-free-all es bound acc))
+        (e-prompt (t body h a b abk abkr) (c-free t bound (c-free body bound (c-free h bound acc))))
+        (e-bloblet (op i args got a b abk abkr) (c-free-all args bound acc))
+        (e-product (fs a b abk abkr) (c-free-all (c-bound-exps fs) bound acc))
+        (e-extract (p l got a b abk abkr) (c-free p bound acc))
+        (e-sum (t v a b abk abkr) (c-free v bound acc))
+        (e-tagcase (s arms els got a b abk abkr)
           (c-free s bound (c-free-arms arms bound (c-free-else els bound acc))))
         ;; A module's items see all of them, as a `letrec*`'s.
-        (e-module (items a b abk) (c-free-items items (c-module-bound items bound) acc))
+        (e-module (items a b abk abkr) (c-free-items items (c-module-bound items bound) acc))
         ;; The module, then the body, the module's values bound in it.
-        (e-with (m body a b abk)
+        (e-with (m body a b abk abkr)
           (cond ((string=? (symbol->string m) "#%fx") acc)
                 ;; A module's included names, bound where it is made, from
                 ;; inside the item (outside, `%include` is bound, and the
                 ;; names bound in it are as good).
-                ((and (c-included? a b abk) (not (c-member? bound m))) (c-free body bound acc))
+                ((and (c-included? a b abk abkr) (not (c-member? bound m))) (c-free body bound acc))
                 (else
-                 (let ((ns (c-with-at a b abk)) (acc (if (c-member? bound m) acc (c-adjoin acc m))))
+                 (let
+                  ((ns (c-with-at a b abk abkr))
+                   (acc (if (c-member? bound m) acc (c-adjoin acc m))))
                    (c-free body (if (null? ns) bound (c-names (car ns) bound)) acc)))))
         (else y acc))))
   (c-free-items (->* (mod-items syms syms) syms)
@@ -629,11 +655,11 @@
 (define c-lambda-of (->* (exp) (listof exp @k))
   (lambda (x)
     (tagcase x
-      (e-plambda (d body a b abk) (c-lambda-of body))
-      (e-the (d body a b abk) (c-lambda-of body))
-      (e-convention (cnv body a b abk) (c-lambda-of body))
-      (e-lambda (ps body a b abk) (the (listof exp @k) (cons x nil)))
-      (e-rlambda (r l a b abk) (the (listof exp @k) (cons x nil)))
+      (e-plambda (d body a b abk abkr) (c-lambda-of body))
+      (e-the (d body a b abk abkr) (c-lambda-of body))
+      (e-convention (cnv body a b abk abkr) (c-lambda-of body))
+      (e-lambda (ps body a b abk abkr) (the (listof exp @k) (cons x nil)))
+      (e-rlambda (r l a b abk abkr) (the (listof exp @k) (cons x nil)))
       (else y nil))))
 
 (define c-count-exps (->* (exps) int)
@@ -664,7 +690,7 @@
       (if (null? lam)
           nil
           (tagcase (car lam)
-            (e-lambda (ps body a b abk)
+            (e-lambda (ps body a b abk abkr)
               (if (= (c-count-params ps) (c-count-exps args))
                   (the (listof (productof (1 c-binds) (2 exp)) @k)
                     (cons (product (1 (c-param-bindings ps args)) (2 body)) nil))
@@ -681,48 +707,50 @@
   (c-calls-only (->* (exp symbol int bool bool) bool)
     (lambda (x f n tail loops)
       (tagcase x
-        (e-var (m a b abk) (not (symbol=? m f)))
-        (e-lambda (ps body a b abk) (or (c-has-param? ps f) (c-calls-only-inside body f n loops)))
-        (e-app (fun args a b abk)
+        (e-var (m a b abk abkr) (not (symbol=? m f)))
+        (e-lambda (ps body a b abk abkr)
+                  (or (c-has-param? ps f) (c-calls-only-inside body f n loops)))
+        (e-app (fun args a b abk abkr)
           (and (c-calls-only-all args f n loops)
                (tagcase fun
-                 (e-var (m a2 b2 a2b2k)
+                 (e-var (m a2 b2 a2b2k a2b2kr)
                    (if (symbol=? m f) (and (or tail (not loops)) (= (c-count-exps args) n)) #t))
                  (else y (c-calls-only fun f n #f loops)))))
-        (e-plambda (d body a b abk) (c-calls-only body f n tail loops))
-        (e-letregion (k r i body a b abk) (or (symbol=? r f) (c-calls-only body f n #f loops)))
-        (e-rlambda (r l a b abk) (and (c-calls-only r f n #f loops) (c-calls-only l f n #f loops)))
-        (e-proj (body ds a b abk) (c-calls-only body f n tail loops))
-        (e-the (d body a b abk) (c-calls-only body f n tail loops))
-        (e-convention (cnv body a b abk) (c-calls-only body f n tail loops))
-        (e-if (t th el a b abk)
+        (e-plambda (d body a b abk abkr) (c-calls-only body f n tail loops))
+        (e-letregion (k r i body a b abk abkr) (or (symbol=? r f) (c-calls-only body f n #f loops)))
+        (e-rlambda (r l a b abk abkr)
+                   (and (c-calls-only r f n #f loops) (c-calls-only l f n #f loops)))
+        (e-proj (body ds a b abk abkr) (c-calls-only body f n tail loops))
+        (e-the (d body a b abk abkr) (c-calls-only body f n tail loops))
+        (e-convention (cnv body a b abk abkr) (c-calls-only body f n tail loops))
+        (e-if (t th el a b abk abkr)
           (and (c-calls-only t f n #f loops)
                (c-calls-only th f n tail loops)
                (c-calls-only el f n tail loops)))
-        (e-letrec (bs body a b abk)
+        (e-letrec (bs body a b abk abkr)
           (or (c-member? (c-bind-letrec bs nil) f)
               (and (c-calls-only-all (c-rec-exps bs) f n loops)
                    (c-calls-only body f n tail loops))))
-        (e-let (bs body a b abk)
+        (e-let (bs body a b abk abkr)
           (and (c-calls-only-all (c-bound-exps bs) f n loops)
                (or (c-member? (c-bind-let bs nil) f) (c-calls-only body f n tail loops))))
-        (e-begin (es a b abk) (c-calls-only-begin es f n tail loops))
-        (e-prompt (t body h a b abk)
+        (e-begin (es a b abk abkr) (c-calls-only-begin es f n tail loops))
+        (e-prompt (t body h a b abk abkr)
           (and (c-calls-only t f n #f loops)
                (c-calls-only h f n #f loops)
                (c-calls-only-inside body f n loops)))
-        (e-bloblet (op i args got a b abk) (c-calls-only-all args f n loops))
-        (e-product (fs a b abk) (c-calls-only-all (c-bound-exps fs) f n loops))
-        (e-extract (p l got a b abk) (c-calls-only p f n #f loops))
-        (e-sum (t v a b abk) (c-calls-only v f n #f loops))
-        (e-tagcase (s arms els got a b abk)
+        (e-bloblet (op i args got a b abk abkr) (c-calls-only-all args f n loops))
+        (e-product (fs a b abk abkr) (c-calls-only-all (c-bound-exps fs) f n loops))
+        (e-extract (p l got a b abk abkr) (c-calls-only p f n #f loops))
+        (e-sum (t v a b abk abkr) (c-calls-only v f n #f loops))
+        (e-tagcase (s arms els got a b abk abkr)
           (and (c-calls-only s f n #f loops)
                (c-calls-only-arms arms f n tail loops)
                (c-calls-only-else els f n tail loops)))
         ;; Said of no module (as the Rust compiler's `loops_only` and
         ;; `called_only` say).
-        (e-module (items a b abk) #f)
-        (e-with (m body a b abk) #f)
+        (e-module (items a b abk abkr) #f)
+        (e-with (m body a b abk abkr) #f)
         (else y #t))))
   ;; The same for the body of a lambda or a prompt in `x`: where `loops`
   ;; asks, no call there is in tail position, so it may not mention `f`.
@@ -799,7 +827,7 @@
     (let* ((b (c-nth-binding bs i)) (name (extract b 1)) (lam (c-lambda-of (extract b 3))))
       (and (not (null? lam))
            (tagcase (car lam)
-             (e-lambda (ps lbody la lb lalbk)
+             (e-lambda (ps lbody la lb lalbk lalbkr)
                (let ((n (c-count-params ps)))
                  (and (not (c-has-param? ps name))
                       (c-loops-only lbody name n #t)

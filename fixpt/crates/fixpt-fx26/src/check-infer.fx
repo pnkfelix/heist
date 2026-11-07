@@ -310,6 +310,7 @@
                   (ty-product (ps) (go (k-push-parts ps rest)))
                   (ty-sum (ps) (go (k-push-parts ps rest)))
                   (ty-union (ms) (go (k-push-ids ms rest)))
+                  (ty-allof (ms) (go (k-push-ids ms rest)))
                   (ty-tag (x y e r)
                     (or (reg r) (k-open-effect? e kinds solved) (go (cons x (cons y rest)))))
                   (ty-comp (x y e r once)
@@ -347,6 +348,7 @@
                   (ty-product (ps) (ws (k-push-parts ps nil)))
                   (ty-sum (ps) (ws (k-push-parts ps nil)))
                   (ty-union (ms) (ws ms))
+                  (ty-allof (ms) (ws ms))
                   (ty-pair (a b r nl) (or (w a) (w b)))
                   (ty-tag (a b e r) (or (w a) (w b)))
                   (ty-comp (a b e r once) (or (w a) (w b)))
@@ -475,7 +477,9 @@
                       ;; wanted, its pair).
                       ((and (tagcase at (ty-union (aa) #t) (else y #f))
                             (tagcase pt (ty-union (pp) #f) (ty-var (v) #f) (else y #t)))
-                       (let ((y (tagcase at (ty-union (aa) (k-member-holding p aa)) (else w -1))))
+                       (let ((y (tagcase at
+                                  (ty-union (aa) (k-greatest-of (k-member-holding p aa)))
+                                  (else w -1))))
                          (if (< y 0) #u (k-unify p y kinds solved trail))))
                       (else (k-unify-node a pt at kinds solved trail)))))))))
   ;; Node `pt` matched against `a`, whose node is `at`, by their shapes.
@@ -612,7 +616,7 @@
     (lambda (pp actual kinds solved trail)
       (if (null? pp)
           #u
-          (let ((y (k-same-shape-in (car pp) actual)))
+          (let ((y (k-greatest-of (k-same-shape-in (car pp) actual))))
             (begin (if (>= y 0) (k-unify (car pp) y kinds solved trail) #u)
                    (k-unify-members (cdr pp) actual kinds solved trail))))))
   (k-unify-parts (->* (k-parts k-parts k-binders k-solved k-trail) unit)
@@ -677,7 +681,7 @@
 (define k-plambda-matches? (->* (kx k-ty) bool)
   (lambda (x et)
     (tagcase x
-      (x-plambda (binders body a b abk)
+      (x-plambda (binders body a b abk abkr)
         (tagcase et
           (ty-poly (bs want) (and (= (k-length bs) (k-length binders)) (k-same-kinds? bs binders)))
           (else y #f)))
@@ -702,6 +706,11 @@
     (cond ((null? candidates) -1)
           ((k-all-fit? types (car candidates)) (car candidates))
           (else (k-upper-bound (cdr candidates) types)))))
+;; Of `ms`, the first every other is below, if one is, or -1: a union's
+;; greatest member of a shape, which inference takes for the union
+;; (`logical-types.md` §8.8). As Rust's `greatest_of`.
+(define k-greatest-of (->* (k-ids) int)
+  (lambda (ms) (k-upper-bound ms ms)))
 (define k-part-names (->* (k-parts) (listof string acyclic))
   (lambda (ps)
     (if (null? ps) nil (cons (symbol->string (extract (car ps) 1)) (k-part-names (cdr ps))))))
@@ -715,12 +724,29 @@
     (cond ((null? vs) nil)
           ((k-arm-named? arms (extract (car vs) 1)) (k-variants-not-named (cdr vs) arms))
           (else (cons (car vs) (k-variants-not-named (cdr vs) arms))))))
+;; Whether a product's labels are 1, 2, … in order, from `i`, a `tupleof`'s:
+;; only such a product's fields are bound by position (`TODO.md` §191).
+(define k-positional? (->* (k-parts int) bool)
+  (lambda (fs i)
+    (cond ((null? fs) #t)
+          ((string=? (symbol->string (extract (car fs) 1)) (int->string i))
+           (k-positional? (cdr fs) (+ i 1)))
+          (else #f))))
+;; Whether an arm's `names` bind the fields `fs`, one each, by position.
+(define k-takes-apart? (->* (k-parts k-names) bool)
+  (lambda (fs names) (and (= (k-length fs) (k-length names)) (k-positional? fs 1))))
+(define k-not-positional string
+  (string-append ": only a product labelled 1, 2, …, a `tupleof`, is taken apart by position;"
+                 " bind it to one name and `extract` its fields"))
 (define k-cannot-take-apart (->* (symbol int k-names kx) k-bindings)
   (lambda (tag t names body)
-    (k-fail (k-cat5 (k-quote (symbol->string tag)) " carries a " (k-show-ty t)
-                    ", which cannot be taken apart into "
-                    (string-append (int->string (k-length names)) " name(s)"))
-            (k-start body) (k-end body))))
+    (let ((named (tagcase (k-get t)
+                   (ty-product (fs) (if (k-positional? fs 1) "" k-not-positional))
+                   (else y ""))))
+      (k-fail (k-cat5 (k-quote (symbol->string tag)) " carries a " (k-show-ty t)
+                      ", which cannot be taken apart into "
+                      (string-append (int->string (k-length names)) " name(s)" named))
+              (k-start body) (k-end body)))))
 (define k-zip-fields (->* (k-names k-parts) k-bindings)
   (lambda (ns fs)
     (if (null? ns)
@@ -743,5 +769,5 @@
 ;; variable `tag`, if it is one.
 (define k-reaches-only? (->* (kx kx k-region) bool)
   (lambda (body tag r)
-    (let ((tv (the k-names (tagcase tag (x-var (s a b abk) (cons s nil)) (else y nil)))))
+    (let ((tv (the k-names (tagcase tag (x-var (s a b abk abkr) (cons s nil)) (else y nil)))))
       (k-none-reach? (k-free-vars body) tv r)))))))

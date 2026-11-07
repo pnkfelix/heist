@@ -428,6 +428,14 @@ printed expansion.
   naming `#%fx` bindings;
 - `let*` and named `let` written as macros, compared with the built-in
   ones' results;
+- a truthy `and` (`TODO.md` §197, the user's, 2026-11-05: by macro, not
+  built in): `(and e1 e2 …)` giving `#f` or the last operand's value,
+  `(let ((t e1)) (if (false? t) #f (and e2 …)))`, so that `(and (to-enf
+  op) (to-enf arg) …)` chains `(oneof false enf)` results. Its test must
+  be `#f` itself, not `bool?`, or a `#t` would count as failure; whether
+  the checker narrows on `(eq? t #f)` or `(not t)`, so that `t` is the
+  rest of its type after it, is to find out first. Hygiene: `t` against a
+  user's `t` in `e2`;
 - refused at definition: `bad` (a body outside its binder's scope), `K`
   (the shadow restriction), a duplicated argument not declared `pure`;
 - refused at use: an argument not of its syntax type (a binder where an
@@ -441,15 +449,250 @@ with `define-command` as its test; the derived forms of both parsers
 rewritten as macros, once, which is the first payoff in this codebase
 itself.
 
+## The prototype, as built (2026-11-06)
+
+`crates/fixpt-fx26/src/macros.rs`, in the front end written in Rust:
+`Checker::expand_forms` defines each `define-syntax` as it is read and
+expands every use in the forms after it, before either checker sees them;
+both check what it expands to, printed, as they agree on any form. Tests:
+`tests/macros.rs`, the programs in `tests/programs/macros`.
+
+**Signatures, in Herman's notation** (the user's answer): a signature is
+the syntax type of a use's operands, all but the macro's name:
+
+```text
+σ ::= expr | bvar | id | data | type | label | ()
+    | (σ . σ) | (σ …)                    a pair; a list, of pairs
+    | (import σ β) | (export σ β)        σ↓β and σ↑β
+    | (mu v σ) | v | (union σ …)
+    | (literal name)                     a name written as it is (`else`)
+    | (many σ)                           placed any number of times
+β ::= (rho (ℓ δ) …)                      a rib, {ℓ : δ, …}
+    | (cage ρ-or-(at ℓ) …)               a ribcage, innermost first; ℓ@γ
+δ ::= none | var | rib | env
+```
+
+An address is a word of `A` and `D`, read right to left as `cadr` is, from
+the innermost `mu`, `union` member or signature around it. `id` (a
+variable referred to: a cell `swap!` takes), `type` (a description) and
+`label` (a tag or a field's name) are FX-26's. Each signature in the tests
+has a comment saying it in the names of "Binding signatures" above, the
+readable form to move to:
+
+```scheme
+(define-syntax let1
+  ;; As named: ((x bvar) (e expr)) (body (in expr x))
+  ((bvar expr) (import expr (rho (AA var))))
+  ((_ (x e) body) (let ((x e)) body)))
+```
+
+**Checked where defined**, Herman's rules:
+- the signature: `mu` contractive; a `union`'s members told apart by
+  their shapes in the source (`expr` anything but a form's name);
+- each clause's pattern aligned with the signature: each pattern
+  variable's syntax type, and the environment the signature declares
+  around it (its imports evaluated over the pattern);
+- the template, aligned with the signatures of the kernel's forms
+  (`KERNEL` in `macros.rs`, written in the same notation: `lambda`,
+  `let`, `let*` as Herman's let*-cl, `letrec`, `if`, `begin`, `and`,
+  `or`, `quote`, `the`, `sum`, `extract`, `product`, `tagcase`, `cond`,
+  applications) and of the macros, the macro itself among them. A kernel
+  form not there is refused in a template;
+- each pattern variable placed where the form takes its syntax type
+  (subtyping, coinductive, binding structure alike), and in the scope of
+  the bindings its signature declares, no more and no fewer, the
+  template's own binders aside (`bad`, and its converse);
+- a pattern binder referred to only where no other pattern binder may
+  shadow it (the shadow restriction, `K`);
+- a pattern variable with an expression in it placed at most once, affine,
+  unless its part of the signature is `(many σ)` (2026-11-06, the user's
+  choice of a substructural rule with an explicit opt-out over a lint);
+  placed in a part another macro's signature says `many`, it counts as
+  placed more than once, so a chain of macros that multiplies an argument
+  says so in every signature on the way (`many-chain.fx`,
+  `many-chain-refused.fx`). A copy is an expression of its own, its own
+  facts (`many-copies.fx`): identity is by position, not place
+  (`loads-and-places.md`, "Decided: identity by position");
+- a template's tag or label a keyword (the user's answer).
+
+**Expanded where used**: the use parsed by the signature (a binder where
+one goes, a macro's name never bound), the first clause whose pattern
+matches transcribed. The template's binders, and its references to them,
+made fresh (`%tmp:3`); its other names the standard bindings, `(with #%fx
+name)`, which nothing shadows; the kernel's form names as they are, as
+no program binds one. So the use's names never capture the template's,
+nor the template's the use's: `swap!` against a use's own `tmp`, `my-or`
+against a use's `t`. A use of a macro inside an expansion is expanded in
+turn.
+
+**Not yet:**
+- A template naming the program's own globals (item 5): refused until
+  there is a reference to a global that nothing shadows, as `#%fx` is to
+  a standard binding. The user's answer: the global as it is where the
+  macro is used.
+- A macro's name may not be bound or defined at all, as a form's may not
+  (Herman lets a local binder shadow a macro); a use binding one is
+  refused, and a definition of one.
+- Errors inside an expansion are said where the template wrote the part,
+  then at each use that made it, innermost first (2026-11-06,
+  `loads-and-places.md`, "Done: identity by position"); the printed
+  expansion's source map, for the checker written in FX-26's places,
+  waits for the expander to be that front end's.
+- The REPL: a macro defined in what is typed is defined for that alone
+  (`Checker::macros_kept`); a use's binders and scopes are not yet shown
+  before it expands.
+- The front end written in FX-26 has no macros: a module's file
+  (`load-module`) and `check_only` see none.
+- Ellipsis (the user's answer: later, as sugar for recursion), `defn`,
+  binders of descriptions, procedural macros (items 7 to 11).
+
+## FX-26's own extensions as binding information (2026-11-06)
+
+The user asked (2026-11-06) whether FX-26's extensions to its type system
+lend themselves to encoding binding structure, and what in the language
+needs a macro system's extra care. Nothing here is decided.
+
+### Effects as scopes, regions as binders
+
+The strongest fit. Taha and Nielsen's environment classifiers (POPL 2003),
+and Kiselyov, Kameyama and Sudo's refined ones (APLAS 2016) above all,
+type generated code by the set of binders it may refer to, a classifier
+per binder: a region discipline. In FX-26's terms:
+- A template's `(lambda (x) body)` is a `letregion`: it brings a scope
+  variable `ρx` in for `body`. A reference to `x` is an effect on `ρx`.
+  Leaving the lambda masks `ρx`, as a closed region's effects are masked.
+- Item 7's `(expr T E)` gains a third index, a set of scopes, `(expr T E
+  S)`; Herman's `(in expr x)` is `S` and `ρx`.
+- **Hygiene as a type.** An `expr` argument comes with the use's scope, a
+  variable `s` the macro is polymorphic in, as it may be in an effect. The
+  template may place it under its own binders, and cannot name them.
+- **Escape is a check FX-26 has.** A use's expression that would refer to
+  a template's binder is refused as a value that mentions a closed region
+  is, or as `m..t` leaving `m`'s scope.
+- **Subeffecting is weakening.** Code good in fewer scopes is good in more.
+
+What effects do not give: Herman's *exports*, what a part offers its
+siblings (`let*`'s clauses, a definition to its module). Effects flow up,
+saying what is used, not what is offered. Modules give those (below).
+
+### `anyof`, `oneof` and `allof`
+
+- Herman's union, its members of disjoint *source* shapes, is a `oneof`
+  read on source shapes, not an `anyof`.
+- A macro of several clauses (`let` and named `let`) is better an `allof`
+  of a signature per clause than Herman's `∪{…} → expr`: with typed
+  results (item 7) each clause may give a type of its own, as `swap`'s
+  members do.
+- At a use, the syntax is concrete: expansion always knows which member
+  applies, and nothing is split as rule 5 splits a call. The logical types
+  earn their keep where a template is checked once, at its definition,
+  against every clause.
+
+### First-class modules as environments
+
+| Herman | FX-26 |
+| --- | --- |
+| a rib, bindings at one level | a module type, `(moduleof (val x t) …)` |
+| an import, `σ` in the scope of `x` | `(with m σ)`, which opens values, types and effects, innermost first, falling back outward |
+| a ribcage, ribs in order | nested `with`s, or `extend` (`(with e0 e1)`) |
+| a rib's binders distinct | `include`'s `` `x` is defined twice in this module `` |
+| a definition offered outward (`defn`, item 9) | a macro that makes a module fragment its module `include`s |
+
+Bawden's first-class macros are the same reading from the other side: a
+macro's value is the environment its expansion refers to, a module (item
+10). Clojure gets part of this: syntax-quote qualifies a template's free
+symbols by namespace (`` `let `` is `clojure.core/let`), so a use cannot
+capture a free reference; binders it leaves to the programmer (`x#`, a
+gensym), which is why its macros are not hygienic. FX-26's qualification
+is `(with #%fx name)`; item 5 is the same, of the module where the macro
+is defined.
+
+### Propositions, for procedural macros
+
+What a test proves (`(bool (then P) (else Q))`) narrows run-time values;
+for pattern macros, choosing a clause does that already. In a procedural
+transformer (item 11), a shape test of a syntax object narrows it by
+occurrence typing, its binding annotations with it: past the test, the car
+is a binder whose scope is the cdr. And a test that two binders are one
+(Racket's `bound-identifier=?`) proves in its `else` that they differ,
+which is what Herman's shadow restriction is about: `K`, `(lambda (a)
+(lambda (b) a))`, could be accepted on the branch where `a` and `b` are
+known apart. Beyond Herman, and for item 11, not the prototype.
+
+### What needs extra care
+
+**Two namespaces, opened together.**
+- A binder says its sort: a value, or a description of a kind (a type, an
+  effect, a region, a size); item 8.
+- Macros take descriptions too: a syntax type for a description, `(desc
+  K)`, parsed as the description half of `parse.rs` parses one.
+- **`with`.** What it opens depends on the module's *type*: each name is
+  read as `(select m n)` falling back to what it is outside, settled where
+  checked. Hygiene cannot wait for that. In a template's `(with user-m (f
+  x))`, `user-m` must not capture the template's `f`: what an open binds
+  is decided by the scopes of the module's expression as the use wrote
+  it, as Racket binds a `require`'s imports by the context of what it
+  names, never a name the template brought in.
+
+**Taking values and types out of modules.**
+- **A temporary seals.** `(let ((m counter)) …)` makes `m..t`, not
+  `counter..t`. The duplication rule (above, "Using FX-26's types and
+  effects", 1) asks a template to bind an argument used twice to a
+  temporary; of a module, that gives it abstract types of its own, which
+  the use's `counter..t` outside does not match. So a syntax type `path`:
+  of no effect, compared by binding, so usable twice without a temporary,
+  and what `select` takes.
+- A template's fresh module binder is printed in types, `%g12..t`: errors
+  need item 4's source map to say what the use wrote.
+
+**Labels and keywords.**
+- A label is never bound, so hygiene has nothing to do with it, but `n`
+  and `#:n` are one label and bare ones are still read. A template writing
+  `(product (x 1))` and binding an `x` of its own would have the label
+  renamed by a renamer that does not know label positions. In templates,
+  a label is a keyword or a `label` pattern variable; bare labels stay in
+  ordinary code through the transition.
+- **`define-datatype`.** A variant's name is a label, never renamed, and a
+  global constructor, a binder, renamed fresh: a macro that makes a
+  datatype gets a tag `circle` and a constructor `%g7`. Racket's
+  `format-id` problem, worse with derived names (`make-point`). Keyword
+  constructors (`(#:circle x)`, above) remove the binder half.
+- Labels a procedural macro computes (`symbol->keyword`) are `keyword`s,
+  their tags unknown: they need the singleton `(keyword n)`.
+- A `tagcase` arm has a label beside binders, the payload's or since §191
+  a positional list's; the macro checker knows its structure as it knows
+  `lambda`'s.
+
+**Regions in templates.** A template's `(letregion r …)` around a use's
+expression must keep the expression from naming the fresh `r`: scopes as
+regions give that, with an `expr` argument's effect polymorphic over
+regions.
+
+**Where to build.** Effects as scopes and modules as ribs: between them,
+both of Herman's directions, imports and exports, on what FX-26 checks
+already. **Decided (the user, 2026-11-06): not first.** The prototype
+starts as close to Herman's foundations as it can: his binding
+signatures (imports, exports, ribs and ribcages), his shadow restriction,
+parsing directed by a macro's type. Scopes as regions, and modules as
+ribs, are for after it, measured against it.
+
 ## Questions for the user
 
-- The concrete syntax of signatures: names in the types as sketched, or
-  Herman's addresses, or patterns and types apart as Herman writes them?
-- Item 5: what a template's reference to a global means after the global
-  is redefined: the global as it was where the macro was defined, or as it
-  is where the macro is used (FX-26's redefinition re-runs definitions)?
-- Ellipsis (`...`) in the prototype, or recursion through syntax types
-  first, as Herman does?
+Answered 2026-11-06 (the user):
+- **Signatures**: Herman's tree addresses to start, each signature with a
+  comment beside it saying how it would read in the names of "Binding
+  signatures" above, the more readable system to move to.
+- **Item 5**: a template's reference to a global is to the global as it is
+  where the macro is used, as FX-26's redefinition re-runs definitions.
+  Only the top level is redefined: a module's definitions never are, and
+  a local binding a template names is its own, hygienically.
+- **Repetition**: recursion through syntax types, as Herman's chapter 7
+  writes `let*` and `cond`; ellipsis later, as sugar for it.
+- **Scopes as regions**: Herman's annotations first ("Where to build").
+- **Labels in templates**: keywords, or `label` pattern variables; a bare
+  label in a template is refused. Ordinary code is unchanged.
+
+Open:
 - Keywords (decided: `#:tag`): a sum's tag at run time a keyword, as
   proposed, or still a symbol with keywords only in the source? And flat
   products, `(product #:n n #:reply c)`, or keep the pairs?

@@ -58,8 +58,10 @@
   ;; `fresh` or "" (a `reify-region`'s of a region of its own); the names
   ;; of the variables whose evidence it is given (`(given …)`), in order;
   ;; and the type it is checked as, as a rep (`k-staged-rep`), or `#f`. A
-  ;; `reify-…`'s: what it is of, as evidence's rep (`k-reified`).
-  (n-staged string string wcell))
+  ;; `reify-…`'s: what it is of, as evidence's rep (`k-reified`). And the
+  ;; rep's digest (`readings.fx`'s `fold-rep`; 0 for `#f`): the fact as
+  ;; `validate` compares it, the cell being one only the runtime reads.
+  (n-staged string string wcell int))
 ;; Each keyed by the expression (its identity, `k-at`).
 (define-type k-fact (productof (1 k-at) (2 k-noted)))
 (define-type k-facts (listof k-fact acyclic))
@@ -82,6 +84,25 @@
 (define-type k-picks (listof k-pick acyclic))
 (define-type k-reshaped (productof (1 k-at) (2 k-picks)))
 (define-type k-reshape-list (listof k-reshaped acyclic))
+;; What `k-reshapes` held for each module before `k-reshape-at` first reshaped it (an `extend`'s
+;; positions, or none, `nil`): what a reshape of it checked again is made onto.
+(define-type k-reshape-base-list (listof (productof (1 k-at) (2 (listof k-picks acyclic))) acyclic))
+;; While a `lambda` is checked against each member of an `allof`, one frame
+;; per `allof`, innermost first (`check-allof.fx`): each `tagcase` arm a
+;; member's type rules out, skipped, by its body's place, with how many
+;; members skipped it and what its error names (the subject's type, the
+;; tag); and where the member being checked skipped one; how many members
+;; there are, which is checked, and each `if` branch skipped, by its place,
+;; with the members that skipped it. Rust's `DeadArms`.
+(define-type k-dead-arm (productof (1 int) (2 int) (3 int) (4 int) (5 symbol) (6 int)))
+;; (The skipped are by the keys of what is in them, each `k` and its
+;; reading: `k-keys-onto`.)
+(define-type k-spans (listof (productof (1 int) (2 int)) acyclic))
+(define-type k-dead-branch (productof (1 k-at) (2 (listof int acyclic))))
+(define-type k-dead-frame
+  (productof (1 (listof k-dead-arm acyclic)) (2 k-spans) (3 int) (4 int)
+             (5 (listof k-dead-branch acyclic))))
+(define-type k-dead-frames (listof k-dead-frame acyclic))
 ;; `with`'s `select` nodes and what each falls back to (`k-with-fallbacks`).
 (define-type k-fallbacks (listof (productof (1 int) (2 int)) acyclic))
 ;; While a type's `select`s are resolved (`k-resolve-selects`): what each
@@ -105,6 +126,8 @@
   (moduleof
    (val k-fx-module? (subr pure (symbol) bool))
    (val k-reshapes (ref k-reshape-list @t))
+   (val k-reshape-bases (ref k-reshape-base-list @t))
+   (val k-dead-arms (ref k-dead-frames @t))
    (val k-with-vals (ref k-with-list @t))
    (val k-last-latent (ref k-eff @t))
    (val k-broken (ref (listof k-break acyclic) @t))
@@ -151,7 +174,7 @@
    (val k-unbound (subr (maxeff (alloc @t) (read @globals) (read @t) spin) (symbol) string))
    (val k-operator (ref k-op-mark @t))
    (val k-second-class? (subr pure (symbol) bool))
-   (val k-operator? (subr (maxeff (read @globals) spin (read @t)) (symbol int int int) bool))
+   (val k-operator? (subr (maxeff (read @globals) spin (read @t)) (symbol int int int int) bool))
    (val k-no-operator k-op-mark)
    (val k-named-only (subr pure (symbol) string))
    (val k-fx-name (subr pure (kx) symbol))
@@ -171,8 +194,8 @@
    (val k-note-fixed
         (subr (maxeff (alloc @t) (read @globals) (read @t) (write @t) spin) (symbol) unit))
    (val k-hazard-mods (ref k-hazard-list @t))
-   (val k-with-names (subr (maxeff (read @globals) spin (read @t)) (int int int) k-names))
-   (val k-at-is? (subr pure (k-at int int int) bool))
+   (val k-with-names (subr (maxeff (read @globals) spin (read @t)) (int int int int) k-names))
+   (val k-at-is? (subr pure (k-at int int int int) bool))
    (val k-summary (subr (maxeff (read @globals) spin) (k-eff) int))
    (val k-param-map (ref k-params-given @t))
    (val k-param-in

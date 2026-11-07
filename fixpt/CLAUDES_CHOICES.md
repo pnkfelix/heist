@@ -3573,3 +3573,523 @@ differ, and another lambda's `tag` is not this one's. Now the earliest
 reference by place, then the innermost lambda around this one that binds
 it. The certificate is not trusted either way; this makes it the same
 from run to run, and right where the name is shadowed.
+
+## U0: `union` renamed `oneof` (2026-11-05; `TODO.md` §79, `logical-types.md` §8.7)
+
+1. **`union` still read, as `oneof`.** The design says the name goes;
+   removing it outright would break Heist's and kayak's programs on their
+   next pin, with nothing gained in the meantime. Both parsers read
+   either; everything printed (types in messages, type representations)
+   says `oneof`. To remove once both have moved (`TODO.md` §79).
+2. **Two sums made one where they are written.** The well-formed `oneof`
+   of two sums with no tag in common is normalized to one sum (tags in the
+   members' order), so `tagcase` takes it apart with nothing new, and the
+   type prints as that `sumof`. Kept apart they would need narrowing by
+   tag sets, which nothing asks for yet.
+3. **Not when a member is a recursive type's own name, not yet defined.**
+   Such a union is built before its members are known and checked later;
+   making its sums one then would mean rewriting a node already shared.
+   Refused instead, naming the fix (write the sums as one `sumof`).
+4. **Renamed everywhere syntax is**, but not where `union` names a
+   procedure (`native-reps-webs.fx`, the Knuth–Bendix ports, `conform.fx`'s
+   set union) nor in prose, where "a union" still describes the type; the
+   research notes keep the name of their date.
+
+## U1: `allof` (2026-11-05; `TODO.md` §79, `logical-types.md` §8.5)
+
+1. **A call synthesizes its arguments once, and a member fits by subtyping
+   alone.** Trying each member by checking the arguments against its
+   parameters would mean undoing what each try records; with
+   monomorphic members a type of the argument's own decides fitting. So
+   no conversion or reshape at an `allof` call, and an argument that needs
+   an expected type (a `lambda` without parameter types) is refused.
+2. **Facts compared where both members checked.** A member skips the arms
+   its type rules out, so it has no facts there; two members must agree
+   on every other expression (by place: within an arm either skipped is
+   out), and what every member found is kept together. The comparison is
+   of the facts the compilers read (`rust_facts.rs`'s, and FX-26's
+   `k-extracts`, `with`s and reshapes); a `stage`'s are not compared, as
+   Rust's list has none. The message names the two members, not the
+   expression: the two checkers order their facts differently.
+3. **Effect summaries joined, not compared.** They differ between members
+   by design (`pure` and `spin`); the greatest is safe for one code, and
+   both compilers already take the greatest noted per expression.
+4. **A call's latent effect**: the least of the fitting members' if one is
+   within every other's, else the first's. Any one member's typing is
+   sound alone; a meet of effects is not needed for that.
+5. **Termination at every member's types.** The size-change walk takes
+   parameter types from the declared type; for a group with an `allof`, it
+   is walked with the `k`th member of each, and the group ends if it ends
+   each time. `spin` per member waits (`TODO.md` §79).
+6. **A recursive global `allof` says `spin` or binds itself locally**, as
+   a `subr` must: `no_reaching_itself` treats an `allof` as a procedure,
+   reading what its members that do not say `spin` read.
+7. **A module of its own, `check-allof.fx`.** `check-rules.fx` is at its
+   size debt; the rules take `k-check`, `k-synth` and `k-app-result` as
+   arguments, as `check-processes.fx` does. `k-as-argument` moved there
+   too, which `check-rules.fx` imports.
+8. **The verifier's gap recorded, not filled**: three words in
+   `typed_cells.rs`'s known gaps, the work in `TODO.md` §79.
+
+## U2: `anyof` (2026-11-05; `TODO.md` §79, `logical-types.md` §8.5)
+
+1. **One node for `oneof` and `anyof`.** As question 9 settled, the former
+   decides only the check where the union is written; printing chooses
+   `oneof` when no two members share a shape, else `anyof`. So a type
+   representation (`reps.rs`) says `oneof` for both; the readers take
+   `anyof` too.
+2. **"A member below another dropped" is narrowed to "a member the same as
+   one before it".** The FX-26 checker reads types before it has
+   subtyping (`check-unions.fx` comes before `check-subtype.fx`), so the
+   normal form uses structural sameness (`same_ty`, `k-same-shape?`),
+   which both have there. Enough for sums' shared tags (`(var symbol)` in
+   `expr` and `op` is one `symbol`); `(anyof int nat)` stays two members,
+   the same values.
+3. **The shape code moved to `check-print-parts.fx`**, so that the
+   printer can tell `oneof` from `anyof`; `check-unions.fx` imports it.
+4. **"May be written" by the member's top**: a cell, an array, a bloblet,
+   an `icell`, a key, a place, or a pair or `nlist` whose region is not
+   frozen. Such a member must be told apart from every other by shape;
+   the rest may overlap. A product of cells is not refused here; what
+   taking it apart gives is U3's.
+5. **Inference picks a member only when one alone fits.** Where the
+   checkers matched a pattern to the first member of the right shape
+   (`cons` where a union is wanted; `car` of a union with a pair), they
+   now do so only if one member has it; with several, nothing is
+   inferred from the union. The same in the termination walk and the
+   verifier. Unchanged for every `oneof`, whose members' shapes differ.
+   *Revised the same day (§8.8, piece 2)*: of several, the greatest, if
+   one is above every other, in inference and the verifier; the
+   termination walk, which has no subtyping, keeps "one alone".
+6. **Narrowing builds its parts directly** in both checkers (`nil` beside
+   one pair merged, nothing else), as the FX-26 checker did: the parts of
+   a normal union are normal.
+7. **Tests in `tests/programs/anyof/`, run** (`logical_types.rs`, formerly
+   `allof.rs`); `allof` and `anyof` added to the sweeps comparing the
+   checkers and the type representations.
+
+## U2b: splitting at a field (2026-11-05; `logical-types.md` §8.8)
+
+1. **What may be split**: products, sums and frozen pairs not `nil`, the
+   user's answer to question 18. Questions 16, 17 and 19 unanswered: built
+   on the proposals (the checker distributes; 64 splits; no answer cache)
+   and recorded as provisional.
+2. **No split without two candidates that differ at the field.** With one
+   candidate, or all agreeing there, every piece goes where the whole
+   would have: a split could only spend the budget.
+3. **The budget counts splits made, failed tries included**, not splits in
+   the proof as §8.8 proposed: with no cache there is nothing for a count
+   to be independent of, and counting all bounds the work. To revisit with
+   a cache (question 19).
+4. **No message of its own past the budget yet**: the question is answered
+   "no", and the refusal is the usual one. A message naming the budget
+   needs the answer carried out of `sub`; question 17 asks what it says.
+5. **Pieces are fresh nodes, not named by origin.** Only the top of a split
+   is new; its fields are the type's own, so recursion meets original
+   pairs on the trail, and the budget bounds the rest.
+6. **`check-subtype.fx` is at 989 lines** of its 1000; the next addition
+   there moves the splitting to a file of its own.
+
+## U3: rule 5, a call's union argument taken apart (2026-11-05; `logical-types.md` §8.5)
+
+1. **Only an argument that is a variable.** Its type is narrowed to each
+   member as a test narrows it (`narrowed`, `k-narrowed`); the call is
+   checked again, nothing else. A computed argument would need a binding
+   of its own to be narrowed; `let` does that in the program.
+2. **Only where the call fails whole, and not for an error inside another
+   argument** (one that is not a variable). Without that second test, an
+   inner call's failure made every enclosing call retry by members.
+3. **The first argument that works**, in order; an argument with a member
+   the call does not fit is passed over, and with none left the call's own
+   error stands, not a member's.
+4. **The facts as the failed try left them, but within the call**, are
+   what each member's check starts from: taken only when there is a union
+   argument to try, so no call that checks pays for it. Copying every
+   call's facts before trying it made checking the front end quadratic.
+5. **Facts compared whole, each member's against the first's**, as an
+   `allof`'s; what all found kept together, effects of the call's
+   expressions joined.
+6. **`extract` not covered**: it is a form, not a call, in both checkers.
+7. **The λm example of §8.5**: `(anyof expr op)` was one sum once U2's
+   merging normalized it, so `swap` of one fit only the `sexp` member. The
+   user's choice (2026-11-05): keep the written members. Below, "U3b".
+
+## U3b: an `anyof`'s sums kept as written (2026-11-05; the user's)
+
+1. **Kept as written; one sum made where one is needed.** `tagcase` of a
+   union whose members are all sums takes their one sum (`sum_head`); a
+   union with other members too is narrowed first, as before. Writing the
+   union checks the sums can be made one (a shared tag's payloads must
+   form an `anyof`), so a later merge does not fail.
+2. **Subtyping's merge is unchecked** (`sums_joined_raw`): a payload of
+   several is the union of those not the same, flattened no further and
+   not refused, since the FX-26 subtype test may not escape. The same
+   values as the checked merge, so the same answers.
+3. **Tried after every member alone**, before splitting at a field.
+4. **A recursive `anyof` of sums is taken**: nothing is made one when it
+   is written, so a member not yet defined no longer matters. A `oneof`'s
+   sums are still made one where written, and that refusal stays for it.
+5. **Rule 5 where a call checks but not as expected**: taken apart, and
+   kept if its union is as expected; else the whole call's facts put back
+   and its type kept, for the expectation to refuse. Without it, `swap` of
+   an `(anyof expr op)` checks whole, as the `sexp` member, and only the
+   expectation fails.
+6. **Helpers moved** from `check-subtype.fx` (then past its 1000 lines) to
+   `check-unions.fx`: candidates by shape, the fields to split, how.
+7. **The verifier of typed cellular code takes a union of sums as their
+   one sum** where it takes a sum apart or checks one made where the union
+   is expected (`typed_cells.rs`), so those words verify; an `allof`'s body
+   and a call split by members stay its known gaps.
+
+## `fixpt check --reps` (2026-11-05; kayak's request, `docs/fx26.md`)
+
+1. **The forms as `fixpt check` takes them**: `declare_ahead`, then
+   `top_defining` on each (`compare::rust_reps`), not kayak's scratch
+   program's `Checker::new` and `top`. So the lines are the `define` lines
+   `fixpt check` lists, with the session's convention, an `include`'s
+   names, and a redefinition's definitions run again, each a line.
+2. **The Rust checker's rep**, and `NAME differs REP` with the FX-26
+   checker's only where it takes the whole program and has a rep of the
+   name: its `checked-reps` gives each name's latest type and leaves out
+   what it declines, so it is compared at the name's last line only.
+3. **A refusal goes to the standard error**, with exit 1, so the standard
+   output is the `NAME …` lines alone. `--reps=hex` is the default's other
+   name; any other `--reps=…` is a usage error (2).
+4. On the test programs of `tests/reps.rs`'s directories: 1923 lines, none
+   declined, none differing.
+
+## F18: an `allof` call's meet, and what the call allocates (2026-11-05; the user's)
+
+1. **Where the rule is**: the procedure-type case of the meet only (two
+   `subr` types made an `allof`), not every meet whose results name a
+   fresh region. Where two results are related, the lesser is one member's
+   typing, sound alone; sums and products meet part by part, so a
+   procedure in one is met by the same rule.
+2. **Fresh regions**: each fitting member's latent `alloc`, not
+   `Region::Frozen` (frozen data, immutable). The call's own effect, as
+   the members say it, not the enclosing expression's after masking.
+3. **No region named in the message**: "whose results are procedures that
+   may keep what the call allocates: one value would be both". The two
+   members are shown, with their `alloc`. The FX-26 checker tells the two
+   refusals apart by meeting again with no fresh regions (its
+   `k-meet-sums`, `k-meet-fields` give none, not why); Rust's `meet`
+   returns which.
+4. **Tests of what the rule relies on**: every maker of mutable storage
+   says `alloc` (a Rust test), and no cell is polymorphic
+   (`allof/poly-cell.fx`). Each refusal test keeps, after the refused
+   form, the lines that would go wrong.
+
+## Dead branches of shape tests under an `allof` member (2026-11-05; the user's)
+
+1. **`void` by narrowing**: where a shape test cannot pass (or fail) for a
+   type that is no union (`narrowed_by` gives nothing), the variable is
+   narrowed to `void`, only while an `allof` is checked
+   (`!dead_arms.is_empty()`, `k-dead-arms` not empty). Outside one, every
+   program checks as before, and its messages are unchanged.
+2. **Dead under every member: checked under the last**, not refused: a
+   `tagcase` arm with no tag is a misspelling; an `if` branch no member
+   takes is dead code, which Fixpt checks elsewhere. Checked, the code has
+   the facts the compilers need. Counted by distinct members (a branch
+   met twice under one member is once), keyed by node (`ExpId`; in FX-26
+   start, end and `kth`).
+3. **A `typecase` arm's parts at the arm**, in both parsers, where they
+   were at the whole `typecase`: a skipped arm then hides only its own
+   facts from rule 3, not the live arms'. Messages at an arm's test or
+   binding now point at the arm.
+4. **Termination is not judged per member** (U1's open item): a recursive
+   `allof` whose calls fit another member says `spin` where it ends
+   (`cond-dead.fx`); the user's `swap` in `herman.fx` checks as `pure`.
+
+## `tupleof`, `tuple`, and taking apart by position (TODO §191, 2026-11-05)
+
+The user chose: only positional products are taken apart by an arm's list
+of names; and `(tupleof T …)`, `(tuple e …)` for products labelled from 1.
+Mine:
+- **Positional** means labels exactly 1, 2, …, n, in the order written.
+  `(productof (2 int) (1 string))` is refused too, though its labels are
+  numbers: by position its first name would bind label 2, which reads
+  wrong. Labels compare as numbers (`tuple-eleven.fx`), never as sorted
+  strings.
+- **Both are rewrites at parse time**, so the types are the same: a
+  `(tupleof int string)` and a `(productof (1 int) (2 string))` are one
+  type, and a type prints as the `productof`. Printing `tupleof` back is
+  left for later; it would change what every message and `fixpt check`
+  says of today's positional products.
+- **Reserved:** `tuple` and `tupleof` are keywords in both checkers. No
+  program here, in Heist or in kayak names either.
+- **The refusal** says what to write instead: bind the payload to one
+  name and `extract` its fields.
+- An empty `(tuple)` is `(product)`, a `(productof)`.
+
+## A variant named by a type form; `(listof T)` (TODO §190, §198, 2026-11-05)
+
+- **Every type form is refused as a variant's tag**, not only `oneof` and
+  `union`: a constructor `(nat 3)` or `(ref x)` reads as a type wherever
+  it is used. No `define-datatype` here, in Heist or in kayak had one. The
+  FX-26 parser keeps its own list (`parser.fx`'s `dt-type-forms`); a test
+  runs every one of `parse.rs`'s `TYPE_FORMS` through both parsers, so the
+  list cannot fall behind unseen.
+- **`(listof T)` is read as `(listof T acyclic)`**, the region parsed from
+  a written `acyclic`, so it is the same type. Types still print with
+  their region: printing `(listof T)` back would change what every
+  message and `fixpt check` says. `listof` as a description function,
+  written alone, still takes a type and a region.
+
+## Termination judged per `allof` member (U1's leftover, 2026-11-05)
+
+- **Nodes, not members alone.** Each binding is a node per member; each
+  call goes to every member its arguments fit. Judging each member by its
+  own calls alone would be unsound: calls alternating between members can
+  loop and grow while each member's calls shrink (`members-alternate.fx`).
+  A node ends if size-change holds for everything reachable from it.
+- **What the walk passes over** is decided from types alone, without the
+  checker's narrowing: a standard shape predicate (`check::SHAPES`, by
+  name) or its `not`, of a value whose type the walk knows (a parameter,
+  or a part of one), and a `tagcase` arm for a tag the sum lacks. Not a
+  user predicate's `(bool (then (shape …)))`: the FX-26 walk is loaded
+  before what reads those (`k-latent-props`), and the two must agree.
+- **Fits, where the walk knows the arguments' types**, by subtyping, after
+  the walk; where it does not (a literal, a call's result), every member:
+  the safe side.
+- **Outside an `allof`, nothing changes**: the walk skips nothing.
+- **A call's `spin`** comes from the members it fits; the `spin` that
+  naming a recursive binding says is not added for its operator, as the
+  call decides. Named anywhere else, it still says `spin`, and escapes:
+  the group then does not end at any member.
+- FX-26's `k-sc-op` now sees a standard binding through `fx`, as Rust's
+  `std_op` did already: `typecase`'s tests are written so.
+
+## `allof` over products (2026-11-05)
+
+The user read the paper as supporting the distribution. Mine:
+- **Normalized where it is written**: `(allof P1 P2)` is read as one
+  product, so nothing downstream sees an `allof` of products, and a
+  `product` checked against it checks each field as before, a `lambda`
+  against its field's `allof`.
+- **Same labels, in order**, as the meet of products asks; not by name in
+  any order.
+- **Fields the same by structure** (`same_ty`, as the `anyof` trimming
+  compares), not by subtyping: the reader runs before FX-26 has subtyping,
+  and the checkers must agree. `(n int)` and `(n nat)` differ, and are
+  refused.
+- **Only procedures, and products of them, may differ**: no written meet of
+  sums or cells. A cell of one type in every member is one cell, fine.
+- check-read-descs.fx was at 978 lines, so the helpers are a file of their
+  own, `check-read-allof.fx`, made as `check-read-ahead.fx` is.
+
+## Arguments at an `allof` call, and rule 5 at any argument (2026-11-05)
+
+- **A `lambda` with an untyped parameter** fits by arity alone; it is then
+  checked against the fitting members' parameter types, their `allof`
+  where they differ, so the existing check of one body against several
+  types (rule 3) covers it.
+- **Converted or reshaped arguments** fit, but are made once: every
+  fitting member must take the same type there (by structure). Otherwise
+  refused, as one value cannot be made two ways.
+- **Not literals**: an integer literal at a member taking a `u8` still does
+  not fit; a literal synthesizes as an `int`, and taking it as each
+  member's width would need each width's representation at once.
+- **Rule 5 at any argument** pins the argument expression to each member
+  where it is synthesized, or checked as a call; an argument checked in
+  some other way (an `if` against a parameter) is not pinned, and stays
+  refused. FX-26's split was given the synthesizer to find an argument's
+  type (`k-split-app`'s new parameter).
+
+## The verifier and `allof`, in part (2026-11-05)
+
+- **Signatures per member** are recorded where the checker checks each
+  member, for every lambda inside the `allof`'s, after a member checks;
+  a word is then certified at each (`Cert::variants`). A failed trial
+  elsewhere can leave one more: the verifier then fails, never accepts.
+- **A closure's type** is the `allof` of the variants its free values fit:
+  an `allof`'s own lambda has the same free values under every member, so
+  all; one nested inside, only the member it was made under.
+- **Unreachable ways**: a value narrowed to `void` by a shape test its type
+  cannot pass marks the way never taken, in any word, not only under an
+  `allof`: sound, as no value has `void`, and it only removes obligations.
+- **Not done**: notes and operations per member. They come from the
+  checker's facts by expression, the last member's; making them per member
+  means compiling each word's notes at each member's facts, a change to
+  the compiler's every note. Words that verified before at one member and
+  now fail at another (`mk` in the fresh/frozen tests) were not verified as
+  `allof` words before either.
+
+## The verifier and `allof`, the rest (2026-11-06)
+
+- **Notes per member without compiling twice.** Compiling a word again at
+  each member's facts would make its inner lambdas' words again. Instead
+  each member's check records the types and instantiations it found inside
+  the body (`check::MemberFacts`), and the compiler records which
+  expression's fact each note and operation was made of (`Compiler::
+  fact_of`: a type note, a datum made, a call's or operation's
+  instantiation, a `list-copy`'s, a polymorphic value's). A variant's
+  certificate has them made again of its member's facts; one its member
+  found nothing for keeps the last member's.
+- **Rule 5 in the verifier where a call fits whole too**: the split's
+  result is taken where it is within the whole's, differs, and its effect
+  is within the whole's: both are sound, and the checkers take the split
+  there when the whole's is not what is expected (`swap-eop`).
+- **`car` of a union of pairs, none greatest**: the union of each pair's
+  part, each region read, as the checkers' rule 5 gives it.
+- **The weakened-effect test** now weakens each variant's effect too: a
+  word with variants is verified at them only, so weakening the outer
+  certificate alone proved nothing (`frozen-ring.fx`'s `mk` showed it once
+  it verified).
+
+## Typed macros, the prototype (2026-11-06)
+
+- **Where it runs**: in `Checker::expand_forms`, as forms are read, so
+  that both checkers check the printed expansion (the note's plan); the
+  REPL's reading as one types keeps the macro table and puts it back.
+- **One algorithm for templates and uses**: syntax is aligned with a
+  syntax type into a tree whose annotations are evaluated over it. The
+  kernel's forms are given signatures in Herman's own notation (`KERNEL`
+  in `macros.rs`), so a template is checked as a use is parsed; a form
+  with none is refused in a template rather than guessed at.
+- **Environments compared, the template's own binders left out**: they
+  are made fresh, so they bind nothing a use wrote. Ribs compare as sets
+  of atoms (a pattern binder, a pattern variable's rib, its ribcage), in
+  order of levels, empty ones dropped.
+- **Free names in templates**: kernel form names stay (reserved, so
+  unshadowable); standard bindings become `(with #%fx name)`; anything
+  else is refused, waiting for an unshadowable reference to a program's
+  global (item 5). No resolver over the whole expansion is needed, since
+  nothing left can be captured.
+- **Macro names reserved**, as form names are: no environment of local
+  binders in the expander yet. Herman's shadowable macro names wait.
+- **`id`**, a syntax type of a variable referred to, beside Herman's:
+  FX-26 has no `set!`, and `swap!` exchanges cells, whose variables it
+  names twice; an `expr` may be placed only once.
+- **`for` became `where`** in the tests: FX-26 has no `for-each` yet
+  (it waits on a prelude), and a template may not name a global.
+- **Duplication** refused for any pattern variable with an expression in
+  it, not only `expr`; `(expr pure)` waits for effect-indexed `expr`.
+
+## `(many σ)`, and identity by position (2026-11-06)
+
+- **`k` as the walk's number, not a new key's shape**: the identity
+  `(start end k)` keeps its three fields, so every comparison and table
+  stands, and `k` alone tells expressions apart. A form's number was not
+  needed: the compiler makes its tables anew each call of the front end,
+  and the walk counts over one call, as `k` did.
+- **`last` computed, not stored**: only skipped arms and branches ask what
+  is inside an expression in the checker written in FX-26, so
+  `k-last-kth` walks the arm once, rather than every node carrying it.
+- **Expansion records in `fixpt-read`, process-wide**, as symbols are
+  interned: an error's span says which use made its text wherever it
+  goes, and `fixpt`'s `located` reads it without the checker passed to
+  each of its 22 callers.
+- **The source map not built**: the checker written in FX-26's place in a
+  printed expansion is said only where the checkers disagree.
+- **`many` counted at placement**: a pattern variable inside a part a
+  form's signature says `many` counts as placed more than once; so `many`
+  goes up a chain of macros, and none hides a duplication by placing an
+  argument once into one that duplicates it.
+
+## The REPL's session text (2026-11-06)
+
+- **One text, not a file number per entry** (the user agreed): 111 places
+  take `FileId(0)` for the text being compiled; the session's text keeps
+  that true, and matches the evaluator's positions past every text before.
+- **Read by seeking**, not by a base in the reader: `Reader::seek` to where
+  the entry starts in the session's text, so spans are its places.
+- **A trial read copies the session's text** to read past it, keeping
+  nothing: the REPL's reading as one types, which is short.
+- **`,query`'s sources stay each entry's own**: it reads them again with
+  its own checker, so their places need only be their entry's.
+- **An error in a file loaded** is said as before (`located`), by the file.
+
+## A reading is a digest, not a count (2026-11-06)
+
+- **The user's call**, after the count (a global in the FX-26 image,
+  bumped by each parse) proved to depend on the image's history, so the
+  two front ends could not agree on it without an owner. Now
+  `reading-of(s, text)`, a fold of the text into 40 bits from the state
+  `s` it is read in, written in FX-26 (`readings.fx`) and Rust
+  (`ids::reading_of`), tested equal.
+- **Of the trees, not the text** (the user's point, revising my first cut,
+  which folded the text): the digest is the full key the cheap key is
+  validated against, so it must tell apart exactly what means something
+  different. Finer (whitespace, comments, `#t`/`#true`) and validation
+  flags the cheap key wrongly. Each side walks its own reader's trees
+  (FX-26 `syn`, Rust `Syntax`) by kind marks past the character codes;
+  agreement is tested on floats, bignums, keywords, vectors, non-ASCII.
+  `(a . (b c))` stays apart from `(a b c)`: the parser rejects the first
+  as code, so equal digests would hide a difference. Every piece of every
+  datum is folded: my first cut left out bytevector bytes and ratio
+  values, as FX-26 could not reach them from a `datum`, and the user
+  rejected the hole (a digest that misses a difference validates
+  nothing). So the standard gained `datum-bytevector-length`/`-ref`
+  (lowered to `bytevector-length`/`bytevector-u8-ref`) and
+  `datum-rational?`, `datum-numerator`, `datum-denominator` (`rational?`,
+  `%numerator`, `%denominator`). A ratio folds in lowest terms, as the
+  FX-26 reader reads it; the Rust reader keeps `6/4` as written, so
+  `ids.rs` reduces it (num-rational). A text that does not read leaves
+  the state unchanged.
+- **Why 40 bits by 1000003**: every step stays in a 61-bit fixnum with no
+  wrapping arithmetic, so both sides compute it alike; collisions within
+  a session's readings are about n²/2⁴¹.
+- **Where `s` lives**: with each state it stands for (the REPL session,
+  a staging session's texts, a staging session's own front end), passed
+  to every entry that reads (`parse-program`'s first argument), never a
+  global set beside the call. Every text that reads advances it, those
+  refused after included.
+
+## Three keys, stage 2: per form, every mode in both front ends (2026-11-07)
+
+- **The user's calls**: `S` by trees as the reference and `S` by types
+  as a cheaper one checked against facts ("both, validated"); `S` per
+  form, so a session's state does not depend on how its forms were split
+  into texts; `Z` the digest of the child path down from the form, which
+  tells apart what a zipper does, the form fixing the siblings.
+- **What a form's reading folds**, so that the reference is sound by
+  construction, not by each case seen: the state before, the checker's
+  switches, the form's trees, each file it first loads (by key, sorted),
+  and where a checker begins, the standard environment's trees; a staged
+  step, the reps it is checked against.
+- **Modes by the numbers given, not by the comparisons**: each mode
+  decides what the walk writes in an expression's two key fields, and
+  every identity test compares both, so no comparison changes with the
+  mode. `path`'s count never goes back: a refused text, or a try, still
+  advances it, so no number is given twice.
+- **Rust's facts by their place in the walk** (reading -1), the compiler
+  giving each the key the parse gave there: the Rust checker need not
+  know the session's count, nor its state, to key its facts.
+- **The evaluator's forms past any program's**, as `ev-stage-base` puts
+  their places: they run among the program's facts. My first version
+  numbered them at 0, arguing nothing they find is kept; a staging test
+  showed them looked up in the program's tables. The argument had a hole.
+
+## Three keys: `validate`, and the count the parser's (2026-11-07)
+
+- **`path`'s count belongs to the key space, not to each caller.** First
+  each owner passed it with the text; but a caller that began again at 0
+  (a program compiled alone, a test's helper) numbered another program's
+  expressions with numbers already given in the same front end, whose
+  compiler keeps copies to inline across calls. Now the parser instance
+  counts (`walked-total`), every parse going on from it; each parse says
+  where it began, for placing the Rust checker's facts. This also took
+  the count out of `ids::State`, the sessions, and the evaluator's
+  reserved base.
+- **`validate` checks where keys are made and where facts are taken**:
+  cheap keys against full ones in the walk (both cheap modes at once);
+  full keys against facts at `c-set-facts!`, which every handoff of
+  either checker's facts reaches. A difference is an error, said with
+  the keys, since this mode is for finding where the argument breaks.
+- **One facts table per front end** (the user's choice): the FX-26
+  compiler's own, honest in its effects; a process-wide one would need a
+  primitive touching state outside the front end's regions, or a log
+  drained on every entry path.
+- **Facts digested in no order, by kind and parts**; a convention
+  variable as "a variable" (fresh numbering would differ); a staged
+  fact's rep by a digest of its bytes the checker records beside the
+  cell, since FX-26 cannot read a cell back.
+- **A definition checked again is read again** (`validate`'s first
+  finding; the user's call to re-key, not to exempt re-checks): its trees
+  numbered anew by the parser's walk, of a reading of its old reading and
+  the state now. The walk is the parser's one instance (`parser.fx` makes
+  it, `parser-top.fx` and the checker reach it), so its count stays one.
+  The checker's prompt tag now allows writing `@s`, the parser's region,
+  which reading again does; only `k-tag`'s type widened, not the
+  `checks` effect every signature spells out.
+

@@ -4,7 +4,7 @@
 
 ;; The types these use, from the files that define them.
 (hide (define parser-types ((proj (load-module "fx26:parser-types.fx") @s @e @m @c @p))))
-(import parser-types (type exp k-datum k-datums mod-items names syn syns-a))
+(import parser-types (type exp k-datum k-datums mod-items names syn syns-a numbering))
 (hide (define check-env-types (load-module "fx26:check-env-types.fx")))
 (import check-env-types (type k-with-list k-with-noted k-reshaped k-pick k-picks k-reshape-list))
 (hide (define table-types (load-module "fx26:table-types.fx")))
@@ -135,7 +135,7 @@
 (define-type c-included (productof (1 syms) (2 k-ids) (3 exps)))
 (define-type compile-sig
   (moduleof (val c-frozen-define-at
-                 (subr (maxeff (read @globals) spin (read @k)) (int int int) bool))
+                 (subr (maxeff (read @globals) spin (read @k)) (int int int int) bool))
             (val c-tag
                  (prompt-tag cresult
                              cresult
@@ -185,45 +185,48 @@
                        (cenv symbol)
                        c-found))
             (val c-set-facts!
-                 (subr (maxeff (alloc @k) (read @globals) spin (read @k) (read @t) (write @k))
-                       (k-facts)
+                 (subr (maxeff (alloc @k) (goto @y) (read @globals) spin (read @k) (read @t)
+                               (write @k))
+                       (k-facts numbering)
                        unit))
             (val c-lambda-of
                  (subr (maxeff (alloc @k) (read @globals) spin) (exp) (listof exp @k)))
             (val c-mentions?
                  (subr (maxeff (alloc @k) (read @globals) (read @k) spin) (exp symbol) bool))
             (val c-plain-table (ref c-by-at @k))
-            (val c-plain-fx-at (subr (maxeff (read @globals) spin (read @k)) (int int int) bool))
+            (val c-plain-fx-at
+                 (subr (maxeff (read @globals) spin (read @k)) (int int int int) bool))
             (val c-call-conv
                  (subr (maxeff (read @globals) spin (read @k)) (exp) k-conv))
             (val c-call-conv-at
-                 (subr (maxeff (read @globals) spin (read @k)) (int int int) k-conv))
+                 (subr (maxeff (read @globals) spin (read @k)) (int int int int) k-conv))
             (val c-datum-at
-                 (subr (maxeff (alloc @k) (read @globals) spin (read @k)) (int int int) k-datums))
+                 (subr (maxeff (alloc @k) (read @globals) spin (read @k)) (int int int int)
+                       k-datums))
             (val c-datum-of
-                 (subr (maxeff (alloc @k) (read @globals) spin (read @k)) (k-datums int int int)
+                 (subr (maxeff (alloc @k) (read @globals) spin (read @k)) (k-datums int int int int)
                        k-datums))
             (val c-genv-now
                  (subr (maxeff (read (globals c-genv c-genv-count)) (read @k)) () int))
             (val c-count-exps (subr (maxeff (read @globals) spin) (exps) int))
             (val c-count-params (subr (maxeff (read @globals) spin) (c-params) int))
             (val c-registers (ref bool @k))
-            (val c-summary-at (subr (maxeff (read @globals) spin (read @k)) (int int int) int))
+            (val c-summary-at (subr (maxeff (read @globals) spin (read @k)) (int int int int) int))
             (val c-conversion-at (subr (maxeff (read @globals) spin (read @k)) (exp) int))
             (val c-staged-at (subr (maxeff (read @globals) spin (read @k)) (exp) c-staged-list))
             (val c-apply-shares-at (subr (maxeff (read @globals) spin (read @k))
-                                         (int int int) bool))
+                                         (int int int int) bool))
             (val c-with-at
                  (subr (maxeff (alloc @k) (read @globals) spin (read @k))
-                       (int int int) c-with-names))
-            (val c-included? (subr (maxeff (read @globals) spin (read @k)) (int int int) bool))
+                       (int int int int) c-with-names))
+            (val c-included? (subr (maxeff (read @globals) spin (read @k)) (int int int int) bool))
             (val c-note-included!
                  (subr (maxeff (alloc @k) (read @globals) spin (read @k) (write @k))
                        (mod-items)
                        c-included))
             (val c-with-places-at
                  (subr (maxeff (alloc @k) (read @globals) spin (read @k))
-                       (int int int)
+                       (int int int int)
                        (listof k-ids @k)))
             (val c-reshape-at
                  (subr (maxeff (alloc @k) (read @globals) spin (read @k))
@@ -267,10 +270,10 @@
             (val c-this-loc? (subr (maxeff (read @globals) spin) (loc loc) bool))
             (val c-int-hash (subr pure (int) int))
             (val c-int=? (subr pure (int int) bool))
-            (val c-span-key (subr pure (int int int) k-at))
+            (val c-span-key (subr pure (int int int int) k-at))
             (val c-at-hash (subr pure (k-at) int))
             (val c-at=? (subr pure (k-at k-at) bool))
-            (val c-at-is? (subr pure (k-at int int int) bool))
+            (val c-at-is? (subr pure (k-at int int int int) bool))
             (val c-lift-count (ref int @k))
             (val c-place-name (subr (maxeff (read @globals) spin) (int) string))
             (val c-extend (subr (alloc @k) (symbol loc cenv) cenv))

@@ -11,6 +11,10 @@
 (define front-end-entries
   (let* (;; Hash tables, a module file of no state.
          (tables (load-module "fx26:table.fx"))
+         ;; A session's state, made and read (`readings.fx`).
+         (readings ((proj (load-module "fx26:readings.fx") @s @e @m @c)))
+         ;; The parser's types, for what a parse gives (`keyed`).
+         (parser-types ((proj (load-module "fx26:parser-types.fx") @s @e @m @c @p)))
          ;; The checker's first file.
          (check-types ((load-input "fx26:check-types.fx") tables))
          ;; Effects.
@@ -32,7 +36,7 @@
          ;; Unions.
          (check-unions
           ((load-input "fx26:check-unions.fx")
-           check-types check-print check-env))
+           check-types check-print check-env check-print-parts))
          ;; What a type holds.
          (check-holds
           ((load-input "fx26:check-holds.fx")
@@ -134,7 +138,7 @@
           ((load-input "fx26:check-subtype.fx")
            check-types check-resolve check-sub-env check-env
            check-print check-effects check-proving check-subst
-           check-modules check-print-parts check-read-helpers check-logic))
+           check-modules check-print-parts check-read-helpers check-logic check-unions))
          ;; The checker, expected types: checking against what is wanted.
          (check-expect
           ((load-input "fx26:check-expect.fx")
@@ -184,12 +188,12 @@
          (check-sc-graphs
           ((load-input "fx26:check-sc-graphs.fx")
            check-resolve check-env check-types check-read
-           check-calls))
+           check-calls check-unions check-print-parts))
          ;; The checker, termination: the graphs closed under composition.
          (check-terminate
           ((load-input "fx26:check-terminate.fx")
            check-types check-resolve check-holds check-env
-           check-expect check-sc-graphs check-print tables))
+           check-expect check-sc-graphs check-print tables check-subtype))
          ;; The checker, its types as reps (`check-reps.fx`).
          (check-reps ((load-input "fx26:check-reps.fx") check-types check-effects))
          ;; The checker, what tests prove: facts in the type of a test.
@@ -240,6 +244,12 @@
            check-types check-env check-resolve check-binders check-data
            check-print check-print-parts check-calls check-effects
            check-synth check-subtype check-module-rules))
+         ;; The checker, the rules for `allof`.
+         (check-allof
+          ((load-input "fx26:check-allof.fx")
+           check-types check-env check-resolve check-print check-print-parts
+           check-effects check-subtype check-synth check-expect check-errors check-unions
+           check-calls))
          ;; The checker, its rules: the one recursive group over expressions.
          (check-rules
           ((load-input "fx26:check-rules.fx")
@@ -252,7 +262,7 @@
            check-calls check-bounds check-holds check-subtype
            check-subst check-sc-graphs check-binders check-sub-env
            check-modules-read check-read-helpers check-print-parts check-processes
-           check-logic))
+           check-allof check-logic))
          ;; The checker, its proofs: lemmas proved.
          (check-proofs
           ((load-input "fx26:check-proofs.fx")
@@ -449,6 +459,30 @@
          ;; standard environment alone, and compiled to the word that makes
          ;; the procedure the wrapping is. Or why not, as `stage-failure`
          ;; says it, placed in the code.
+         ;; What a text is numbered by (`parser-types.fx`'s `keys`): mode
+         ;; `mode`, read in the session's state `s`, under the switches the
+         ;; checker is set to now (`checked-settings`), which change what it
+         ;; finds.
+         (keys-in
+          (lambda ((mode int) (s int))
+            (product (1 mode) (2 s) (3 ((with check-program checked-settings))))))
+         ;; The state a checker begins in, in the standard environment
+         ;; `standard`: its trees' reading (`standard-state`), made once for
+         ;; each standard environment given.
+         (standard-made
+          (the (ref (listof (productof (1 (listof syn acyclic)) (2 int)) acyclic) @t) (new nil)))
+         (begun
+          (lambda ((standard (listof syn acyclic)))
+            (let ((made (get standard-made)))
+              (if (and (not (null? made)) (eq? (extract (car made) 1) standard))
+                  (extract (car made) 2)
+                  (let ((s ((with readings standard-state) standard)))
+                    (begin (set standard-made (cons (product (1 standard) (2 s)) nil)) s))))))
+         ;; How a parse `p` numbered its trees, for the compiler
+         ;; (`c-set-facts!`).
+         (numbered
+          (lambda ((p (select parser-types keyed)) (mode int))
+            (product (1 mode) (2 (extract p 3)) (3 (extract p 4)))))
          ;; A refusal as `stage-failure` says it; and place `n` of the text
          ;; checked, in the code, which starts at `k`.
          (fail
@@ -462,7 +496,7 @@
                  (checked
                   (lambda ((standard (listof syn acyclic)) (tops (listof top acyclic))
                            (k int) (len int) (native bool) (registers bool)
-                           (rep (bytevectorof @t)))
+                           (rep (bytevectorof @t)) (mode int))
                     (begin
                       ((with check-program check-lines!) #f)
                       ((with check-print-parts check-conv-native!) native)
@@ -476,7 +510,8 @@
                                (k-ok (ls)
                                  (tagcase ((with compile-programs compile-checked)
                                            ((with check-program checked-tops))
-                                           ((with check-env checked-extracts)))
+                                           ((with check-env checked-extracts))
+                                           (product (1 mode) (2 0) (3 nil)))
                                    (c-ok (w) (sum made w))
                                    (c-err (m) (fail (sum refused #u) m 0 len)))))))
                         ;; The stage's bindings undone, the standard
@@ -485,42 +520,59 @@
             ;; The code wrapped (`stage.rs`'s `wrapped`), `whole`, the code
             ;; `len` characters at `k` of it; and the type it is checked as,
             ;; as a rep, which `whole` names `%stage-type`, if not empty
-            ;; (`check-staged-program`).
+            ;; (`check-staged-program`). Read in no session's state but the
+            ;; standard environment's (`begun`), with `rep` (`with-reps`),
+            ;; under its convention, by `mode` (`keys-in`).
             (lambda ((standard (listof syn acyclic)) (whole string) (k int) (len int)
-                     (native bool) (registers bool) (rep (bytevectorof @t)))
+                     (native bool) (registers bool) (rep (bytevectorof @t)) (mode int))
               (let ((read (read-text-at whole 0)))
                 (if (null? read)
                     (fail (sum unread #u) "the code is not one whole expression" 0 len)
                     (begin
                       (loaded-files! nil)
                       (includes-given! nil)
-                      (tagcase (parse-program (car read))
+                      ((with check-print-parts check-conv-native!) native)
+                      (tagcase (let ((s ((with readings with-reps) (begun standard) rep nil)))
+                                 (extract (parse-program (keys-in mode s) (car read)) 1))
                         (p-err (m a b)
                           (fail (sum malformed #u) m (clamp a k len) (clamp b k len)))
-                        (p-ok (tops) (checked standard tops k len native registers rep)))))))))
+                        (p-ok (tops) (checked standard tops k len native registers rep mode)))))))))
          ;; A `.fasl`'s definition (`session.rs`'s `run_program_def`), its
-         ;; text `whole`, which loads nothing, read, parsed and checked as
-         ;; `check-more-typed` checks it, in one call: its message if refused,
-         ;; else "" (`docs/research/heap-types.md`, step 5).
+         ;; text `whole`, which loads nothing, read by `mode` in the session's
+         ;; state `s` (`keys-in`), parsed and checked as `check-more-typed`
+         ;; checks it, in one call: its message if refused, else ""; and the
+         ;; state after, if the checker kept it, else as it was
+         ;; (`docs/research/heap-types.md`, step 5).
          (check-text-typed
-          (lambda ((whole string) (named (listof (productof (1 symbol) (2 int)) acyclic)))
-            (let ((read (read-text-at whole 0)))
+          (lambda ((mode int) (s int) (whole string)
+                   (named (listof (productof (1 symbol) (2 int)) acyclic)))
+            (let ((read (read-text-at whole 0))
+                  (said (lambda ((m string) (s int)) (product (1 m) (2 s)))))
               (if (null? read)
-                  "the definition is not one whole form"
+                  (said "the definition is not one whole form" s)
                   (begin
                     (loaded-files! nil)
                     (includes-given! nil)
                     ((with check-program check-lines!) #f)
-                    (tagcase (parse-program (car read))
-                      (p-err (m a b) m)
-                      (p-ok (tops)
-                        (tagcase ((with check-program check-more-typed) tops named)
-                          (k-err (m a b) m)
-                          (else y "")))))))))
+                    (let ((p (parse-program (keys-in mode s) (car read))))
+                      (tagcase (extract p 1)
+                        (p-err (m a b) (said m s))
+                        (p-ok (tops)
+                          (tagcase ((with check-program check-more-typed) tops named)
+                            (k-err (m a b) (said m s))
+                            (else y (said "" (extract p 2))))))))))))
+         ;; The state a session's checker is in (this instance's, a session's
+         ;; own: `make-session-compiler`), as a step reads its text in it: the
+         ;; state after the last step the checker kept, each read in the state
+         ;; the one before left, from the first, which begins it again in the
+         ;; standard environment's (`begun`; `readings.fx`). Kept with the
+         ;; checker's state it stands for.
+         (step-state (the (ref int @t) (new 0)))
          ;; A session's step (`sessions26.rs`), checked by this instance's
          ;; checker, which holds the session's definitions, and compiled by
          ;; its compiler, whose globals are the session's: `whole`, the code
-         ;; wrapped, the code `len` characters at `k` of it; `how`: 0, the
+         ;; wrapped, read in the session's state `s` (`step-state`), the code
+         ;; `len` characters at `k` of it; `how`: 0, the
          ;; first, in the standard environment `standard`, checked alone; 1,
          ;; more, kept, and compiled (if `make`), into the procedure that
          ;; runs it (if `deferred`, a commit's) or the word; 2, tried, not
@@ -530,9 +582,9 @@
          ;; types, each a rep (`set-step-named!`). What each gives, or why
          ;; not, placed in the code.
          (session-step-of
-          (lambda ((standard (listof syn acyclic)) (whole string) (k int) (len int) (how int)
-                   (name symbol) (make bool) (deferred bool) (native bool) (registers bool)
-                   (rep (bytevectorof @t)))
+          (lambda ((standard (listof syn acyclic)) (mode int) (s int) (whole string) (k int)
+                   (len int) (how int) (name symbol) (make bool) (deferred bool) (native bool)
+                   (registers bool) (rep (bytevectorof @t)))
             (let ((read (read-text-at whole 0))
                   (refused (lambda ((m string) (a int) (b int))
                              (fail (sum refused #u) m (clamp a k len) (clamp b k len)))))
@@ -545,55 +597,71 @@
                     ((with check-print-parts check-conv-native!) native)
                     ((with compile compile-conv-native!) native)
                     ((with regcode-entry compile-registers!) registers)
-                    (tagcase (parse-program (car read))
+                    ;; The state after is the parse's if the checker keeps the
+                    ;; text; a try, or a text refused, leaves it as it was
+                    ;; (the standard environment's, where it began).
+                    (let* ((p (parse-program (keys-in mode s) (car read)))
+                           (r (extract p 2)))
+                     (tagcase (extract p 1)
                       (p-err (m a b)
                         (fail (sum malformed #u) m (clamp a k len) (clamp b k len)))
                       (p-ok (tops)
                         (cond
                           ((= how 2)
-                           (let ((r ((with check-program check-try) tops name rep)))
-                             (tagcase (extract r 1)
+                           (let ((t ((with check-program check-try) tops name rep)))
+                             (tagcase (extract t 1)
                                (k-err (m a b) (refused m a b))
-                               (else y (sum typed (product (1 (extract r 2)) (2 (extract r 3))))))))
+                               (else y (sum typed (product (1 (extract t 2)) (2 (extract t 3))))))))
                           ((= how 0)
                            (tagcase ((with check-program check-program) standard tops)
                              (k-err (m a b) (refused m a b))
-                             (else y (sum checked #u))))
+                             (else y (begin (set step-state r) (sum checked #u)))))
                           (else
                            (tagcase ((with check-program check-more-with) tops rep)
                              (k-err (m a b) (refused m a b))
                              (k-done (t) (refused "not a form" 0 len))
                              (k-ok (ls)
+                              (begin
+                               (set step-state r)
                                (if (not make)
                                    (sum checked #u)
                                    (let ((runs ((with check-program checked-tops)))
                                          (facts ((with check-env checked-extracts))))
                                      (tagcase (if deferred
                                                   ((with compile-programs compile-checked-deferred)
-                                                   runs facts)
+                                                   runs facts (product (1 mode) (2 0) (3 nil)))
                                                   ((with compile-programs compile-checked)
-                                                   runs facts))
+                                                   runs facts (product (1 mode) (2 0) (3 nil))))
                                        (c-ok (w) (sum made w))
-                                       (c-err (m) (refused m k (+ k len)))))))))))))))))
+                                       (c-err (m) (refused m k (+ k len)))))))))))))))))))
          (session-step
-          (lambda ((standard (listof syn acyclic)) (whole string) (k int) (len int) (how int)
-                   (name symbol) (make bool) (deferred bool) (native bool) (registers bool)
-                   (rep (bytevectorof @t))
-                   (named (listof (productof (1 symbol) (2 (bytevectorof @t))) acyclic)))
-            (begin
-             ((with check-program set-step-named!) named)
-             (let ((out (session-step-of standard whole k len how name make deferred native
-                                         registers rep)))
-               (begin ((with check-program set-step-named!) nil) out)))))
+          (lambda ((standard (listof syn acyclic)) (whole string) (k int) (len int)
+                   (how int) (name symbol) (make bool) (deferred bool) (native bool)
+                   (registers bool) (rep (bytevectorof @t))
+                   (named (listof (productof (1 symbol) (2 (bytevectorof @t))) acyclic))
+                   (mode int))
+            ;; Read with the types it is checked against (`with-reps`).
+            (let* ((s0 (if (= how 0) (begun standard) (get step-state)))
+                   (s ((with readings with-reps) s0 rep named)))
+              (begin
+               (if (= how 0) (set step-state s0) #u)
+               ((with check-program set-step-named!) named)
+               (let ((out (session-step-of standard mode s whole k len how name make deferred
+                                           native registers rep)))
+                 (begin ((with check-program set-step-named!) nil) out))))))
          ;; The types of what the checker tells the compiler.
          (stage-env-types (load-module "fx26:check-env-types.fx"))
          ;; A session's code (`sessions.rs`), checked by the checker written
          ;; in Rust, which gives what it found: compiled by this instance,
          ;; whose globals are the session's, to the word that runs it, or,
          ;; `deferred`, that makes the procedure that does (a commit's); or
-         ;; why not.
+         ;; why not. Read by `mode` in `s`, the session's state, under
+         ;; `settings`, the Rust checker's switches as the checker that
+         ;; checked it was set (`sessions.rs`'s `keys`); its facts numbered
+         ;; by their place in the walk (`numbered`).
          (session-compile
-          (lambda ((text string) (facts (select stage-env-types k-facts))
+          (lambda ((mode int) (s int) (settings string) (text string)
+                   (facts (select stage-env-types k-facts))
                    (withs (select stage-env-types k-with-list))
                    (reshapes (select stage-env-types k-reshape-list))
                    (native bool) (registers bool) (deferred bool))
@@ -603,7 +671,8 @@
                   (begin
                     (loaded-files! nil)
                     (includes-given! nil)
-                    (tagcase (parse-program (car read))
+                    (let ((p (parse-program (product (1 mode) (2 s) (3 settings)) (car read))))
+                     (tagcase (extract p 1)
                       (p-err (m a b) (sum failed m))
                       (p-ok (tops)
                         (begin
@@ -612,10 +681,12 @@
                           ((with compile compile-conv-native!) native)
                           ((with regcode-entry compile-registers!) registers)
                           (tagcase (if deferred
-                                       ((with compile-programs compile-deferred) tops facts)
-                                       ((with compile-programs compile-program) tops facts))
+                                       ((with compile-programs compile-deferred)
+                                        tops facts (numbered p mode))
+                                       ((with compile-programs compile-program)
+                                        tops facts (numbered p mode)))
                             (c-ok (w) (sum made w))
-                            (c-err (m) (sum failed m))))))))))))
+                            (c-err (m) (sum failed m)))))))))))))
     ;; What Rust and `bootstrap.fx` call of them (`syn.rs`, `session.rs`).
     (product (run-checked (with eval-core run-checked))
              (run-checked-more (with eval-core run-checked-more))
@@ -642,6 +713,7 @@
              (compile-registers! (with regcode-entry compile-registers!))
              (compile-conv-native! (with compile compile-conv-native!))
              (check-defer-reruns! (with check-program check-defer-reruns!))
+             (checked-settings (with check-program checked-settings))
              (check-redefines (with check-program check-redefines))
              (checked-run-names (with check-program checked-run-names))
              (checked-reps (with check-program checked-reps))
@@ -718,6 +790,7 @@
 (define compile-registers! (extract front-end-entries compile-registers!))
 (define compile-conv-native! (extract front-end-entries compile-conv-native!))
 (define check-defer-reruns! (extract front-end-entries check-defer-reruns!))
+(define checked-settings (extract front-end-entries checked-settings))
 (define check-hold-breaks! (extract front-end-entries check-hold-breaks!))
 (define check-lines! (extract front-end-entries check-lines!))
 (define check-more (extract front-end-entries check-more))

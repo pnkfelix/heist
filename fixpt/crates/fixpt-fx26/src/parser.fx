@@ -32,6 +32,12 @@
         (type syns-a names exp top exp-list param-list letrec-list let-list arm-list top-list
               mod-item mod-items presult loaded-file loaded-files) (effect tree-builds parses))
 
+;; Each expression's identity (`parser-ids.fx`): its walk, made once for
+;; the parser, so that its count is one (`walked-total`); the checker reads
+;; again what it checks again (`read-again`, `k-rerun`).
+(define parser-ids-module ((proj (load-module "fx26:parser-ids.fx") rs re rm rc rp)))
+(define read-again (with parser-ids-module read-again))
+
 (define parse-tag (prompt-tag presult presult (maxeff tree-builds (write rs) spin) rp)
   (make-continuation-prompt-tag))
 
@@ -206,10 +212,10 @@
 ;; `(with #%fx f)`: what an expansion calls, the standard binding, whatever
 ;; shadows or redefines `f` where it is (`TODO.md` §46).
 (define standard-ref (->* (symbol int int) exp)
-  (lambda (f a b) (e-with '#%fx (e-var f a b 0) a b 0)))
+  (lambda (f a b) (e-with '#%fx (e-var f a b 0 0) a b 0 0)))
 (define call-tmp (->* (symbol symbol exp-list int int) exp)
   (lambda (f tmp more a b)
-    (e-app (standard-ref f a b) (the exp-list (cons (e-var tmp a b 0) more)) a b 0)))
+    (e-app (standard-ref f a b) (the exp-list (cons (e-var tmp a b 0 0) more)) a b 0 0)))
 (define one-let (->* (symbol exp) let-list)
   (lambda (name e) (the let-list (cons (product (1 name) (2 e)) nil))))
 
@@ -265,24 +271,24 @@
   (lambda (v a b)
     (letrec ((call (subr (maxeff (read @globals) spin) (symbol exp exp) exp)
                    (lambda (f x y)
-                     (e-app (e-var f a b 0) (the exp-list (cons x (the exp-list (cons y nil))))
-                            a b 0)))
+                     (e-app (e-var f a b 0 0) (the exp-list (cons x (the exp-list (cons y nil))))
+                            a b 0 0)))
              (fixnum? (subr spin (int) bool)
                       (lambda (n) (and (<= n 1152921504606846975) (>= n -1152921504606846976))))
              ;; The limbs below the first fixnum, most significant first.
              (peel (subr (maxeff (read @globals) spin) (int (listof int acyclic)) exp)
                    (lambda (n limbs)
                      (if (fixnum? n)
-                         (build (e-int n a b 0) limbs)
+                         (build (e-int n a b 0 0) limbs)
                          (peel (quotient n 1000000000) (cons (remainder n 1000000000) limbs)))))
              (build (subr (maxeff (read @globals) spin) (exp (listof int acyclic)) exp)
                     (lambda (acc limbs)
                       (if (null? limbs)
                           acc
-                          (let ((scaled (call '* acc (e-int 1000000000 a b 0))))
-                            (build (call '+ scaled (e-int (car limbs) a b 0)) (cdr limbs)))))))
-      (cond ((fixnum? v) (e-int v a b 0))
-            ((< v 0) (call '- (e-int 0 a b 0) (peel (- 0 v) nil)))
+                          (let ((scaled (call '* acc (e-int 1000000000 a b 0 0))))
+                            (build (call '+ scaled (e-int (car limbs) a b 0 0)) (cdr limbs)))))))
+      (cond ((fixnum? v) (e-int v a b 0 0))
+            ((< v 0) (call '- (e-int 0 a b 0 0) (peel (- 0 v) nil)))
             (else (peel v nil))))))
 
 ;; Whether `s` is a string literal; and the string it is.
@@ -380,11 +386,13 @@
 (define in-includes (->* (exp int int) exp)
   (lambda (x a b)
     (tagcase x
-      (e-lambda (ps body la lb lalbk) (e-lambda ps (e-with '%include body a b 0) la lb lalbk))
-      (e-plambda (bs body la lb lalbk) (e-plambda bs (in-includes body a b) la lb lalbk))
-      (e-the (t e la lb lalbk) (e-the t (in-includes e a b) la lb lalbk))
-      (e-rlambda (r l la lb lalbk) (e-rlambda r (in-includes l a b) la lb lalbk))
-      (else y (e-with '%include x a b 0)))))
+      (e-lambda (ps body la lb lalbk lalbkr)
+                (e-lambda ps (e-with '%include body a b 0 0) la lb lalbk lalbkr))
+      (e-plambda (bs body la lb lalbk lalbkr)
+                 (e-plambda bs (in-includes body a b) la lb lalbk lalbkr))
+      (e-the (t e la lb lalbk lalbkr) (e-the t (in-includes e a b) la lb lalbk lalbkr))
+      (e-rlambda (r l la lb lalbk lalbkr) (e-rlambda r (in-includes l a b) la lb lalbk lalbkr))
+      (else y (e-with '%include x a b 0 0)))))
 ;; Each of `xs` so, at the place of the binding of `bs` it is.
 (define inits-in-includes (->* (exp-list syns-a) exp-list)
   (lambda (xs bs)
@@ -434,14 +442,14 @@
           items
           (cons (mod-item-of 2 '%include nil
                              (list (e-module (include-items items 0) (syn-start (car f))
-                                             (syn-end (car f)) 0)))
+                                             (syn-end (car f)) 0 0)))
                 (own-items items))))))
 
 ;; `(lambda (x) x)`, spanning `a`..`b`: an abstract type's conversion.
 (define identity-at (->* (int int) exp)
   (lambda (a b)
     (let ((x (product (1 'x) (2 (the syns-a nil)))))
-      (e-lambda (the param-list (cons x nil)) (e-var 'x a b 0) a b 0))))
+      (e-lambda (the param-list (cons x nil)) (e-var 'x a b 0 0) a b 0 0))))
 (define module-usage string
   (string-append "a module holds `(define-generative t T)`, `(define-type d T)`, "
                  "`(define-effect e E)`, `(define x [T] e)`, `(define* f T e)`, "
@@ -542,6 +550,29 @@
           (if (and (= (len p) 2) (syn-symbol? (car p)))
               (cons (car p) (dt-param-names (cdr ps)))
               (pfail "a parameter is `(name kind)`" (car ps)))))))
+;; The type forms, as `parse.rs`'s `TYPE_FORMS`: no variant's tag (`TODO.md`
+;; §190), as `(define-datatype var (oneof symbol pat))` would be one variant
+;; `oneof`, not the type.
+(define dt-type-forms (listof symbol acyclic)
+  (list 'arrayof 'narrayof 'bloblet 'composable 'dletrec 'icell 'listof 'mark-key 'moduleof 'mu
+        'nat 'nlist 'oneshot 'pairof 'place 'poly 'productof 'prompt-tag 'proves 'ref 'select 'subr
+        'sumof 'tupleof 'bool 'oneof 'union 'anyof 'allof '-> '->* 'restrict))
+(define dt-in? (->* (symbol (listof symbol acyclic)) bool)
+  (lambda (x xs) (and (not (null? xs)) (or (symbol=? x (car xs)) (dt-in? x (cdr xs))))))
+;; #t, once no variant of `vs` has a type form's name for its tag.
+(define dt-no-type-forms (->* (syns-a syn) bool)
+  (lambda (vs name)
+    (if (null? vs)
+        #t
+        (let* ((parts (syn-items (car vs) "a variant"))
+               (tag (if (null? parts) (car vs) (dt-tag (car parts)))))
+          (if (and (syn-symbol? tag) (dt-in? (syn-symbol tag) dt-type-forms))
+              (let ((t (syn-name tag)))
+                (pfail (string-append "`" t "` is a type form: this would be a variant named `" t
+                                      "`, not the type; to name a type, write `(define-type "
+                                      (syn-name name) " (" t " …))`")
+                       (car vs)))
+              (dt-no-type-forms (cdr vs) name))))))
 ;; `(define-datatype name (tag type …) …)`, or with parameters,
 ;; `(define-datatype (name (param kind) …) …)`, a type family, which its
 ;; variants may mention with the same parameters: the forms it stands for.
@@ -559,6 +590,7 @@
                              (else (pfail usage s))))
                  (params (if family? (cdr hs) (the syns-a nil)))
                  (used (if family? (mk-list (cons name (dt-param-names params)) a b) name))
+                 (named (dt-no-type-forms (drop items 2) name))
                  (sum (mk-form "sumof" (dt-arms (drop items 2) a b) a b))
                  (ctors (dt-constructors used family? params (drop items 2) a b)))
             (cons (mk-form "define-type" (list head sum) a b) ctors))))))
@@ -828,5 +860,5 @@
   (lambda (ps m a b)
     (cond ((null? ps) m)
           ;; `(module-parameters ())`: a `lambda` of none, no `plambda` of none.
-          ((syn-nil? (car ps)) (e-lambda (the param-list nil) m a b 0))
-          (else (e-plambda (car ps) (e-lambda (the param-list nil) m a b 0) a b 0)))))
+          ((syn-nil? (car ps)) (e-lambda (the param-list nil) m a b 0 0))
+          (else (e-plambda (car ps) (e-lambda (the param-list nil) m a b 0 0) a b 0 0)))))

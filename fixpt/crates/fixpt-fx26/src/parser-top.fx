@@ -7,9 +7,14 @@
 ;; The parser's other parts at these regions, the reader's types in them,
 ;; and what this file uses of them.
 (define parser-exps-module ((proj (load-module "fx26:parser-exps.fx") rs re rm rc rp)))
-(define parser-ids-module ((proj (load-module "fx26:parser-ids.fx") rs re rm rc rp)))
-(define number-tops (with parser-ids-module number-tops))
 (define parser-module (with parser-exps-module parser-module))
+(define parser-ids-module (with parser-module parser-ids-module))
+(import parser-ids-module walk-of number-form walk-state walk-count walk-given walk-wrong
+        walk-done! (type seen))
+(define readings ((proj (load-module "fx26:readings.fx") rs re rm rc)))
+(import readings form-reading (type loads))
+(define parser-types ((proj (load-module "fx26:parser-types.fx") rs re rm rc rp)))
+(import parser-types (type keys keyed loaded-file))
 (define reader-types (with parser-module reader-types))
 (import reader-types lst (type syn))
 (import parser-module parse-tag syn-start syn-end pfail syn-symbol? syn-symbol syn-items len nth
@@ -17,8 +22,8 @@
         expand-import e-var e-lambda t-define t-define-rec t-define-type t-define-effect
         includes-given include-given-at mk-symbol syn-name loaded-error e-module
         (type include-given)
-        t-define-convention t-define-syscall t-define-generative t-exp p-ok shared-taken
-        shared-reset!
+        t-define-convention t-define-syscall t-define-generative t-exp p-ok p-err shared-taken
+        shared-reset! loaded input-key?
         (type syns-a exp top param-list top-list presult names) (effect parses))
 (import parser-exps-module parse-exp parse-rec-bindings type-loaded)
 ;; `(define name type expression)` or `(define name expression)`; for a
@@ -116,7 +121,7 @@
                          (let ((t (mk-pure-subr (the syns-a (cons from nil)) to a b)))
                            (if family? (mk-poly binders t a b) t))))
                  (x (product (1 'x) (2 (the syns-a nil))))
-                 (identity (e-lambda (the param-list (cons x nil)) (e-var 'x a b 0) a b 0))
+                 (identity (e-lambda (the param-list (cons x nil)) (e-var 'x a b 0 0) a b 0 0))
                  (up (gen-conversion "up-" n (conv rep used) identity a b))
                  (down (gen-conversion "down-" n (conv used rep) identity a b)))
             (list (t-define-generative head rep a b) up down))))))
@@ -155,7 +160,7 @@
            (end (if (null? given) (syn-end x) (extract (car given) 7))))
       (if (string=? why "")
           (parse-each-top (expand-import (include-import x (car given))))
-          (the top-list (list (t-exp (e-module (loaded-error why) at end 0))))))))
+          (the top-list (list (t-exp (e-module (loaded-error why) at end 0 0))))))))
 ;; A top-level `(include m)`, `x`: the `(import m x … (type t …) (effect e
 ;; …))` of what `m` gives, `g`, at `x`'s span (`Checker::include_forms`).
 (define include-import (->* (syn include-given) syn)
@@ -181,23 +186,64 @@
         nil
         (the syns-a (cons (mk-list (cons (mk-symbol word a b) (names-at ns a b)) a b) nil)))))
 
-(define parse-tops (->* (syns-a) top-list)
-  (lambda (xs)
+;; Forms `xs`, each read in the state the one before left (`t`), under the
+;; switches `settings`: to trees, each expression numbered (`parser-ids.fx`)
+;; of the form's reading (`form-reading`).
+(define parse-tops (->* (seen string syns-a) top-list)
+  (lambda (t settings xs)
     (if (null? xs)
         nil
         ;; Before each form, the hidden globals of the files it loads first
         ;; (`parse-loaded`), those its types name first (`type-loaded`).
         (let* ((made (parse-made (type-loaded (car xs))))
                (before (shared-taken))
-               (rest (parse-tops (cdr xs))))
-          (append-tops before (append-tops made rest))))))
+               (r (form-reading (walk-state t) settings (car xs) (loads-of before)))
+               (form (number-form t r (append-tops before made)))
+               (rest (parse-tops t settings (cdr xs))))
+          (append-tops form rest)))))
+;; The files the hidden globals `ts` are, each by its key and its trees.
+(define loads-of (->* (top-list) loads)
+  (lambda (ts)
+    (if (null? ts)
+        nil
+        (tagcase (car ts)
+          (t-define (n ty e a b)
+            (let* ((name (symbol->string n)) (key (substring name 8 (string-length name)))
+                   (f (loaded-keyed (get loaded) key)))
+              (if (null? f)
+                  (loads-of (cdr ts))
+                  (the loads (cons (product (1 key) (2 (extract (car f) 5)))
+                                   (loads-of (cdr ts)))))))
+          (else y (loads-of (cdr ts)))))))
+;; The file read whose key, as a hidden global names it, is `key` (its own,
+;; or a `load-input`'s, `input:` before it: `parse-loaded`), in a list of one.
+(define loaded-keyed (->* ((listof loaded-file acyclic) string) (listof loaded-file acyclic))
+  (lambda (fs key)
+    (cond ((null? fs) nil)
+          ((or (string=? (extract (car fs) 7) key)
+               (and (not (input-key? (extract (car fs) 7)))
+                    (string=? (string-append "input:" (extract (car fs) 7)) key)))
+           (the (listof loaded-file acyclic) (cons (car fs) nil)))
+          (else (loaded-keyed (cdr fs) key)))))
 
-;; The entry point: a program's forms, as read, to trees, each expression
-;; numbered (`parser-ids.fx`), or an error. The
-;; prompt catches every failure, but its tag is a global whose type names
-;; `rp`, so the control effect stays in the type, as the reader's on `re` do;
-;; `rp` is one of the regions this module is given, so that is still licensed.
-(define parse-program (->* (syns-a) presult)
-  (lambda (forms)
-    (begin (shared-reset!)
-           (prompt parse-tag (p-ok (number-tops (parse-tops forms))) (lambda (r) r)))))
+;; The entry point: a program's forms, as read, read with `keys` (the mode,
+;; the session's state, the checker's switches: `parser-types.fx`), to
+;; trees, each expression numbered (`parser-ids.fx`), or an error; and the
+;; session's state after them, the parser's count before them, and the keys
+;; given, in order (`walk-given`). The prompt
+;; catches every failure, but its tag is a global whose type names `rp`, so
+;; the control effect stays in the type, as the reader's on `re` do; `rp`
+;; is one of the regions this module is given, so that is still licensed.
+(define parse-program (->* (keys syns-a) keyed)
+  (lambda (keys forms)
+    (let* ((t (walk-of keys)) (base (walk-count t)))
+      (begin (shared-reset!)
+             (let* ((parsed (prompt parse-tag (p-ok (parse-tops t (extract keys 3) forms))
+                                    (lambda (r) r)))
+                    (done (walk-done! t))
+                    ;; A key `validate` found given twice, the parse's error.
+                    (wrong (walk-wrong))
+                    (r (if (string=? (extract wrong 1) "")
+                           parsed
+                           (p-err (extract wrong 1) (extract wrong 2) (extract wrong 3)))))
+               (product (1 r) (2 (walk-state t)) (3 base) (4 (walk-given t))))))))

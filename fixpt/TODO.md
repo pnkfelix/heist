@@ -2080,7 +2080,7 @@ owner<<3 + offset.
 encoding), the direct-address variant with owner hints, segment tables, a
 boxed fallback for owners of 128 MiB or more.
 
-## 79. Intersections of procedure types, `overload` (the user's, 2026-10-11)
+## 79. Intersections of procedure types, `overload`; true unions (the user's, 2026-10-11, 2026-11-04)
 
 Designed, not built: `docs/research/logical-types.md` (decision 4 and
 §8, "Proposed syntax") proposes `(overload (subr …) …)`, intersections of
@@ -2102,6 +2102,127 @@ shown in messages, principal types, inference's interaction with the
 choice; both checkers must choose alike. The compilers need nothing for
 `length`, whose arms are one list walk at run time; arms with different
 code would.
+
+**A second use, and the user's direction (2026-11-04).** In encoding Herman
+and Wand's λm ("A Theory of Hygienic Macros", ESOP 2008; §182's source)
+with structural types, the user made its sorts sub-sums of one another:
+`expr`'s variants are among `sexp`'s, under the same tags, as the grammar
+`s ::= e | op | (s̄)` reads, so an `expr` is an `sexp` with no injection.
+The paper's α-equivalence (§3) is Gabbay and Pitts' swapping, one
+definition over every sort: `swap : (sym sym D) → D` for each D of `v`,
+`expr`, `op`, `macro`, `pat`, `sexp`. Defined at `sexp` alone, its callers
+lose the proof that the sort is kept; as a `poly` over D it is wrong
+(parametricity forbids taking a D apart, and a bound D ≤ sexp still gives
+no way to build one) unless D's constructors are passed in. What fits is
+§79's intersection with one body: `(overload (subr pure (sym sym expr)
+expr) … (subr pure (sym sym sexp) sexp))`, the body checked against each
+member, its recursive calls seeing the whole intersection. Uniform
+representation throughout. Davies and Pfenning's refinement types are
+this case. What it adds to the design (proposals, not decisions; the
+questions are the user's, `logical-types.md` §9):
+
+- **Dead arms while checking a member.** Checked against the `expr`
+  member, the body's `tagcase` arms for `sexp`'s other tags cannot run;
+  they are skipped, not refused as "has no tag" (`k-tagcase-arms`) nor
+  checked. The only new rule the swap body needs; a node rebuilt from
+  swapped parts is then an `expr` as it stands.
+- **A call takes every member it fits; its result their meet.** With
+  sub-sums several members fit and none need be best: an `expr` fits
+  `expr`'s and `sexp`'s; a variable fits `expr`'s, `op`'s and `sexp`'s, of
+  which `expr` and `op` are apart. Ordered selection (above) is fragile
+  there. ∩-elimination at every member that fits gives the call each of
+  their results: their meet, which structural sums and products always
+  have (the tags in common, their payloads' meets); swapping in a
+  variable gives `expr ⊓ op`, the variables. No choice to show in
+  messages. Needs results with meets; `subr` results, to think about.
+- **Shape-directed conversion** (`(Z X)^σ · s`, the paper's §3.1) is the
+  same intersection over sorts, its arm chosen by the shape σ as well.
+
+The paper the user brought for the theory: Liquori and Stolze, "A
+Decidable Subtyping Logic for Intersection and Union Types" (Inria
+hal-01488428, 2017): ∩ as one term's several typings (its typed
+calculus' ∩I asks both sides' erasures β-equal), ∪ dual, and a decision
+procedure for subtyping in BCD's theory Ξ, distributivity and (σ→ρ) ∩
+(τ→ρ) ≤ (σ∪τ) → ρ included, which §79's restricted design leaves out.
+
+**The user's direction:** proper intersection *and* union types in FX-26
+first, before macros (§182). Part of it: telling a union from a disjoint
+union. What FX-26 calls `union` today is the disjoint kind by
+construction (`logical-types.md` L1: members of distinct run-time shapes,
+so a shape test splits it; §8.4 rules out overlapping members as "hidden
+tags; write a sum"); the user thinks it is the disjoint variant and
+should be named as one (a name to choose: "partition", "parts"), beside a
+true union. To settle: what a true union of overlapping members admits
+(only what holds of every member: no test splits it), and how it relates
+to sums, whose width subtyping already makes the union of two sub-sums
+their join (`(union expr op)` would be the sum of both's tags, refused
+today as two sums of one shape); the meet above is an intersection of
+non-procedure types, which §8.4 also rules out (refs unsound; products
+positional), so which types may meet; and the renaming of today's
+`union` in both checkers, the front end and the ports.
+
+Designed (2026-11-04): `logical-types.md` §8.5 (five rules: per-member
+introduction; dead arms; one body, one code, as agreeing facts; every
+fitting member and the meet of results, defined only where exact and
+sound; ∪E at a call's arguments), §8.6 (soundness note), §8.7 (stages U0
+to U5), §9.2 (the user's questions 9 to 15).
+
+Settled with the user (2026-11-05, `logical-types.md` §9.2): the formers
+are `anyof` (true union), `oneof` (today's `union`, renamed; members
+separated by shape or, for sums, by disjoint tags; the same type as
+`anyof` of its members) and `allof` (was `overload`); rules 2 to 5 as
+proposed, rule 3 strict; no mutable members of an `anyof` yet; U0 to U3
+before macros (§182), U4 and U5 after.
+
+U0 done (2026-11-05): `oneof` in both checkers, its sums told apart by
+tags and made one; every `(union …)` renamed. Left of it: `union`, read
+as `oneof` for now (CLAUDES_CHOICES.md, "U0"), to remove once Heist and
+kayak have moved.
+
+U1 done (2026-11-05): `allof` of monomorphic `subr` members, in both
+checkers (`logical-types.md`, "U1, as built"). Left of it:
+- ~~`spin` judged per member~~ (done 2026-11-05, `logical-types.md`,
+  "Termination per member"): `len` with a `pure` member on `acyclic` lists
+  and a `spin` one on `@heap` lists checks.
+- ~~The verifier of typed cellular code (`typed_cells.rs`)~~ (done
+  2026-11-06, `logical-types.md`, "The verifier of typed cellular
+  code"): calls, words at each member's signature with that member's
+  type notes and operations, closures, unreachable ways, `car` of an
+  `anyof` of pairs. No `allof` or `anyof` word is a known gap.
+- ~~A call's arguments must each have a type of their own and be below a
+  member's parameters as they are~~ (done 2026-11-05, `logical-types.md`,
+  "Arguments at an `allof` call"): a `lambda` without parameter types, a
+  conversion and a reshape are taken; an integer literal beyond `int`'s
+  type is not.
+
+U2 done (2026-11-05): `anyof` in both checkers (`logical-types.md`, "U2,
+as built"). Left of it:
+- A member below another is not dropped, only one the same as another
+  (CLAUDES_CHOICES.md, "U2"): `(anyof int nat)` keeps both.
+- Cells, and writable pairs and lists, that share a shape: refused until
+  a program needs them (question 14).
+
+U2b proposed (2026-11-05, the user's direction: normalize lazily, on
+demand): `logical-types.md` §8.8, head forms by shape, a shape's greatest
+member for inference, splitting an immutable field only when a whole
+comparison fails, a budget on splits, caches whose answers never change a
+verdict. Questions 16 to 20 there, for the user. Then U3.
+Built already (2026-11-05): the greatest member of a shape, for inference
+(piece 2), so `car` of an `anyof` of a `nat` list and an `int` list
+checks; and splitting products, sums and frozen pairs at a field (pieces
+1, 3, 4; the user's answer to question 18), with a budget of 64.
+U3 done (2026-11-05): rule 5 for a call's argument that is a variable of a
+union (`logical-types.md`, "U3, as built"). Then an `anyof`'s sums kept as
+written, made one only where needed (the user's), so `swap` of an `(anyof
+expr op)` is an `(anyof expr op)`. Left of it: arguments that are not
+variables; `extract`; the verifier of typed cellular code, which has no
+rule for a call split by members (known gaps, as `allof`'s). Arguments
+that are not variables: done 2026-11-05 (`logical-types.md`, "Rule 5 at
+any argument").
+Left of U2b: questions 16, 17, 19 and 20 (built on the proposals,
+provisional); a message of its own past the budget; head forms and
+greatest members kept on the node, and the answer cache, once measured
+on programs that use `anyof` (the front end has none yet).
 
 ## 80. Real literals as `f32` where one is expected (kayak's request, 2026-10-11)
 
@@ -4182,12 +4303,15 @@ notes).
 Design: `docs/research/typed-macros.md` (Herman's syntax types as FX-26
 `data` types over generative `expr` and `bvar`, his binding signatures as
 annotations the value checker erases; Bawden's macro types for modules,
-later). Next: the
-prototype of its "The prototype" section, in the Rust front end; the
-note's table "What FX-26's type system would need" says what the type
-system needs, and when. Waiting on the user's answers to its questions
-(the signatures' concrete syntax; what a template's reference to a
-redefined global means; ellipsis in the prototype or not).
+later). The user's answers (2026-11-06): Herman's foundations first, his
+tree addresses (with comments in the readable names), recursion not
+ellipsis, a template's globals as at the use, keyword labels in templates.
+Prototype built (2026-11-06, `typed-macros.md`, "The prototype, as
+built"; `macros.rs`, `tests/macros.rs`). Next, its "Not yet": templates
+naming the program's globals (an unshadowable reference to one, as
+`#%fx` is to the standard's); errors in expansions mapped back (item 4);
+macro names a local binder may shadow; `(expr T E)` and templates
+checked once (item 7); the port to the front end written in FX-26.
 
 ## 183. Keywords, `#:tag`, for tags and labels (the user's, 2026-10-30)
 Keywords as values done (2026-10-30, `docs/fx26.md`, "Keywords"): `#:name`
@@ -4459,7 +4583,15 @@ the Rust checker's view after a resume, which knows nothing of the
 program, so that what needs it (sessions on the Rust checker, `stage`
 lowered) does not see the program's names.
 
-## 190. Q: why is `(define-datatype var (union symbol pat))` accepted? (the user's, 2026-10-31)
+## 190. ~~Q: why is `(define-datatype var (union symbol pat))` accepted?~~ (the user's, 2026-10-31; done 2026-11-05)
+
+Answer: it was read as a datatype of one variant, named `union` (now
+`oneof`), whose members were `symbol` and `pat`, and a constructor
+`oneof` defined. Done (2026-11-05): a variant's tag may not be a type
+form, in both parsers, the refusal saying to write `define-type`; test
+`parser.rs`'s `a_variant_named_by_a_type_form_is_refused`, over every one
+of `parse.rs`'s `TYPE_FORMS`. No variant here, in Heist or in kayak was
+so named.
 
 Find out why this checks as a datatype definition, and whether it
 should: `define-type` would be the right form for it.
@@ -4468,7 +4600,13 @@ should: `define-type` would be the right form for it.
 (define-datatype var (union symbol pat))
 ```
 
-## 191. Q: `tagcase` binds a named product's fields by position (the user's, 2026-10-31)
+## 191. ~~Q: `tagcase` binds a named product's fields by position~~ (the user's, 2026-10-31; done 2026-11-05)
+
+Done (2026-11-05), the user's choice (1), from 1: an arm takes apart by
+position only a product labelled 1, 2, … in order, in both checkers
+(`Checker::positional`, `k-takes-apart?`); and `(tupleof T …)` and `(tuple
+e …)` for such products (`docs/fx26.md`, products). Tests:
+`tests/programs/tuples/`.
 
 Why is a product with named fields taken apart by position, the arm's
 names unrelated to the fields'?
@@ -4493,7 +4631,10 @@ With `(define-type tree-loc (listof nat acyclic))`, why is `(the tree-loc
 Make the `(union …)` system treat sums with distinct tags as distinct
 shapes, so that a union may hold two sum types whose tags differ.
 
-## 194. Pending type definitions and `union` (the user's, 2026-10-31)
+## 194. ~~Pending type definitions and `union`~~ (the user's, 2026-10-31; found working 2026-11-05)
+
+Found working (2026-11-05), with `oneof`: the example below checks in
+both checkers, `c` defined after the `a` and `b` that name it.
 
 The pending type definitions (which the user relies on to define
 mutually recursive types one at a time at the REPL) do not work with
@@ -4518,11 +4659,18 @@ See whether `(bool (then (shape …)))` can be extended to prove that a
 value is of a type that is nearly arbitrary; now it is limited to a fixed
 set of core shapes (probably those `typecase` tells apart).
 
-## 197. A truthy `and` (the user's, 2026-10-31)
+## 197. ~~A truthy `and`~~ (the user's, 2026-10-31; closed 2026-11-05: by macro)
 
 Add `(and e1 e2 …)` that gives false or the last expression's value.
+Closed (the user's, 2026-11-05): not built in, since it is `(let ((t e1))
+(if (false? t) #f e2))`; one of the prototype's first macros instead
+(`docs/research/typed-macros.md`, "The prototype", with what it needs of
+the checker's narrowing on `#f`).
 
-## 198. `(listof T)` short for `(listof T acyclic)` (the user's, 2026-10-31)
+## 198. ~~`(listof T)` short for `(listof T acyclic)`~~ (the user's, 2026-10-31; done 2026-11-05)
+
+Done (2026-11-05), in both checkers; a type still prints with its region.
+Tests: `tests/programs/listof/`.
 
 Make `(listof T)` short for `(listof T acyclic)`, as that is almost always
 what is wanted.
@@ -5056,3 +5204,35 @@ the way:
   not wherever the types say `spin` (Heist's refusal said it of control).
   **Left**: naming the prompt, and the free variable, that kept it from
   delimiting.
+
+## 213. Explicit colons where something is declared a bound (the user's, 2026-11-06)
+Not now. A possible broader revision of FX-26's syntax: an explicit `:`
+wherever one thing is declared a bound or constraint on another, so a
+declaration is told apart by how it is written, not by its position. It
+came up over `define-syntax`, whose signature is known as one only by
+being the form's second item (`typed-macros.md`, "The prototype, as
+built"); a parameter's `(x : T)` is the one place FX-26 writes it now.
+
+## 214. Identity by position, spans for provenance (the user's, 2026-11-06)
+Decided: `docs/research/loads-and-places.md`, "Decided: identity by
+position". Identity done in both front ends (2026-11-06, "Done: identity
+by position"): `k` the walk's number, containment by structure; and
+provenance, a span's expansion record, traced in `fixpt`'s messages.
+`(many σ)` done (2026-11-06, `typed-macros.md`). Left: the printed
+expansion's source map (waits for the expander in the front end written
+in FX-26). An expression's identity becomes `(form n last)`, its number
+in a walk of its form and its subtree's last, in both front ends and the
+`Kth` bridge; the Rust checker's span-as-identity uses go; spans become
+provenance with an expansion record. Then the printed expansion's source
+map, then macros' `(many σ)` (`typed-macros.md`). Later, apart: caching
+macro expansion steps.
+
+## 215. A session's state by types, checked against facts (the user's, 2026-11-07; tabled)
+Decided as the cheaper of two session states ("both, validated",
+`docs/research/loads-and-places.md`, "Stage 2, decided"): each
+definition's name and type, each type's definition, macro, load and
+convention, by a type digest written in both languages; checked in
+`validate` against the facts, as `path` is (where two occurrences share
+its key and not the trees' one, their facts must agree). Tabled by the
+user, 2026-11-07, after stage 2: the state by trees, the reference, is
+done and is what every mode keys by.
