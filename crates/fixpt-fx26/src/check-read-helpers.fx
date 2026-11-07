@@ -67,7 +67,7 @@
 (define k-type-forms k-names
   (list 'arrayof 'narrayof 'bloblet 'composable 'dletrec 'icell 'listof 'mark-key 'moduleof 'mu
         'nat 'nlist 'oneshot 'pairof 'place 'poly 'productof 'prompt-tag 'proves 'ref 'select 'subr
-        'sumof 'bool 'union '-> '->* 'restrict))
+        'sumof 'tupleof 'bool 'oneof 'union 'anyof 'allof '-> '->* 'restrict))
 ;; Whether `hd` heads a type form: not a name a `with` shadows.
 (define k-type-form? (->* (symbol) bool)
   (lambda (hd) (k-has-name? k-type-forms hd)))
@@ -78,7 +78,8 @@
         'oneshot '->*
         'listof 'cond 'else 'and 'or 'let* 'define-effect 'module-parameters 'the 'bloblet 'fields
         'frozen 'arrayof 'icell 'await 'define-rec 'letrena 'letreap 'rlambda 'quote 'productof
-        'sumof 'product 'extract 'sum 'tagcase 'module 'moduleof 'with 'select 'load-module
+        'sumof 'product 'tupleof 'tuple 'extract 'sum 'tagcase 'module 'moduleof 'with 'select
+        'load-module
         'define-datatype 'make-bloblet 'bloblet-ref 'bloblet-set! 'bloblet-freeze 'bloblet-byte
         'bloblet-set-byte! 'bloblet-bytes 'rmake-bloblet 'dlambda '=> 'case
         'define-convention 'define-syscall 'define-optional-syscall 'syscall-available?))
@@ -325,6 +326,7 @@
       (ty-sum (ps) (k-parts-onto ps nil))
       (ty-bloblet (fs z r) fs)
       (ty-union (ms) ms)
+      (ty-allof (ms) ms)
       (ty-named (g ds) (k-desc-kids ds))
       (ty-app (f ds) (the k-ids (cons f (k-desc-kids ds))))
       (ty-lam (bs x) (k-desc-kids (the k-descs (cons x nil))))
@@ -510,11 +512,11 @@
 (define k-literal-value (->* (kx int int) (listof int acyclic))
   (lambda (x a b)
     (tagcase x
-      (x-const (t n c d cdk) (if (and (= t k-int) (= c a) (= d b)) (list n) nil))
-      (x-app (f args c d cdk)
+      (x-const (t n c d cdk cdkr) (if (and (= t k-int) (= c a) (= d b)) (list n) nil))
+      (x-app (f args c d cdk cdkr)
         (if (and (= c a) (= d b) (= (k-length args) 2))
             (tagcase f
-              (x-var (s fa fb fafbk)
+              (x-var (s fa fb fafbk fafbkr)
                 (if (and (= fa a) (= fb b) (k-std-binding? s (k-lookup s)))
                     (k-literal-op (symbol->string s) (k-literal-value (car args) a b)
                                   (k-literal-value (car (cdr args)) a b))

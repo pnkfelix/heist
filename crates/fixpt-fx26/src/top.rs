@@ -113,6 +113,9 @@ fn every_field_placed(c: &Checker) {
         hidden: _, shared_loads: _, shared_files: _, reading_deps: _, loading: _, include_scope: _, run_items: _, with_depth: _, shared_globals: _, hoisted: _,
         loaded: _, in_built_in: _, load_sites: _, files_read: _, ahead: _, ahead_filled: _, hazard_modules: _,
         hazard_items: _, broken: _, defs: _, outdated: _, poly_chain: _, inst_for: _,
+        // The macros defined, as the forms are read, before any is checked
+        // (`expand_forms`): a form tried and thrown away has defined none.
+        macros: _,
         // Put back by `truncate_env`, with the environment.
         known: _, global_slots: _, fixed_slots: _,
         // The arena, reset by `scratch` (a refused check's ids are left
@@ -122,10 +125,14 @@ fn every_field_placed(c: &Checker) {
         // Printing's, set and cleared around each print.
         print_names: _, print_expanded: _, print_cycles: _, print_for_fasl: _, fasl_selects: _, print_abs: _, fasl_selects_key: _, fasl_digests: _, print_canon: _, print_shallow: _, print_subrs: _, print_params: _, print_tys: _, print_aliases: _, print_selects: _, print_self: _, show_marks: _,
         // Set around a single unification or check, and put back there.
-        unify_exact: _, unify_upper: _, arrow_star: _, holes: _, hole_hint: _,
+        unify_exact: _, unify_upper: _, arrow_star: _, holes: _, hole_hint: _, dead_arms: _, splits_left: _, pinned: _,
         // A count of regions made, which only grows: a name made once is
         // never made again, put back or not.
         fresh_regions: _,
+        // Each entry written by `note_termination` before any read of it,
+        // and read only for a binding `recursive` holds: one left behind
+        // by a check thrown away is never consulted.
+        member_spins: _,
         // The standard environment, and the session's settings: no check
         // changes them.
         base: _, void: _, int: _, bool_: _, string: _, unit: _, char_: _, f64_: _, symbol: _, conv_default: _,
@@ -383,7 +390,7 @@ impl Checker {
         while let crate::ast::Ty::Poly { body, .. } = self.arena.get(t) {
             t = self.arena.resolve(*body);
         }
-        self.arena.get(t).as_subr().is_some()
+        self.arena.get(t).as_subr().is_some() || matches!(self.arena.get(t), crate::ast::Ty::AllOf(_))
     }
 
     /// A procedure a value of type `t` keeps, kept in a global (a product's
@@ -412,7 +419,7 @@ impl Checker {
             Ty::Pair(a, b, _, _) => each(vec![a, b], seen),
             Ty::Bloblet { fields, .. } => each(fields, seen),
             Ty::Product(ps) | Ty::Sum(ps) => each(ps.iter().map(|(_, x)| *x).collect(), seen),
-            Ty::Union(ms) => each(ms, seen),
+            Ty::Union(ms) | Ty::AllOf(ms) => each(ms, seen),
             Ty::Module { vals, .. } => each(vals.iter().map(|(_, x)| *x).collect(), seen),
             Ty::Named { which, args } => {
                 let rep = self.generatives[which as usize].rep;
@@ -430,6 +437,10 @@ impl Checker {
         while let crate::ast::Ty::Poly { body, .. } = self.arena.get(t) {
             t = self.arena.resolve(*body);
         }
+        // An `allof`'s: those of its members that do not say `spin`.
+        if let crate::ast::Ty::AllOf(ms) = self.arena.get(t) {
+            return ms.iter().filter(|m| !self.spins(**m)).flat_map(|m| self.latent_globals(*m)).collect();
+        }
         self.arena.get(t).as_subr().map_or(Vec::new(), |(e, _, _)| e.0.iter().filter_map(|a| a.region().filter(|r| r.is_globals())).collect())
     }
 
@@ -439,6 +450,9 @@ impl Checker {
         let mut t = self.arena.resolve(t);
         while let crate::ast::Ty::Poly { body, .. } = self.arena.get(t) {
             t = self.arena.resolve(*body);
+        }
+        if let crate::ast::Ty::AllOf(ms) = self.arena.get(t) {
+            return ms.iter().all(|m| self.spins(*m));
         }
         self.arena.get(t).as_subr().is_some_and(|(e, _, _)| e.0.contains(&crate::ast::Atom::Spin))
     }
@@ -534,11 +548,24 @@ impl Checker {
     /// Read `text` in FX-26's lexical syntax (`SyntaxProfile::FX26`),
     /// recording spans against `file`.
     pub fn read_in(&mut self, file: FileId, text: &str) -> R<Vec<Syntax>> {
+        self.read_in_from(file, text, 0)
+    }
+
+    /// The forms of `text` from byte `start` on, their places in all of
+    /// `text`: a REPL's entry, in the session's text
+    /// (`Fx26Session::read_entry`).
+    pub fn read_in_from(&mut self, file: FileId, text: &str, start: usize) -> R<Vec<Syntax>> {
         let mut interner = std::mem::take(&mut self.interner);
-        let r = Reader::new(text, file, SyntaxProfile::FX26, &mut interner).read_all();
+        let mut reader = Reader::new(text, file, SyntaxProfile::FX26, &mut interner);
+        reader.seek(start);
+        let r = reader.read_all();
         self.interner = interner;
         let forms = r.map_err(|e| FxError::at(e.span, e.message))?;
-        self.expand_forms(forms)
+        // The text, for the macros defined in it (their templates' places).
+        self.macros.reading = Some(std::sync::Arc::from(text));
+        let r = self.expand_forms(forms);
+        self.macros.reading = None;
+        r
     }
 
     /// A module's file (`load-module`) read: its `define-datatype`s
@@ -560,12 +587,41 @@ impl Checker {
     pub fn expand_forms(&mut self, forms: Vec<Syntax>) -> R<Vec<Syntax>> {
         let mut out = Vec::new();
         for f in forms {
+            // A macro defined, or each use of one expanded
+            // (`crate::macros`): before anything else sees the form.
+            let Some(f) = self.macro_expanded(f)? else { continue };
             if self.expand_generative(&f, &mut out)? {
                 continue;
             }
             self.expand_datatype(f, &mut out)?;
         }
         Ok(out)
+    }
+
+    /// The macros defined now, to put back (`macros_put_back`) after reading
+    /// what must leave none defined: the REPL's reading as one types.
+    pub fn macros_kept(&self) -> crate::macros::Macros {
+        self.macros.clone()
+    }
+
+    pub fn macros_put_back(&mut self, kept: crate::macros::Macros) {
+        self.macros = kept;
+    }
+
+    /// `form`, a `(define-syntax …)`, defined, and none; or with the uses of
+    /// the macros defined in it expanded (`crate::macros`).
+    fn macro_expanded(&mut self, form: Syntax) -> R<Option<Syntax>> {
+        let mut macros = std::mem::take(&mut self.macros);
+        let mut interner = std::mem::take(&mut self.interner);
+        let defines = form.as_proper_list().and_then(|l| l.first()).and_then(|h| h.as_symbol()).is_some_and(|h| interner.name(h) == "define-syntax");
+        let r = if defines {
+            macros.define(&form, &mut interner, &|s| self.standard_type(s).is_some()).map(|()| None)
+        } else {
+            macros.expand(&form, &mut interner).map(Some)
+        };
+        self.macros = macros;
+        self.interner = interner;
+        r
     }
 
     /// `(import m item …)`: what module `m` gives, by name, defined here,
@@ -743,6 +799,13 @@ impl Checker {
             let Some((tag, members)) = parts.split_first().filter(|(t, _)| t.as_symbol().is_some()) else {
                 return Err(FxError::at(v.span, "a variant is `(tag type …)` or `(#:tag type …)`"));
             };
+            // `(define-datatype var (oneof symbol pat))` is one variant,
+            // `oneof`, not the type `(oneof symbol pat)` (`TODO.md` §190).
+            let t = self.interner.name(tag.as_symbol().unwrap()).to_string();
+            if crate::parse::TYPE_FORMS.contains(&t.as_str()) {
+                let n = self.interner.name(name.as_symbol().unwrap());
+                return Err(FxError::at(v.span, crate::parse::variant_type_form(&t, n)));
+            }
             let mut prod = vec![productof.clone()];
             let mut params = Vec::new();
             let mut fields = vec![product.clone()];
@@ -1081,6 +1144,11 @@ impl Checker {
             }
             crate::ast::Ty::Subr { conv, effect, params, result, spec } => {
                 Some(self.arena.ty(crate::ast::Ty::Subr { conv, effect: effect.union(extra), params, result, spec }))
+            }
+            // Each member's, the one body's under each.
+            crate::ast::Ty::AllOf(ms) => {
+                let ms = ms.iter().map(|m| self.with_latent(*m, extra)).collect::<Option<Vec<_>>>()?;
+                Some(self.arena.ty(crate::ast::Ty::AllOf(ms)))
             }
             _ => None,
         }
@@ -1692,7 +1760,7 @@ pub const KEYWORDS: &[&str] = &[
     "subr", "->", "->*", "poly", "ref", "pairof", "dletrec", "void", "pure", "maxeff", "read", "write",
     "alloc", "goto", "comefrom", "region", "effect", "type", "prompt", "prompt-tag",
     "composable", "oneshot", "mark-key", "listof", "cond", "case", "else", "and", "or", "let*", "define-effect", "define-convention", "define-syscall", "define-optional-syscall", "syscall-available?", "module-parameters", "the",
-    "bloblet", "fields", "frozen", "arrayof", "icell", "await", "define-rec", "letrena", "letreap", "rlambda", "quote", "productof", "sumof", "product", "extract", "sum", "tagcase", "module", "moduleof", "with", "select", "load-module", "import",
+    "bloblet", "fields", "frozen", "arrayof", "icell", "await", "define-rec", "letrena", "letreap", "rlambda", "quote", "productof", "sumof", "product", "tupleof", "tuple", "extract", "sum", "tagcase", "module", "moduleof", "with", "select", "load-module", "import",
     "define-datatype", "make-bloblet", "bloblet-ref", "bloblet-set!", "bloblet-freeze", "bloblet-byte",
     "bloblet-set-byte!", "bloblet-bytes", "rmake-bloblet", "dlambda", "=>",
     "blobref-at", "blobref+", "blobref-owner", "blobref-offset", "blobref-get", "blobref-set!", "blobref-index", "blobref-length", "blobref-variant!",

@@ -47,6 +47,12 @@
             check-types check-read-helpers check-syntax check-read check-subst check-env
             check-print check-holds check-proving check-effects check-unions parser
             check-print-parts check-specs check-read-made)))
+      ;; And the reading of `allof`'s members (`check-read-allof.fx`).
+      (let ((check-read-allof
+             ((load-input "fx26:check-read-allof.fx")
+              check-types check-read-helpers check-syntax check-read check-subst check-env
+              check-print check-holds check-proving check-effects check-unions parser
+              check-print-parts check-specs check-read-made)))
       (module
 
 ;; The types it uses of the files before it.
@@ -133,6 +139,14 @@
                     (let ((t (k-parse-type (k-nth pair 1))))
                       (k-parse-parts (cdr ps) (cons (product (1 l) (2 t)) done)))))
               (k-sfail "`(label type)`" (car ps)))))))
+;; A `tupleof`'s parts, `(tupleof T1 T2 …)` as `(productof (1 T1) (2 T2) …)`, from `i`.
+(define k-tuple-parts (->* (k-syns int) k-parts)
+  (lambda (ts i)
+    (if (null? ts)
+        nil
+        (let ((t (k-parse-type (car ts))))
+          (cons (product (1 (string->symbol (int->string i))) (2 t))
+                (k-tuple-parts (cdr ts) (+ i 1)))))))
 ;; Storage written: a procedure kept there may not reach itself unsaid
 ;; (`spin`).
 (define k-parse-type (->* (syn) int)
@@ -391,6 +405,7 @@
         (let* ((saved (get k-dscope)) (t (k-parse-proves (k-nth items 1) usage)))
           (begin (set k-dscope saved) t))))))
 ;; Given on, all `check-read-ahead.fx` defines.
+(import check-read-allof k-allof-of)
 (import check-read-ahead k-read-in-order? k-names-a-file? k-any-names-a-file? k-ahead-names-of
         k-given-again k-again-lines k-ahead-stop k-included? k-type-top-start k-declared-later?
         (type k-tops k-out))
@@ -439,13 +454,18 @@
            (let* ((a (k-parse-type (k-nth items 1))) (b (k-parse-type (k-nth items 2)))
                   (r (k-parse-region (k-nth items 3))))
              (k-ty-new (ty-pair a b r #f)))))
-        ((union) (k-parse-union s items))
+        ((oneof union) (k-parse-union s items))
+        ((anyof) (k-parse-anyof s items))
+        ((allof) (k-parse-allof s items))
         ((dletrec) (k-parse-dletrec s items))
         ((mu) (k-parse-mu s items))
         ((listof)
          (begin
-           (k-shape (= n 3) "`(listof type region)`" s)
-           (let* ((t (k-parse-type (k-nth items 1))) (r (k-parse-region (k-nth items 2)))
+           ;; Without a region, `acyclic` (`TODO.md` §198).
+           (k-shape (or (= n 2) (= n 3)) "`(listof type [region])`" s)
+           (let* ((t (k-parse-type (k-nth items 1)))
+                  (acyclic (atom 'acyclic (syn-start s) (syn-end s)))
+                  (r (k-parse-region (if (= n 2) acyclic (k-nth items 2))))
                   (slot (k-slot)) (pair (k-ty-new (ty-pair t slot r #t))))
              (begin (k-set-link slot pair) slot))))
         ((prompt-tag)
@@ -475,6 +495,7 @@
                    (k-ty-new (ty-bloblet fs (string=? which "frozen") r)))
                  (k-sfail "`(fields type …)` or `(frozen type …)`" fields)))))
         ((productof) (k-ty-new (ty-product (k-parse-parts (cdr items) nil))))
+        ((tupleof) (k-ty-new (ty-product (k-tuple-parts (cdr items) 1))))
         ;; With a key, a flat sum (`TODO.md` §77).
         ((sumof) (if (and (> n 1) (syn-symbol? (k-nth items 1)))
                      (k-parse-flat s)
@@ -532,13 +553,41 @@
         (begin (set k-dscope saved) body)))))
 ;; `(mu name type)`: a recursive type, anonymous; the same as `(dletrec
 ;; ((name type)) name)`.
-;; A union of members of disjoint shapes at run time
-;; (`docs/research/logical-types.md`, L1), normalized.
+;; A union of members a run-time test tells apart, `(oneof …)`
+;; (`docs/research/logical-types.md`, L1 and §8.5), normalized. `union`,
+;; its name until 2026-11-05, read as it for now.
 (define k-parse-union (->* (syn k-syns) int)
   (lambda (s items)
     (begin
-      (k-shape (>= (k-length items) 3) "`(union type type …)`" s)
+      (k-shape (>= (k-length items) 3) "`(oneof type type …)`" s)
       (k-union-of (k-parse-types (cdr items)) (syn-start s) (syn-end s)))))
+;; A true union, `(anyof …)`: a value of any of the members, which may
+;; overlap (`logical-types.md` §8.5, U2), normalized.
+(define k-parse-anyof (->* (syn k-syns) int)
+  (lambda (s items)
+    (begin
+      (k-shape (>= (k-length items) 3) "`(anyof type type …)`" s)
+      (k-anyof-of (k-parse-types (cdr items)) (syn-start s) (syn-end s)))))
+;; One procedure with each member's type, `(allof (subr …) …)`
+;; (`docs/research/logical-types.md` §8.5, U1): monomorphic `subr` types of
+;; one convention. As Rust's.
+(define k-parse-allof (->* (syn k-syns) int)
+  (lambda (s items)
+    (begin
+      (k-shape (>= (k-length items) 3) "`(allof (subr …) (subr …) …)`" s)
+      (k-allof-of (k-allof-members (cdr items)) s))))
+(define k-allof-members (->* (k-syns) k-ids)
+  (lambda (xs)
+    (if (null? xs)
+        nil
+        (let ((t (k-resolve (k-parse-type (car xs)))))
+          (tagcase (k-get t)
+            (ty-allof (ms) (append ms (k-allof-members (cdr xs))))
+            (ty-subr (e ps r cv spc) (the k-ids (cons t (k-allof-members (cdr xs)))))
+            (ty-product (fs) (the k-ids (cons t (k-allof-members (cdr xs)))))
+            (else y (k-sfail (string-append "a member of an `allof` is a `subr` type, "
+                                            "or a product of them, and this is a " (k-show-ty t))
+                             (car xs))))))))
 (define k-parse-mu (->* (syn k-syns) int)
   (lambda (s items)
     (begin
@@ -927,4 +976,4 @@
                                          (the k-ids (append tys (cons t nil))) cs)))
           (cons t rest)))))
 (define k-read-params (->* (k-syns syn k-syns) k-ids)
-  (lambda (ps r cs) (k-read-params-from ps r nil nil cs)))))))
+  (lambda (ps r cs) (k-read-params-from ps r nil nil cs))))))))

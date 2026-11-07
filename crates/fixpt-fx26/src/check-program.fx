@@ -82,7 +82,7 @@
       (include check-modules-read) (include check-subst) (include check-synth)
       (include check-module-rules) (include check-subtype) (include parser))
 (import check-effects k-atom-region k-one k-insert)
-(import check-resolve k-defs k-free-into k-has-region-in? k-last-uses k-reset k-runs)
+(import check-resolve k-defs k-free-into k-has-region-in? k-last-uses k-reset k-runs exp-reading)
 (import check-read k-items k-name-of k-sfail k-symbol-head)
 (define k-names-onto (with check-modorder k-names-onto))
 
@@ -216,6 +216,7 @@
                 (ty-product (ps) (k-kept-in (k-parts-types ps) ns path))
                 (ty-sum (ps) (k-kept-in (k-parts-types ps) ns path))
                 (ty-union (ms) (k-kept-in ms ns path))
+                (ty-allof (ms) (k-kept-in ms ns path))
                 (ty-module (abs ds vs) (k-kept-in (k-parts-types vs) ns path))
                 (ty-named (g ds)
                   (k-kept-in (the k-ids (cons (extract (k-gen-of g) 4) (k-desc-types ds)))
@@ -248,25 +249,36 @@
 (define k-note-run (->* (top bool) unit)
   (lambda (form assigns)
     (set k-runs (the k-run-list (cons (product (1 form) (2 assigns)) (get k-runs))))))
+;; The reading form `x` was read at (`parser-ids.fx`): its expressions'.
+(define k-top-reading (->* (top) int)
+  (lambda (x)
+    (tagcase x
+      (t-define (n ty e a b) (exp-reading e))
+      (t-define-rec (bs a b) (if (null? bs) 0 (exp-reading (extract (car bs) 3))))
+      (t-exp (e) (exp-reading e))
+      (else y 0))))
 ;; Each of `users` checked again after the redefinition of `ns`: defined
-;; again if it checks, broken if not.
+;; again if it checks, broken if not. Each read again first, in the state
+;; the session is in now (`read-again`): what this check finds is of keys
+;; of its own, never taken for what the first check of it found.
 (define k-rerun (->* (k-def-list k-names k-out) k-out)
   (lambda (users ns lines)
     (if (null? users)
         lines
         (let* ((u (car users))
+               (form ((with parser read-again) (k-top-reading (extract u 2)) (extract u 2)))
                (olds (k-old-types (extract u 1)))
                (m (k-mark))
                (reset (set k-last-uses nil))
                (r (prompt k-tag
-                    (let ((ls (k-top-lines (extract u 2))))
-                      (begin (k-no-reaching-itself (extract u 2) (extract u 1)) (k-ok ls)))
+                    (let ((ls (k-top-lines form)))
+                      (begin (k-no-reaching-itself form (extract u 1)) (k-ok ls)))
                     (lambda (r) r))))
           (tagcase r
             (k-ok (ls)
               (let* ((assigns (k-fits-old? olds))
-                     (recorded (k-record (extract u 2) (extract u 1)))
-                     (ran (k-note-run (extract u 2) assigns)))
+                     (recorded (k-record form (extract u 1)))
+                     (ran (k-note-run form assigns)))
                 (k-rerun (cdr users) ns (k-lines-append lines ls))))
             (k-err (msg a b)
               (begin (k-unbind-to m)
@@ -285,6 +297,17 @@
   (lambda (on) (set k-show-lines on)))
 (define check-defer-reruns! (->* (bool) unit)
   (lambda (on) (set k-defer-reruns on)))
+;; The switches a driver set that change what a check finds, as text:
+;; folded into each reading (`readings.fx`), as the session's state is, so
+;; that a text read under other switches is another reading. As `ids.rs`'s
+;; `settings` writes them: the program's convention, then each switch on.
+(define checked-settings (->* () string)
+  (lambda ()
+    (k-cat5 (k-conv-show (get k-conv-default))
+            (if (get k-globals-effects) " globals-effects" "")
+            (if (get k-defer-reruns) " defer-reruns" "")
+            (if (get k-syscalls) " syscalls" "")
+            (if (> (get k-in-built-in) 0) " built-in" ""))))
 ;; The breaks as the last check began (`k-broken`, which only grows, newest
 ;; first); and, while they are held (`check-hold-breaks!`), those the check
 ;; made, set aside, and the breaks as it began.
@@ -378,14 +401,14 @@
           (string h (if (k-sys-host-from? h 0 0 0) h (k-sfail k-sys-host-msg s)))
           (else x (k-sfail k-sys-host-msg s))))
       (else x (k-sfail k-sys-host-msg s)))))
-(define k-sys-str (->* (string int int int) exp) (lambda (v a b k) (e-str v a b k)))
-;; `x1` … `xi`, onto `acc`, the `i`th's identity `k`+`i`.
-(define k-sys-xs (->* (int int int int (listof exp acyclic)) (listof exp acyclic))
-  (lambda (i a b k acc)
+(define k-sys-str (->* (string int int int int) exp) (lambda (v a b k r) (e-str v a b k r)))
+;; `x1` … `xi`, onto `acc`, the `i`th's identity `k`+`i` in reading `r`.
+(define k-sys-xs (->* (int int int int int (listof exp acyclic)) (listof exp acyclic))
+  (lambda (i a b k r acc)
     (if (= i 0)
         acc
-        (k-sys-xs (- i 1) a b k
-                  (cons (e-var (string->symbol (string-append "x" (int->string i))) a b (+ k i))
+        (k-sys-xs (- i 1) a b k r
+                  (cons (e-var (string->symbol (string-append "x" (int->string i))) a b (+ k i) r)
                         acc)))))
 (define k-sys-params (->* (int (listof syn acyclic)) param-list)
   (lambda (i ps)
@@ -396,6 +419,8 @@
               (k-sys-params (+ i 1) (cdr ps))))))
 (define k-sys-items (->* (syn) (listof syn acyclic))
   (lambda (s) (tagcase s (lst (items d a b) items) (else x nil))))
+;; A reading's digest (`readings.fx`).
+(define readings ((proj (load-module "fx26:readings.fx") @s @e @m @c)))
 ;; The two definitions declaration `name` at `a`..`b` is, its type
 ;; `canonical`, `text` printed: whether the runtime has it, for a required
 ;; one checked as it is made; and itself, each of its expressions an
@@ -403,12 +428,17 @@
 ;; which is checked against its body.
 (define k-sys-defs (->* (symbol string syn string bool int int) (productof (1 top) (2 top)))
   (lambda (name host canonical text required a b)
-    (let* ((label (string-append "syscall " (symbol->string name) " (\"" host "\")"))
+    (let*
+     ((label (string-append "syscall " (symbol->string name) " (\"" host "\")"))
+           ;; A reading of their own, what they are made of, in no session's
+           ;; state (-1: apart from every text read).
+           (r ((with readings text-reading-of) -1
+               (string-append label " " text (if required " required" " optional"))))
            (asks (lambda ((f symbol) (k int))
-                   (e-app (e-var f a b k)
-                          (list (k-sys-str label a b (+ k 1)) (k-sys-str host a b (+ k 2))
-                                (k-sys-str text a b (+ k 3)))
-                          a b (+ k 4))))
+                   (e-app (e-var f a b k r)
+                          (list (k-sys-str label a b (+ k 1) r) (k-sys-str host a b (+ k 2) r)
+                                (k-sys-str text a b (+ k 3) r))
+                          a b (+ k 4) r)))
            (cs (k-sys-items canonical))
            (poly? (string=? (syn-name (car cs)) "poly"))
            (subr (if poly? (car (cdr (cdr cs))) canonical))
@@ -422,16 +452,17 @@
                           (car (cdr (cdr (cdr ss)))))
                     nil a b))
            (call (tagcase (asks (string->symbol (string-append "%syscall" (int->string n))) 1010)
-                   (e-app (f xs a2 b2 k2)
-                     (e-app (e-the at f a b 1016) (append xs (k-sys-xs n a b 1020 nil)) a b k2))
+                   (e-app (f xs a2 b2 k2 k2r)
+                     (e-app (e-the at f a b 1016 r) (append xs (k-sys-xs n a b 1020 r nil)) a b k2
+                            k2r))
                    (else x x)))
-           (body (e-lambda (k-sys-params 1 ps) (e-the (car (cdr (cdr (cdr ss)))) call a b 1030)
-                           a b 1031))
+           (body (e-lambda (k-sys-params 1 ps) (e-the (car (cdr (cdr (cdr ss)))) call a b 1030 r)
+                           a b 1031 r))
            (available
             (if required
-                (e-begin (list (asks '%syscall-require 1040) (e-bool #t a b 1045)) a b 1046)
-                (e-app (e-var '%syscall-available? a b 1050)
-                       (list (k-sys-str host a b 1051) (k-sys-str text a b 1052)) a b 1053)))
+                (e-begin (list (asks '%syscall-require 1040) (e-bool #t a b 1045 r)) a b 1046 r)
+                (e-app (e-var '%syscall-available? a b 1050 r)
+                       (list (k-sys-str host a b 1051 r) (k-sys-str text a b 1052 r)) a b 1053 r)))
            (companion (string->symbol (string-append "%syscall-available:" (symbol->string name)))))
       (product (1 (t-define companion (the syns-a (list (atom 'bool a b))) available a b))
                (2 (t-define name (the syns-a (list canonical)) body a b))))))
@@ -541,6 +572,7 @@
                       (set k-effect-notes nil)
                       (k-forget-withs)
                       (set k-reshapes nil)
+                      (set k-reshape-bases nil)
                       (set k-runs nil)
                       (k-stage-type! rep)
                       (k-ahead forms)

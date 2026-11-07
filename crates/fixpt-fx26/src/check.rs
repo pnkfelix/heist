@@ -52,7 +52,7 @@ pub(crate) fn fixed_range(name: &str) -> Option<(i128, i128)> {
 /// A datum, what a reader reads: an atom, or a pair of datums, frozen and
 /// acyclic, or a vector or bytevector (TODO §51). The same text defines it
 /// in the checker written in FX-26 (`standard::standard_text`).
-pub const DATUM: &str = "(union int f64 char bool string symbol keyword nil (pairof datum datum acyclic) vector bytevector)";
+pub const DATUM: &str = "(oneof int f64 char bool string symbol keyword nil (pairof datum datum acyclic) vector bytevector)";
 /// What an I/O primitive gives when it fails (`TODO.md` §84): its kind, one
 /// of a fixed few as `tagcase` can check, and the system's description. A
 /// value the program sees, not a failure of the run.
@@ -347,6 +347,18 @@ pub struct Checker {
     /// Why each member of a recursive group that may not end may not: said
     /// when its declared type leaves out `spin`.
     pub(crate) spin_why: Vec<((Sym, TyId), String)>,
+    /// Of each binding of a recursive group with an `allof`, for each
+    /// member (one for a binding of no `allof`), whether a call of it at
+    /// that member may not end (`termination_by_member`, noted by
+    /// `termination`): a call says `spin` only for the members it fits
+    /// that may not.
+    pub(crate) member_spins: HashMap<(Sym, TyId), Vec<bool>>,
+    /// The macros defined (`crate::macros`), as the forms are read.
+    pub(crate) macros: crate::macros::Macros,
+    /// Expressions taken as one member of their union's type while a call
+    /// is taken apart by an argument that is no variable (rule 5): each as
+    /// that member wherever it is synthesized, or checked as a call.
+    pub(crate) pinned: Vec<(ExpId, TyId)>,
     /// The regions each type mentions (`regions_in`), kept for types with
     /// no inference slot unsolved in them, which cannot change: masking
     /// asks for those of every free variable at each node, and a module
@@ -405,7 +417,15 @@ pub struct Checker {
     pub(crate) closure_depth: usize,
     /// Unions read with a member not yet known, a recursive type's own
     /// name, and where: checked once it is (`Checker::union_of`).
-    pub(crate) pending_unions: Vec<(TyId, fixpt_read::Span)>,
+    /// Whether each is an `anyof`.
+    pub(crate) pending_unions: Vec<(TyId, fixpt_read::Span, bool)>,
+    /// How many more times the subtype question being asked may split a
+    /// type at a field to show it below a union (`SPLIT_BUDGET`).
+    pub(crate) splits_left: usize,
+    /// While a `lambda` is checked against each member of an `allof`, one
+    /// per `allof`, innermost last: the `tagcase` arms a member's type
+    /// rules out, skipped (`logical-types.md` §8.5, rule 2).
+    pub(crate) dead_arms: Vec<DeadArms>,
     /// Whether `unify` is inside a pair's contents, which are invariant: a
     /// binder solved already takes what it meets there, if the two are
     /// related, since nothing else will check (`infer.rs`, `unify`).
@@ -656,6 +676,16 @@ pub struct Checker {
 
 /// A lambda's signature, for typed cellular code
 /// (`docs/research/typed-cellular-code.md`): its parameters and its free
+/// What one member's check of an `allof`'s lambda found inside it: each
+/// expression's type and instantiations, which the word's type notes and
+/// operations are made of at that member (`NodeFacts::lambda_variants`).
+#[derive(Clone, Debug, Default)]
+pub struct MemberFacts {
+    pub types: HashMap<ExpId, TyId>,
+    pub insts: HashMap<ExpId, Vec<D>>,
+    pub value_insts: HashMap<ExpId, Vec<D>>,
+}
+
 /// variables by name, with their types (a free variable's where the lambda
 /// is made, narrowings included), its result's type and its latent effect.
 #[derive(Clone, Debug)]
@@ -688,6 +718,10 @@ pub struct NodeFacts {
     /// from its body): its word's precondition and postcondition. With
     /// `record_types`.
     pub lambdas: HashMap<ExpId, LambdaSig>,
+    /// Of an `allof`'s lambda, and each inside it, by body: the signature
+    /// at each member, as the member's check left it, for the verifier of
+    /// typed cellular code to verify its word at each.
+    pub lambda_variants: HashMap<ExpId, Vec<(LambdaSig, std::rc::Rc<MemberFacts>)>>,
     /// Each lambda that is a polymorphic value (a `plambda`'s, or one
     /// checked against a `poly`), by its body: the binders its signature's
     /// types are under, a level for each `poly`, outermost first. With
@@ -787,6 +821,130 @@ pub struct NodeFacts {
     /// that is value `k` of the one given, as `(extend e0 e1)` takes its
     /// values from the two it holds (`TODO.md` §69).
     pub reshaped: HashMap<ExpId, Vec<Pick>>,
+    /// What `reshaped` held for an expression before `Checker::expect`
+    /// first reshaped it (an `extend`'s positions, or none): what a
+    /// reshape of it checked again is made onto, not the reshape itself.
+    pub reshape_bases: HashMap<ExpId, Option<Vec<Pick>>>,
+}
+
+/// The facts the compilers read of each expression (`rust_facts.rs`), but
+/// its effect: what one body checked against each member of an `allof`
+/// must be found alike under every member, to be compiled once
+/// (`docs/research/logical-types.md` §8.5, rule 3).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum CodeFact {
+    Datum(Datum),
+    Converted(Conv, usize),
+    ApplyShares,
+    FrozenDefine,
+    FxPlain(ExpId),
+    CallConv(Conv),
+    WithVals(Vec<(Sym, usize)>),
+    Reshaped(Vec<Pick>),
+}
+
+impl NodeFacts {
+    /// Each code fact, by its expression and kind.
+    pub(crate) fn code_facts(&self) -> HashMap<(ExpId, u8), CodeFact> {
+        let mut out = HashMap::new();
+        out.extend(self.datum.iter().map(|(e, d)| ((*e, 0), CodeFact::Datum(*d))));
+        out.extend(self.converted.iter().map(|(e, (c, n))| ((*e, 1), CodeFact::Converted(*c, *n))));
+        out.extend(self.apply_shares.iter().map(|e| ((*e, 2), CodeFact::ApplyShares)));
+        out.extend(self.frozen_defines.iter().map(|e| ((*e, 3), CodeFact::FrozenDefine)));
+        out.extend(self.fx_plain.iter().map(|(e, x)| ((*e, 4), CodeFact::FxPlain(*x))));
+        out.extend(self.call_convs.iter().map(|(e, c)| ((*e, 5), CodeFact::CallConv(*c))));
+        out.extend(self.with_vals.iter().map(|(e, v)| ((*e, 6), CodeFact::WithVals(v.clone()))));
+        out.extend(self.reshaped.iter().map(|(e, v)| ((*e, 7), CodeFact::Reshaped(v.clone()))));
+        out
+    }
+
+    /// The code facts as they were (`CodeSaved`), those since forgotten.
+    pub(crate) fn code_saved(&self) -> CodeSaved {
+        CodeSaved {
+            datum: self.datum.clone(),
+            converted: self.converted.clone(),
+            apply_shares: self.apply_shares.clone(),
+            frozen_defines: self.frozen_defines.clone(),
+            fx_plain: self.fx_plain.clone(),
+            call_convs: self.call_convs.clone(),
+            with_vals: self.with_vals.clone(),
+            reshaped: self.reshaped.clone(),
+            reshape_bases: self.reshape_bases.clone(),
+        }
+    }
+
+    /// The same, but the facts of expressions `inside` holds of.
+    pub(crate) fn code_saved_but(&self, inside: impl Fn(ExpId) -> bool) -> CodeSaved {
+        let mut s = self.code_saved();
+        s.datum.retain(|x, _| !inside(*x));
+        s.converted.retain(|x, _| !inside(*x));
+        s.apply_shares.retain(|x| !inside(*x));
+        s.frozen_defines.retain(|x| !inside(*x));
+        s.fx_plain.retain(|x, _| !inside(*x));
+        s.call_convs.retain(|x, _| !inside(*x));
+        s.with_vals.retain(|x, _| !inside(*x));
+        s.reshaped.retain(|x, _| !inside(*x));
+        s.reshape_bases.retain(|x, _| !inside(*x));
+        s
+    }
+
+    pub(crate) fn code_put_back(&mut self, saved: &CodeSaved) {
+        let s = saved.clone();
+        (self.datum, self.converted, self.apply_shares, self.frozen_defines) = (s.datum, s.converted, s.apply_shares, s.frozen_defines);
+        (self.fx_plain, self.call_convs, self.with_vals, self.reshaped) = (s.fx_plain, s.call_convs, s.with_vals, s.reshaped);
+        self.reshape_bases = s.reshape_bases;
+    }
+}
+
+/// The `tagcase` arms and `if` branches skipped while one `lambda` is
+/// checked against each member of an `allof` (`Checker::dead_arms`).
+#[derive(Default)]
+pub(crate) struct DeadArms {
+    /// How many members there are, and which is being checked.
+    pub(crate) members: usize,
+    pub(crate) at: usize,
+    /// Each `if`'s branch (0, its `then`; 1, its `else`), with the members
+    /// that skipped it: one that every member before the last skipped is
+    /// checked under the last, so that its code has facts, and its errors
+    /// are what they would be.
+    pub(crate) branches: HashMap<(ExpId, u8), HashSet<usize>>,
+    /// Each, by its `tagcase` and place, with how many members skipped it
+    /// and the error it would have been: one skipped under every member is
+    /// that error.
+    pub(crate) counts: HashMap<(ExpId, usize), (usize, FxError)>,
+    /// Those of the member being checked: what it did not check, so has no
+    /// facts of, each with all that is in it.
+    pub(crate) now: Vec<ExpId>,
+}
+
+impl NodeFacts {
+    /// A code fact put in its table (`code_facts`'s).
+    pub(crate) fn code_insert(&mut self, (e, _): (ExpId, u8), fact: CodeFact) {
+        match fact {
+            CodeFact::Datum(d) => _ = self.datum.insert(e, d),
+            CodeFact::Converted(c, n) => _ = self.converted.insert(e, (c, n)),
+            CodeFact::ApplyShares => _ = self.apply_shares.insert(e),
+            CodeFact::FrozenDefine => _ = self.frozen_defines.insert(e),
+            CodeFact::FxPlain(x) => _ = self.fx_plain.insert(e, x),
+            CodeFact::CallConv(c) => _ = self.call_convs.insert(e, c),
+            CodeFact::WithVals(v) => _ = self.with_vals.insert(e, v),
+            CodeFact::Reshaped(v) => _ = self.reshaped.insert(e, v),
+        }
+    }
+}
+
+/// The code facts of `NodeFacts`, kept to be put back.
+#[derive(Clone)]
+pub(crate) struct CodeSaved {
+    datum: HashMap<ExpId, Datum>,
+    converted: HashMap<ExpId, (Conv, usize)>,
+    apply_shares: HashSet<ExpId>,
+    frozen_defines: HashSet<ExpId>,
+    fx_plain: HashMap<ExpId, ExpId>,
+    call_convs: HashMap<ExpId, Conv>,
+    with_vals: HashMap<ExpId, Vec<(Sym, usize)>>,
+    reshaped: HashMap<ExpId, Vec<Pick>>,
+    reshape_bases: HashMap<ExpId, Option<Vec<Pick>>>,
 }
 
 /// Where a reshaped module's value is taken from (`NodeFacts::reshaped`;
@@ -995,6 +1153,9 @@ impl Checker {
             holes: None,
             hole_hint: None,
             spin_why: Vec::new(),
+            member_spins: HashMap::new(),
+            macros: Default::default(),
+            pinned: Vec::new(),
             regions_memo: std::cell::RefCell::new(Default::default()),
             fun_apps: HashMap::new(),
             regions_open: std::cell::Cell::new(false),
@@ -1013,6 +1174,8 @@ impl Checker {
             path_narrowed: Vec::new(),
             closure_depth: 0,
             pending_unions: Vec::new(),
+            splits_left: SPLIT_BUDGET,
+            dead_arms: Vec::new(),
             unify_exact: false,
             unify_upper: false,
             checked_call: None,
@@ -1273,7 +1436,7 @@ impl Checker {
             Ty::False => bit("bool"),
             Ty::Pair(_, _, _, nil) => Some(bit("pair")? | if *nil { bit("nil")? } else { 0 }),
             Ty::NList { .. } => Some(bit("pair")? | bit("nil")?),
-            Ty::Subr { .. } | Ty::Composable { .. } => bit("procedure"),
+            Ty::Subr { .. } | Ty::Composable { .. } | Ty::AllOf(_) => bit("procedure"),
             // An array is a bloblet as `(bloblet …)` is, of the same kind.
             Ty::Array(..) | Ty::Bloblet { .. } => bit("bloblet"),
             Ty::Ref(..) => bit("box"),
@@ -1293,11 +1456,25 @@ impl Checker {
         }
     }
 
-    /// The union of `members`, normalized: unions in it flattened, `nil` and
-    /// a pair that is not `nil` made the pair that may be, and one member
-    /// itself. Each member must have a known shape, and no two the same
-    /// (`docs/research/logical-types.md`, L1).
+    /// The union of `members`, `(oneof …)`, normalized: unions in it
+    /// flattened, `nil` and a pair that is not `nil` made the pair that may
+    /// be, sums made one, and one member itself. Each member must have a
+    /// known shape, and no two the same but sums with no tag in common
+    /// (`docs/research/logical-types.md`, L1 and §8.5).
     pub(crate) fn union_of(&mut self, members: &[TyId], span: fixpt_read::Span) -> R<TyId> {
+        self.union_formed(members, span, false)
+    }
+
+    /// The true union of `members`, `(anyof …)` (`logical-types.md` §8.5,
+    /// U2), normalized as `union_of` is, but members may overlap: `void`
+    /// and a member the same as one before it dropped, and sums made one
+    /// with a tag in several the union of its payloads. Only a member that
+    /// may be written must still be told apart from every other.
+    pub(crate) fn anyof_of(&mut self, members: &[TyId], span: fixpt_read::Span) -> R<TyId> {
+        self.union_formed(members, span, true)
+    }
+
+    fn union_formed(&mut self, members: &[TyId], span: fixpt_read::Span, any: bool) -> R<TyId> {
         let mut flat: Vec<TyId> = Vec::new();
         for &m in members {
             let m = self.arena.resolve(m);
@@ -1306,40 +1483,194 @@ impl Checker {
                 _ => flat.push(m),
             }
         }
+        if any {
+            self.anyof_trimmed(&mut flat);
+        }
         // A member not yet known (a recursive type's own name, read before
         // its definition is): the union checked once it is.
         let open = |c: &Self, m: TyId| matches!(c.arena.get(c.arena.resolve(m)), Ty::Link(None));
         let pending = flat.iter().any(|m| open(self, *m));
         if !pending {
-            self.union_members_known(&flat, span)?;
+            self.union_members_known(&flat, span, any)?;
         }
-        // `nil` beside a pair: the pair that may be `nil`.
-        if let Some(n) = flat.iter().position(|m| matches!(self.arena.get(*m), Ty::Nil)) {
-            let pairs: Vec<usize> = (0..flat.len()).filter(|&i| matches!(self.arena.get(flat[i]), Ty::Pair(..))).collect();
-            if let [p] = pairs[..] {
-                if let Ty::Pair(a, b, r, false) = self.arena.get(flat[p]).clone() {
-                    flat[p] = self.arena.ty(Ty::Pair(a, b, r, true));
-                }
-                flat.remove(n);
-            }
-        }
+        let mut flat = self.nil_merged(flat);
         if pending {
             let u = self.arena.ty(Ty::Union(flat));
-            self.pending_unions.push((u, span));
+            self.pending_unions.push((u, span, any));
             return Ok(u);
         }
-        self.union_members_differ(&flat, span)?;
-        match flat[..] {
-            [] => Ok(self.arena.ty(Ty::Void)),
-            [m] => Ok(m),
-            _ => Ok(self.arena.ty(Ty::Union(flat))),
+        if any {
+            // Its sums kept as written: their head form made where one sum is
+            // needed (`sum_head`), which must be one, checked now.
+            self.sums_joined_of(&flat, span)?;
+            self.anyof_written_apart(&flat, span)?;
+        } else {
+            self.union_members_differ(&flat, span)?;
+            self.union_sums_merged(&mut flat);
+        }
+        Ok(self.union_built(flat))
+    }
+
+    /// `ms` with `nil` beside one pair made the pair that may be `nil`.
+    fn nil_merged(&mut self, mut ms: Vec<TyId>) -> Vec<TyId> {
+        if let Some(n) = ms.iter().position(|m| matches!(self.arena.get(self.arena.resolve(*m)), Ty::Nil)) {
+            let pair = |c: &Self, m: TyId| matches!(c.arena.get(c.arena.resolve(m)), Ty::Pair(..));
+            let pairs: Vec<usize> = (0..ms.len()).filter(|&i| pair(self, ms[i])).collect();
+            if let [p] = pairs[..] {
+                if let Ty::Pair(a, b, r, false) = self.arena.get(self.arena.resolve(ms[p])).clone() {
+                    ms[p] = self.arena.ty(Ty::Pair(a, b, r, true));
+                }
+                ms.remove(n);
+            }
+        }
+        ms
+    }
+
+    /// A union of `ms`, normal already: `void` for none, one itself.
+    pub(crate) fn union_built(&mut self, ms: Vec<TyId>) -> TyId {
+        match ms[..] {
+            [] => self.arena.ty(Ty::Void),
+            [m] => m,
+            _ => self.arena.ty(Ty::Union(ms)),
         }
     }
 
-    fn union_members_known(&mut self, ms: &[TyId], span: fixpt_read::Span) -> R<()> {
+    /// `ms` without `void`, and without a member the same as one before it.
+    fn anyof_trimmed(&mut self, ms: &mut Vec<TyId>) {
+        let mut kept: Vec<TyId> = Vec::new();
+        for &m in ms.iter() {
+            if !matches!(self.arena.get(m), Ty::Void) && !kept.iter().any(|k| self.same_ty(*k, m, &mut Vec::new())) {
+                kept.push(m);
+            }
+        }
+        *ms = kept;
+    }
+
+    /// `sums` made one: each tag once, its payload the `anyof` of its
+    /// payloads in them (`logical-types.md` §8.5: the same values, since a
+    /// sum's representation names its tag, not its type's tags). An
+    /// `anyof`'s sums are kept as written; this is their head form
+    /// (§8.8), made where one sum is needed.
+    pub(crate) fn sums_joined(&mut self, sums: &[TyId], span: fixpt_read::Span) -> R<TyId> {
+        let mut tags: Vec<(Sym, Vec<TyId>)> = Vec::new();
+        for &m in sums {
+            let Ty::Sum(ps) = self.arena.get(self.arena.resolve(m)).clone() else { unreachable!("a sum") };
+            for (l, t) in ps {
+                match tags.iter_mut().find(|(m, _)| *m == l) {
+                    Some((_, ts)) => ts.push(t),
+                    None => tags.push((l, vec![t])),
+                }
+            }
+        }
+        let mut parts = Vec::new();
+        for (l, ts) in tags {
+            let t = if let [t] = ts[..] { t } else { self.anyof_of(&ts, span)? };
+            parts.push((l, t));
+        }
+        Ok(self.arena.ty(Ty::Sum(parts)))
+    }
+
+    /// The sums of `ms`, if two or more, made one (`sums_joined`).
+    fn sums_joined_of(&mut self, ms: &[TyId], span: fixpt_read::Span) -> R<Option<TyId>> {
+        let sums: Vec<TyId> = ms.iter().copied().filter(|m| matches!(self.arena.get(self.arena.resolve(*m)), Ty::Sum(_))).collect();
+        if sums.len() < 2 {
+            return Ok(None);
+        }
+        Ok(Some(self.sums_joined(&sums, span)?))
+    }
+
+    /// The sums of `ms`, if two or more, made one as `sums_joined` makes
+    /// them, but each payload of several the union of those not the same,
+    /// unchecked: what subtyping compares with, which may not fail.
+    pub(crate) fn sums_joined_raw(&mut self, ms: &[TyId]) -> Option<TyId> {
+        let sums: Vec<TyId> = ms.iter().copied().filter(|m| matches!(self.arena.get(self.arena.resolve(*m)), Ty::Sum(_))).collect();
+        if sums.len() < 2 {
+            return None;
+        }
+        let mut tags: Vec<(Sym, Vec<TyId>)> = Vec::new();
+        for &m in &sums {
+            let Ty::Sum(ps) = self.arena.get(self.arena.resolve(m)).clone() else { unreachable!("a sum") };
+            for (l, t) in ps {
+                match tags.iter_mut().find(|(m, _)| *m == l) {
+                    Some((_, ts)) => ts.push(t),
+                    None => tags.push((l, vec![t])),
+                }
+            }
+        }
+        let mut parts = Vec::new();
+        for (l, mut ts) in tags {
+            let t = if let [t] = ts[..] {
+                t
+            } else {
+                self.anyof_trimmed(&mut ts);
+                self.union_built(ts)
+            };
+            parts.push((l, t));
+        }
+        Some(self.arena.ty(Ty::Sum(parts)))
+    }
+
+    /// Of a union whose members are all sums, its head form: the one sum
+    /// they are together (`tagcase` takes that apart).
+    pub(crate) fn sum_head(&mut self, t: TyId) -> Option<TyId> {
+        let Ty::Union(ms) = self.arena.get(self.arena.resolve(t)).clone() else { return None };
+        if !ms.iter().all(|m| matches!(self.arena.get(self.arena.resolve(*m)), Ty::Sum(_))) {
+            return None;
+        }
+        let span = fixpt_read::Span::new(fixpt_read::FileId(0), 0, 0);
+        self.sums_joined(&ms, span).ok()
+    }
+
+    /// Whether a value of `t` may be written: a cell, an array, a bloblet, or
+    /// a pair or list not frozen.
+    fn may_be_written(&self, t: TyId) -> bool {
+        match self.arena.get(self.arena.resolve(t)) {
+            Ty::Ref(..) | Ty::Array(..) | Ty::Bloblet { .. } | Ty::ICell(..) | Ty::MarkKey(..) | Ty::Place(_) => true,
+            Ty::Pair(_, _, r, _) | Ty::NList { region: r, .. } => !matches!(r, Region::Frozen(..)),
+            _ => false,
+        }
+    }
+
+    /// An `anyof`'s members that may be written each told apart from every
+    /// other at run time (`logical-types.md` §9.2, question 14: a union of
+    /// cells, refused until a program needs it).
+    fn anyof_written_apart(&mut self, ms: &[TyId], span: fixpt_read::Span) -> R<()> {
+        for i in 0..ms.len() {
+            for j in i + 1..ms.len() {
+                let meet = self.shape(ms[i]).unwrap_or(0) & self.shape(ms[j]).unwrap_or(0) != 0;
+                if meet && (self.may_be_written(ms[i]) || self.may_be_written(ms[j])) {
+                    return Err(FxError::at(
+                        span,
+                        format!(
+                            "an `anyof`'s members that may be written must be told apart at run time: a {} and a {} cannot be",
+                            self.show_ty(ms[i]),
+                            self.show_ty(ms[j])
+                        ),
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Of `ms`, the first that every other is below, if one is: a union's
+    /// greatest member of a shape, which inference takes for the union
+    /// (`logical-types.md` §8.8).
+    pub(crate) fn greatest_of(&mut self, ms: &[TyId]) -> Option<TyId> {
+        ms.iter().copied().find(|&m| ms.iter().all(|&o| o == m || self.subtype(o, m)))
+    }
+
+    /// Whether no two of `ms` share a shape: a union printed `oneof`.
+    pub(crate) fn members_apart(&self, ms: &[TyId]) -> bool {
+        let shapes: Vec<u32> = ms.iter().map(|m| self.shape(*m).unwrap_or(0)).collect();
+        (0..shapes.len()).all(|i| (i + 1..shapes.len()).all(|j| shapes[i] & shapes[j] == 0))
+    }
+
+    fn union_members_known(&mut self, ms: &[TyId], span: fixpt_read::Span, any: bool) -> R<()> {
+        let former = if any { "anyof" } else { "oneof" };
         for &m in ms {
             if self.shape(m).is_none() {
-                return Err(FxError::at(span, format!("a {} cannot be in a union: its shape at run time is not known", self.show_ty(m))));
+                return Err(FxError::at(span, format!("a {} cannot be in a `{former}`: its shape at run time is not known", self.show_ty(m))));
             }
         }
         Ok(())
@@ -1348,15 +1679,115 @@ impl Checker {
     fn union_members_differ(&mut self, ms: &[TyId], span: fixpt_read::Span) -> R<()> {
         for i in 0..ms.len() {
             for j in i + 1..ms.len() {
+                // Two sums: told apart by their tags, if none is in both.
+                let (x, y) = (self.arena.resolve(ms[i]), self.arena.resolve(ms[j]));
+                if let (Ty::Sum(a), Ty::Sum(b)) = (self.arena.get(x), self.arena.get(y)) {
+                    if let Some((l, _)) = a.iter().find(|(l, _)| b.iter().any(|(m, _)| m == l)) {
+                        let l = self.interner.name(*l).to_string();
+                        return Err(FxError::at(
+                            span,
+                            format!(
+                                "a `oneof`'s sums must have no tag in common: a {} and a {} both have `{l}`",
+                                self.show_ty(ms[i]),
+                                self.show_ty(ms[j])
+                            ),
+                        ));
+                    }
+                    continue;
+                }
                 if self.shape(ms[i]).unwrap_or(0) & self.shape(ms[j]).unwrap_or(0) != 0 {
                     return Err(FxError::at(
                         span,
-                        format!("a union's members must differ in shape at run time: a {} and a {} do not", self.show_ty(ms[i]), self.show_ty(ms[j])),
+                        format!("a `oneof`'s members must be told apart at run time: a {} and a {} cannot be", self.show_ty(ms[i]), self.show_ty(ms[j])),
                     ));
                 }
             }
         }
         Ok(())
+    }
+
+    /// `ms`'s sums, whose tags `union_members_differ` found apart, made
+    /// one: the same values, which `tagcase` takes apart.
+    fn union_sums_merged(&mut self, ms: &mut Vec<TyId>) {
+        let sums: Vec<usize> = (0..ms.len()).filter(|&i| matches!(self.arena.get(ms[i]), Ty::Sum(_))).collect();
+        let [first, ref rest @ ..] = sums[..] else { return };
+        if rest.is_empty() {
+            return;
+        }
+        let mut parts = Vec::new();
+        for &i in &sums {
+            let Ty::Sum(ps) = self.arena.get(ms[i]).clone() else { unreachable!("a sum") };
+            parts.extend(ps);
+        }
+        ms[first] = self.arena.ty(Ty::Sum(parts));
+        for &i in rest.iter().rev() {
+            ms.remove(i);
+        }
+    }
+
+    /// The meet of `a` and `b`: the values both are, where that is a type
+    /// exactly and soundly (`docs/research/logical-types.md` §8.5, rule 4):
+    /// the lesser of two related; of two sums, their tags in common (none,
+    /// `void`), payloads met; of two products of the same labels, field by
+    /// field; of two procedure types of one convention, their `allof`.
+    /// Nothing else meets: in particular no two cells, arrays, writable
+    /// pairs or regions that differ, whose meet would be unsound.
+    ///
+    /// Nor two procedure types that name a region of `fresh`, where the
+    /// call allocates (`Err(true)`; `Err(false)`, no meet): typed under
+    /// each member, a cell it makes there may be another type under each,
+    /// and a procedure kept in the result may read or write it, as one of
+    /// those types or the other (Davies and Pfenning's reason to drop the
+    /// arrow's distributivity; `docs/research/logical-types.md` §8.5).
+    /// Data made frozen, or no cell, is one value of both types.
+    pub(crate) fn meet(&mut self, a: TyId, b: TyId, fresh: &[Region]) -> Result<TyId, bool> {
+        let (a, b) = (self.arena.resolve(a), self.arena.resolve(b));
+        if self.subtype(a, b) {
+            return Ok(a);
+        }
+        if self.subtype(b, a) {
+            return Ok(b);
+        }
+        let procs = |c: &Self, t: TyId| match c.arena.get(t) {
+            Ty::Subr { conv, .. } => Some((*conv, vec![t])),
+            Ty::AllOf(ms) => match c.arena.get(ms[0]) {
+                Ty::Subr { conv, .. } => Some((*conv, ms.clone())),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let (Some((c1, mut ms)), Some((c2, ns))) = (procs(self, a), procs(self, b)) {
+            if c1 != c2 {
+                return Err(false);
+            }
+            let mut named = HashSet::new();
+            self.regions_in(a, &mut named);
+            self.regions_in(b, &mut named);
+            if fresh.iter().any(|r| named.contains(r)) {
+                return Err(true);
+            }
+            ms.extend(ns);
+            return Ok(self.arena.ty(Ty::AllOf(ms)));
+        }
+        match (self.arena.get(a).clone(), self.arena.get(b).clone()) {
+            (Ty::Sum(xs), Ty::Sum(ys)) => {
+                let mut parts = Vec::new();
+                for (l, t) in xs {
+                    if let Some((_, u)) = ys.iter().find(|(m, _)| *m == l) {
+                        parts.push((l, self.meet(t, *u, fresh)?));
+                    }
+                }
+                Ok(if parts.is_empty() { self.void } else { self.arena.ty(Ty::Sum(parts)) })
+            }
+            (Ty::Product(xs), Ty::Product(ys)) if xs.len() == ys.len() && xs.iter().zip(&ys).all(|((l, _), (m, _))| l == m) => {
+                let mut fields = Vec::new();
+                for ((l, t), (_, u)) in xs.iter().zip(&ys) {
+                    fields.push((*l, self.meet(*t, *u, fresh)?));
+                }
+                Ok(self.arena.ty(Ty::Product(fields)))
+            }
+            _ => Err(false),
+        }
     }
 
     /// The unions read before what they name was (`pending_unions`), each
@@ -1365,15 +1796,25 @@ impl Checker {
         let open = |c: &Self, m: TyId| matches!(c.arena.get(c.arena.resolve(m)), Ty::Link(None));
         let mut i = 0;
         while i < self.pending_unions.len() {
-            let (u, span) = self.pending_unions[i];
+            let (u, span, any) = self.pending_unions[i];
             let Ty::Union(ms) = self.arena.get(u).clone() else { unreachable!("a union") };
             if ms.iter().any(|m| open(self, *m)) {
                 i += 1;
                 continue;
             }
             self.pending_unions.remove(i);
-            self.union_members_known(&ms, span)?;
+            self.union_members_known(&ms, span, any)?;
+            if any {
+                self.anyof_written_apart(&ms, span)?;
+                self.sums_joined_of(&ms, span)?;
+                continue;
+            }
             self.union_members_differ(&ms, span)?;
+            // Made already, its sums cannot be made one now.
+            let sum = |c: &Self, m: &TyId| matches!(c.arena.get(c.arena.resolve(*m)), Ty::Sum(_));
+            if ms.iter().filter(|m| sum(self, m)).count() > 1 {
+                return Err(FxError::at(span, "a `oneof` of sums with a member not yet defined: write the sums as one `sumof`"));
+            }
         }
         Ok(())
     }
@@ -1449,7 +1890,18 @@ impl Checker {
                 },
             };
             let (yes, no) = self.narrowed_by(t, 1u32 << shape);
-            let Some(t) = (if negated { no } else { yes }) else { continue };
+            let t = match if negated { no } else { yes } {
+                Some(t) => t,
+                // Checked against a member of an `allof`, a test of a type
+                // that cannot pass it (or fail it) leaves its branch no
+                // value: `void`, and the branch is skipped (`dead_branch`).
+                None if !self.dead_arms.is_empty() => match self.shape(t) {
+                    Some(s) if s != 0 && !negated && s & (1u32 << shape) == 0 => self.void,
+                    Some(s) if s != 0 && negated && s & !(1u32 << shape) == 0 => self.void,
+                    _ => continue,
+                },
+                None => continue,
+            };
             match k {
                 Some(k) => out[k].4 = t,
                 None => out.push((v, i, steps, regions, t)),
@@ -1532,6 +1984,30 @@ impl Checker {
     }
 
     /// Narrowings, of variables and of paths, put in force.
+    /// Whether `if` `e`'s branch `side` (0, `then`; 1, `else`) is skipped:
+    /// checked against a member of an `allof`, it narrows a variable to
+    /// `void`, so cannot run (`docs/research/logical-types.md` §8.5, rule
+    /// 2, as a `tagcase`'s arm), unless every member but this last one
+    /// skipped it. Noted, so that the member's facts there are not
+    /// compared.
+    pub(crate) fn dead_branch(&mut self, e: ExpId, side: u8, ns: &[Narrowed]) -> bool {
+        let void = ns.iter().any(|n| matches!(self.arena.get(n.4), Ty::Void));
+        let branch = match (self.arena.exp_at(e), side) {
+            (Exp::If { then, .. }, 0) => *then,
+            (Exp::If { els, .. }, _) => *els,
+            _ => e,
+        };
+        let Some(dead) = self.dead_arms.last_mut().filter(|_| void) else { return false };
+        let at = dead.at;
+        let skipped = dead.branches.entry((e, side)).or_default();
+        if at + 1 == dead.members && (0..at).all(|i| skipped.contains(&i)) {
+            return false;
+        }
+        skipped.insert(at);
+        dead.now.push(branch);
+        true
+    }
+
     pub(crate) fn push_narrowings(&mut self, ns: Vec<Narrowed>) {
         for (v, i, steps, regions, t) in ns {
             if steps.is_empty() {
@@ -1620,8 +2096,9 @@ impl Checker {
                         }
                     }
                 }
-                let span = fixpt_read::Span::new(fixpt_read::FileId(0), 0, 0);
-                (self.union_of(&inside, span).ok(), self.union_of(&outside, span).ok())
+                // Parts of a normal union: normal but for `nil` beside a pair.
+                let (inside, outside) = (self.nil_merged(inside), self.nil_merged(outside));
+                (Some(self.union_built(inside)), Some(self.union_built(outside)))
             }
             _ => (None, None),
         }
@@ -1701,6 +2178,7 @@ impl Checker {
         self.facts.effects.insert(e, eff.clone());
         self.kill_paths(&eff);
         let t = self.path_typed(e, t);
+        let t = self.pinned_type(e).unwrap_or(t);
         if self.record_types {
             self.facts.types.insert(e, t);
         }
@@ -1921,6 +2399,9 @@ impl Checker {
                 }
                 for w in self.spin_why.iter_mut().filter(|w| w.0 == (names[i], old)) {
                     w.0.1 = found;
+                }
+                if let Some(m) = self.member_spins.remove(&(names[i], old)) {
+                    self.member_spins.insert((names[i], found), m);
                 }
                 out[i].1 = found;
                 if alone && self.holes.is_none() {
@@ -2214,9 +2695,10 @@ impl Checker {
                 let (narrow_yes, narrow_no) = self.narrowings(test);
                 let depth = self.size_facts.len();
                 let narrowed = (self.narrowed.len(), self.path_narrowed.len());
+                let dead = [self.dead_branch(e, 0, &narrow_yes), self.dead_branch(e, 1, &narrow_no)];
                 self.size_facts.extend(yes);
                 self.push_narrowings(narrow_yes);
-                let a = self.synth(then);
+                let a = if dead[0] { Ok((self.void, Effect::pure())) } else { self.synth(then) };
                 self.size_facts.truncate(depth);
                 self.narrowed.truncate(narrowed.0);
                 self.path_narrowed.truncate(narrowed.1);
@@ -2232,7 +2714,7 @@ impl Checker {
                 let (a, ae) = a?;
                 self.size_facts.extend(no);
                 self.push_narrowings(narrow_no);
-                let b = self.synth(els);
+                let b = if dead[1] { Ok((self.void, Effect::pure())) } else { self.synth(els) };
                 self.size_facts.truncate(depth);
                 self.narrowed.truncate(narrowed.0);
                 self.path_narrowed.truncate(narrowed.1);
@@ -2470,6 +2952,11 @@ impl Checker {
 
     /// Whether the group `bindings` ends; if not, its members are recursion
     /// that says `spin`, and why is kept for an error.
+    /// The member `e` is taken as (`pinned`), if it is.
+    pub(crate) fn pinned_type(&self, e: ExpId) -> Option<TyId> {
+        self.pinned.iter().rev().find(|(x, _)| *x == e).map(|(_, t)| *t)
+    }
+
     pub(crate) fn note_termination(&mut self, bindings: &[(Sym, TyId, ExpId)]) -> Result<(), String> {
         let ends = self.termination(bindings);
         self.note_ending(bindings, &ends);
@@ -2604,7 +3091,7 @@ impl Checker {
                 Ty::NList { elem: a, .. } | Ty::Ref(a, _) | Ty::Array(a, _, _) | Ty::ICell(a, _) => stack.push(*a),
                 Ty::Bloblet { fields, .. } => stack.extend(fields),
                 Ty::Product(ps) | Ty::Sum(ps) => stack.extend(ps.iter().map(|(_, x)| *x)),
-                Ty::Union(ms) => stack.extend(ms.iter().copied()),
+                Ty::Union(ms) | Ty::AllOf(ms) => stack.extend(ms.iter().copied()),
                 _ => return false,
             }
         }
@@ -2851,7 +3338,7 @@ impl Checker {
         match self.arena.get(t).clone() {
             Ty::Base(_) | Ty::Nat(_) | Ty::Void | Ty::Nil | Ty::False | Ty::Var(_) | Ty::Select(..) | Ty::ParamSel(..) => {}
             Ty::Link(None) => self.regions_open.set(true),
-            Ty::Union(ms) => {
+            Ty::Union(ms) | Ty::AllOf(ms) => {
                 for m in ms {
                     self.regions_walk(m, seen, out);
                 }
@@ -2984,7 +3471,7 @@ impl Checker {
             Ty::NList { elem, .. } => vec![elem],
             Ty::Poly { body, .. } => vec![body],
             Ty::Product(ps) | Ty::Sum(ps) => ps.into_iter().map(|(_, x)| x).collect(),
-            Ty::Union(ms) => ms,
+            Ty::Union(ms) | Ty::AllOf(ms) => ms,
             Ty::PromptTag { answer: a, payload: b, .. } | Ty::Composable { arg: a, answer: b, .. } => vec![a, b],
             Ty::Named { which, args } => [self.generatives[which as usize].rep]
                 .into_iter()
@@ -3037,7 +3524,7 @@ impl Checker {
             Ty::Base(_) | Ty::Nat(_) | Ty::Void | Ty::Nil => true,
             Ty::Var(v) => self.arena.is_data_var(v) && here(self.data_var_place(v)),
             Ty::Product(ps) | Ty::Sum(ps) => ps.iter().all(|(_, x)| self.data_walk(*x, seen, place)),
-            Ty::Union(ms) => ms.iter().all(|x| self.data_walk(*x, seen, place)),
+            Ty::Union(ms) | Ty::AllOf(ms) => ms.iter().all(|x| self.data_walk(*x, seen, place)),
             Ty::Pair(a, b, r, _) => {
                 r.is_frozen() && here(Self::data_place(r)) && self.data_walk(a, seen, place) && self.data_walk(b, seen, place)
             }
@@ -3087,7 +3574,7 @@ impl Checker {
                 (if frozen { near(q) } else { q == r }) && fields.iter().all(|f| self.forget_walk(*f, r, seen))
             }
             Ty::Product(ps) | Ty::Sum(ps) => ps.iter().all(|(_, x)| self.forget_walk(*x, r, seen)),
-            Ty::Union(ms) => ms.iter().all(|x| self.forget_walk(*x, r, seen)),
+            Ty::Union(ms) | Ty::AllOf(ms) => ms.iter().all(|x| self.forget_walk(*x, r, seen)),
             Ty::NList { elem, region: q, .. } => near(q) && self.forget_walk(elem, r, seen),
             _ => false,
         }
@@ -3107,7 +3594,7 @@ impl Checker {
         match self.arena.get(t).clone() {
             Ty::Var(v) if self.arena.is_data_var(v) => note(self.data_var_place(v)),
             Ty::Product(ps) | Ty::Sum(ps) => ps.iter().for_each(|(_, x)| self.data_places(*x, seen, out)),
-            Ty::Union(ms) => ms.iter().for_each(|x| self.data_places(*x, seen, out)),
+            Ty::Union(ms) | Ty::AllOf(ms) => ms.iter().for_each(|x| self.data_places(*x, seen, out)),
             Ty::Pair(a, b, r, _) => {
                 note(Self::data_place(r));
                 self.data_places(a, seen, out);
@@ -3339,7 +3826,7 @@ impl Checker {
                 }
             }
             // Immutable, as a sum: covariant in its members.
-            Ty::Union(ms) => {
+            Ty::Union(ms) | Ty::AllOf(ms) => {
                 for x in ms {
                     self.polarity(x, v, at, seen, found);
                 }
@@ -3429,7 +3916,7 @@ impl Checker {
             Ty::Pair(a, b, _, _) => vec![*a, *b],
             Ty::Bloblet { fields, .. } => fields.clone(),
             Ty::Product(ps) | Ty::Sum(ps) => ps.iter().map(|(_, x)| *x).collect(),
-            Ty::Union(ms) => ms.clone(),
+            Ty::Union(ms) | Ty::AllOf(ms) => ms.clone(),
             Ty::NList { elem, .. } => vec![*elem],
             Ty::PromptTag { answer, payload, .. } => vec![*answer, *payload],
             Ty::Named { which, args } => [self.generatives[*which as usize].rep].into_iter().chain(args.iter().flat_map(|d| self.d_types(d))).collect(),
@@ -3525,7 +4012,7 @@ impl Checker {
                 fields.iter().find_map(|f| self.knot_in(*f, &k, seen))
             }
             Ty::Product(parts) | Ty::Sum(parts) => parts.iter().find_map(|(_, x)| self.knot_in(*x, kept, seen)),
-            Ty::Union(ms) => ms.iter().find_map(|x| self.knot_in(*x, kept, seen)),
+            Ty::Union(ms) | Ty::AllOf(ms) => ms.iter().find_map(|x| self.knot_in(*x, kept, seen)),
             Ty::NList { elem, .. } => self.knot_in(elem, kept, seen),
             Ty::Poly { body, .. } => self.knot_in(body, kept, seen),
             // A procedure: kept where it is, it may not read there unsaid;
@@ -3590,7 +4077,7 @@ impl Checker {
                 Ty::NList { elem, .. } => (vec![], vec![*elem]),
                 Ty::Bloblet { fields, .. } => (vec![], fields.clone()),
                 Ty::Product(parts) | Ty::Sum(parts) => (vec![], parts.iter().map(|(_, t)| *t).collect()),
-                Ty::Union(ms) => (vec![], ms.clone()),
+                Ty::Union(ms) | Ty::AllOf(ms) => (vec![], ms.clone()),
                 Ty::Named { which, args } => {
                     let mut kids = vec![self.generatives[*which as usize].rep];
                     for d in args {
@@ -3672,6 +4159,90 @@ impl Checker {
         }
     }
 
+    /// Of union members `ns`, those that may hold an `a`: of its shapes, or
+    /// either's not known.
+    fn shaped_like(&self, a: TyId, ns: &[TyId]) -> Vec<TyId> {
+        let s = self.shape(a);
+        ns.iter().copied().filter(|n| matches!((s, self.shape(*n)), (Some(x), Some(y)) if x & y != 0) || s.is_none() || self.shape(*n).is_none()).collect()
+    }
+
+    /// `a` below union `b`, of candidates `ns`, none of which takes it
+    /// whole (`logical-types.md` §8.8): `a`, a product, a sum or a frozen
+    /// pair that is not `nil`, split at its first field whose type is a
+    /// union and on which two candidates of its kind differ, each piece
+    /// below `b`. Exact, as those are never written: a value of `(pairof
+    /// (anyof A B) C acyclic)` is one of `(pairof A C acyclic)` or of
+    /// `(pairof B C acyclic)`. Each split spends one of the question's
+    /// `splits_left`; none left, `a` is not shown below.
+    fn split_below(&mut self, a: TyId, ns: &[TyId], b: TyId, env: &BinderEnv, st: &mut SubState) -> bool {
+        if self.splits_left == 0 {
+            return false;
+        }
+        let Some(fields) = self.split_fields(a) else { return false };
+        let kin: Vec<Vec<TyId>> = ns.iter().filter_map(|n| self.kin_fields(a, *n)).collect();
+        if kin.len() < 2 {
+            return false;
+        }
+        for (i, f) in fields.iter().enumerate() {
+            let Ty::Union(ms) = self.arena.get(self.arena.resolve(*f)).clone() else { continue };
+            if kin.iter().all(|k| self.same_ty(k[i], kin[0][i], &mut Vec::new())) {
+                continue;
+            }
+            self.splits_left -= 1;
+            return ms.iter().all(|m| {
+                let piece = self.with_field(a, i, *m);
+                self.sub(piece, b, env, st)
+            });
+        }
+        false
+    }
+
+    /// The fields of `a` that `split_below` may split, in order: a product's
+    /// or a sum's, a frozen pair's head and tail.
+    fn split_fields(&self, a: TyId) -> Option<Vec<TyId>> {
+        match self.arena.get(self.arena.resolve(a)) {
+            Ty::Product(ps) | Ty::Sum(ps) => Some(ps.iter().map(|(_, t)| *t).collect()),
+            Ty::Pair(x, y, Region::Frozen(..), false) => Some(vec![*x, *y]),
+            _ => None,
+        }
+    }
+
+    /// The fields of candidate `n` matching `a`'s, if `n` is of `a`'s kind:
+    /// a product of the same labels, a sum with each of `a`'s tags, a pair.
+    fn kin_fields(&self, a: TyId, n: TyId) -> Option<Vec<TyId>> {
+        match (self.arena.get(self.arena.resolve(a)), self.arena.get(self.arena.resolve(n))) {
+            (Ty::Product(ps), Ty::Product(qs)) if ps.len() == qs.len() && ps.iter().zip(qs).all(|((l, _), (m, _))| l == m) => {
+                Some(qs.iter().map(|(_, t)| *t).collect())
+            }
+            (Ty::Sum(ps), Ty::Sum(qs)) => ps.iter().map(|(l, _)| qs.iter().find(|(m, _)| m == l).map(|(_, t)| *t)).collect(),
+            (Ty::Pair(..), Ty::Pair(x, y, _, _)) => Some(vec![*x, *y]),
+            _ => None,
+        }
+    }
+
+    /// `a` with its `i`th field (`split_fields`) of type `m`.
+    fn with_field(&mut self, a: TyId, i: usize, m: TyId) -> TyId {
+        let t = match self.arena.get(self.arena.resolve(a)).clone() {
+            Ty::Product(mut ps) => {
+                ps[i].1 = m;
+                Ty::Product(ps)
+            }
+            Ty::Sum(mut ps) => {
+                ps[i].1 = m;
+                Ty::Sum(ps)
+            }
+            Ty::Pair(x, y, r, n) => {
+                if i == 0 {
+                    Ty::Pair(m, y, r, n)
+                } else {
+                    Ty::Pair(x, m, r, n)
+                }
+            }
+            _ => unreachable!("split_fields"),
+        };
+        self.arena.ty(t)
+    }
+
     /// `a ≤ b`. Recursive types are compared coinductively: a pair already
     /// being compared is assumed to hold, which is what makes comparing two
     /// cycles terminate — FX-87's `trail`, Amadio and Cardelli's assumption
@@ -3679,7 +4250,10 @@ impl Checker {
     /// comparison that failed is never relied on: the failure is the answer.
     pub fn subtype(&mut self, a: TyId, b: TyId) -> bool {
         let mut st = SubState::default();
-        self.sub(a, b, &BinderEnv::default(), &mut st)
+        let outer = std::mem::replace(&mut self.splits_left, SPLIT_BUDGET);
+        let r = self.sub(a, b, &BinderEnv::default(), &mut st);
+        self.splits_left = outer;
+        r
     }
 
     /// `a ≤ b` under `env`, which names each `poly` binder in scope on either
@@ -3791,6 +4365,21 @@ impl Checker {
                 && self.sub(qa, qb, env, st)
                 && crate::logic::spec_within(None, spec.as_deref());
         }
+        // A type is below an `allof` if below each member; an `allof` is
+        // below what one of its members is (`logical-types.md` §8.5).
+        if let Ty::AllOf(ns) = &tb {
+            return ns.clone().iter().all(|n| self.sub(a, *n, env, st));
+        }
+        if let Ty::AllOf(ms) = &ta {
+            return ms.clone().iter().any(|m| {
+                let saved = st.clone();
+                let ok = self.sub(*m, b, env, st);
+                if !ok {
+                    *st = saved;
+                }
+                ok
+            });
+        }
         // A union is below what each of its members is; a type is below a
         // union if below a member, or, a pair that may be `nil`, if `nil`
         // and the pair that is not are each below one.
@@ -3799,7 +4388,8 @@ impl Checker {
                 return ms.clone().iter().all(|m| self.sub(*m, b, env, st));
             }
             if let Ty::Union(ns) = &tb {
-                let ns = ns.clone();
+                // Only the members of `a`'s own shapes may hold it.
+                let ns = self.shaped_like(a, ns);
                 let below_one = |c: &mut Self, x: TyId, st: &mut SubState| {
                     ns.iter().any(|n| {
                         let saved = st.clone();
@@ -3817,7 +4407,18 @@ impl Checker {
                     let (nil, pair) = (self.arena.ty(Ty::Nil), self.arena.ty(Ty::Pair(x, y, r, false)));
                     return below_one(self, nil, st) && below_one(self, pair, st);
                 }
-                return false;
+                // A sum below the union's sums made one (their head form):
+                // its tags may be some of one member's, some of another's.
+                if matches!(ta, Ty::Sum(_)) {
+                    if let Some(joined) = self.sums_joined_raw(&ns) {
+                        let saved = st.clone();
+                        if self.sub(a, joined, env, st) {
+                            return true;
+                        }
+                        *st = saved;
+                    }
+                }
+                return self.split_below(a, &ns, b, env, st);
             }
         }
         match (ta, tb) {
@@ -4129,7 +4730,7 @@ impl Checker {
         let region = |r: &Region| !matches!(r, Region::Var(_) | Region::Frozen(Some(_), _));
         match self.arena.get(t).clone() {
             Ty::Base(_) | Ty::Void | Ty::Nil | Ty::False => true,
-            Ty::Union(ms) => ms.iter().all(|m| self.closed_data(*m, seen)),
+            Ty::Union(ms) | Ty::AllOf(ms) => ms.iter().all(|m| self.closed_data(*m, seen)),
             Ty::Sum(ps) | Ty::Product(ps) => ps.iter().all(|(_, p)| self.closed_data(*p, seen)),
             Ty::Pair(a, b, r, _) => region(&r) && self.closed_data(a, seen) && self.closed_data(b, seen),
             Ty::Ref(a, r) | Ty::Array(a, _, r) => region(&r) && self.closed_data(a, seen),
@@ -4258,6 +4859,7 @@ impl Checker {
             Ty::Product(parts) => Ty::Product(parts.iter().map(|(l, t)| (*l, self.subst_memo(*t, map, memo))).collect()),
             Ty::Sum(parts) => Ty::Sum(parts.iter().map(|(l, t)| (*l, self.subst_memo(*t, map, memo))).collect()),
             Ty::Union(ms) => Ty::Union(ms.iter().map(|t| self.subst_memo(*t, map, memo)).collect()),
+            Ty::AllOf(ms) => Ty::AllOf(ms.iter().map(|t| self.subst_memo(*t, map, memo)).collect()),
             Ty::Module { abs, descs, vals } => Ty::Module {
                 abs,
                 descs: descs.iter().map(|(l, t)| (*l, self.subst_memo(*t, map, memo))).collect(),
@@ -4389,7 +4991,7 @@ impl Checker {
                 region(&r, &mut vs);
             }
             Ty::Product(ps) | Ty::Sum(ps) => tys.extend(ps.iter().map(|(_, t)| *t)),
-            Ty::Union(ms) => tys.extend(ms),
+            Ty::Union(ms) | Ty::AllOf(ms) => tys.extend(ms),
             Ty::Module { descs, vals, .. } => tys.extend(descs.iter().chain(&vals).map(|(_, t)| *t)),
             Ty::Bloblet { fields, region: r, .. } => {
                 tys.extend(fields);
@@ -4584,6 +5186,12 @@ impl Checker {
     /// `tagcase`. `expected`, when checking, is what every arm is checked
     /// against; otherwise the result is the arms' types' least upper bound
     /// among themselves.
+    /// Whether a product's labels are 1, 2, … in order, a `tupleof`'s: only
+    /// such a product's fields are bound by position (`TODO.md` §191).
+    pub(crate) fn positional(&self, fs: &[(Sym, TyId)]) -> bool {
+        fs.iter().enumerate().all(|(i, (l, _))| self.interner.name(*l) == (i + 1).to_string())
+    }
+
     pub(crate) fn synth_tagcase(
         &mut self,
         e: ExpId,
@@ -4594,6 +5202,8 @@ impl Checker {
     ) -> R<(TyId, Effect)> {
         let span = self.arena.span_of(e);
         let (st, mut eff) = self.synth(scrutinee)?;
+        // A union of sums: its head form, the one sum they are together.
+        let st = self.sum_head(st).unwrap_or(st);
         // A blobref to a flat sum (`TODO.md` §77): each arm given a blobref
         // to its variant, the `else` the blobref as it is; the tag read from
         // the owner's region, by the layout's code told the compilers.
@@ -4615,16 +5225,32 @@ impl Checker {
         // A flat sum's shown as the sum of blobrefs its arms see.
         let shown = if flat.is_some() { self.arena.ty(Ty::Sum(variants.clone())) } else { st };
         let mut types = Vec::new();
-        for arm in arms {
+        for (i, arm) in arms.iter().enumerate() {
             let Some((_, t)) = variants.iter().find(|(l, _)| *l == arm.tag) else {
-                return Err(FxError::at(self.arena.span_of(arm.body), format!("a {} has no tag `{}`", self.show_ty(shown), self.interner.name(arm.tag))));
+                let err = FxError::at(self.arena.span_of(arm.body), format!("a {} has no tag `{}`", self.show_ty(shown), self.interner.name(arm.tag)));
+                // Checked against one member of an `allof`, an arm its type
+                // rules out cannot run: skipped.
+                if let Some(dead) = self.dead_arms.last_mut() {
+                    let at = dead.counts.entry((e, i)).or_insert((0, err.clone()));
+                    at.0 += 1;
+                    at.1 = err;
+                    dead.now.push(arm.body);
+                    continue;
+                }
+                return Err(err);
             };
             let bound: Vec<(Sym, TyId)> = match &arm.bind {
                 ArmBind::Value(x) => vec![(*x, *t)],
                 ArmBind::Fields(xs) => match self.arena.get(*t).clone() {
-                    Ty::Product(fs) if fs.len() == xs.len() => xs.iter().zip(&fs).map(|(x, (_, t))| (*x, *t)).collect(),
-                    _ => {
-                        return Err(FxError::at(self.arena.span_of(arm.body), format!("`{}` carries a {}, which cannot be taken apart into {} name(s)", self.interner.name(arm.tag), self.show_ty(*t), xs.len())));
+                    Ty::Product(fs) if fs.len() == xs.len() && self.positional(&fs) => xs.iter().zip(&fs).map(|(x, (_, t))| (*x, *t)).collect(),
+                    ty => {
+                        // A product with names of its own is not taken apart
+                        // by position (`TODO.md` §191).
+                        let named = match ty {
+                            Ty::Product(fs) if !self.positional(&fs) => NOT_POSITIONAL,
+                            _ => "",
+                        };
+                        return Err(FxError::at(self.arena.span_of(arm.body), format!("`{}` carries a {}, which cannot be taken apart into {} name(s){named}", self.interner.name(arm.tag), self.show_ty(*t), xs.len())));
                     }
                 },
             };
@@ -5165,6 +5791,9 @@ const BEYOND: &str = "beyond what is expected, it has ";
 
 /// What a message adds where control is beyond what is expected (Heist's,
 /// `TODO.md` §211): why a `prompt` may not have taken it away.
+/// What a refusal to take a product with names apart by position adds.
+pub const NOT_POSITIONAL: &str = ": only a product labelled 1, 2, …, a `tupleof`, is taken apart by position; bind it to one name and `extract` its fields";
+
 pub const UNDELIMITED: &str = "a `prompt` masks the control on its tag's region only where no free variable of its body names that region but the tag (a continuation resumed under it does); a `letregion` that makes the region masks it";
 
 /// What one whose body may capture a continuation is told.
@@ -5175,6 +5804,10 @@ pub fn region_captured(form: &str, r: &str, eff: &str) -> String {
 /// What one subtype question remembers: the pairs assumed (FX-87's trail),
 /// each with the binder environment it was asked under, and the names given
 /// to pairs of `poly` binders.
+/// How many times one subtype question may split a type at a field
+/// (`Checker::split_below`; `logical-types.md` §8.8, question 17).
+const SPLIT_BUDGET: usize = 64;
+
 #[derive(Clone, Default)]
 struct SubState {
     trail: HashSet<(TyId, TyId, BinderEnv)>,

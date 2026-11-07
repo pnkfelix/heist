@@ -121,8 +121,8 @@
           (set k-extracts (cons (product (1 (k-at-of x)) (2 (n-apply-shares))) (get k-extracts)))
           #u))))
 ;; `car` or `cdr` of a union with a pair member (a `datum`, say) takes that
-;; member apart: every machine's `car` checks its argument is a pair, and
-;; traps if not, as it does on `nil` (TODO §51).
+;; member apart, of several the greatest: every machine's `car` checks its
+;; argument is a pair, and traps if not, as it does on `nil` (TODO §51).
 (define k-partial-pair-arg
   (->* (kx (arrayof int @t) k-ids k-binders k-solved) unit)
   (lambda (f types ps kinds solved)
@@ -130,18 +130,19 @@
       (if (and (or (string=? op "car") (string=? op "cdr")) (>= t 0))
           (tagcase (k-get (k-resolve t))
             (ty-union (ms)
-              (let ((m (k-union-pair-member ms)))
+              (let* ((pairs (k-union-pairs ms)) (m (k-upper-bound pairs pairs)))
                 (if (>= m 0)
                     (begin (k-unify (car ps) m kinds solved (k-new-trail)) (array-set! types 0 m))
                     #u)))
             (else y #u))
           #u))))
-;; A union's member that is a pair, of members `ms`; or -1.
-(define k-union-pair-member (->* (k-ids) int)
+;; A union's members that are pairs, of members `ms`.
+(define k-union-pairs (->* (k-ids) k-ids)
   (lambda (ms)
-    (cond ((null? ms) -1)
-          ((tagcase (k-get (k-resolve (car ms))) (ty-pair (x d r nl) #t) (else y #f)) (car ms))
-          (else (k-union-pair-member (cdr ms))))))
+    (cond ((null? ms) nil)
+          ((tagcase (k-get (k-resolve (car ms))) (ty-pair (x d r nl) #t) (else y #f))
+           (the k-ids (cons (car ms) (k-union-pairs (cdr ms)))))
+          (else (k-union-pairs (cdr ms))))))
 ;; Type `t` and effect `e` of `x`, or `r`, both, with what `x` masks masked.
 (define k-te-masked (->* (kx int k-eff) k-te)
   (lambda (x t e) (k-te t (k-mask x e t))))
@@ -319,13 +320,14 @@
 (define k-path-of (->* (kx) k-paths)
   (lambda (x)
     (tagcase x
-      (x-var (v a b abk) (the k-paths (cons (product (1 v) (2 (k-binding-depth v)) (3 nil)) nil)))
-      (x-app (f args a b abk)
+      (x-var (v a b abk abkr)
+             (the k-paths (cons (product (1 v) (2 (k-binding-depth v)) (3 nil)) nil)))
+      (x-app (f args a b abk abkr)
         (let ((op (k-std-op f)))
           (if (and (k-sc-one-arg? args) (or (string=? op "car") (string=? op "cdr")))
               (k-path-step (k-path-of (car args)) (if (string=? op "car") (st-car) (st-cdr)))
               (the k-paths nil))))
-      (x-extract (e l a b abk) (k-path-step (k-path-of e) (st-field l)))
+      (x-extract (e l a b abk abkr) (k-path-step (k-path-of e) (st-field l)))
       (else y (the k-paths nil)))))
 ;; The type the fact in force of the path from `v` at `d` by `steps` gives,
 ;; or -1.
@@ -386,7 +388,9 @@
               (let* ((p (car ps)) (f (k-path-fact-ty (extract p 1) (extract p 2) (extract p 3))))
                 (if (< f 0) t f)))))))
 (define k-path-te (->* (kx k-te) k-te)
-  (lambda (x te) (k-te (k-path-ty x (extract te 1)) (extract te 2))))
+  (lambda (x te)
+    (let ((p (k-pinned-of (k-at-of x))))
+      (k-te (if (>= p 0) p (k-path-ty x (extract te 1))) (extract te 2)))))
 ;; What `out` narrows the path from `v` at `d` by `steps` to (none or one).
 (define k-nars-of (->* (k-nars symbol int k-steps) k-reached)
   (lambda (out v d steps)
@@ -405,6 +409,18 @@
                (and (symbol=? (extract n 1) v) (= (extract n 2) d) (k-steps=? (extract n 3) steps)))
              (the k-nars (cons one (cdr out))))
             (else (the k-nars (cons (car out) (k-nars-put (cdr out) v d steps rs t))))))))
+;; What a shape test narrows a `t` to, `to` (-1, nothing): checked against a
+;; member of an `allof`, where `t` cannot pass it (or fail it, `negated`),
+;; `void`, and its branch is skipped (`k-dead-branch?`). As `props_narrow`.
+(define k-narrowed-or-void (->* (int int bool int) int)
+  (lambda (t k negated to)
+    (if (or (>= to 0) (null? (get k-dead-arms)))
+        to
+        (let ((s (k-run-shape t)) (bit (k-shape-bit k)))
+          (cond ((<= s 0) to)
+                ((and (not negated) (= (bitwise-and s bit) 0)) k-void)
+                ((and negated (= (bitwise-and s bit) s)) k-void)
+                (else to))))))
 ;; The variables and paths among `args` narrowed by `props`, a conjunction:
 ;; each proposition of a shape, in turn.
 (define k-props-narrow (->* (k-props kxs k-nars) k-nars)
@@ -425,7 +441,9 @@
                     (let* ((shape (tagcase p (pr-shape (i k f) k) (else y 0)))
                            (negated (tagcase p (pr-shape (i k f) f) (else y #f)))
                            (split (k-narrowed-by (k-resolve (extract (car tr) 1)) shape))
-                           (to (if negated (extract split 2) (extract split 1))))
+                           (to (k-narrowed-or-void
+                                (k-resolve (extract (car tr) 1)) shape negated
+                                (if negated (extract split 2) (extract split 1)))))
                       (k-props-narrow
                        (cdr props) args
                        (if (< to 0) out (k-nars-put out n d steps (extract (car tr) 2) to)))))))))))
@@ -443,12 +461,12 @@
   (lambda (p)
     (let ((none (the k-narrowing (cons nil nil))))
       (tagcase p
-        (x-if (q c d a b abk)
+        (x-if (q c d a b abk abkr)
           (let ((nq (k-narrowings q)))
             (cond ((k-bool-lit? c #t) (cons nil (k-nars-append (cdr nq) (cdr (k-narrowings d)))))
                   ((k-bool-lit? d #f) (cons (k-nars-append (car nq) (car (k-narrowings c))) nil))
                   (else none))))
-        (x-app (f args a b abk)
+        (x-app (f args a b abk abkr)
           (if (and (string=? (k-std-op f) "not") (k-sc-one-arg? args))
               (let ((ns (k-narrowings (car args)))) (cons (cdr ns) (car ns)))
               (k-latent-narrowing p)))
@@ -578,5 +596,5 @@
   (lambda (cs args)
     (and (k-sc-one-arg? args)
          (tagcase (car args)
-           (x-var (v va vb vavbk) (k-certified-has? cs v (k-binding-depth v)))
+           (x-var (v va vb vavbk vavbkr) (k-certified-has? cs v (k-binding-depth v)))
            (else y #f))))))))

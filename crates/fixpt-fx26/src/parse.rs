@@ -63,10 +63,94 @@ const ABS_CTOR_USAGE: &str = "an abstract type constructor is `(abs (f (name kin
 const ARROW_STAR_ONLY: &str = "`(->* (param …) result)` is only the type a definition declares (`define`, `define-rec`, `letrec`), \
      its effect found from its `lambda`: here, write `->` or `subr`";
 
-const TYPE_FORMS: &[&str] = &[
+pub const TYPE_FORMS: &[&str] = &[
     "arrayof", "narrayof", "bloblet", "composable", "dletrec", "icell", "listof", "mark-key", "moduleof", "mu", "nat", "nlist", "oneshot", "pairof", "place",
-    "poly", "productof", "prompt-tag", "proves", "ref", "select", "subr", "sumof", "bool", "union", "->", "->*", "restrict",
+    "poly", "productof", "prompt-tag", "proves", "ref", "select", "subr", "sumof", "tupleof", "bool", "oneof", "union", "anyof", "allof", "->", "->*", "restrict",
 ];
+
+impl Checker {
+    /// The `allof` of `members`, each a `subr` or a product (`allof`s among
+    /// them already flattened): of `subr`s of one convention, the `allof`;
+    /// of products of the same labels in order, the product whose field is
+    /// what every member's is, where they are the same, and their `allof`
+    /// where not, so that only procedures differ (`logical-types.md` §8.5:
+    /// the intersection distributes over products).
+    pub(crate) fn allof_of(&mut self, members: &[TyId], span: fixpt_read::Span) -> R<TyId> {
+        let products: Vec<Vec<(Sym, TyId)>> = members
+            .iter()
+            .filter_map(|m| match self.arena.get(self.arena.resolve(*m)) {
+                Ty::Product(fs) => Some(fs.clone()),
+                _ => None,
+            })
+            .collect();
+        if products.is_empty() {
+            let conv = |c: &Self, m: TyId| match c.arena.get(m) {
+                Ty::Subr { conv, .. } => *conv,
+                _ => unreachable!("a subr"),
+            };
+            if let Some(m) = members.iter().find(|m| conv(self, **m) != conv(self, members[0])) {
+                return Err(FxError::at(
+                    span,
+                    format!("an `allof`'s members have one convention: a {} and a {} do not", self.show_ty(members[0]), self.show_ty(*m)),
+                ));
+            }
+            return Ok(self.arena.ty(Ty::AllOf(members.to_vec())));
+        }
+        let first = products[0].clone();
+        // The first member that is not a product of the first's labels.
+        let unlike = members.iter().copied().find(|m| match self.arena.get(self.arena.resolve(*m)) {
+            Ty::Product(fs) => fs.len() != first.len() || fs.iter().zip(&first).any(|((l, _), (k, _))| l != k),
+            _ => true,
+        });
+        if let Some(other) = unlike {
+            let p0 = members.iter().copied().find(|m| matches!(self.arena.get(self.arena.resolve(*m)), Ty::Product(_))).expect("a product");
+            return Err(FxError::at(
+                span,
+                format!(
+                    "an `allof` of products: its members are products of the same labels, in order, and a {} and a {} are not",
+                    self.show_ty(p0),
+                    self.show_ty(other)
+                ),
+            ));
+        }
+        let mut fields = Vec::new();
+        for (i, (l, t0)) in first.iter().enumerate() {
+            let at: Vec<TyId> = products.iter().map(|fs| fs[i].1).collect();
+            if at.iter().all(|t| self.same_ty(*t0, *t, &mut Vec::new())) {
+                fields.push((*l, *t0));
+                continue;
+            }
+            let mut flat = Vec::new();
+            for t in &at {
+                let t = self.arena.resolve(*t);
+                match self.arena.get(t).clone() {
+                    Ty::AllOf(ms) => flat.extend(ms),
+                    Ty::Subr { .. } | Ty::Product(_) => flat.push(t),
+                    _ => {
+                        let other = at.iter().copied().find(|u| !self.same_ty(*t0, *u, &mut Vec::new())).unwrap_or(t);
+                        return Err(FxError::at(
+                            span,
+                            format!(
+                                "an `allof`'s members differ at `{}`, a {} and a {}: only procedures, and products of them, may",
+                                self.interner.name(*l),
+                                self.show_ty(*t0),
+                                self.show_ty(other)
+                            ),
+                        ));
+                    }
+                }
+            }
+            fields.push((*l, self.allof_of(&flat, span)?));
+        }
+        Ok(self.arena.ty(Ty::Product(fields)))
+    }
+}
+
+/// Why a `define-datatype` variant may not be named `form`, a type form,
+/// in the datatype `name` (`TODO.md` §190).
+pub(crate) fn variant_type_form(form: &str, name: &str) -> String {
+    format!("`{form}` is a type form: this would be a variant named `{form}`, not the type; to name a type, write `(define-type {name} ({form} …))`")
+}
 
 impl Checker {
     pub(crate) fn name(&self, s: Sym) -> &str {
@@ -532,7 +616,7 @@ impl Checker {
         };
         // Storage written: a procedure kept there may not reach itself
         // unsaid (`spin`).
-        if matches!(self.head(self.items(s, "a type").unwrap_or(&[])), Some("ref" | "icell" | "pairof" | "listof" | "union" | "bloblet" | "arrayof" | "mark-key" | "mu")) {
+        if matches!(self.head(self.items(s, "a type").unwrap_or(&[])), Some("ref" | "icell" | "pairof" | "listof" | "oneof" | "union" | "anyof" | "bloblet" | "arrayof" | "mark-key" | "mu")) {
             self.no_knot(t, s.span)?;
         }
         Ok(t)
@@ -788,17 +872,54 @@ impl Checker {
                 let r = self.parse_region(r)?;
                 Ok(self.arena.ty(Ty::Pair(a, b, r, false)))
             }
-            // A union of members of disjoint shapes at run time
-            // (`docs/research/logical-types.md`, L1), normalized.
-            "union" => {
+            // A union of members a run-time test tells apart
+            // (`docs/research/logical-types.md`, L1 and §8.5), normalized.
+            // `union`, its name until 2026-11-05, read as it for now.
+            "oneof" | "union" => {
                 if items.len() < 3 {
-                    return Err(FxError::at(s.span, "`(union type type …)`"));
+                    return Err(FxError::at(s.span, "`(oneof type type …)`"));
                 }
                 let mut members = Vec::new();
                 for m in &items[1..] {
                     members.push(self.parse_type(m)?);
                 }
                 self.union_of(&members, s.span)
+            }
+            // A true union: a value of any of the members, which may
+            // overlap (`logical-types.md` §8.5, U2), normalized.
+            "anyof" => {
+                if items.len() < 3 {
+                    return Err(FxError::at(s.span, "`(anyof type type …)`"));
+                }
+                let mut members = Vec::new();
+                for m in &items[1..] {
+                    members.push(self.parse_type(m)?);
+                }
+                self.anyof_of(&members, s.span)
+            }
+            // One procedure with each member's type (`logical-types.md`
+            // §8.5, U1): monomorphic `subr` types of one convention; or
+            // products of them, distributed field by field.
+            "allof" => {
+                if items.len() < 3 {
+                    return Err(FxError::at(s.span, "`(allof (subr …) (subr …) …)`"));
+                }
+                let mut members = Vec::new();
+                for m in &items[1..] {
+                    let t = self.parse_type(m)?;
+                    let t = self.arena.resolve(t);
+                    match self.arena.get(t).clone() {
+                        Ty::AllOf(ms) => members.extend(ms),
+                        Ty::Subr { .. } | Ty::Product(_) => members.push(t),
+                        _ => {
+                            return Err(FxError::at(
+                                m.span,
+                                format!("a member of an `allof` is a `subr` type, or a product of them, and this is a {}", self.show_ty(t)),
+                            ));
+                        }
+                    }
+                }
+                self.allof_of(&members, s.span)
             }
             "dletrec" => self.parse_dletrec(s, &items),
             // `(mu name type)`: a recursive type, anonymous; the same as
@@ -819,12 +940,16 @@ impl Checker {
             }
             "listof" => {
                 // FX-87's `listof`: a pair whose tail is the list itself, or
-                // the empty list, `nil`.
-                let [_, t, r] = &items[..] else {
-                    return Err(FxError::at(s.span, "`(listof type region)`"));
+                // the empty list, `nil`. Without a region, `acyclic`
+                // (`TODO.md` §198).
+                let (t, r) = match &items[..] {
+                    [_, t] => {
+                        let acyclic = Syntax::symbol(s.span, self.interner.intern("acyclic"));
+                        (self.parse_type(t)?, self.parse_region(&acyclic)?)
+                    }
+                    [_, t, r] => (self.parse_type(t)?, self.parse_region(r)?),
+                    _ => return Err(FxError::at(s.span, "`(listof type [region])`")),
                 };
-                let t = self.parse_type(t)?;
-                let r = self.parse_region(r)?;
                 let slot = self.arena.ty(Ty::Link(None));
                 let pair = self.arena.ty(Ty::Pair(t, slot, r, true));
                 self.arena.set_link(slot, pair);
@@ -869,6 +994,11 @@ impl Checker {
             // A flat sum with a key (`TODO.md` §77), so `define-type` may
             // name one.
             "sumof" if items.get(1).is_some_and(|k| k.as_symbol().is_some()) => self.parse_flat(s),
+            // `(tupleof T1 T2 …)`, `(productof (1 T1) (2 T2) …)`.
+            "tupleof" => {
+                let parts = items[1..].iter().enumerate().map(|(i, t)| Ok((self.interner.intern(&(i + 1).to_string()), self.parse_type(t)?))).collect::<R<Vec<_>>>()?;
+                Ok(self.arena.ty(Ty::Product(parts)))
+            }
             "productof" | "sumof" => {
                 let mut parts = Vec::new();
                 for p in &items[1..] {
@@ -1985,6 +2115,11 @@ impl Checker {
                 }
                 Ok(self.arena.exp(span, Exp::Product(fields)))
             }
+            // `(tuple e1 e2 …)`, `(product (1 e1) (2 e2) …)`.
+            "tuple" => {
+                let fields = items[1..].iter().enumerate().map(|(i, e)| Ok((self.interner.intern(&(i + 1).to_string()), self.parse_exp(e)?))).collect::<R<Vec<_>>>()?;
+                Ok(self.arena.exp(span, Exp::Product(fields)))
+            }
             "extract" => {
                 let [_, e, label] = &items[..] else {
                     return Err(FxError::at(span, "`(extract expression label)`"));
@@ -2152,7 +2287,7 @@ impl Checker {
                 return Err(FxError::at(shape.span, format!("a shape `typecase` tests is one of {}", shapes.join(", "))));
             };
             let x = x.as_symbol().ok_or_else(|| FxError::at(x.span, "a name"))?;
-            tests.push((pred, x, self.parse_exp(body)?));
+            tests.push((pred, x, self.parse_exp(body)?, arm.span));
         }
         // `(else body)`, or `(else name body)`, `name` the value as what
         // the arms leave it.
@@ -2166,18 +2301,20 @@ impl Checker {
         if head.as_symbol().map(|h| self.name(h)) != Some("else") {
             return Err(FxError::at(last.span, else_usage));
         }
+        // Each arm's parts at the arm, as a `cond`'s clause's are: where an
+        // arm is skipped under a member of an `allof`, that is all it skips.
         let mut chain = self.parse_exp(body)?;
         if let Some(x) = name {
-            let v = self.arena.exp(span, Exp::Var(tmp));
-            chain = self.arena.exp(span, Exp::Let { bindings: vec![(x, v)], body: chain });
+            let v = self.arena.exp(last.span, Exp::Var(tmp));
+            chain = self.arena.exp(last.span, Exp::Let { bindings: vec![(x, v)], body: chain });
         }
-        for (pred, x, body) in tests.into_iter().rev() {
-            let f = self.standard_ref_at(span, pred);
-            let a = self.arena.exp(span, Exp::Var(tmp));
-            let test = self.arena.exp(span, Exp::App { fun: f, args: vec![a] });
-            let v = self.arena.exp(span, Exp::Var(tmp));
-            let then = self.arena.exp(span, Exp::Let { bindings: vec![(x, v)], body });
-            chain = self.arena.exp(span, Exp::If { test, then, els: chain });
+        for (pred, x, body, at) in tests.into_iter().rev() {
+            let f = self.standard_ref_at(at, pred);
+            let a = self.arena.exp(at, Exp::Var(tmp));
+            let test = self.arena.exp(at, Exp::App { fun: f, args: vec![a] });
+            let v = self.arena.exp(at, Exp::Var(tmp));
+            let then = self.arena.exp(at, Exp::Let { bindings: vec![(x, v)], body });
+            chain = self.arena.exp(at, Exp::If { test, then, els: chain });
         }
         Ok(match e {
             Some(e) => self.arena.exp(span, Exp::Let { bindings: vec![(tmp, e)], body: chain }),

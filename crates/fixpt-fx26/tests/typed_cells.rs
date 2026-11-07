@@ -185,6 +185,7 @@ fn weakened(s: &mut Fx26Session, name: &str, text: &str) -> (usize, Vec<String>,
                 if !verify(&mut c, m.heap(), &certs, w).verified() {
                     continue;
                 }
+                let effects: Vec<_> = certs.words[&raw].variants.iter().map(|v| v.effect.clone()).collect();
                 for a in latent.0.iter() {
                     let mut less = latent.clone();
                     less.0.remove(a);
@@ -193,7 +194,13 @@ fn weakened(s: &mut Fx26Session, name: &str, text: &str) -> (usize, Vec<String>,
                     if fixpt_fx26::ast::Effect(std::iter::once(*a).collect()).within(&less) {
                         continue;
                     }
-                    certs.words.get_mut(&raw).expect("there").effect = Some(less);
+                    // Of an `allof`'s word, each member's too, which is what
+                    // is verified (`Cert::variants`).
+                    let cert = certs.words.get_mut(&raw).expect("there");
+                    cert.effect = Some(less);
+                    for var in &mut cert.variants {
+                        var.effect.as_mut().map(|e| e.0.remove(a));
+                    }
                     made += 1;
                     if verify(&mut c, m.heap(), &certs, w).verified() {
                         let what = format!("{name}: {a:?} of {}", c.show_effect(&latent));
@@ -203,6 +210,9 @@ fn weakened(s: &mut Fx26Session, name: &str, text: &str) -> (usize, Vec<String>,
                         }
                         certs.words.get_mut(&raw).expect("there").masks = masks;
                         kept.push(what);
+                    }
+                    for (var, e) in certs.words.get_mut(&raw).expect("there").variants.iter_mut().zip(&effects) {
+                        var.effect = e.clone();
                     }
                 }
                 certs.words.get_mut(&raw).expect("there").effect = Some(latent);

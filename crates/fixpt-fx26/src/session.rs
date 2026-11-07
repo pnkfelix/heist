@@ -83,6 +83,17 @@ pub struct Fx26Session {
     /// ones before (`check-more`), and compiled alone against the globals
     /// they made, which the compiler keeps.
     own_begun: bool,
+    /// The state this session's program is in, as the checker written in
+    /// FX-26 has read it: the reading of the last text it kept, each read
+    /// in the state the one before left (0 as it begins), the state the next
+    /// is read in, which decides that text's reading (`ids::form_reading`;
+    /// `docs/research/loads-and-places.md`, "Decided: three keys"). Not a
+    /// count: what was kept decides it.
+    own_state: i64,
+    /// How deep the module files built in being checked are, as the checker
+    /// written in FX-26 counts them (`check-built-in!`): a switch a reading
+    /// folds ([`Self::read_state`]).
+    built_in_depth: u32,
     /// The loads whose hidden globals this session's program has made, by
     /// key (`syn::set_shared_made`): forms compiled one by one make none of
     /// them again. Forgotten as a whole program begins.
@@ -115,6 +126,13 @@ pub struct Fx26Session {
     /// Under `Evaluate`, where the next form's positions begin: past every
     /// text the evaluator was given before (`eval_form`).
     eval_base: i64,
+    /// What a REPL has read, every entry in order, and where each starts in
+    /// it, with its name (`<fx26:3>`, or a file's, sent with `,at`): a span
+    /// of what an entry read is a place in it, whichever entry it is
+    /// (`read_entry`, `place`), as the evaluator's positions are past every
+    /// text before (`eval_base`).
+    session_text: String,
+    entries: Vec<(usize, String)>,
     /// How many steps a form may take when run, or no limit: see
     /// [`set_step_limit`](Fx26Session::set_step_limit).
     step_limit: Option<u64>,
@@ -1031,6 +1049,8 @@ impl Fx26Session {
             breaks_held: false,
             own_made: false,
             own_begun: false,
+            own_state: 0,
+            built_in_depth: 0,
             shared_made: Default::default(),
             built_ins_cached: Default::default(),
             source_file: None,
@@ -1042,6 +1062,8 @@ impl Fx26Session {
             words_shown: Default::default(),
             standard26: None,
             eval_base: 0,
+            session_text: String::new(),
+            entries: Vec::new(),
             step_limit: Some(DEFAULT_STEP_LIMIT),
             speculation_limit: Some(SPECULATION_STEP_LIMIT),
             pending: Vec::new(),
@@ -1622,6 +1644,7 @@ impl Fx26Session {
     /// module file built in, or no longer (`check-built-in!`).
     fn check_built_in(&mut self, on: bool) -> R<()> {
         self.own_pieces()?;
+        self.built_in_depth = if on { self.built_in_depth + 1 } else { self.built_in_depth.saturating_sub(1) };
         let mark = self.scheme.root_mark();
         let v = self.scheme.make(|_| fixpt_heap::Value::boolean(on));
         let r = self.scheme.call_global(&format!("{READER_PREFIX}check-built-in!"), &[v]);
@@ -1858,7 +1881,10 @@ impl Fx26Session {
 
     fn fasl_define_in(&mut self, standard: Option<fixpt_scheme::Handle>, name: Sym, text: &str, fasl: &std::path::Path) -> R<Result<Option<String>, String>> {
         let shown = self.checker.interner.name(name).to_string();
-        if let Err(why) = crate::syn::check_only(&mut self.scheme, standard, FileId(0), text)? {
+        let mut state = self.read_state(&standard);
+        let checked = crate::syn::check_only(&mut self.scheme, standard, &mut state, FileId(0), text)?;
+        self.keep_state(state);
+        if let Err(why) = checked {
             return Err(FxError::at(Span::new(FileId(0), 0, 0), format!("the checkers disagree: the Rust checker takes `{shown}`'s definition, and the one written in FX-26 refuses it: {why}")));
         }
         self.own_begun = true;
@@ -2133,7 +2159,10 @@ impl Fx26Session {
         let names = self.checker.defined_names(form);
         self.released(|s| {
             let fail = |e: fixpt_scheme::SessionError| FxError::at(form.span, e.to_string());
-            if let Err(why) = crate::syn::check_only(&mut s.scheme, standard, FileId(0), &text)? {
+            let mut state = s.read_state(&standard);
+            let checked = crate::syn::check_only(&mut s.scheme, standard, &mut state, FileId(0), &text)?;
+            s.keep_state(state);
+            if let Err(why) = checked {
                 return Err(FxError::at(form.span, format!("the checkers disagree: the Rust checker takes this definition, and the one written in FX-26 refuses it: {why}")));
             }
             s.own_begun = true;
@@ -2557,13 +2586,23 @@ impl Fx26Session {
             let by_rep = match (&standard, ids) {
                 (None, Some(ids)) => {
                     let typed: Vec<(String, i64)> = named.iter().cloned().zip(ids).collect();
-                    crate::syn::check_only_typed(&mut s.scheme, FileId(0), &format!("{named_text}\n"), &typed)?
+                    let named_text = format!("{named_text}\n");
+                    let mut state = s.read_state(&standard);
+                    let checked = crate::syn::check_only_typed(&mut s.scheme, &mut state, FileId(0), &named_text, &typed)?;
+                    s.keep_state(state);
+                    checked
                 }
                 _ => Err(String::new()),
             };
             let checked = match by_rep {
                 Ok(()) => Ok(()),
-                Err(_) => crate::syn::check_only(&mut s.scheme, standard, FileId(0), &format!("{text}\n"))?,
+                Err(_) => {
+                    let text = format!("{text}\n");
+                    let mut state = s.read_state(&standard);
+                    let checked = crate::syn::check_only(&mut s.scheme, standard, &mut state, FileId(0), &text)?;
+                    s.keep_state(state);
+                    checked
+                }
             };
             if let Err(why) = checked {
                 return Err(fail(format!("the checkers disagree: the Rust checker takes `{}`'s definition, and the one written in FX-26 refuses it: {why}", group[0].0.name)));
@@ -2976,11 +3015,17 @@ impl Fx26Session {
     /// Parse `text` with the parser written in FX-26 (and its reader),
     /// loading them the first time: each form's tree, as text.
     pub fn parse_with_own_parser(&mut self, text: &str) -> R<Vec<String>> {
+        self.parse_with_own_parser_from(text).map(|(trees, _)| trees)
+    }
+
+    /// The same, and how many expressions the parser had walked before it
+    /// (`syn::parse_with_fx26_parser_from`).
+    pub fn parse_with_own_parser_from(&mut self, text: &str) -> R<(Vec<String>, i64)> {
         if !self.scheme.is_bound(&format!("{READER_PREFIX}parse-program")) {
             load_eager_reader(&mut self.scheme).map_err(crate::front_end_failure)?;
         }
         self.scheme.engine.set_step_limit(None);
-        let r = crate::syn::parse_with_fx26_parser(&mut self.scheme, FileId(0), text);
+        let r = crate::syn::parse_with_fx26_parser_from(&mut self.scheme, FileId(0), text);
         self.scheme.engine.set_step_limit(self.step_limit);
         r
     }
@@ -3016,7 +3061,9 @@ impl Fx26Session {
         let base = self.eval_base;
         self.eval_base += text.chars().count() as i64 + 1;
         self.scheme.engine.set_step_limit(None);
-        let r = crate::syn::eval_more_with_fx26_evaluator(&mut self.scheme, standard, FileId(0), text, base);
+        let mut state = self.read_state(&standard);
+        let r = crate::syn::eval_more_with_fx26_evaluator(&mut self.scheme, standard, FileId(0), text, base, &mut state);
+        self.keep_state(state);
         self.scheme.engine.set_step_limit(self.step_limit);
         self.own_begun |= !matches!(&r, Ok(out) if out.starts_with("!! check:"));
         r
@@ -3126,11 +3173,11 @@ impl Fx26Session {
 
     /// The front end's entry points the Rust side calls by name
     /// (`READER_PREFIX`), each rebound by [`Self::front_end_as_register_code`].
-    pub const FRONT_ENTRIES: [&'static str; 48] = [
+    pub const FRONT_ENTRIES: [&'static str; 49] = [
         "read-text-at", "check-program", "check-more", "checked-tops", "checked-extracts", "checked-effects", "check-conv-native!", "checked-withs!", "checked-reshapes!",
         "check-globals-effects!", "check-defer-reruns!", "check-hold-breaks!", "check-lines!", "parse-program", "loaded-files!", "includes-given!", "run-checked", "run-checked-more", "compile-program", "compile-checked", "compile-registers!", "compile-conv-native!",
         "compile-global-cell", "compile-new-global", "compile-adopt-globals!", "compile-adopt-broken?", "compile-name-word!", "compile-defining!", "compile-keep-global!", "compile-note-inline!", "compile-forget-globals!", "native-assemble",
-        "check-built-in!", "check-syscalls!", "make-stage-check", "make-session-compiler",
+        "check-built-in!", "check-syscalls!", "checked-settings", "make-stage-check", "make-session-compiler",
         "native-assemble-x64", "native-assemble-x64-regs", "native-adapter-x64", "native-compile-x64-proc",
         "checked-reps", "checked-reps-again", "check-more-typed", "import-types", "check-text-typed",
         "native-assemble-arm64-regs", "native-adapter-arm64",
@@ -3503,7 +3550,10 @@ fn names_its_word(c: &Checker, mut x: crate::ast::ExpId) -> bool {
         // The Rust checker took the form: the checker written in FX-26
         // refusing it is the two disagreeing, said, not a reason to run it
         // another way, which would hide it (`TODO.md` §97).
-        if let Err(why) = crate::syn::check_only(&mut self.scheme, standard, FileId(0), form)? {
+        let mut state = self.read_state(&standard);
+        let checked = crate::syn::check_only(&mut self.scheme, standard, &mut state, FileId(0), form)?;
+        self.keep_state(state);
+        if let Err(why) = checked {
             return Err(FxError::at(Span::new(FileId(0), 0, 0), format!("the checkers disagree: the Rust checker takes `{name}`'s definition, and the one written in FX-26 refuses it: {why}")));
         }
         // The value is checked again below, as an expression (and, if the
@@ -3765,7 +3815,9 @@ fn names_its_word(c: &Checker, mut x: crate::ast::ExpId) -> bool {
         // (`crate::sources`): what this compile queues, made after, too, so
         // until the next.
         fixpt_heap::regcode::set_source(s.source_of(text));
-        let r = crate::syn::with_last_value(&mut s.scheme, standard, FileId(0), text, native, f);
+        let mut state = s.read_state(&standard);
+        let r = crate::syn::with_last_value(&mut s.scheme, standard, &mut state, FileId(0), text, native, f);
+        s.keep_state(state);
         s.own_begun |= !matches!(&r, Ok(Err(m)) if m.starts_with("check:"));
         let off = s.scheme.make(|_| fixpt_heap::Value::boolean(s.register_code));
         s.scheme.call_global(&format!("{READER_PREFIX}compile-registers!"), &[off]).map_err(fail)?;
@@ -3867,6 +3919,47 @@ fn names_its_word(c: &Checker, mut x: crate::ast::ExpId) -> bool {
         if self.own_begun { Ok(None) } else { self.standard26().map(Some) }
     }
 
+    /// The state a call that read left (`syn.rs`).
+    fn keep_state(&mut self, state: crate::ids::State) {
+        self.own_state = state.at;
+    }
+
+    /// What the checker written in FX-26 reads the next text in, as this
+    /// session keeps it ([`Self::read_state`]).
+    pub fn own_reading_state(&self) -> crate::ids::State {
+        self.read_state(&None)
+    }
+
+    /// The switches the checker written in FX-26 is set to, as it writes
+    /// them itself (`checked-settings`): [`crate::ids::Settings::text`]'s.
+    pub fn own_settings_text(&mut self) -> R<String> {
+        self.own_pieces()?;
+        let mark = self.scheme.root_mark();
+        let r = self.scheme.call_global(&format!("{READER_PREFIX}checked-settings"), &[]);
+        let text = r.map(|r| self.scheme.view(|v| v.get(r).string().unwrap_or_default()));
+        self.scheme.release_to(mark);
+        text.map_err(|e| FxError::at(Span::new(FileId(0), 0, 0), e.to_string()))
+    }
+
+    /// What the checker written in FX-26 reads the next text in: the
+    /// standard environment's if it begins again (`standard`,
+    /// [`crate::ids::standard_state`]), else the state the texts it kept before
+    /// left; and the switches it is set to (`own_pieces`, `check_built_in`).
+    /// Each call that reads leaves the state after in it, kept as
+    /// `own_state` (`syn.rs`, [`crate::ids::State`]).
+    fn read_state(&self, standard: &Option<fixpt_scheme::Handle>) -> crate::ids::State {
+        crate::ids::State {
+            at: if standard.is_some() { crate::ids::standard_state() } else { self.own_state },
+            settings: crate::ids::Settings {
+                native: self.native_convention,
+                globals_effects: self.globals_effects,
+                defer_reruns: self.defer_reruns,
+                syscalls: self.checker.syscalls,
+                built_in: self.built_in_depth > 0,
+            },
+        }
+    }
+
     /// `text`, one form, as the next of this session's program: checked
     /// after the forms before, compiled against the globals they made, and
     /// run; as [`compile_with_own_compiler_showing`](Self::compile_with_own_compiler_showing).
@@ -3901,7 +3994,9 @@ fn names_its_word(c: &Checker, mut x: crate::ast::ExpId) -> bool {
         s.scheme
             .call_global(&format!("{READER_PREFIX}compile-registers!"), &[on])
             .map_err(|e| FxError::at(Span::new(FileId(0), 0, 0), e.to_string()))?;
-        let r = crate::syn::compile_with_fx26_compiler_showing(&mut s.scheme, standard, FileId(0), text, show, s.step_limit);
+        let mut state = s.read_state(&standard);
+        let r = crate::syn::compile_with_fx26_compiler_showing(&mut s.scheme, standard, &mut state, FileId(0), text, show, s.step_limit);
+        s.keep_state(state);
         s.scheme.engine.set_step_limit(s.step_limit);
         r
         })
@@ -3921,6 +4016,48 @@ fn names_its_word(c: &Checker, mut x: crate::ast::ExpId) -> bool {
             }
         }
         Ok(last)
+    }
+
+    /// A REPL's entry `text`, named `name`, read as the session's next: its
+    /// forms' places are in the session's text, past every entry before.
+    pub fn read_entry(&mut self, name: &str, text: &str) -> R<Vec<Syntax>> {
+        let start = self.session_text.len();
+        self.session_text.push_str(text);
+        self.session_text.push('\n');
+        self.entries.push((start, name.to_string()));
+        self.checker.read_in_from(FileId(0), &self.session_text, start)
+    }
+
+    /// `text` read as the next entry would be, the session left as it was
+    /// (the REPL's reading as one types): its forms, and where it starts.
+    pub fn read_trial(&mut self, text: &str) -> R<(Vec<Syntax>, usize)> {
+        let start = self.session_text.len();
+        let whole = format!("{}{text}", self.session_text);
+        Ok((self.checker.read_in_from(FileId(0), &whole, start)?, start))
+    }
+
+    /// Where `span`, of what an entry read, is: the entry's name, and the
+    /// line and column there, each from 1.
+    pub fn place(&self, span: fixpt_read::Span) -> (String, usize, usize) {
+        let at = (span.start as usize).min(self.session_text.len());
+        let k = self.entries.partition_point(|(s, _)| *s <= at).max(1) - 1;
+        let Some((start, name)) = self.entries.get(k) else { return (String::from("<fx26>"), 1, 1) };
+        let before = &self.session_text[*start..at];
+        let line = before.matches('\n').count() + 1;
+        let col = before.rsplit('\n').next().map_or(0, |l| l.chars().count()) + 1;
+        (name.clone(), line, col)
+    }
+
+    /// The text of `span`, of what an entry read.
+    pub fn session_text_at(&self, span: fixpt_read::Span) -> &str {
+        let n = self.session_text.len();
+        &self.session_text[(span.start as usize).min(n)..(span.end as usize).min(n)]
+    }
+
+    /// Where the entry that `span` is in starts in the session's text.
+    pub fn entry_start(&self, span: fixpt_read::Span) -> usize {
+        let k = self.entries.partition_point(|(s, _)| *s <= span.start as usize).max(1) - 1;
+        self.entries.get(k).map_or(0, |(s, _)| *s)
     }
 
     /// Run a whole program, and the value of its last expression. Its
