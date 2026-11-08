@@ -9,11 +9,12 @@ run two-cats: instance found (scope 3)
   $p = {Person$0}
 check dog-or-cat: no counterexample found (scope 5)
 check everyone-owns: counterexample found (scope 3)
-  Person = {Person$0, Person$1, Person$2}
-  Animal = {Rex$0, Animal$1}
-  Dog = {Rex$0, Animal$1}
+  Person = {Person$0, Person$1}
+  Animal = {Rex$0}
+  Dog = {Rex$0}
   Cat = {}
   Rex = {Rex$0}
-  owns = {Person$1->Animal$1, Person$2->Rex$0}
-  owner = {Rex$0->Person$2, Animal$1->Person$1}
+  owns = {Person$1->Rex$0}
+  owner = {Rex$0->Person$1}
+  $p = {Person$0}
 [exit 0]

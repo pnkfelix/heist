@@ -217,6 +217,15 @@ ordered sig has an atom of its own: then `next` is the solver's to pick,
 within each ordered sig, with facts that make it a line
 (`tests/ordering-free.cs`, where Monday may be last).
 
+**Witnesses, as Alloy's skolems.** An existential at the top of a
+command's formula (not under a universal, a temporal operator, or
+`one`/`lone`; through `and`, `or`, `not` and calls), first-order or not,
+is skolemized there, and its set is shown with what is found, `$x`; for a
+check, it is the counterexample's (`$p = {Person$0}`: the person who owns
+nothing). Two of one name are `$x` and `$x_1`. Below the top, a
+quantifier is translated once for each binding or state, and its sets are
+not shown.
+
 **More than Alloy: higher-order quantifiers.** Alloy translates a
 higher-order quantifier only when Kodkod can skolemize it; otherwise
 "Analysis cannot be performed since it requires higher-order

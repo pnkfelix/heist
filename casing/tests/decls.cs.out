@@ -2,13 +2,17 @@ check apart: no counterexample found (scope 3)
 check not-apart: counterexample found (scope 3, 1 Node)
   Node = {Node$0}
   edges = {}
+  $a = {Node$0}
+  $b = {Node$0}
 run (some ((s Node #:set)) (and (= (size s) 2) (in (join s edges) s))): instance found (scope 3, 2 Node)
   Node = {Node$0, Node$1}
   edges = {}
+  $s = {Node$0, Node$1}
 check sets-in: no counterexample found (scope 3)
 run (some ((r (-> Node Node))) (and (in r edges) (= (size r) 2))): instance found (scope 3, 2 Node)
   Node = {Node$0, Node$1}
   edges = {Node$0->Node$0, Node$0->Node$1}
+  $r = {Node$0->Node$0, Node$0->Node$1}
 check reach: no counterexample found (scope 3)
 run (one ((s Node #:set)) (= s Node)): instance found (scope 3)
   Node = {Node$0, Node$1, Node$2}
@@ -18,6 +22,8 @@ check one-atom: no counterexample found (scope 3)
 run (some ((s t Node #:some #:disj)) (= (union s t) Node)): instance found (scope 3, 3 Node)
   Node = {Node$0, Node$1, Node$2}
   edges = {}
+  $s = {Node$1, Node$2}
+  $t = {Node$0}
 run closed: instance found (scope 3, 2 Node)
   Node = {Node$0, Node$1}
   edges = {Node$1->Node$0}

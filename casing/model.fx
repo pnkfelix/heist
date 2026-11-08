@@ -630,14 +630,25 @@ d+1 copies to say at copy d what it says at every later pass
 The bitwidth of Int's atoms, and the first of them (-1 if none). And the
 polarity of the formula being translated: 1 if it stands
 positively in what is asserted, -1 negatively, 0 both or not known; an
-existential quantifier where it stands may be skolemized (`ground`)."
+existential quantifier where it stands may be skolemized (`ground`).
+Whether the formula is at the top of what is asserted: not under a
+universal, a temporal operator, or `one`/`lone`, so translated once; the
+sets an existential there is skolemized to are its witnesses, shown with
+what is found (as Alloy shows its skolems, `$x`)."
+(define-type witness (productof (name string) (val matrix)))
 (define-type ctx (productof (c circuit) (n int) (k int) (u int) (loops ivec) (rels (listof rel acyclic)) (model model) (universe universe)
-                           (pol int) (bw int) (ibase int)))
-(define with-pol (subr ro (ctx int) ctx)
-  (lambda (x p)
-    (if (= p (extract x pol)) x
+                           (pol int) (bw int) (ibase int) (top bool) (witnesses (arrayof (listof witness acyclic) @cb))))
+(define ctx-with (subr ro (ctx int bool) ctx)
+  (lambda (x p top)
+    (if (and (= p (extract x pol)) (eq? top (extract x top))) x
         (product (c (extract x c)) (n (extract x n)) (k (extract x k)) (u (extract x u)) (loops (extract x loops)) (rels (extract x rels))
-                 (model (extract x model)) (universe (extract x universe)) (pol p) (bw (extract x bw)) (ibase (extract x ibase))))))
+                 (model (extract x model)) (universe (extract x universe)) (pol p) (bw (extract x bw)) (ibase (extract x ibase))
+                 (top top) (witnesses (extract x witnesses))))))
+(define with-pol (subr ro (ctx int) ctx) (lambda (x p) (ctx-with x p (extract x top))))
+"`x` below the top."
+(define inner (subr ro (ctx) ctx) (lambda (x) (ctx-with x (extract x pol) #f)))
+(define temporal-ops strings
+  (list "after" "then" "always" "eventually" "until" "releases" "before" "once" "historically" "since" "triggered"))
 "`x` with its polarity reversed, and neither."
 (define flipped (subr ro (ctx) ctx) (lambda (x) (with-pol x (- 0 (extract x pol)))))
 (define neutral (subr ro (ctx) ctx) (lambda (x) (with-pol x 0)))
@@ -861,6 +872,11 @@ The names of a `#:disj` declaration are bound to disjoint values."
                                         (if (= gd c-false) nil
                                             (go (cdr ds) (product (guard gd) (scope (bind-now (extract en name) v sc)) (atoms atoms))))))))
                          (cond
+                           ((and skolem (extract x top))       ; at the top: a witness, the solver's, shown
+                            (let ((v (m-build n k (lambda ((t int)) (if (= (m-ref tm t) c-false) c-false (c-input! c))))))
+                              (begin (array-set! (extract x witnesses) 0
+                                                 (cons (product (name (extract en name)) (val v)) (array-ref (extract x witnesses) 0)))
+                                     (bind v (c-and2 c (m-subset c v tm) (mult-holds c mult v)) (extract g atoms)))))
                            ((string=? mult "one")
                             (letrec ((each (subr cb-eff (int) (listof grounding acyclic))
                                        (lambda (t)
@@ -1032,8 +1048,9 @@ value (Alloy's `Int[i]`). This never wraps."
 
 "Formula `d` in state `i`."
 (define form (subr cb-eff (ctx datum int env) int)
-  (lambda (x d i e)
-    (let* ((c (cx x)) (h (head d)) (args (if (pair? d) (cdr (items d)) nil))
+  (lambda (x0 d i e)
+    (let* ((h (head d)) (x (if (member-string? h temporal-ops) (inner x0) x0))
+           (c (cx x)) (args (if (pair? d) (cdr (items d)) nil))
            (k (extract x k)))
       (letrec ((f1 (subr cb-eff (int) int) (lambda (j) (form x (car args) j e)))
                (f2 (subr cb-eff (int) int) (lambda (j) (form x (car (cdr args)) j e)))
@@ -1051,8 +1068,10 @@ value (Alloy's `Int[i]`). This never wraps."
                  (lambda (q)
                    (let* ((pol (extract x pol))
                           (skolem (or (and (string=? q "some") (= pol 1)) (and (or (string=? q "all") (string=? q "no")) (= pol -1))))
-                          (y (cond ((string=? q "no") (flipped x)) ((or (string=? q "one") (string=? q "lone")) (neutral x)) (else x)))
-                          (gs (ground x (items (car args)) i e skolem)))
+                          (y0 (cond ((string=? q "no") (flipped x)) ((or (string=? q "one") (string=? q "lone")) (neutral x)) (else x)))
+                          (gs (ground x (items (car args)) i e skolem))
+                          ;; still the top if skolemized there, to one binding
+                          (y (if (and skolem (extract x top) (= (list-length gs) 1)) y0 (inner y0))))
                      (letrec ((pairs (subr cb-eff ((listof grounding acyclic)) ints)
                                 (lambda (l) (if (null? l) nil
                                                 (cons (let ((b (form y (car (cdr args)) i (extract (car l) scope))) (g (extract (car l) guard)))
@@ -1344,7 +1363,8 @@ solver (and the facts `with-ordering` adds)."
                                  (none u2 nil))
                                field-rels))
                  (model m) (universe u) (pol 1) (bw bw)
-                 (ibase (tagcase (bound-of u "Int") (some b (car (extract b upper))) (none u2 -1))))))))
+                 (ibase (tagcase (bound-of u "Int") (some b (car (extract b upper))) (none u2 -1)))
+                 (top #t) (witnesses (the (arrayof (listof witness acyclic) @cb) (make-array 1 nil))))))))
 
 ;;; ------------------------------------------------------------ what was found
 
@@ -1378,7 +1398,8 @@ then each state's that do, and where the loop goes back to."
 (define instance-shown (subr cb-eff (ctx) string)
   (lambda (x)
     (let ((k (extract x k)))
-      (if (and (= k 1) (not (any-var? (extract x model)))) (state-shown x 0 #f)
+      (string-append
+       (if (and (= k 1) (not (any-var? (extract x model)))) (state-shown x 0 #f)
           (let ((loop (letrec ((go (subr cb-eff (int) int) (lambda (l) (if (or (>= l k) (c-value (cx x) (loop-at x l))) l (go (+ l 1))))))
                         (go 0)))
                 (static (letrec ((go (subr cb-eff ((listof rel acyclic)) strings)
@@ -1395,7 +1416,24 @@ then each state's that do, and where the loop goes back to."
                                                                                                                    (string-append ":\n" (state-shown x i #t)))))
                                                              (go (+ i 1)))))))
                             (go 0))
-                          "\n")))))))
+                          "\n"))))
+       (witnesses-shown x)))))
+
+"The witnesses, `$x`: of each existential at the top, the solver's
+choice; for a check, the counterexample's. Two of one name are told apart
+by a number, as Alloy's are."
+(define witnesses-shown (subr cb-eff (ctx) string)
+  (lambda (x)
+    (letrec ((count (subr ro (string (listof witness acyclic)) int)
+               (lambda (nm l) (cond ((null? l) 0) ((string=? (extract (car l) name) nm) (+ 1 (count nm (cdr l)))) (else (count nm (cdr l))))))
+             (go (subr cb-eff ((listof witness acyclic) (listof witness acyclic)) strings)
+               (lambda (l before)
+                 (if (null? l) nil
+                     (let* ((nm (extract (car l) name)) (j (count nm before))
+                            (label (string-append "$" (if (= j 0) nm (string-append nm (string-append "_" (int->string j)))))))
+                       (cons (string-append "\n  " (string-append label (string-append " = " (matrix-shown x (extract (car l) val)))))
+                             (go (cdr l) (cons (car l) before))))))))
+      (string-join (go (reverse (array-ref (extract x witnesses) 0)) nil) ""))))
 
 ;;; ------------------------------------------------------------ commands
 

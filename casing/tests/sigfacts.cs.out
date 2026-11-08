@@ -19,4 +19,6 @@ check own-things: counterexample found (scope 3)
   best = {}
   keys = {}
   things = {Box$0->Key$0, Box$1->Key$0}
+  $a = {Box$1}
+  $b = {Box$0}
 [exit 0]
