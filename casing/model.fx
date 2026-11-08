@@ -80,17 +80,34 @@ columns."
 (define field-type (subr ro (datum) (productof (mult string) (cols datums)))
   (lambda (t)
     (cond ((string=? (head t) "->") (product (mult "set") (cols (cdr (items t)))))
-          ((not (string=? (mark-of t) ""))
-           (error (string-append "casing: a multiplicity outside an arrow is an option: write #:" (mark-of t))))
+          ((and (mult-name? (head t)) (= (len t) 2))
+           (error (string-append "casing: a field's multiplicity is an option: write #:" (head t))))
+          ((string=? (head t) "col") (error (string-append "casing: a col is an arrow's operand: " (shown t))))
           (else (product (mult "one") (cols (list t)))))))
 
-"An arrow's operand's multiplicity, `(m X)` (Alloy's `X m -> …`), or \"\"."
+"An arrow's operand's multiplicity, `(col X #:m)` (Alloy's `X m -> …`), or
+\"\" if it says none. `X`'s columns are one group: a multiplicity on an
+operand of several columns, `(col (-> B C) #:lone)`, counts its tuples."
 (define mark-of (subr ro (datum) string)
-  (lambda (d) (if (and (mult-name? (head d)) (= (len d) 2)) (head d) "")))
-"An operand without its multiplicity."
-(define unmarked (subr ro (datum) datum) (lambda (d) (if (string=? (mark-of d) "") d (nth d 1))))
+  (lambda (d)
+    (cond ((string=? (head d) "col")
+           (if (< (len d) 2) (error (string-append "casing: a col of what? " (shown d)))
+               (letrec ((go (subr ro (datums string) string)
+                          (lambda (l m)
+                            (if (null? l) m
+                                (let ((k (option-name (car l))))
+                                  (cond ((and (mult-name? k) (string=? m "")) (go (cdr l) k))
+                                        ((mult-name? k) (error (string-append "casing: two multiplicities in " (shown d))))
+                                        (else (error (string-append "casing: what is this in a col? " (shown (car l)))))))))))
+                 (go (cdr (cdr (items d))) ""))))
+          ((and (mult-name? (head d)) (= (len d) 2))
+           (error (string-append "casing: an arrow's operand says its multiplicity as a col: write (col "
+                                 (string-append (shown (nth d 1)) (string-append " #:" (string-append (head d) ")"))))))
+          (else ""))))
+"An operand without its `col`."
+(define unmarked (subr ro (datum) datum) (lambda (d) (if (string=? (head d) "col") (nth d 1) d)))
 "Whether `d` is an arrow with a multiplicity on some operand, or within
-one: `(-> (one A) (lone B))`, Alloy's `A one -> lone B`."
+one: `(-> (col A #:one) (col B #:lone))`, Alloy's `A one -> lone B`."
 (define marked-arrow? (subr ro (datum) bool)
   (lambda (d) (and (string=? (head d) "->")
                    (letrec ((any (subr ro (datums) bool)
@@ -111,14 +128,14 @@ written as a keyword, `#:w`; no field may be named so."
 (define option-word? (subr ro (string) bool)
   (lambda (w) (or (mult-name? w) (string=? w "abstract") (string=? w "extends") (string=? w "in")
                   (string=? w "var") (string=? w "writes") (string=? w "ordered")
-                  (string=? w "fact") (string=? w "disj") (string=? w "apart"))))
+                  (string=? w "fact") (string=? w "disj") (string=? w "apart") (string=? w "col"))))
 "A keyword's name, `#:k`; \"\" for anything else."
 (define option-name (subr ro (datum) string)
   (lambda (d) (if (keyword? d) (symbol->string (keyword->symbol d)) "")))
 
 "Fields of `owner`, `(f g … T #:m #:var @r #:disj #:apart)`, each of
 type `T`: a sig, an expression, or `(-> T U …)`, whose operands may say
-their multiplicities, `(-> (one A) (lone B))`; `T` may mention `this`,
+their multiplicities, `(-> (col A #:one) (col B #:lone))`; `T` may mention `this`,
 the owner. `#:m` is the multiplicity of the last column (`one` if not
 said, or `set` for an arrow); `#:var` that they change, in region `@r` if
 one follows; `#:disj` that the names are disjoint relations (Alloy's
@@ -766,6 +783,7 @@ state in the next copy (the last copy's own, from the last)."
                  (after-expr x i (lambda ((j int)) (expr x (nth d 1) j e))))
                 ((string=? h "let") (expr x (nth d 2) i (let-env x (items (nth d 1)) e)))
                 ((string=? h "set") (comprehension (neutral x) (items (nth d 1)) (nth d 2) i e))
+                ((string=? h "col") (arity-error d "a col is an arrow's operand"))
                 ((string=? h "") (arity-error d "not an expression"))
                 (else
                  (tagcase (find-def (extract x model) h)

@@ -79,13 +79,22 @@ for a name.
   the keyword to write instead).
 - **An arrow's multiplicities**, wherever an arrow is a type (a field's, a
   declaration's) or the right of `in`: an operand may say its
-  multiplicity, `(-> (one A) (lone B))`, Alloy's `A one -> lone B`: each
+  multiplicity as a column of the arrow, `(col X #:m)`.
+  `(-> (col A #:one) (col B #:lone))` is Alloy's `A one -> lone B`: each
   tuple of A maps to `lone` of B's, each of B's to `one` of A's. Several
-  operands nest to the right, as Alloy's `->` does: `(-> A (one B) (one
-  C))` is `(-> A (-> (one B) (one C)))`, for each a a bijection of B and
-  C; to mark a whole operand of several columns, nest it,
-  `(-> (one A) (lone (-> B C)))`. A multiplicity outside an arrow is an
-  option (`#:lone`), and `(f (lone A))` is refused.
+  operands nest to the right, as Alloy's `->` does:
+  `(-> A (col B #:one) (col C #:one))` is
+  `(-> A (-> (col B #:one) (col C #:one)))`, for each a a bijection of B
+  and C. An operand of several columns is one group: `(col (-> B C)
+  #:lone)` is Alloy's `lone (B -> C)`, at most one pair.
+
+  Why `col`, a word at the head (2026-11-08): `(one B)` already says, as
+  a formula, that B has one atom, and `(B #:one)` would read as a call;
+  a relation is columns, as its instances show (`a->b->c`), so the
+  operand is named as one, its multiplicity its option, as everywhere
+  else. `(one B)` in an arrow is refused, with the `col` to write; a
+  multiplicity outside an arrow is an option (`#:lone`), and `col`
+  outside one is refused.
 - **`(enum E v …)`**: Alloy's `enum`, an abstract sig `E` with a `one` part
   for each value, `#:ordered`; its scope is its values, and its order is
   as written, fixed (Alloy fixes it so, `BoundsComputer`).

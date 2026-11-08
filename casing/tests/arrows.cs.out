@@ -8,5 +8,16 @@ run (some ((a A)) (no (join a (join Map part)))): instance found (scope 3, 2 A, 
   bij = {Map$0->A$0->B$1, Map$0->A$1->B$0}
   part = {Map$0->A$1->B$0}
   pm = {Map$0->A$0->B$0->C$1, Map$0->A$0->B$1->C$0, Map$0->A$1->B$0->C$1, Map$0->A$1->B$1->C$0}
+  grp = {}
 check nested: no counterexample found (scope 3)
+check one-pair: no counterexample found (scope 3)
+run (some ((a A)) (= (size (join a (join Map grp))) 1)): instance found (scope 3, 1 A, 2 B, 2 C)
+  A = {A$0}
+  B = {B$0}
+  C = {C$0}
+  Map = {Map$0}
+  bij = {Map$0->A$0->B$0}
+  part = {}
+  pm = {Map$0->A$0->B$0->C$0}
+  grp = {Map$0->A$0->B$0->C$0}
 [exit 0]
