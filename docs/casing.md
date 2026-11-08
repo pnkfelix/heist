@@ -236,6 +236,21 @@ ordered sig has an atom of its own: then `next` is the solver's to pick,
 within each ordered sig, with facts that make it a line
 (`tests/ordering-free.cs`, where Monday may be last).
 
+**Types, as Alloy's warnings.** Before its commands' answers, casing
+says where Alloy's types show a mistake (`tests/types.cs`):
+
+    warning: in fact 1: (join owns owns): the join always yields an empty set
+
+An expression's type is a union of tuples of sigs: each a top-level sig
+or a part of one (a subset sig is typed by its parent), `univ`, or `Int`.
+Two sigs overlap when one is the other or below it. casing warns of a
+join, `inter`, `<:` or `:>` that is always empty, and of `in`, `=` or
+`!=` whose sides are always disjoint, in facts, sig facts, fields' types,
+definitions (their parameters typed as declared), assertions and
+commands. A function's call is typed by its body, its parameters by the
+arguments. A type casing cannot tell says nothing. As in Alloy, these are
+warnings: what is found is the same.
+
 **Witnesses, as Alloy's skolems.** An existential at the top of a
 command's formula (not under a universal, a temporal operator, or
 `one`/`lone`; through `and`, `or`, `not` and calls), first-order or not,
@@ -382,8 +397,10 @@ a model can say:
 - warnings: a static part of a `var` sig, `var` on a part of a static sig
   (redundant), a static field inside a `var` sig, and a static field whose
   type mentions a `var` sig;
-- Alloy's type system: casing checks arity only, not that a join relates
-  the sigs it should, and gives no relevance warnings.
+- Alloy's type errors (as opposed to its warnings, which casing gives):
+  casing reports a wrong arity as it translates, not before; and Alloy's
+  "redundant" warnings (a subexpression that is always empty, an `=`
+  whose sides are always equal) and unused variables.
 
 **Not of expressive power, but of the analysis:**
 - **Symmetry breaking.** Kodkod's lex-leader predicates over

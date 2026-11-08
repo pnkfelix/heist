@@ -1533,6 +1533,262 @@ by a number, as Alloy's are."
                              (go (cdr l) (cons (car l) before))))))))
       (string-join (go (reverse (array-ref (extract x witnesses) 0)) nil) ""))))
 
+;;; ------------------------------------------------------------ types
+
+"Alloy's types, as its warnings. A set expression's type is a union of
+tuples of sigs: each a top-level sig or a part of one (a subset sig has
+its parent's), `univ`, or `Int`. Two sigs overlap when one is the other
+or below it (`#:extends`), or either is `univ`. Where the types say an
+operator's result is always empty, or two sides are always disjoint,
+casing warns, as Alloy does (`ExprBinary`); it changes nothing found. A
+type casing cannot tell, `?`, overlaps everything, so says nothing."
+(define-type ttype (listof strings acyclic))
+(define-type tbinding (productof (name string) (type ttype)))
+(define-type tenv (listof tbinding acyclic))
+(define t-unknown ttype (list (list "?")))
+(define unknown? (subr ro (ttype) bool)
+  (lambda (t) (and (pair? t) (or (member-string? "?" (car t)) (unknown? (cdr t))))))
+
+"The sig a name's atoms are typed by: a subset sig's parent's."
+(define prim-of (subr ro (model string) string)
+  (lambda (m s) (tagcase (find-sig m s)
+                  (some g (if (and (extract g subset) (not (string=? (extract g parent) ""))) (prim-of m (extract g parent)) s))
+                  (none u s))))
+"Whether sig a is b or below it."
+(define below? (subr ro (model string string) bool)
+  (lambda (m a b) (or (string=? a b)
+                      (tagcase (find-sig m a)
+                        (some g (and (not (extract g subset)) (not (string=? (extract g parent) "")) (below? m (extract g parent) b)))
+                        (none u #f)))))
+(define overlap? (subr ro (model string string) bool)
+  (lambda (m a b) (or (string=? a "?") (string=? b "?") (string=? a "univ") (string=? b "univ") (below? m a b) (below? m b a))))
+"Of two that overlap, the narrower."
+(define meet (subr ro (model string string) string)
+  (lambda (m a b) (cond ((or (string=? a "univ") (string=? a "?")) b) ((below? m a b) a) (else b))))
+(define tuples-overlap? (subr ro (model strings strings) bool)
+  (lambda (m a b) (or (not (= (list-length a) (list-length b)))
+                      (letrec ((go (subr ro (strings strings) bool)
+                                 (lambda (x y) (or (null? x) (and (overlap? m (car x) (car y)) (go (cdr x) (cdr y)))))))
+                        (go a b)))))
+"Whether some tuple of `a` overlaps one of `b`."
+(define types-overlap? (subr ro (model ttype ttype) bool)
+  (lambda (m a b) (or (unknown? a) (unknown? b)
+                      (letrec ((go (subr ro (ttype) bool)
+                                 (lambda (l) (and (pair? l)
+                                                  (or (letrec ((each (subr ro (ttype) bool) (lambda (k) (and (pair? k) (or (tuples-overlap? m (car l) (car k)) (each (cdr k)))))))
+                                                        (each b))
+                                                      (go (cdr l)))))))
+                        (go a)))))
+"Every pair of `a`'s and `b`'s, made by `f` (or dropped, if it says nil)."
+(define pairs-of (subr ro (ttype ttype (subr ro (strings strings) ttype)) ttype)
+  (lambda (a b f) (if (null? a) nil
+                      (append (letrec ((go (subr ro (ttype) ttype) (lambda (k) (if (null? k) nil (append (f (car a) (car k)) (go (cdr k)))))))
+                                (go b))
+                              (pairs-of (cdr a) b f)))))
+(define slashed? (subr spin (string) bool)
+  (lambda (s) (letrec ((go (subr spin (int) bool) (lambda (i) (and (< i (string-length s)) (or (char=? (string-ref s i) #\/) (go (+ i 1)))))))
+                (go 0))))
+(define last-of (subr ro (strings) string) (lambda (l) (if (null? (cdr l)) (car l) (last-of (cdr l)))))
+(define but-last (subr ro (strings) strings) (lambda (l) (if (null? (cdr l)) nil (cons (car l) (but-last (cdr l))))))
+
+"A field's type: its owner's, then its columns', each typed with `this`
+its owner."
+(define field-ttype (subr cb-eff (model field-info) ttype)
+  (lambda (m f)
+    (let ((te (if (string=? (extract f owner) "") nil
+                  (list (product (name "this") (type (list (list (prim-of m (extract f owner))))))))))
+      (letrec ((go (subr cb-eff (datums ttype) ttype)
+                 (lambda (l acc) (if (null? l) acc
+                                     (go (cdr l) (pairs-of acc (tc m (unmarked (car l)) te (the (arrayof strings @cb) (make-array 1 nil)) "")
+                                                           (lambda ((x strings) (y strings)) (list (append x y)))))))))
+        (go (extract f cols) (if (string=? (extract f owner) "") (list nil) (list (list (prim-of m (extract f owner))))))))))
+
+"The type of expression `d`; warnings, each said `where`, added to `w`."
+(define tc (subr cb-eff (model datum tenv (arrayof strings @cb) string) ttype)
+  (lambda (m d te w where)
+    (letrec ((warn (subr cb-eff (string) unit)
+               (lambda (msg) (array-set! w 0 (cons (string-append "warning: in " (string-append where (string-append ": " (string-append (shown d) (string-append ": " msg)))))
+                                                    (array-ref w 0)))))
+             (t (subr cb-eff (datum) ttype) (lambda (x) (tc m x te w where)))
+             (ts (subr cb-eff (datums) (listof ttype acyclic)) (lambda (l) (if (null? l) nil (cons (t (car l)) (ts (cdr l))))))
+             (fold (subr cb-eff ((subr cb-eff (ttype ttype) ttype) (listof ttype acyclic)) ttype)
+               (lambda (f l) (if (null? l) t-unknown
+                                 (letrec ((go (subr cb-eff (ttype (listof ttype acyclic)) ttype) (lambda (a k) (if (null? k) a (go (f a (car k)) (cdr k))))))
+                                   (go (car l) (cdr l))))))
+             (empty-warns (subr cb-eff (ttype (listof ttype acyclic) string) ttype)
+               ;; r, warning if it is empty though no operand is
+               (lambda (r parts msg)
+                 (begin (if (and (null? r) (letrec ((ok (subr ro ((listof ttype acyclic)) bool) (lambda (l) (or (null? l) (and (pair? (car l)) (not (unknown? (car l))) (ok (cdr l)))))))
+                                              (ok parts)))
+                            (warn msg) #u)
+                        r))))
+      (cond
+        ((datum-int? d) (list (list "Int")))
+        ((symbol? d)
+         (let ((s (symbol->string d)))
+           (letrec ((look (subr ro (tenv) (sumof (none unit) (some ttype)))
+                      (lambda (l) (cond ((null? l) (sum none #u)) ((string=? (extract (car l) name) s) (sum some (extract (car l) type))) (else (look (cdr l)))))))
+             (tagcase (look te)
+               (some ty ty)
+               (none u
+                 (cond ((string=? s "univ") (list (list "univ")))
+                       ((string=? s "iden") (list (list "univ" "univ")))
+                       ((string=? s "Int") (list (list "Int")))
+                       (else
+                        (tagcase (find-sig m s)
+                          (some g (list (list (prim-of m s))))
+                          (none u2
+                            (letrec ((field (subr ro ((listof field-info acyclic)) (sumof (none unit) (some field-info)))
+                                              (lambda (l) (cond ((null? l) (sum none #u)) ((string=? (extract (car l) name) s) (sum some (car l))) (else (field (cdr l)))))))
+                              (tagcase (field (extract m fields))
+                                (some f (field-ttype m f))
+                                (none u3 t-unknown))))))))))))
+        ((int-op? d) (begin (ts (cdr (items d))) (list (list "Int"))))
+        (else
+         (let* ((h (head d)) (args (if (pair? d) (cdr (items d)) nil)))
+           (cond
+             ((string=? h "join")
+              (let ((parts (ts args)))
+                (empty-warns (fold (lambda ((a ttype) (b ttype))
+                                     (if (or (unknown? a) (unknown? b)) t-unknown
+                                         (pairs-of a b (lambda ((x strings) (y strings))
+                                                         (if (overlap? m (last-of x) (car y)) (list (append (but-last x) (cdr y))) nil)))))
+                                   parts)
+                             parts "the join always yields an empty set")))
+             ((string=? h "->")
+              (fold (lambda ((a ttype) (b ttype)) (if (or (unknown? a) (unknown? b)) t-unknown (pairs-of a b (lambda ((x strings) (y strings)) (list (append x y))))))
+                    (ts (letrec ((go (subr ro (datums) datums) (lambda (l) (if (null? l) nil (cons (unmarked (car l)) (go (cdr l))))))) (go args)))))
+             ((or (string=? h "union") (string=? h "++")) (fold (lambda ((a ttype) (b ttype)) (append a b)) (ts args)))
+             ((string=? h "inter")
+              (let ((parts (ts args)))
+                (empty-warns (fold (lambda ((a ttype) (b ttype))
+                                     (if (or (unknown? a) (unknown? b)) t-unknown
+                                         (pairs-of a b (lambda ((x strings) (y strings))
+                                                         (if (tuples-overlap? m x y)
+                                                             (list (letrec ((go (subr ro (strings strings) strings)
+                                                                                  (lambda (p q) (if (or (null? p) (null? q)) nil (cons (meet m (car p) (car q)) (go (cdr p) (cdr q)))))))
+                                                                     (go x y)))
+                                                             nil)))))
+                                   parts)
+                             parts "the intersection is always empty: its operands are always disjoint")))
+             ((string=? h "diff") (let ((parts (ts args))) (if (pair? parts) (car parts) t-unknown)))
+             ((string=? h "~") (let ((a (t (car args)))) (if (unknown? a) a (pairs-of a (list nil) (lambda ((x strings) (y strings)) (list (reverse x)))))))
+             ((string=? h "^") (t (car args)))
+             ((string=? h "*") (append (t (car args)) (list (list "univ" "univ"))))
+             ((or (string=? h "<:") (string=? h ":>"))
+              (let* ((s (t (car args))) (r (t (car (cdr args)))) (dom (string=? h "<:")) (ss (if dom s r)) (rr (if dom r s)))
+                (empty-warns (if (or (unknown? ss) (unknown? rr)) t-unknown
+                                 (pairs-of rr ss (lambda ((x strings) (y strings))
+                                                   (if (overlap? m (if dom (car x) (last-of x)) (car y)) (list x) nil))))
+                             (list s r) (string-append h " is irrelevant: the result is always empty"))))
+             ((string=? h "if") (begin (tf m (car args) te w where) (append (t (nth d 2)) (t (nth d 3)))))
+             ((or (string=? h "prime") (string=? h "quote")) (t (car args)))
+             ((string=? h "col") (t (car args)))
+             ((string=? h "let") (tc m (nth d 2) (t-let m (items (nth d 1)) te w where) w where))
+             ((string=? h "set")
+              (let ((te2 (t-decls m (items (car args)) te w where)))
+                (begin (tf m (car (cdr args)) te2 w where)
+                       (letrec ((go (subr cb-eff (strings ttype) ttype)
+                                  (lambda (ns acc) (if (null? ns) acc
+                                                       (go (cdr ns) (pairs-of acc (tc m (sym (car ns)) te2 w where) (lambda ((x strings) (y strings)) (list (append x y)))))))))
+                         (go (decl-names (read-decls (items (car args)))) (list nil))))))
+             (else
+              (begin (ts args)
+                     (tagcase (find-def m h)
+                       ;; a function's call: its body, its parameters typed by the arguments
+                       (some f (if (not (extract f fun)) t-unknown
+                                   (letrec ((bind (subr cb-eff (strings datums tenv) tenv)
+                                              (lambda (ps as acc) (if (or (null? ps) (null? as)) acc
+                                                                      (bind (cdr ps) (cdr as) (cons (product (name (car ps)) (type (t (car as)))) acc))))))
+                                     (tc m (extract f body) (bind (decl-names (read-decls (extract f params))) args nil)
+                                         (the (arrayof strings @cb) (make-array 1 nil)) ""))))
+                       (none u t-unknown)))))))))))
+
+"`let`'s bindings, typed."
+(define t-let (subr cb-eff (model datums tenv (arrayof strings @cb) string) tenv)
+  (lambda (m bs te w where)
+    (if (null? bs) te
+        (t-let m (cdr bs) (cons (product (name (name-of (nth (car bs) 0))) (type (tc m (nth (car bs) 1) te w where))) te) w where))))
+"Declarations' names, typed by their types."
+(define t-decls (subr cb-eff (model datums tenv (arrayof strings @cb) string) tenv)
+  (lambda (m ds te w where)
+    (letrec ((go (subr cb-eff ((listof decl acyclic) tenv) tenv)
+               (lambda (l te)
+                 (if (null? l) te
+                     (let ((ty (tc m (extract (car l) type) te w where)))
+                       (go (cdr l) (letrec ((each (subr ro (strings tenv) tenv)
+                                              (lambda (ns te) (if (null? ns) te (each (cdr ns) (cons (product (name (car ns)) (type ty)) te))))))
+                                     (each (extract (car l) names) te))))))))
+      (go (read-decls ds) te))))
+
+"Formula `d`'s expressions typed, and warned of."
+(define tf (subr cb-eff (model datum tenv (arrayof strings @cb) string) unit)
+  (lambda (m d te w where)
+    (if (not (pair? d)) #u
+        (let* ((h (head d)) (args (cdr (items d))))
+          (letrec ((each (subr cb-eff (datums) unit) (lambda (l) (if (null? l) #u (begin (tf m (car l) te w where) (each (cdr l))))))
+                   (exprs (subr cb-eff (datums) unit) (lambda (l) (if (null? l) #u (begin (tc m (car l) te w where) (exprs (cdr l)))))))
+            (cond
+              ((or (string=? h "in") (string=? h "=") (string=? h "!="))
+               (let ((a (tc m (car args) te w where)) (b (tc m (car (cdr args)) te w where)))
+                 (if (or (null? a) (null? b) (types-overlap? m a b)) #u
+                     (array-set! w 0 (cons (string-append "warning: in " (string-append where (string-append ": " (string-append (shown d)
+                                                                                                                                 ": its left and right are always disjoint"))))
+                                           (array-ref w 0))))))
+              ((and (member-string? h (list "all" "some" "no" "one" "lone")) (= (list-length args) 2))
+               (tf m (car (cdr args)) (t-decls m (items (car args)) te w where) w where))
+              ((member-string? h (list "some" "no" "one" "lone" "<" "<=" ">" ">=" "unchanged")) (exprs args))
+              ((string=? h "let") (tf m (nth d 2) (t-let m (items (nth d 1)) te w where) w where))
+              ((member-string? h (append (list "not" "and" "or" "implies" "=>" "iff" "if") temporal-ops)) (each args))
+              (else (tagcase (find-def m h) (some f (exprs args)) (none u #u)))))))))
+
+"A model's warnings: its facts, sigs' facts, fields' types, definitions,
+assertions, and commands' formulas, typed."
+(define model-warnings (subr cb-eff (model) strings)
+  (lambda (m)
+    (let ((w (the (arrayof strings @cb) (make-array 1 nil))))
+      (begin
+        (letrec ((go (subr cb-eff (datums int) unit) (lambda (l j) (if (null? l) #u (begin (tf m (car l) nil w (string-append "fact " (int->string j))) (go (cdr l) (+ j 1)))))))
+          (go (extract m facts) 1))
+        (letrec ((go (subr cb-eff ((listof sig-info acyclic)) unit)
+                   (lambda (l) (if (null? l) #u
+                                   (begin (letrec ((each (subr cb-eff (datums) unit)
+                                                     (lambda (k) (if (null? k) #u
+                                                                     (begin (tf m (car k) (list (product (name "this") (type (list (list (prim-of m (extract (car l) name)))))))
+                                                                                w (string-append "sig " (extract (car l) name)))
+                                                                            (each (cdr k)))))))
+                                            (each (extract (car l) facts)))
+                                          (go (cdr l)))))))
+          (go (extract m sigs)))
+        (letrec ((go (subr cb-eff ((listof field-info acyclic)) unit)
+                   (lambda (l) (if (null? l) #u
+                                   (begin (if (string=? (extract (car l) owner) "") #u
+                                              (letrec ((each (subr cb-eff (datums) unit)
+                                                         (lambda (k) (if (null? k) #u
+                                                                         (begin (tc m (unmarked (car k)) (list (product (name "this") (type (list (list (prim-of m (extract (car l) owner)))))))
+                                                                                    w (string-append "field " (extract (car l) name)))
+                                                                                (each (cdr k)))))))
+                                                (each (extract (car l) cols))))
+                                          (go (cdr l)))))))
+          (go (extract m fields)))
+        (letrec ((go (subr cb-eff ((listof def-info acyclic)) unit)
+                   (lambda (l) (if (null? l) #u
+                                   (let* ((f (car l)) (where (string-append (if (extract f fun) "fun " (if (extract f event) "event " "pred ")) (extract f name)))
+                                          (te (t-decls m (extract f params) nil w where)))
+                                     (begin (if (slashed? (extract f name)) #u                   ; a library's, opened #:as: not the model's
+                                                (if (extract f fun) (begin (tc m (extract f body) te w where) #u) (tf m (extract f body) te w where)))
+                                            (go (cdr l))))))))
+          (go (extract m defs)))
+        (letrec ((go (subr cb-eff ((listof named acyclic)) unit)
+                   (lambda (l) (if (null? l) #u (begin (tf m (extract (car l) body) nil w (string-append "assert " (extract (car l) name))) (go (cdr l)))))))
+          (go (extract m asserts)))
+        (letrec ((go (subr cb-eff (datums) unit)
+                   (lambda (l) (if (null? l) #u
+                                   (begin (let ((target (nth (car l) 1))) (if (pair? target) (tf m target nil w (string-append (head (car l)) " " (shown target))) #u))
+                                          (go (cdr l)))))))
+          (go (extract m commands)))
+        (reverse (array-ref w 0))))))
+
 ;;; ------------------------------------------------------------ commands
 
 "A command's formula: for `run`, its predicate, its parameters found
@@ -1662,7 +1918,8 @@ functions, assertions, and in `goal`."
                                                             (string-append (if temporal (string-append ", steps " (string-append (int->string (extract s min-steps)) (string-append ".." (int->string (extract s max-steps))))) "")
                                                                            ")"))))))
 
-"Every command of a model, in order, each one's answer."
+"A model's warnings (its types), then every command, in order, each one's
+answer."
 (define run-model (subr cb-eff (model) strings)
   (lambda (m) (letrec ((go (subr cb-eff (datums) strings) (lambda (l) (if (null? l) nil (cons (run-command m (car l)) (go (cdr l)))))))
-                (go (extract m commands)))))
+                (append (model-warnings m) (go (extract m commands))))))
