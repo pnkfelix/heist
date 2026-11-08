@@ -1,0 +1,6 @@
+run (some ((r (-> (some D) (one E)))) (= (size r) 3)): no instance found (scope 3, exactly 2 D, exactly 3 E)
+run (some ((r (-> (some D) (one E)))) (= (size r) 3)): instance found (scope 3, exactly 3 D, exactly 2 E)
+  D = {D$0, D$1, D$2}
+  E = {E$0, E$1}
+check onto: no counterexample found (scope 3)
+[exit 0]

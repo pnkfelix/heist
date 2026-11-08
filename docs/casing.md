@@ -34,6 +34,7 @@ temporal logic).
 (sig Lamp (on Lamp #:lone #:var @lamp))             ; …in region @lamp
 (sig Guest #:var @door)                             ; a sig that changes, in @door
 (sig Tmp #:in Node)                                 ; a subset sig
+(enum Color Red Green Blue)                         ; enum Color { Red, Green, Blue }
 (fact (all ((n Node)) (not (in n (join n (^ edges))))))
 (pred (two-cats (p Person)) (= (size (inter (join p owns) Cat)) 2))
 (fun (kids (p Person)) (join p owns))
@@ -59,23 +60,35 @@ for a name.
     rewrites a field `f` in `F` to `this.f`, and writes the relation
     itself `@f`; casing does not rewrite (`@` names a region), so `F`
     says `(join this f)`.
-- **A field:** `(f T option…)`, `T` a sig (or an expression) or
-  `(-> T U …)`, its options:
+- **A field:** `(f g … T option…)`, one or more names, `T` a sig (or an
+  expression) or an arrow `(-> T U …)`, its options:
   - a multiplicity: `#:one` (the default for `T`), `#:lone`, `#:some` or
     `#:set` (the default for an arrow). As in Alloy, it applies to the
     last column: for each owner atom `x`, `(m (join x f))` holds. A sig's
     multiplicity and a field's are the same kind of thing, a constraint on
-    the relation declared, so both are options. Alloy's per-column
-    multiplicities, `A one -> lone B`, are not here yet; they would belong
-    in the arrow, `(-> (one A) (lone B))`.
+    the relation declared, so both are options.
   - `#:var`, or `#:var @r`;
-  - `#:disj`: distinct owners' values are disjoint (Alloy's `f: disj T`).
+  - `#:disj`: the names are disjoint relations (Alloy's `disj f, g: T`),
+    as the names of a quantifier's declaration are disjoint values;
+  - `#:apart`: distinct owners' values are disjoint (Alloy's `f: disj T`).
 
   `T` may mention `this`, the owner, and the other fields:
   `(best (join this likes) #:lone)` is Alloy's `best: lone likes`.
 
   No field may be named after an option (`(extends P)` is refused, with
   the keyword to write instead).
+- **An arrow's multiplicities**, wherever an arrow is a type (a field's, a
+  declaration's) or the right of `in`: an operand may say its
+  multiplicity, `(-> (one A) (lone B))`, Alloy's `A one -> lone B`: each
+  tuple of A maps to `lone` of B's, each of B's to `one` of A's. Several
+  operands nest to the right, as Alloy's `->` does: `(-> A (one B) (one
+  C))` is `(-> A (-> (one B) (one C)))`, for each a a bijection of B and
+  C; to mark a whole operand of several columns, nest it,
+  `(-> (one A) (lone (-> B C)))`. A multiplicity outside an arrow is an
+  option (`#:lone`), and `(f (lone A))` is refused.
+- **`(enum E v …)`**: Alloy's `enum`, an abstract sig `E` with a `one` part
+  for each value, `#:ordered`; its scope is its values, and its order is
+  as written, fixed (Alloy fixes it so, `BoundsComputer`).
 - **Expressions:**
   - a name (a relation, a variable, `univ`, `iden`, `none`, or a function of
     no parameters);
@@ -303,14 +316,9 @@ a model can say:
    (`<<`, `>>`, `>>>`) and `util/integer`'s `min`, `max`, `next`, `prev`
    over Int.
 2. **Declarations.**
-   - **Per-column multiplicities** in an arrow, all sixteen of
-     `A m -> n B` (`ONE_ARROW_LONE` and the rest). casing has only the
-     last column's, as a field's option. They would be written in the
-     arrow: `(-> (one A) (lone B))`.
-   - **`disj f, g: T`**, two fields disjoint as relations (a fact says
-     it). `f: disj T` is `#:disj`.
-   - **`enum`.**
    - **Overloading and the receiver call** `x.p[y]`: sugar for `(p x y)`.
+     (Arrow multiplicities, fields declared together and disjoint, and
+     `enum` were done 2026-11-08.)
 3. **The library and modules.**
    - **`util/integer`, `util/boolean`, `util/relation`, `util/graph`.**
      (`util/ordering` is `#:ordered`. An ordered sig must be top-level;

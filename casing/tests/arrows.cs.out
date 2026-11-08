@@ -1,0 +1,12 @@
+check same-size: no counterexample found (scope 3)
+check partial: no counterexample found (scope 3)
+run (some ((a A)) (no (join a (join Map part)))): instance found (scope 3, 2 A, 2 B, 2 C)
+  A = {A$0, A$1}
+  B = {B$0, B$1}
+  C = {C$0, C$1}
+  Map = {Map$0}
+  bij = {Map$0->A$0->B$1, Map$0->A$1->B$0}
+  part = {Map$0->A$1->B$0}
+  pm = {Map$0->A$0->B$0->C$1, Map$0->A$0->B$1->C$0, Map$0->A$1->B$0->C$1, Map$0->A$1->B$1->C$0}
+check nested: no counterexample found (scope 3)
+[exit 0]
