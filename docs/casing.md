@@ -53,7 +53,12 @@ for a name.
   - a multiplicity, `#:one`, `#:lone`, `#:some` or `#:set` (the default);
   - `#:extends P` (a part of `P`) or `#:in P` (a subset of `P`);
   - `#:var`, or `#:var @r` for one that changes in region `r`;
-  - `#:ordered`: Alloy's `util/ordering` (below).
+  - `#:ordered`: Alloy's `util/ordering` (below);
+  - `#:fact F`, any number: `F` holds of each atom `this` of the sig, in
+    every state, as Alloy's sig facts (`sig S {…} { F }`) do. Alloy
+    rewrites a field `f` in `F` to `this.f`, and writes the relation
+    itself `@f`; casing does not rewrite (`@` names a region), so `F`
+    says `(join this f)`.
 - **A field:** `(f T option…)`, `T` a sig (or an expression) or
   `(-> T U …)`, its options:
   - a multiplicity: `#:one` (the default for `T`), `#:lone`, `#:some` or
@@ -63,7 +68,11 @@ for a name.
     the relation declared, so both are options. Alloy's per-column
     multiplicities, `A one -> lone B`, are not here yet; they would belong
     in the arrow, `(-> (one A) (lone B))`.
-  - `#:var`, or `#:var @r`.
+  - `#:var`, or `#:var @r`;
+  - `#:disj`: distinct owners' values are disjoint (Alloy's `f: disj T`).
+
+  `T` may mention `this`, the owner, and the other fields:
+  `(best (join this likes) #:lone)` is Alloy's `best: lone likes`.
 
   No field may be named after an option (`(extends P)` is refused, with
   the keyword to write instead).
@@ -270,15 +279,12 @@ a model can say:
    wraps, or something more FX-like, such as arithmetic whose overflow is
    reported rather than wrapped.
 2. **Declarations.**
-   - **`disj` fields** (`disj f: …`: no two atoms share a value).
-     Quantifiers and parameters have `#:disj`.
    - **Per-column multiplicities** in an arrow, all sixteen of
      `A m -> n B` (`ONE_ARROW_LONE` and the rest). casing has only the
      last column's, as a field's option. They would be written in the
      arrow: `(-> (one A) (lone B))`.
-   - **Fields that depend on the owner** (`this`) or on other fields:
-     `sig S { f: set T, g: f -> T }`.
-   - **Sig facts:** `sig S {…} { a constraint about this }`.
+   - **`disj f, g: T`**, two fields disjoint as relations (a fact says
+     it). `f: disj T` is `#:disj`.
    - **`enum`.**
    - **Overloading and the receiver call** `x.p[y]`: sugar for `(p x y)`.
 3. **The library and modules.**
@@ -295,10 +301,10 @@ a model can say:
    - **Unbounded traces** (`1..` steps). With its nuXmv or NuSMV back end,
      Alloy 6 checks temporal properties of traces of any length. That is
      another decision procedure, not a missing piece of the translation.
-5. **Sugar.** `@f` (a field named raw in a sig fact, which needs sig facts
-   first), the box join `e[x]`, the negated comparisons `!in` and `!<`,
-   `else` after `=>`. casing has an equivalent of each but `@f`; they
-   matter only for transliterating Alloy's models.
+5. **Sugar.** The implicit `this.f` in sig facts and field types, and
+   `@f`; the box join `e[x]`; the negated comparisons `!in` and `!<`;
+   `else` after `=>`. casing has an equivalent of each (`(join this f)`
+   for the first); they matter only for transliterating Alloy's models.
 
 **Checks Alloy makes that casing does not** (`parser/CompModule.java`):
 - errors: an exact scope on a `var` sig, and a scope on a `var` sig that
@@ -320,6 +326,6 @@ a model can say:
 - **Cross-checking against Alloy itself.** Run the same models in Alloy 6
   and compare the answers. This needs a JDK newer than this machine's 11.
 
-**A suggested order:** sig facts with `this`; then integers, after their
-design. (`#:disj`, declarations' multiplicities and `util/ordering`, first
-on the list, were done 2026-11-08.)
+**Next:** integers, after their design. (`#:disj`, declarations'
+multiplicities, `util/ordering` and sig facts with `this`, before them on
+the list, were done 2026-11-08.)

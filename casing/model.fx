@@ -55,13 +55,14 @@
 parent, rather than a part of it (`extends`); abstract; its multiplicity
 (\"set\", \"one\", \"lone\", \"some\"); whether it changes from state to
 state, and the region it changes in (\"\" if none); whether it is
-totally ordered (`#:ordered`, Alloy's `util/ordering`)."
+totally ordered (`#:ordered`, Alloy's `util/ordering`); its facts
+(`#:fact F`: of each atom `this` of it, in every state)."
 (define-type sig-info (productof (name string) (parent string) (subset bool) (abstract bool) (mult string) (var bool) (region string)
-                                 (ordered bool)))
+                                 (ordered bool) (facts datums)))
 "A field of `owner`: the columns after the owner's (expressions, sig
 names most often), the multiplicity of the last, whether it changes, and
 the region it changes in (\"\" if none)."
-(define-type field-info (productof (name string) (owner string) (cols datums) (mult string) (var bool) (region string)))
+(define-type field-info (productof (name string) (owner string) (cols datums) (mult string) (var bool) (region string) (disj bool)))
 "A predicate, function or event: its declarations `((x T) …)`, its body;
 an event's relations and regions (`@r`) it writes (the rest are unchanged)."
 (define-type def-info (productof (name string) (params datums) (body datum) (fun bool) (event bool) (writes strings)))
@@ -88,7 +89,8 @@ columns."
 written as a keyword, `#:w`; no field may be named so."
 (define option-word? (subr ro (string) bool)
   (lambda (w) (or (mult-name? w) (string=? w "abstract") (string=? w "extends") (string=? w "in")
-                  (string=? w "var") (string=? w "writes") (string=? w "ordered"))))
+                  (string=? w "var") (string=? w "writes") (string=? w "ordered")
+                  (string=? w "fact") (string=? w "disj"))))
 "A keyword's name, `#:k`; \"\" for anything else."
 (define option-name (subr ro (datum) string)
   (lambda (d) (if (keyword? d) (symbol->string (keyword->symbol d)) "")))
@@ -96,25 +98,28 @@ written as a keyword, `#:w`; no field may be named so."
 "A field of `owner`, `(f T #:m #:var @r)`: `T` a sig, an expression, or
 `(-> T U …)`; `#:m` the multiplicity of its last column (`one` if not
 said, or `set` for an arrow);
-`#:var` that it changes, in region `@r` if one follows."
+`#:var` that it changes, in region `@r` if one follows; `#:disj` that
+distinct owners' values are disjoint (Alloy's `f: disj T`). `T` may
+mention `this`, the owner."
 (define read-field (subr ro (string datum) field-info)
   (lambda (owner d)
     (let ((t (field-type (nth d 1))) (name (name-of (car d))))
       (if (option-word? name) (error (string-append "casing: an option is a keyword: write #:" name)) #u)
-      (letrec ((go (subr ro (datums string bool bool string) field-info)
-                 (lambda (os mult said var region)
+      (letrec ((go (subr ro (datums string bool bool string bool) field-info)
+                 (lambda (os mult said var region disj)
                    (if (null? os)
-                       (product (name name) (owner owner) (cols (extract t cols)) (mult mult) (var var) (region region))
+                       (product (name name) (owner owner) (cols (extract t cols)) (mult mult) (var var) (region region) (disj disj))
                        (let ((k (option-name (car os))))
                          (cond ((mult-name? k)
                                 (if said (error (string-append "casing: two multiplicities for field " name))
-                                    (go (cdr os) k #t var region)))
+                                    (go (cdr os) k #t var region disj)))
                                ((string=? k "var")
                                 (if (and (pair? (cdr os)) (region? (car (cdr os))))
-                                    (go (cdr (cdr os)) mult said #t (name-of (car (cdr os))))
-                                    (go (cdr os) mult said #t "")))
+                                    (go (cdr (cdr os)) mult said #t (name-of (car (cdr os))) disj)
+                                    (go (cdr os) mult said #t "" disj)))
+                               ((string=? k "disj") (go (cdr os) mult said var region #t))
                                (else (error (string-append "casing: what is this in field " (string-append name (string-append "? " (shown (car os)))))))))))))
-        (go (cdr (cdr (items d))) (extract t mult) #f #f "")))))
+        (go (cdr (cdr (items d))) (extract t mult) #f #f "" #f)))))
 
 "A predicate's, function's or event's options before its body: an
 event's `#:writes x` or `#:writes (x …)`, each `x` a relation or a
@@ -179,30 +184,34 @@ relation, as in Alloy); whether its names are bound to disjoint values."
       (cond
         ((string=? h "sig")
          (let ((name (name-of (car xs))))
-           (letrec ((go (subr ro (datums string bool bool string bool string bool (listof field-info acyclic)) model)
-                      (lambda (os parent subset abstract mult var region ordered fs)
+           (letrec ((go (subr ro (datums string bool bool string bool string bool datums (listof field-info acyclic)) model)
+                      (lambda (os parent subset abstract mult var region ordered sfs fs)
                         (if (null? os)
                             (product (sigs (cons (product (name name) (parent parent) (subset subset) (abstract abstract)
-                                                          (mult mult) (var var) (region region) (ordered ordered))
+                                                          (mult mult) (var var) (region region) (ordered ordered) (facts (reverse sfs)))
                                                  (extract m sigs)))
                                      (fields (append fs (extract m fields)))
                                      (facts (extract m facts)) (defs (extract m defs)) (asserts (extract m asserts)) (commands (extract m commands)))
                             (let* ((o (car os)) (k (option-name o)))
                               (cond
-                                ((string=? k "abstract") (go (cdr os) parent subset #t mult var region ordered fs))
-                                ((mult-name? k) (go (cdr os) parent subset abstract k var region ordered fs))
+                                ((string=? k "abstract") (go (cdr os) parent subset #t mult var region ordered sfs fs))
+                                ((mult-name? k) (go (cdr os) parent subset abstract k var region ordered sfs fs))
                                 ((or (string=? k "extends") (string=? k "in"))
                                  (if (pair? (cdr os))
-                                     (go (cdr (cdr os)) (name-of (car (cdr os))) (string=? k "in") abstract mult var region ordered fs)
+                                     (go (cdr (cdr os)) (name-of (car (cdr os))) (string=? k "in") abstract mult var region ordered sfs fs)
                                      (error (string-append "casing: whose part is this sig? " name))))
                                 ((string=? k "var")                                   ; #:var, or #:var @r
                                  (if (and (pair? (cdr os)) (region? (car (cdr os))))
-                                     (go (cdr (cdr os)) parent subset abstract mult #t (name-of (car (cdr os))) ordered fs)
-                                     (go (cdr os) parent subset abstract mult #t "" ordered fs)))
-                                ((string=? k "ordered") (go (cdr os) parent subset abstract mult var region #t fs))
-                                ((pair? o) (go (cdr os) parent subset abstract mult var region ordered (cons (read-field name o) fs)))
+                                     (go (cdr (cdr os)) parent subset abstract mult #t (name-of (car (cdr os))) ordered sfs fs)
+                                     (go (cdr os) parent subset abstract mult #t "" ordered sfs fs)))
+                                ((string=? k "fact")                                  ; #:fact F
+                                 (if (pair? (cdr os))
+                                     (go (cdr (cdr os)) parent subset abstract mult var region ordered (cons (car (cdr os)) sfs) fs)
+                                     (error (string-append "casing: a fact of what? " name))))
+                                ((string=? k "ordered") (go (cdr os) parent subset abstract mult var region #t sfs fs))
+                                ((pair? o) (go (cdr os) parent subset abstract mult var region ordered sfs (cons (read-field name o) fs)))
                                 (else (error (string-append "casing: what is this in a sig? " (shown o))))))))))
-             (go (cdr xs) "" #f #f "set" #f "" #f nil))))
+             (go (cdr xs) "" #f #f "set" #f "" #f nil nil))))
         ((string=? h "fact")
          (let ((body (if (and (pair? xs) (symbol? (car xs)) (pair? (cdr xs))) (cdr xs) xs)))
            (product (sigs (extract m sigs)) (fields (extract m fields)) (facts (cons (conj body) (extract m facts)))
@@ -318,7 +327,7 @@ make `next` a total order of each ordered sig."
             (if (and (check os) (not (field? (extract m fields))))
                 (product (sigs (extract m sigs))
                          (fields (append (extract m fields)
-                                         (list (product (name "next") (owner "") (cols (list (sym "univ") (sym "univ"))) (mult "set") (var #f) (region "")))))
+                                         (list (product (name "next") (owner "") (cols (list (sym "univ") (sym "univ"))) (mult "set") (var #f) (region "") (disj #f)))))
                          (facts (if (order-fixed? m) (extract m facts)
                                     (append (extract m facts)
                                             (append (list (the datum '(all ((b univ)) (and (lone (join b next)) (lone (join next b)))))
@@ -915,6 +924,12 @@ writes every relation that changes in it."
 
 ;;; ------------------------------------------------------------ the problem
 
+"Whether `d` mentions the name `n`."
+(define mentions? (subr ro (datum string) bool)
+  (lambda (d n) (cond ((symbol? d) (string=? (symbol->string d) n))
+                      ((pair? d) (or (mentions? (car d) n) (mentions? (cdr d) n)))
+                      (else #f))))
+
 "The facts the declarations give: sigs within their parents, parts
 disjoint, an abstract sig its parts, multiplicities, and fields within
 their columns with their last column's multiplicity."
@@ -935,7 +950,13 @@ their columns with their last column's multiplicity."
                                                 (append (if (and (extract g abstract) (pair? parts))
                                                             (list (the datum (list (sym "in") (s n) (the datum (cons (sym "union") (names->syms parts))))))
                                                             nil)
-                                                        (disjoint parts))))))
+                                                        (append (disjoint parts)
+                                                                ;; its facts, of each atom: (all ((this S)) F)
+                                                                (letrec ((go (subr ro (datums) datums)
+                                                                               (lambda (k) (if (null? k) nil
+                                                                                               (cons (the datum (list (sym "all") (list (list (sym "this") (s n))) (car k)))
+                                                                                                     (go (cdr k)))))))
+                                                                  (go (extract g facts)))))))))
                        (append fs (sigs (cdr l)))))))
              (names->syms (subr ro (strings) datums) (lambda (l) (if (null? l) nil (cons (sym (car l)) (names->syms (cdr l))))))
              (disjoint (subr ro (strings) datums)
@@ -948,11 +969,25 @@ their columns with their last column's multiplicity."
                (lambda (l)
                  (if (null? l) nil
                      (let* ((f (car l)) (fn (sym (extract f name))) (o (sym (extract f owner)))
-                            (within (the datum (list (sym "in") fn (the datum (cons (sym "->") (if (string=? (extract f owner) "") (extract f cols) (cons o (extract f cols))))))))
-                            (mult (if (string=? (extract f mult) "set") nil
-                                      (list (the datum (list (sym "all") (list (list (sym "%this") o))
-                                                             (list (sym (extract f mult)) (list (sym "join") (sym "%this") fn))))))))
-                       (cons within (append mult (fields (cdr l)))))))))
+                            (this-f (the datum (list (sym "join") (sym "this") fn)))
+                            (each (lambda ((d datum)) (the datum (list (sym "all") (list (list (sym "this") o)) d))))
+                            ;; columns that mention this are each owner's: within them, owner by owner
+                            (own (letrec ((any (subr ro (datums) bool) (lambda (l) (and (pair? l) (or (mentions? (car l) "this") (any (cdr l)))))))
+                                   (any (extract f cols))))
+                            (within (cond ((string=? (extract f owner) "")
+                                           (list (the datum (list (sym "in") fn (the datum (cons (sym "->") (extract f cols)))))))
+                                          (own
+                                           (list (the datum (list (sym "in") fn (the datum (cons (sym "->") (cons o (letrec ((go (subr ro (datums) datums) (lambda (l) (if (null? l) nil (cons (sym "univ") (go (cdr l)))))))
+                                                                                                                (go (extract f cols))))))))
+                                                 (each (the datum (list (sym "in") this-f (the datum (cons (sym "->") (extract f cols))))))))
+                                          (else (list (the datum (list (sym "in") fn (the datum (cons (sym "->") (cons o (extract f cols))))))))))
+                            (mult (if (string=? (extract f mult) "set") nil (list (each (the datum (list (sym (extract f mult)) this-f))))))
+                            ;; #:disj: distinct owners' values apart
+                            (disj (if (extract f disj)
+                                      (list (the datum (list (sym "all") (list (list (sym "this") (sym "that") o (the datum #:disj)))
+                                                             (list (sym "no") (list (sym "inter") this-f (list (sym "join") (sym "that") fn))))))
+                                      nil)))
+                       (append within (append mult (append disj (fields (cdr l))))))))))
       (append (sigs (extract m sigs)) (fields (extract m fields))))))
 
 "A relation's matrix in one state: true on its lower bound, an input on
@@ -1155,7 +1190,7 @@ functions, assertions, and in `goal`."
                                                            (product (sigs (extract m sigs))
                                                                     (fields (append (extract m fields)
                                                                                     (list (product (name (string-append "$" nm)) (owner "")
-                                                                                                   (cols (extract t cols)) (mult "set") (var #f) (region "")))))
+                                                                                                   (cols (extract t cols)) (mult "set") (var #f) (region "") (disj #f)))))
                                                                     (facts (append (if (string=? mult "set") nil (list (the datum (list (sym mult) (dollar nm)))))
                                                                                    (append (if (extract dc disj)
                                                                                                (letrec ((apart (subr ro (strings) datums)

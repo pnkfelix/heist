@@ -1,0 +1,22 @@
+check no-self: no counterexample found (scope 3)
+check best-liked: no counterexample found (scope 3)
+run (some best): instance found (scope 3, 2 Person)
+  Person = {Person$0, Person$1}
+  Key = {}
+  Room = {}
+  Box = {}
+  likes = {Person$1->Person$0}
+  best = {Person$1->Person$0}
+  keys = {}
+  things = {}
+check own-keys: no counterexample found (scope 3)
+check own-things: counterexample found (scope 3)
+  Person = {}
+  Key = {Key$0}
+  Room = {}
+  Box = {Box$0, Box$1}
+  likes = {}
+  best = {}
+  keys = {}
+  things = {Box$0->Key$0, Box$1->Key$0}
+[exit 0]
