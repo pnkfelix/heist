@@ -134,6 +134,38 @@ region `@r`."
                        (else (product (writes ws) (body l)))))))
       (go xs nil))))
 
+"A declaration, `(x y T #:m #:disj)`: its names; its type, an expression;
+its multiplicity, if said (\"\" if not: `one` for a set, `set` for a
+relation, as in Alloy); whether its names are bound to disjoint values."
+(define-type decl (productof (names strings) (type datum) (mult string) (disj bool)))
+(define read-decl (subr ro (datum) decl)
+  (lambda (d)
+    (letrec ((go (subr ro (datums strings) decl)
+               ;; names, up to the type: the last item before the options
+               (lambda (l acc)
+                 (cond ((null? l) (error (string-append "casing: a declaration without a type: " (shown d))))
+                       ((or (null? (cdr l)) (keyword? (car (cdr l))))
+                        (if (null? acc) (error (string-append "casing: a declaration without names: " (shown d)))
+                            (options (cdr l) (product (names (reverse acc)) (type (car l)) (mult "") (disj #f)))))
+                       (else (go (cdr l) (cons (name-of (car l)) acc))))))
+             (options (subr ro (datums decl) decl)
+               (lambda (l dc)
+                 (if (null? l) dc
+                     (let ((k (option-name (car l))))
+                       (cond ((mult-name? k)
+                              (if (string=? (extract dc mult) "")
+                                  (options (cdr l) (product (names (extract dc names)) (type (extract dc type)) (mult k) (disj (extract dc disj))))
+                                  (error (string-append "casing: two multiplicities in " (shown d)))))
+                             ((string=? k "disj")
+                              (options (cdr l) (product (names (extract dc names)) (type (extract dc type)) (mult (extract dc mult)) (disj #t))))
+                             (else (error (string-append "casing: what is this in a declaration? " (shown (car l)))))))))))
+      (go (items d) nil))))
+(define read-decls (subr ro (datums) (listof decl acyclic))
+  (lambda (ds) (if (null? ds) nil (cons (read-decl (car ds)) (read-decls (cdr ds))))))
+"The names declarations declare, in order."
+(define decl-names (subr ro ((listof decl acyclic)) strings)
+  (lambda (ds) (if (null? ds) nil (append (extract (car ds) names) (decl-names (cdr ds))))))
+
 "A conjunction of a body's forms."
 (define conj (subr ro (datums) datum)
   (lambda (fs) (if (and (pair? fs) (null? (cdr fs))) (car fs) (the datum (cons (sym "and") fs)))))
@@ -363,8 +395,20 @@ state s in copy j of the states. Copy 0 is the trace from its start;
 copy 1 on, the loop again, so its states from the loop's; the loop goes
 back from the last copy's last state. A past formula nested d deep needs
 d+1 copies to say at copy d what it says at every later pass
-(Pardinus's unrolling; Latvala et al., \"Simple is better\", 2005)."
-(define-type ctx (productof (c circuit) (n int) (k int) (u int) (loops ivec) (rels (listof rel acyclic)) (model model) (universe universe)))
+(Pardinus's unrolling; Latvala et al., \"Simple is better\", 2005).
+And the polarity of the formula being translated: 1 if it stands
+positively in what is asserted, -1 negatively, 0 both or not known; an
+existential quantifier where it stands may be skolemized (`ground`)."
+(define-type ctx (productof (c circuit) (n int) (k int) (u int) (loops ivec) (rels (listof rel acyclic)) (model model) (universe universe)
+                           (pol int)))
+(define with-pol (subr ro (ctx int) ctx)
+  (lambda (x p)
+    (if (= p (extract x pol)) x
+        (product (c (extract x c)) (n (extract x n)) (k (extract x k)) (u (extract x u)) (loops (extract x loops)) (rels (extract x rels))
+                 (model (extract x model)) (universe (extract x universe)) (pol p)))))
+"`x` with its polarity reversed, and neither."
+(define flipped (subr ro (ctx) ctx) (lambda (x) (with-pol x (- 0 (extract x pol)))))
+(define neutral (subr ro (ctx) ctx) (lambda (x) (with-pol x 0)))
 
 "What a name is bound to: a value now, or an expression evaluated where
 it is used (a predicate's argument, a `let`'s), in its own scope."
@@ -496,12 +540,12 @@ state in the next copy (the last copy's own, from the last)."
                 ((string=? h "^") (m-closure c n (binary)))
                 ((string=? h "*") (m-rclosure c n (binary)))
                 ((string=? h "if") (let ((a (expr x (nth d 2) i e)) (b (expr x (nth d 3) i e)))
-                                     (if (= (m-arity a) (m-arity b)) (m-ite c (form x (nth d 1) i e) a b)
+                                     (if (= (m-arity a) (m-arity b)) (m-ite c (form (neutral x) (nth d 1) i e) a b)
                                          (arity-error d "branches of different arities"))))
                 ((or (string=? h "prime") (string=? h "quote"))
                  (after-expr x i (lambda ((j int)) (expr x (nth d 1) j e))))
                 ((string=? h "let") (expr x (nth d 2) i (let-env x (items (nth d 1)) e)))
-                ((string=? h "set") (comprehension x (items (nth d 1)) (nth d 2) i e))
+                ((string=? h "set") (comprehension (neutral x) (items (nth d 1)) (nth d 2) i e))
                 ((string=? h "") (arity-error d "not an expression"))
                 (else
                  (tagcase (find-def (extract x model) h)
@@ -519,61 +563,116 @@ state in the next copy (the last copy's own, from the last)."
 "A call's scope: each parameter bound to its argument, by name."
 (define call-env (subr cb-eff (ctx def-info datums int env) env)
   (lambda (x f args i e)
-    (letrec ((names (subr ro (datums strings) strings)
-               ;; ((x y T) (z U)): x y z
-               (lambda (ds acc) (if (null? ds) (reverse acc)
-                                    (names (cdr ds) (letrec ((go (subr ro (datums strings) strings)
-                                                               (lambda (l acc) (if (null? (cdr l)) acc (go (cdr l) (cons (name-of (car l)) acc))))))
-                                                      (go (items (car ds)) acc))))))
-             (bind (subr cb-eff (strings datums env) env)
+    (letrec ((bind (subr cb-eff (strings datums env) env)
                (lambda (ps as acc)
                  (cond ((and (null? ps) (null? as)) acc)
                        ((or (null? ps) (null? as)) (error (string-append "casing: wrong number of arguments to " (extract f name))))
                        (else (bind (cdr ps) (cdr as) (cons (product (name (car ps)) (now #f) (val (m-none 1 1)) (code (car as)) (scope e)) acc)))))))
-      (bind (names (extract f params) nil) args nil))))
+      (bind (decl-names (read-decls (extract f params))) args nil))))
 
-"Every binding of declarations `((x y T) …)`, each later one's type in
-the scope of those before: the bindings and when each holds."
+"Every binding of declarations `((x y T #:m #:disj) …)`, each later one's
+type in the scope of those before: the bindings and when each holds.
+A variable of multiplicity `one` ranges over its type's tuples. One of
+`lone`, `some` or `set` (higher-order) ranges over sets of them:
+- if `skolem` (the quantifier is existential where it stands), as one
+  set of fresh inputs to the solver, which picks it. Each translation of
+  the quantifier gets its own, so this holds under `all` (a skolem
+  function, one set for each binding outside) and in each state;
+- if not, as one binding for each set, which casing allows up to
+  `most-sets` (Alloy refuses higher-order quantifiers it cannot
+  skolemize).
+The names of a `#:disj` declaration are bound to disjoint values."
 (define-type grounding (productof (guard int) (scope env) (atoms ints)))
-(define ground (subr cb-eff (ctx datums int env) (listof grounding acyclic))
-  (lambda (x decls i e)
-    (letrec ((names-type (subr ro (datums strings) (productof (names strings) (type datum)))
-               (lambda (l acc) (if (null? (cdr l)) (product (names (reverse acc)) (type (car l))) (names-type (cdr l) (cons (name-of (car l)) acc)))))
-             ;; flatten ((x y T)) into (x T) (y T)
-             (flat (subr ro (datums) (listof (productof (name string) (type datum)) acyclic))
-               (lambda (ds) (if (null? ds) nil
-                                (let ((nt (names-type (items (car ds)) nil)))
-                                  (append (letrec ((go (subr ro (strings) (listof (productof (name string) (type datum)) acyclic))
-                                                         (lambda (ns) (if (null? ns) nil (cons (product (name (car ns)) (type (extract nt type))) (go (cdr ns)))))))
-                                            (go (extract nt names)))
-                                          (flat (cdr ds)))))))
-             (go (subr cb-eff ((listof (productof (name string) (type datum)) acyclic) grounding) (listof grounding acyclic))
-               (lambda (ds g)
-                 (if (null? ds) (list g)
-                     (let* ((m (expr x (extract (car ds) type) i (extract g scope))) (k (m-arity m)))
-                       (letrec ((each (subr cb-eff (int) (listof grounding acyclic))
-                                  (lambda (t)
-                                    (if (>= t (m-size m)) nil
-                                        (let ((b (m-ref m t)))
-                                          (if (= b c-false) (each (+ t 1))
-                                              (append (go (cdr ds) (product (guard (c-and2 (cx x) (extract g guard) b))
-                                                                            (scope (bind-now (extract (car ds) name) (m-tuple (extract x n) k t) (extract g scope)))
-                                                                            (atoms (cons t (extract g atoms)))))
-                                                      (each (+ t 1)))))))))
-                         (each 0)))))))
-      (go (flat decls) (product (guard c-true) (scope e) (atoms nil))))))
+(define most-sets int 1024)
+(define ground (subr cb-eff (ctx datums int env bool) (listof grounding acyclic))
+  (lambda (x decls i e skolem)
+    (let ((c (cx x)) (n (extract x n)))
+      (letrec ((flat (subr ro ((listof decl acyclic)) (listof (productof (name string) (decl decl) (apart strings)) acyclic))
+                 ;; each name, its declaration, and the names before it it is disjoint from
+                 (lambda (ds)
+                   (if (null? ds) nil
+                       (letrec ((go (subr ro (strings strings) (listof (productof (name string) (decl decl) (apart strings)) acyclic))
+                                  (lambda (ns before)
+                                    (if (null? ns) (flat (cdr ds))
+                                        (cons (product (name (car ns)) (decl (car ds)) (apart (if (extract (car ds) disj) before nil)))
+                                              (go (cdr ns) (cons (car ns) before)))))))
+                         (go (extract (car ds) names) nil)))))
+               (subsets (subr spin (ints) (listof ints acyclic))
+                 (lambda (l) (if (null? l) (list nil)
+                                 (let ((r (subsets (cdr l))))
+                                   (append r (letrec ((go (subr spin ((listof ints acyclic)) (listof ints acyclic))
+                                                        (lambda (ss) (if (null? ss) nil (cons (cons (car l) (car ss)) (go (cdr ss)))))))
+                                               (go r)))))))
+               (go (subr cb-eff ((listof (productof (name string) (decl decl) (apart strings)) acyclic) grounding) (listof grounding acyclic))
+                 (lambda (ds g)
+                   (if (null? ds) (list g)
+                       (let* ((en (car ds)) (dc (extract en decl)) (sc (extract g scope))
+                              (tm (expr (neutral x) (extract dc type) i sc)) (k (m-arity tm))
+                              (mult (cond ((not (string=? (extract dc mult) "")) (extract dc mult)) ((= k 1) "one") (else "set")))
+                              ;; v bound, when `when` holds and v is apart from those it must be
+                              (bind (lambda ((v matrix) (when int) (atoms ints))
+                                      (let ((gd (c-and c (cons (extract g guard)
+                                                               (cons when
+                                                                     (letrec ((apart (subr cb-eff (strings) ints)
+                                                                                       (lambda (l) (if (null? l) nil
+                                                                                                       (cons (tagcase (lookup sc (car l))
+                                                                                                               (some b (m-no c (m-inter c v (extract b val))))
+                                                                                                               (none u c-true))
+                                                                                                             (apart (cdr l)))))))
+                                                                       (apart (extract en apart))))))))
+                                        (if (= gd c-false) nil
+                                            (go (cdr ds) (product (guard gd) (scope (bind-now (extract en name) v sc)) (atoms atoms))))))))
+                         (cond
+                           ((string=? mult "one")
+                            (letrec ((each (subr cb-eff (int) (listof grounding acyclic))
+                                       (lambda (t)
+                                         (if (>= t (m-size tm)) nil
+                                             (append (bind (m-tuple n k t) (m-ref tm t) (cons t (extract g atoms))) (each (+ t 1)))))))
+                              (each 0)))
+                           (skolem
+                            (let ((v (m-build n k (lambda ((t int)) (if (= (m-ref tm t) c-false) c-false (c-input! c))))))
+                              (bind v (c-and2 c (m-subset c v tm) (mult-holds c mult v)) (extract g atoms))))
+                           (else
+                            (let ((ts (letrec ((go (subr cb-eff (int) ints)
+                                                 (lambda (t) (cond ((>= t (m-size tm)) nil) ((= (m-ref tm t) c-false) (go (+ t 1))) (else (cons t (go (+ t 1))))))))
+                                        (go 0))))
+                              (if (> (power 2 (list-length ts)) most-sets)
+                                  (error (string-append "casing: a higher-order quantifier that cannot be skolemized, over more than "
+                                                        (string-append (int->string most-sets) (string-append " sets: " (extract en name)))))
+                                  (letrec ((each (subr cb-eff ((listof ints acyclic)) (listof grounding acyclic))
+                                             (lambda (ss)
+                                               (if (null? ss) nil
+                                                   (let ((sz (list-length (car ss))))
+                                                     (append (if (or (and (string=? mult "lone") (> sz 1)) (and (string=? mult "some") (= sz 0))) nil
+                                                                 (bind (m-build n k (lambda ((t int)) (if (in-ints? t (car ss)) c-true c-false)))
+                                                                       (c-and c (letrec ((go (subr cb-eff (ints) ints) (lambda (l) (if (null? l) nil (cons (m-ref tm (car l)) (go (cdr l)))))))
+                                                                                  (go (car ss))))
+                                                                       (extract g atoms)))
+                                                             (each (cdr ss))))))))
+                                    (each (subsets ts))))))))))))
+        (go (flat (read-decls decls)) (product (guard c-true) (scope e) (atoms nil)))))))
+
+"Whether `v` has multiplicity `m`."
+(define mult-holds (subr cb-eff (circuit string matrix) int)
+  (lambda (c m v) (cond ((string=? m "one") (m-one c v)) ((string=? m "lone") (m-lone c v)) ((string=? m "some") (m-some c v)) (else c-true))))
 
 "{decls | f}: of unary declarations, a relation of their atoms."
 (define comprehension (subr cb-eff (ctx datums datum int env) matrix)
   (lambda (x decls f i e)
-    (let* ((gs (ground x decls i e)) (n (extract x n))
-           (k (if (null? gs) (list-length decls) (list-length (extract (car gs) atoms))))
+    (let* ((ds (read-decls decls)) (k (list-length (decl-names ds)))
+           (gs (letrec ((check (subr ro ((listof decl acyclic)) bool)
+                              (lambda (l) (or (null? l)
+                                              (and (or (string=? (extract (car l) mult) "") (string=? (extract (car l) mult) "one")) (check (cdr l)))))))
+                 (if (check ds) (ground x decls i e #f)
+                     (error "casing: a comprehension's variables are each one atom"))))
+           (n (extract x n))
            (v (the ivec (make-array (power n k) c-false))))
       (letrec ((index (subr ro (ints int) int) (lambda (as acc) (if (null? as) acc (index (cdr as) (+ (* acc n) (car as))))))
                (go (subr cb-eff ((listof grounding acyclic)) matrix)
                  (lambda (l)
                    (if (null? l) (product (arity k) (cells v))
-                       (let ((t (index (reverse (extract (car l) atoms)) 0)))
+                       (let ((t (if (= (list-length (extract (car l) atoms)) k) (index (reverse (extract (car l) atoms)) 0)
+                                    (error "casing: a comprehension's variables are each one atom"))))
                          (begin (array-set! v t (c-and2 (cx x) (extract (car l) guard) (form x f i (extract (car l) scope))))
                                 (go (cdr l))))))))
         (go gs)))))
@@ -606,12 +705,19 @@ the scope of those before: the bindings and when each holds."
                (same2 (subr cb-eff ((subr cb-eff (matrix matrix) int)) int)
                  (lambda (g) (let ((a (e1)) (b (e2))) (if (= (m-arity a) (m-arity b)) (g a b) (arity-error d "operands of different arities")))))
                (quantified? (subr ro () bool) (lambda () (= (list-length args) 2)))
+               ;; a quantifier: its variables skolemized where it is existential
+               ;; (`some` positively, `all` or `no` negatively); its body's
+               ;; polarity as the quantifier's (`no`'s reversed; `one`'s and
+               ;; `lone`'s both ways)
                (quant (subr cb-eff (string) int)
                  (lambda (q)
-                   (let ((gs (ground x (items (car args)) i e)))
+                   (let* ((pol (extract x pol))
+                          (skolem (or (and (string=? q "some") (= pol 1)) (and (or (string=? q "all") (string=? q "no")) (= pol -1))))
+                          (y (cond ((string=? q "no") (flipped x)) ((or (string=? q "one") (string=? q "lone")) (neutral x)) (else x)))
+                          (gs (ground x (items (car args)) i e skolem)))
                      (letrec ((pairs (subr cb-eff ((listof grounding acyclic)) ints)
                                 (lambda (l) (if (null? l) nil
-                                                (cons (let ((b (form x (car (cdr args)) i (extract (car l) scope))) (g (extract (car l) guard)))
+                                                (cons (let ((b (form y (car (cdr args)) i (extract (car l) scope))) (g (extract (car l) guard)))
                                                         (if (string=? q "all") (c-implies c g b) (c-and2 c g b)))
                                                       (pairs (cdr l)))))))
                        (let ((ps (pairs gs)))
@@ -646,12 +752,12 @@ the scope of those before: the bindings and when each holds."
           ((string=? h "no") (if (quantified?) (quant "no") (m-no c (e1))))
           ((string=? h "one") (if (quantified?) (quant "one") (m-one c (e1))))
           ((string=? h "lone") (if (quantified?) (quant "lone") (m-lone c (e1))))
-          ((string=? h "not") (c-not (f1 i)))
+          ((string=? h "not") (c-not (form (flipped x) (car args) i e)))
           ((string=? h "and") (c-and c (all-forms args)))
           ((string=? h "or") (c-or c (all-forms args)))
-          ((or (string=? h "implies") (string=? h "=>")) (c-implies c (f1 i) (f2 i)))
-          ((string=? h "iff") (c-iff c (f1 i) (f2 i)))
-          ((string=? h "if") (c-ite c (f1 i) (f2 i) (form x (nth d 3) i e)))
+          ((or (string=? h "implies") (string=? h "=>")) (c-implies c (form (flipped x) (car args) i e) (f2 i)))
+          ((string=? h "iff") (c-iff c (form (neutral x) (car args) i e) (form (neutral x) (car (cdr args)) i e)))
+          ((string=? h "if") (c-ite c (form (neutral x) (car args) i e) (f2 i) (form x (nth d 3) i e)))
           ((string=? h "let") (form x (nth d 2) i (let-env x (items (nth d 1)) e)))
           ;; time
           ((string=? h "after") (after-form x i f1))
@@ -806,7 +912,7 @@ the rest of its upper, false elsewhere."
           (go 0))
         (c-assert! c (c-exactly-one c (letrec ((go (subr cb-eff (int) ints) (lambda (j) (if (>= j k) nil (cons (array-ref loops j) (go (+ j 1)))))))
                                         (go 0))))
-        (product (c c) (n n) (k k) (u copies) (loops loops) (rels (append sig-rels field-rels)) (model m) (universe u))))))
+        (product (c c) (n n) (k k) (u copies) (loops loops) (rels (append sig-rels field-rels)) (model m) (universe u) (pol 1))))))
 
 ;;; ------------------------------------------------------------ what was found
 
@@ -877,12 +983,8 @@ false."
               (tagcase (find-def m (symbol->string target))
                 (none u (error (string-append "casing: no predicate " (shown target))))
                 (some f (product (name (extract f name)) (check #f)
-                                 (goal (the datum (cons target (letrec ((names (subr ro (datums) datums)
-                                                                          (lambda (ds) (if (null? ds) nil
-                                                                                           (append (letrec ((go (subr ro (datums) datums) (lambda (l) (if (null? (cdr l)) nil (cons (car l) (go (cdr l)))))))
-                                                                                                     (go (items (car ds))))
-                                                                                                   (names (cdr ds)))))))
-                                                                 (names (extract f params))))))
+                                 (goal (the datum (cons target (letrec ((syms (subr ro (strings) datums) (lambda (l) (if (null? l) nil (cons (sym (car l)) (syms (cdr l)))))))
+                                                                 (syms (decl-names (read-decls (extract f params))))))))
                                  (params (extract f params)))))
               (product (name "") (check #f) (goal target) (params nil)))))))
 
@@ -913,24 +1015,36 @@ functions, assertions, and in `goal`."
     (let* ((g (command-goal m d))
            (sc (read-scope m (cdr (cdr (items d)))))
            (u (make-universe m sc))
-           ;; a run's parameters become sigs of their own: one atom of their type
-           (m2 (letrec ((go (subr ro (datums model) model)
-                          (lambda (ps m)
-                            (if (null? ps) m
-                                (let* ((p (items (car ps))) (t (car (reverse p))))
-                                  (go (cdr ps)
-                                      (letrec ((each (subr ro (datums model) model)
-                                                 (lambda (ns m)
-                                                   (if (null? (cdr ns)) m
-                                                       (each (cdr ns)
-                                                             (product (sigs (extract m sigs))
-                                                                      (fields (append (extract m fields)
-                                                                                      (list (product (name (string-append "$" (name-of (car ns)))) (owner "")
-                                                                                                     (cols (list t)) (mult "set") (var #f) (region "")))))
-                                                                      (facts (cons (the datum (list (sym "one") (sym (string-append "$" (name-of (car ns)))))) (extract m facts)))
-                                                                      (defs (extract m defs)) (asserts (extract m asserts)) (commands (extract m commands))))))))
-                                        (each p m))))))))
-                 (go (extract g params) m)))
+           ;; a run's parameters become relations of their own, of their
+           ;; type and multiplicity (and apart, if #:disj), as Alloy skolemizes
+           (m2 (letrec ((go (subr ro ((listof decl acyclic) model) model)
+                          (lambda (ds m)
+                            (if (null? ds) m
+                                (let* ((dc (car ds)) (t (field-type (extract dc type)))
+                                       (mult (cond ((not (string=? (extract dc mult) "")) (extract dc mult))
+                                                   ((= (list-length (extract t cols)) 1) "one") (else "set")))
+                                       (dollar (lambda ((nm string)) (sym (string-append "$" nm)))))
+                                  (letrec ((each (subr ro (strings strings model) model)
+                                             (lambda (ns before m)
+                                               (if (null? ns) (go (cdr ds) m)
+                                                   (let ((nm (car ns)))
+                                                     (each (cdr ns) (cons nm before)
+                                                           (product (sigs (extract m sigs))
+                                                                    (fields (append (extract m fields)
+                                                                                    (list (product (name (string-append "$" nm)) (owner "")
+                                                                                                   (cols (extract t cols)) (mult "set") (var #f) (region "")))))
+                                                                    (facts (append (if (string=? mult "set") nil (list (the datum (list (sym mult) (dollar nm)))))
+                                                                                   (append (if (extract dc disj)
+                                                                                               (letrec ((apart (subr ro (strings) datums)
+                                                                                                                 (lambda (l) (if (null? l) nil
+                                                                                                                                 (cons (the datum (list (sym "no") (list (sym "inter") (dollar nm) (dollar (car l)))))
+                                                                                                                                       (apart (cdr l)))))))
+                                                                                                 (apart before))
+                                                                                               nil)
+                                                                                           (extract m facts))))
+                                                                    (defs (extract m defs)) (asserts (extract m asserts)) (commands (extract m commands)))))))))
+                                    (each (extract dc names) nil m)))))))
+                 (go (read-decls (extract g params)) m)))
            (goal (if (null? (extract g params)) (extract g goal)
                      ;; (p x y) with x y the fresh relations
                      (the datum (cons (car (items (extract g goal)))

@@ -82,6 +82,16 @@ for a name.
   - multiplicities: `(some e)`, `(no e)`, `(one e)`, `(lone e)`;
   - quantifiers: `(all ((x y T) (z U)) f)`, and `some`, `no`, `one` and
     `lone` with declarations. A declaration may name those before it.
+- **Declarations** (of quantifiers, comprehensions and parameters):
+  `(x y T option…)`, the names, the type, then options:
+  - a multiplicity: `#:one` (the default for a set), `#:lone`, `#:some`
+    or `#:set` (the default for a relation, as in Alloy). Any but `one`
+    makes the variable higher-order: it ranges over sets of `T`'s tuples.
+  - `#:disj`: the names are bound to disjoint values, as Alloy's
+    `all disj x, y: S`: a guard, implied under `all`, conjoined under the
+    others.
+
+  A comprehension's variables are each one atom.
   - connectives: `not`, `and`, `or`, `implies` (or `=>`), `iff`,
     `(if f g h)`, `let`, `true`, `false`;
   - predicate calls.
@@ -134,8 +144,30 @@ for a name.
   - Each temporal operator walks the positions in their order for each loop
     the trace may have (`future-seq`, `past-seq`), under that loop's input.
     `tests/past-loop.cs` checks this on formulas that need it.
-- **A run with parameters.** Each parameter is a fresh relation, `one` of
-  its type, and is shown as `$name`, as Alloy skolemizes.
+- **A run with parameters.** Each parameter is a fresh relation of its
+  type, with its multiplicity (and apart from the others of a `#:disj`
+  declaration), shown as `$name`, as Alloy skolemizes.
+- **`one` and `lone` over several variables** count the bindings
+  together, as Alloy's comprehension does: `(one ((a b S)) f)` says one
+  pair.
+
+**More than Alloy: higher-order quantifiers.** Alloy translates a
+higher-order quantifier only when Kodkod can skolemize it; otherwise
+"Analysis cannot be performed since it requires higher-order
+quantification that could not be skolemized". casing knows, as it
+translates, each formula's polarity: positive, negative, or both (under
+`iff`, an `if`'s condition, `one`/`lone`, and in an expression).
+- **Where a quantifier is existential** (`some` positively, `all` or `no`
+  negatively), its variable is a set of fresh inputs to the solver, with
+  its multiplicity: skolemization done during the translation. Each
+  translation of the quantifier gets its own set, so this holds under
+  `all` (as a skolem function would, one set for each binding outside)
+  and under temporal operators (one for each position), which Kodkod
+  skolemizes only at the top.
+- **Elsewhere**, a universal over sets in a fact, say, the variable is
+  bound to each set of its type's tuples in turn, up to `most-sets`
+  (1024) of them: so `(all ((s Node #:some)) …)`, which says a graph is
+  strongly connected, works at small scopes (`tests/decls.cs`).
 
 **Not as Alloy.**
 - **Integers are naturals, in unary.** A count is a list of circuits, the
@@ -213,12 +245,8 @@ a model can say:
    wraps, or something more FX-like, such as arithmetic whose overflow is
    reported rather than wrapped.
 2. **Declarations.**
-   - **Multiplicities of quantified variables and parameters:**
-     `all x: set S`, `some s: lone S`, parameters that are not `one`.
-     Alloy quantifies over higher-order things when it can skolemize them
-     (`some r: A -> B | …` at the top); casing grounds every quantifier
-     over atoms, and so does neither.
-   - **`disj`**, in quantifiers (`all disj x, y: S`) and in fields.
+   - **`disj` fields** (`disj f: …`: no two atoms share a value).
+     Quantifiers and parameters have `#:disj`.
    - **Per-column multiplicities** in an arrow, all sixteen of
      `A m -> n B` (`ONE_ARROW_LONE` and the rest). casing has only the
      last column's, as a field's option. They would be written in the
@@ -267,7 +295,7 @@ a model can say:
 - **Cross-checking against Alloy itself.** Run the same models in Alloy 6
   and compare the answers. This needs a JDK newer than this machine's 11.
 
-**A suggested order:** `disj` and declaration multiplicities (with
-skolemization at the top), which nearly every real model uses;
-`util/ordering`, which most models of protocols use; sig facts with
-`this`; then integers, after their design.
+**A suggested order:** `util/ordering`, which most models of protocols
+use; sig facts with `this`; then integers, after their design. (`#:disj`
+and declarations' multiplicities, first on the list, were done
+2026-11-08.)
