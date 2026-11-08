@@ -41,6 +41,10 @@
 (define shown-all (subr ro (datums) strings)
   (lambda (l) (if (null? l) nil (cons (shown (car l)) (shown-all (cdr l))))))
 (define sym (subr ro (string) datum) (lambda (s) (string->symbol s)))
+"Whether a name is a region's, `@r`."
+(define region-name? (subr ro (string) bool)
+  (lambda (n) (and (> (string-length n) 1) (char=? (string-ref n 0) #\@))))
+(define region? (subr ro (datum) bool) (lambda (d) (and (symbol? d) (region-name? (name-of d)))))
 (define member-string? (subr ro (string strings) bool)
   (lambda (s l) (and (pair? l) (or (string=? s (car l)) (member-string? s (cdr l))))))
 
@@ -49,13 +53,14 @@
 "A sig: its parent (\"\" if none), whether it is a subset (`in`) of the
 parent, rather than a part of it (`extends`); abstract; its multiplicity
 (\"set\", \"one\", \"lone\", \"some\"); whether it changes from state to
-state."
-(define-type sig-info (productof (name string) (parent string) (subset bool) (abstract bool) (mult string) (var bool)))
+state, and the region it changes in (\"\" if none)."
+(define-type sig-info (productof (name string) (parent string) (subset bool) (abstract bool) (mult string) (var bool) (region string)))
 "A field of `owner`: the columns after the owner's (expressions, sig
-names most often), the multiplicity of the last, and whether it changes."
-(define-type field-info (productof (name string) (owner string) (cols datums) (mult string) (var bool)))
+names most often), the multiplicity of the last, whether it changes, and
+the region it changes in (\"\" if none)."
+(define-type field-info (productof (name string) (owner string) (cols datums) (mult string) (var bool) (region string)))
 "A predicate, function or event: its declarations `((x T) …)`, its body;
-an event's relations it writes (the rest are unchanged)."
+an event's relations and regions (`@r`) it writes (the rest are unchanged)."
 (define-type def-info (productof (name string) (params datums) (body datum) (fun bool) (event bool) (writes strings)))
 (define-type named (productof (name string) (body datum)))
 (define-type model
@@ -95,20 +100,25 @@ an event's relations it writes (the rest are unchanged)."
                                      (facts (extract m facts)) (defs (extract m defs)) (asserts (extract m asserts)) (commands (extract m commands)))
                             (let* ((o (car os)) (oh (head o)))
                               (cond
-                                ((sym? o "abstract") (go (cdr os) (product (name name) (parent (extract s parent)) (subset (extract s subset)) (abstract #t) (mult (extract s mult)) (var (extract s var))) fs))
-                                ((sym? o "var") (go (cdr os) (product (name name) (parent (extract s parent)) (subset (extract s subset)) (abstract (extract s abstract)) (mult (extract s mult)) (var #t)) fs))
+                                ((sym? o "abstract") (go (cdr os) (product (name name) (parent (extract s parent)) (subset (extract s subset)) (abstract #t) (mult (extract s mult)) (var (extract s var)) (region (extract s region))) fs))
+                                ((sym? o "var")           ; var, or var @r: the sig changes (in r)
+                                 (let ((r (if (and (pair? (cdr os)) (region? (car (cdr os)))) (name-of (car (cdr os))) "")))
+                                   (go (if (string=? r "") (cdr os) (cdr (cdr os)))
+                                       (product (name name) (parent (extract s parent)) (subset (extract s subset)) (abstract (extract s abstract)) (mult (extract s mult)) (var #t) (region r)) fs)))
                                 ((or (sym? o "one") (sym? o "lone") (sym? o "some"))
-                                 (go (cdr os) (product (name name) (parent (extract s parent)) (subset (extract s subset)) (abstract (extract s abstract)) (mult (name-of o)) (var (extract s var))) fs))
+                                 (go (cdr os) (product (name name) (parent (extract s parent)) (subset (extract s subset)) (abstract (extract s abstract)) (mult (name-of o)) (var (extract s var)) (region (extract s region))) fs))
                                 ((or (string=? oh "extends") (string=? oh "in"))
-                                 (go (cdr os) (product (name name) (parent (name-of (nth o 1))) (subset (string=? oh "in")) (abstract (extract s abstract)) (mult (extract s mult)) (var (extract s var))) fs))
-                                ((string=? oh "var")       ; (var f T): a field that changes
-                                 (let ((t (field-type (nth o 2))))
-                                   (go (cdr os) s (cons (product (name (name-of (nth o 1))) (owner name) (cols (extract t cols)) (mult (extract t mult)) (var #t)) fs))))
+                                 (go (cdr os) (product (name name) (parent (name-of (nth o 1))) (subset (string=? oh "in")) (abstract (extract s abstract)) (mult (extract s mult)) (var (extract s var)) (region (extract s region))) fs))
+                                ((string=? oh "var")       ; (var f T) or (var @r f T): a field that changes (in r)
+                                 (let* ((r (if (region? (nth o 1)) (name-of (nth o 1)) ""))
+                                        (j (if (string=? r "") 1 2))
+                                        (t (field-type (nth o (+ j 1)))))
+                                   (go (cdr os) s (cons (product (name (name-of (nth o j))) (owner name) (cols (extract t cols)) (mult (extract t mult)) (var #t) (region r)) fs))))
                                 ((pair? o)                 ; (f T): a field
                                  (let ((t (field-type (nth o 1))))
-                                   (go (cdr os) s (cons (product (name (name-of (car o))) (owner name) (cols (extract t cols)) (mult (extract t mult)) (var #f)) fs))))
+                                   (go (cdr os) s (cons (product (name (name-of (car o))) (owner name) (cols (extract t cols)) (mult (extract t mult)) (var #f) (region "")) fs))))
                                 (else (error (string-append "casing: what is this in a sig? " (shown o))))))))))
-             (go opts (product (name name) (parent "") (subset #f) (abstract #f) (mult "set") (var #f)) nil))))
+             (go opts (product (name name) (parent "") (subset #f) (abstract #f) (mult "set") (var #f) (region "")) nil))))
         ((string=? h "fact")
          (let ((body (if (and (pair? xs) (symbol? (car xs)) (pair? (cdr xs))) (cdr xs) xs)))
            (product (sigs (extract m sigs)) (fields (extract m fields)) (facts (cons (conj body) (extract m facts)))
@@ -164,6 +174,26 @@ an event's relations it writes (the rest are unchanged)."
                       (letrec ((go (subr ro ((listof field-info acyclic)) strings)
                                  (lambda (l) (cond ((null? l) nil) ((extract (car l) var) (cons (extract (car l) name) (go (cdr l)))) (else (go (cdr l)))))))
                         (go (extract m fields))))))
+
+"The names of the relations that change in region `r`."
+(define region-names (subr ro (model string) strings)
+  (lambda (m r) (append (letrec ((go (subr ro ((listof sig-info acyclic)) strings)
+                                   (lambda (l) (cond ((null? l) nil) ((string=? (extract (car l) region) r) (cons (extract (car l) name) (go (cdr l)))) (else (go (cdr l)))))))
+                          (go (extract m sigs)))
+                        (letrec ((go (subr ro ((listof field-info acyclic)) strings)
+                                   (lambda (l) (cond ((null? l) nil) ((string=? (extract (car l) region) r) (cons (extract (car l) name) (go (cdr l)))) (else (go (cdr l)))))))
+                          (go (extract m fields))))))
+"The relations an event's `writes` names: a relation that changes names
+itself, and a region `@r` every relation that changes in it."
+(define written (subr ro (model strings) strings)
+  (lambda (m ns)
+    (if (null? ns) nil
+        (let ((n (car ns)) (rest (written m (cdr ns))))
+          (cond ((region-name? n)
+                 (let ((rs (region-names m n)))
+                   (if (null? rs) (error (string-append "casing: no relation changes in region " n)) (append rs rest))))
+                ((member-string? n (var-names m)) (cons n rest))
+                (else (error (string-append "casing: written, but it does not change: " n))))))))
 
 ;;; ------------------------------------------------------------ scopes and bounds
 
@@ -593,12 +623,17 @@ the scope of those before: the bindings and when each holds."
           ((string=? h "since") (per-loop x (lambda ((l int)) (until-along c f1 f2 (reverse (past-seq x i l))))))
           ((string=? h "triggered")
            (c-not (per-loop x (lambda ((l int)) (until-along c (lambda ((j int)) (c-not (f1 j))) (lambda ((j int)) (c-not (f2 j))) (reverse (past-seq x i l)))))))
-          ;; the relations named unchanged in the next state
+          ;; the relations named unchanged in the next state; a region @r
+          ;; names every relation that changes in it
           ((string=? h "unchanged")
            (c-and c (letrec ((go (subr cb-eff (datums) ints)
-                               (lambda (l) (if (null? l) nil
-                                               (cons (m-equal c (after-expr x i (lambda ((j int)) (expr x (car l) j e))) (expr x (car l) i e))
-                                                     (go (cdr l)))))))
+                               (lambda (l) (cond ((null? l) nil)
+                                                 ((region? (car l))
+                                                  (go (append (letrec ((syms (subr ro (strings) datums) (lambda (ns) (if (null? ns) nil (cons (sym (car ns)) (syms (cdr ns)))))))
+                                                                (syms (written (extract x model) (list (name-of (car l))))))
+                                                              (cdr l))))
+                                                 (else (cons (m-equal c (after-expr x i (lambda ((j int)) (expr x (car l) j e))) (expr x (car l) i e))
+                                                             (go (cdr l))))))))
                       (go args))))
           ((string=? h "stutter")
            (form x (the datum (cons (sym "unchanged") (letrec ((go (subr ro (strings) datums) (lambda (l) (if (null? l) nil (cons (sym (car l)) (go (cdr l)))))))
@@ -611,16 +646,18 @@ the scope of those before: the bindings and when each holds."
              (none u (arity-error d "unknown predicate")))))))))
 
 "A predicate's or event's call. An event's frame: every relation that
-changes and that it does not write is unchanged."
+changes and that it does not write is unchanged. A region it writes
+writes every relation that changes in it."
 (define call (subr cb-eff (ctx def-info datums int env) int)
   (lambda (x f args i e)
-    (let ((body (form x (extract f body) i (call-env x f args i e))))
+    (let ((body (form x (extract f body) i (call-env x f args i e)))
+          (writes (written (extract x model) (extract f writes))))
       (if (not (extract f event)) body
           (c-and2 (cx x) body
                   (form x (the datum (cons (sym "unchanged")
                                            (letrec ((go (subr ro (strings) datums)
                                                       (lambda (l) (cond ((null? l) nil)
-                                                                        ((member-string? (car l) (extract f writes)) (go (cdr l)))
+                                                                        ((member-string? (car l) writes) (go (cdr l)))
                                                                         (else (cons (sym (car l)) (go (cdr l))))))))
                                              (go (var-names (extract x model))))))
                         i nil))))))
@@ -844,7 +881,7 @@ functions, assertions, and in `goal`."
                                                              (product (sigs (extract m sigs))
                                                                       (fields (append (extract m fields)
                                                                                       (list (product (name (string-append "$" (name-of (car ns)))) (owner "")
-                                                                                                     (cols (list t)) (mult "set") (var #f)))))
+                                                                                                     (cols (list t)) (mult "set") (var #f) (region "")))))
                                                                       (facts (cons (the datum (list (sym "one") (sym (string-append "$" (name-of (car ns)))))) (extract m facts)))
                                                                       (defs (extract m defs)) (asserts (extract m asserts)) (commands (extract m commands))))))))
                                         (each p m))))))))

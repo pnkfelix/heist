@@ -1,0 +1,34 @@
+check switch-alone: no counterexample found (scope 3, 1 Lamp, 1 Door, 2 Guest, steps 1..3)
+check enter-alone: no counterexample found (scope 3, 1 Lamp, 1 Door, 2 Guest, steps 1..3)
+check prop-dims: counterexample found (scope 3, 1 Lamp, 1 Door, 1 Guest, steps 1..3), 2 states
+  Lamp = {Lamp$0}
+  Door = {Door$0}
+state 0:
+  Guest = {}
+  on = {}
+  level = {}
+  open = {}
+state 1 (the loop comes back here):
+  Guest = {}
+  on = {}
+  level = {Lamp$0->Lamp$0}
+  open = {Door$0->Door$0}
+run party: instance found (scope 3, 1 Lamp, 1 Door, 1 Guest, steps 1..4), 3 states
+  Lamp = {Lamp$0}
+  Door = {Door$0}
+state 0:
+  Guest = {}
+  on = {}
+  level = {}
+  open = {}
+state 1 (the loop comes back here):
+  Guest = {Guest$0}
+  on = {}
+  level = {}
+  open = {Door$0->Door$0}
+state 2:
+  Guest = {Guest$0}
+  on = {Lamp$0->Lamp$0}
+  level = {Lamp$0->Lamp$0}
+  open = {Door$0->Door$0}
+[exit 0]

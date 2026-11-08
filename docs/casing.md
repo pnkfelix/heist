@@ -31,6 +31,8 @@ temporal logic).
 (sig Animal abstract (owner (lone Person)))
 (sig Dog (extends Animal))  (sig Rex one (extends Dog))
 (sig Light (var on (lone Light)))                   ; a field that changes
+(sig Lamp (var @lamp on (lone Lamp)))               ; …in region @lamp
+(sig Guest var @door)                               ; a sig that changes, in @door
 (sig Tmp (in Node))                                 ; a subset sig
 (fact (all ((n Node)) (not (in n (join n (^ edges))))))
 (pred (two-cats (p Person)) (= (size (inter (join p owns) Cat)) 2))
@@ -41,9 +43,10 @@ temporal logic).
 ```
 
 - **Sig options:**
-  - `abstract`, `one`, `lone`, `some`, `var`;
+  - `abstract`, `one`, `lone`, `some`, `var` (or `var @r`, in region `r`);
   - `(extends P)`, `(in P)`;
-  - fields, written `(f T)`, or `(var f T)` for one that changes.
+  - fields, written `(f T)`, or `(var f T)` for one that changes, or
+    `(var @r f T)` for one that changes in region `r`.
 - **A field's type** is one of:
   - `T`, meaning `one T`, as in Alloy;
   - `(one T)`, `(lone T)`, `(some T)` or `(set T)`;
@@ -78,9 +81,10 @@ temporal logic).
   - future: `after`, `always`, `eventually`, `until`, `releases`;
   - past: `before`, `historically`, `once`, `since`, `triggered`;
   - `(then f g)`, which is Alloy's `f ; g`.
-- **Events:** an event is a predicate that says which changing relations it
-  may write. The FX-flavoured part is below.
-  - `(unchanged r …)`: the named relations are the same in the next state.
+- **Events:** an event is a predicate that says which changing relations,
+  and which regions, it may write. The FX-flavoured part is below.
+  - `(unchanged r …)`: the named relations are the same in the next state;
+    a region `@r` names every relation that changes in it.
   - `(stutter)`: nothing that changes, changes.
 
 ## Semantics: as Alloy 6, and where not
@@ -145,6 +149,26 @@ says which regions it may write. The rest are unchanged, by construction:
 ```
 
 `toggle` leaves `pressed` as it is without saying so (`tests/light.cs`).
+
+**Regions.** As an FX procedure's effect names regions rather than each
+location it writes, a relation that changes may say the region it
+changes in, and an event may write the region:
+
+```scheme
+(sig Lamp (var @lamp on (lone Lamp)) (var @lamp level (set Lamp)))
+(sig Door (var @door open (lone Door)))
+(sig Guest var @door)
+(event (switch (l Lamp)) (writes @lamp) …)          ; on and level
+(event (prop (l Lamp) (d Door)) (writes @lamp open) …)  ; both kinds at once
+(assert enter-alone (always (implies (enter) (unchanged @lamp))))
+```
+
+Regions are declared by use: a region is the relations that name it.
+A relation is in at most one region, and need not be in any. Naming
+relations in `writes` still works, as above. casing refuses a `writes`
+that names a relation that does not change, or a region nothing changes
+in (`tests/regions.cs`).
+
 An FX-style effect discipline goes further than this:
 - events whose writes are disjoint commute, which partial-order reduction
   could use;
