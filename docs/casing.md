@@ -193,6 +193,25 @@ for a name.
   together, as Alloy's comprehension does: `(one ((a b S)) f)` says one
   pair.
 
+**Libraries: `(open util/relation)`, `(open util/graph S)`.** Alloy's
+`util/relation` and `util/graph[node]`, written in casing
+(`relation-defs`, `graph-defs`), their names in kebab-case:
+
+| Alloy | casing |
+| --- | --- |
+| `dom`, `ran`, `total`, `functional`, `function`, `surjective`, `injective`, `bijective`, `bijection`, `reflexive`, `irreflexive`, `symmetric`, `antisymmetric`, `transitive`, `acyclic`, `complete`, `preorder`, `equivalence` | the same |
+| `partialOrder`, `totalOrder` | `partial-order`, `total-order` |
+| `undirected`, `ring`, `dag`, `forest`, `tree`, `roots`, `leaves` | the same |
+| `noSelfLoops`, `weaklyConnected`, `stronglyConnected`, `rootedAt`, `treeRootedAt`, `innerNodes` | `no-self-loops`, `weakly-connected`, `strongly-connected`, `rooted-at`, `tree-rooted-at`, `inner-nodes` |
+
+`util/graph` is opened on a sig, which stands for its `node`; it uses
+util/relation's definitions as `relation/…`, as Alloy's opens it `as rel`,
+so opening the graph library does not open the relation library's names.
+`#:as a` names a library's definitions `a/…`, so a model may open
+util/graph on two sigs (`(open util/graph P #:as pg)`, `(pg/dag le)`). A
+model's own definitions win over a library's, wherever they are written.
+casing has no modules of a model's own (below).
+
 **`util/ordering`, as a sig's option.** `(sig State #:ordered)` is
 Alloy's `open util/ordering[State]` (`util/ordering.als`):
 - its scope is exact, as the module's `exactly elem` makes it;
@@ -338,7 +357,8 @@ a model can say:
      (Arrow multiplicities, fields declared together and disjoint, and
      `enum` were done 2026-11-08.)
 3. **The library and modules.**
-   - **`util/integer`, `util/boolean`, `util/relation`, `util/graph`.**
+   - **`util/integer`, `util/boolean`.** (`util/relation` and `util/graph`
+     are opened with `open`.)
      (`util/ordering` is `#:ordered`. An ordered sig must be top-level;
      Alloy also orders subsigs.)
    - **`seq`** and `util/sequniv`, which are indexed by Int (item 1).
@@ -373,6 +393,9 @@ a model can say:
   loop and position that reaches it. The circuits are hash-consed, so the
   formula is the same, but the time grows with temporal nesting.
 - **More instances**, by blocking each one found: Alloy's "next".
+- **Witnesses below the top.** An existential under a universal or in a
+  state is translated once for each binding or state; its sets are not
+  shown (Alloy shows skolem functions of the bindings outside).
 - **Cross-checking against Alloy itself.** Run the same models in Alloy 6
   and compare the answers. This needs a JDK newer than this machine's 11.
 

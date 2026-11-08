@@ -301,6 +301,8 @@ relation, as in Alloy); whether its names are bound to disjoint values."
                                             (extract m sigs))))
                         (fields (extract m fields)) (facts (extract m facts)) (defs (extract m defs))
                         (asserts (extract m asserts)) (commands (extract m commands))))))
+        ;; (open util/relation), (open util/graph S): a library's definitions
+        ((string=? h "open") (open-library m xs))
         ((string=? h "fact")
          (let ((body (if (and (pair? xs) (symbol? (car xs)) (pair? (cdr xs))) (cdr xs) xs)))
            (product (sigs (extract m sigs)) (fields (extract m fields)) (facts (cons (conj body) (extract m facts)))
@@ -331,6 +333,102 @@ relation, as in Alloy); whether its names are bound to disjoint values."
         (with-ordering
          (product (sigs (reverse (extract m sigs))) (fields (reverse (extract m fields))) (facts (reverse (extract m facts)))
                   (defs (extract m defs)) (asserts (extract m asserts)) (commands (reverse (extract m commands)))))))))
+
+;;; ------------------------------------------------------------ libraries
+
+"Alloy's `util/relation`, in casing; names in kebab-case."
+(define relation-defs datum
+  '((fun (dom (r (-> univ univ))) (join r univ))
+    (fun (ran (r (-> univ univ))) (join univ r))
+    (pred (total (r (-> univ univ)) (s univ #:set)) (all ((x s)) (some (join x r))))
+    (pred (functional (r (-> univ univ)) (s univ #:set)) (all ((x s)) (lone (join x r))))
+    (pred (function (r (-> univ univ)) (s univ #:set)) (all ((x s)) (one (join x r))))
+    (pred (surjective (r (-> univ univ)) (s univ #:set)) (all ((x s)) (some (join r x))))
+    (pred (injective (r (-> univ univ)) (s univ #:set)) (all ((x s)) (lone (join r x))))
+    (pred (bijective (r (-> univ univ)) (s univ #:set)) (all ((x s)) (one (join r x))))
+    (pred (bijection (r (-> univ univ)) (d c univ #:set)) (and (function r d) (bijective r c)))
+    (pred (reflexive (r (-> univ univ)) (s univ #:set)) (in (<: s iden) r))
+    (pred (irreflexive (r (-> univ univ))) (no (inter iden r)))
+    (pred (symmetric (r (-> univ univ))) (in (~ r) r))
+    (pred (antisymmetric (r (-> univ univ))) (in (inter (~ r) r) iden))
+    (pred (transitive (r (-> univ univ))) (in (join r r) r))
+    (pred (acyclic (r (-> univ univ)) (s univ #:set)) (all ((x s)) (not (in x (join x (^ r))))))
+    (pred (complete (r (-> univ univ)) (s univ #:set)) (all ((x y s)) (implies (!= x y) (in (-> x y) (union r (~ r))))))
+    (pred (preorder (r (-> univ univ)) (s univ #:set)) (and (reflexive r s) (transitive r)))
+    (pred (equivalence (r (-> univ univ)) (s univ #:set)) (and (preorder r s) (symmetric r)))
+    (pred (partial-order (r (-> univ univ)) (s univ #:set)) (and (preorder r s) (antisymmetric r)))
+    (pred (total-order (r (-> univ univ)) (s univ #:set)) (and (partial-order r s) (complete r s)))))
+
+"Alloy's `util/graph[node]`, in casing: `node` is the sig it is opened
+on; `util/relation`'s definitions it uses are `relation/…`, as Alloy's
+opens it `as rel`."
+(define graph-defs datum
+  '((pred (undirected (r (-> node node))) (relation/symmetric r))
+    (pred (no-self-loops (r (-> node node))) (relation/irreflexive r))
+    (pred (weakly-connected (r (-> node node))) (all ((n1 n2 node)) (in n1 (join n2 (* (union r (~ r)))))))
+    (pred (strongly-connected (r (-> node node))) (all ((n1 n2 node)) (in n1 (join n2 (* r)))))
+    (pred (rooted-at (r (-> node node)) (root node)) (in node (join root (* r))))
+    (pred (ring (r (-> node node))) (all ((n node)) (and (one (join n r)) (rooted-at r n))))
+    (pred (dag (r (-> node node))) (relation/acyclic r node))
+    (pred (forest (r (-> node node))) (and (dag r) (all ((n node)) (lone (join r n)))))
+    (pred (tree (r (-> node node))) (and (forest r) (lone ((root node)) (no (join r root)))))
+    (pred (tree-rooted-at (r (-> node node)) (root node)) (and (forest r) (rooted-at r root)))
+    (fun (roots (r (-> node node))) (diff node (join node (^ r))))
+    (fun (leaves (r (-> node node))) (diff node (join node (^ (~ r)))))
+    (fun (inner-nodes (r (-> node node))) (diff node (leaves r)))))
+
+"`d` with each symbol named in `subst` replaced."
+(define substituted (subr ro (datum (listof named acyclic)) datum)
+  (lambda (d subst)
+    (cond ((symbol? d)
+           (letrec ((go (subr ro ((listof named acyclic)) datum)
+                      (lambda (l) (cond ((null? l) d) ((string=? (extract (car l) name) (symbol->string d)) (extract (car l) body)) (else (go (cdr l)))))))
+             (go subst)))
+          ((pair? d) (the datum (cons (substituted (car d) subst) (substituted (cdr d) subst))))
+          (else d))))
+
+"A library's definitions, `lib`, renamed `prefix` + name (and with
+`subst`), added after the model's own, which therefore win."
+(define with-library (subr ro (model datums string (listof named acyclic)) model)
+  (lambda (m lib prefix subst)
+    (letrec ((renames (subr ro (datums) (listof named acyclic))       ; each definition's name, prefixed
+               (lambda (l) (if (null? l) subst
+                               (let ((nm (name-of (car (items (nth (car l) 1))))))
+                                 (cons (product (name nm) (body (sym (string-append prefix nm)))) (renames (cdr l)))))))
+             (defs (subr ro (datums (listof named acyclic) (listof def-info acyclic)) (listof def-info acyclic))
+               (lambda (l sub acc)
+                 (if (null? l) acc
+                     (defs (cdr l) sub
+                           (append acc (extract (add-form empty-model (substituted (car l) sub)) defs)))))))
+      (product (sigs (extract m sigs)) (fields (extract m fields)) (facts (extract m facts))
+               (defs (defs lib (if (string=? prefix "") subst (renames lib)) (extract m defs)))
+               (asserts (extract m asserts)) (commands (extract m commands))))))
+
+"(open util/relation [#:as a]), (open util/graph S [#:as a]): the
+library's definitions, named `a/name` if `#:as a`."
+(define open-library (subr ro (model datums) model)
+  (lambda (m xs)
+    (let* ((lib (name-of (car xs)))
+           (rest (cdr xs))
+           (as (letrec ((go (subr ro (datums) string)
+                              (lambda (l) (cond ((null? l) "")
+                                                ((and (string=? (option-name (car l)) "as") (pair? (cdr l))) (string-append (name-of (car (cdr l))) "/"))
+                                                (else (go (cdr l)))))))
+                 (go rest)))
+           (args (letrec ((go (subr ro (datums) datums) (lambda (l) (cond ((null? l) nil) ((keyword? (car l)) nil) (else (cons (car l) (go (cdr l))))))))
+                   (go rest)))
+           (opened? (lambda ((nm string)) (tagcase (find-def m (string-append as nm)) (some f #t) (none u #f)))))
+      (cond ((string=? lib "util/relation")
+             (if (opened? "dom") (error "casing: util/relation is open already; open it again #:as another name")
+                 (with-library m (items relation-defs) as nil)))
+            ((string=? lib "util/graph")
+             (cond ((not (= (list-length args) 1)) (error "casing: (open util/graph S): a graph of which sig?"))
+                   ((opened? "dag") (error "casing: util/graph is open already; open it again #:as another name"))
+                   (else
+                    (let ((m2 (if (tagcase (find-def m "relation/dom") (some f #t) (none u #f)) m
+                                  (with-library m (items relation-defs) "relation/" nil))))
+                      (with-library m2 (items graph-defs) as (list (product (name "node") (body (car args)))))))))
+            (else (error (string-append "casing: no library " (string-append lib "; casing has util/relation and util/graph (and #:ordered for util/ordering)"))))))))
 
 ;;; ------------------------------------------------------------ util/ordering
 
