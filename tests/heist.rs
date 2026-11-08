@@ -8,6 +8,7 @@
 //!   cfa::FILE          cfa/tests/run.sh FILE (NAME.fx or NAME.scm)
 //!   combo::FILE        combo/tests/run.sh FILE (NAME.smt2, .cnf, .icnf, .serve or .fx)
 //!   kit::NAME          kit/tests/run.sh NAME (NAME-test.fx)
+//!   casing::FILE       casing/tests/run.sh FILE (NAME.cs or NAME.fx)
 //!   conformance::LIB   s7st/conformance/run.sh LIB (its summary all passed);
 //!                      the libraries s7st does not have yet, ignored
 //! Each needs Fixpt built (`cd fixpt && cargo build --release -p fixpt-cli`).
@@ -102,6 +103,15 @@ fn main() {
     for n in combo_tests {
         let sh = combo.join("run.sh");
         trials.push(Trial::test(format!("combo::{n}"), move || run(script(&sh, &[&n])).map(drop)));
+    }
+
+    let casing = h.join("casing/tests");
+    let mut casing_tests: Vec<String> = [".cs", ".fx"].iter()
+        .flat_map(|x| names(&casing, x).into_iter().map(move |n| n + x)).collect();
+    casing_tests.sort();
+    for n in casing_tests {
+        let sh = casing.join("run.sh");
+        trials.push(Trial::test(format!("casing::{n}"), move || run(script(&sh, &[&n])).map(drop)));
     }
 
     let kit = h.join("kit/tests");

@@ -1,0 +1,5 @@
+run chain: instance found (scope 3)
+  Node = {Node$0, Node$1, Node$2}
+  edges = {Node$1->Node$0, Node$2->Node$0, Node$2->Node$1}
+check acyclic: no counterexample found (scope 4)
+[exit 0]

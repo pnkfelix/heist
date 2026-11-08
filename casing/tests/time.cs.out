@@ -1,0 +1,19 @@
+check alternates: no counterexample found (scope 3, steps 1..4)
+check until-first: no counterexample found (scope 3, steps 1..4)
+check once-empty: no counterexample found (scope 3, steps 1..4)
+check since-empty: no counterexample found (scope 3, steps 1..4)
+check before-empty: no counterexample found (scope 3, steps 1..4)
+check never: counterexample found (scope 3, steps 1..4), 2 states
+  S = {S$0}
+state 0 (the loop comes back here):
+  x = {}
+state 1:
+  x = {S$0->S$0}
+run (releases (some x) (no x)): no instance found (scope 3, steps 1..4)
+run (then (no x) (some x)): instance found (scope 3, steps 1..4), 2 states
+  S = {S$0}
+state 0 (the loop comes back here):
+  x = {}
+state 1:
+  x = {S$0->S$0}
+[exit 0]

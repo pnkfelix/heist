@@ -1,0 +1,5 @@
+same gate: 1
+x and not x: -1
+sat: 1 x0 y1 z0
+with z: 1
+[exit 0]

@@ -1,0 +1,18 @@
+#!/bin/sh
+# casing: a relational model finder in FX-26 (after Alloy 6), run on Heist's
+# own Fixpt. `casing FILE` runs a model's commands. File names are relative to
+# where it is started.
+heist=$(cd "$(dirname "$0")/.." && pwd)
+fixpt="$heist/fixpt/target/release/fixpt"
+[ -x "$fixpt" ] || { echo "build fixpt first: (cd $heist/fixpt && cargo build --release -p fixpt-cli)" >&2; exit 2; }
+for a in "$@"; do
+  shift
+  case "$a" in -*|/*) ;; *) [ -e "$a" ] && a="$PWD/$a" ;; esac
+  set -- "$@" "$a"
+done
+cd "$heist/casing" || exit 2
+# Its heap dump resumed while fresh (bin/heist-dump), else loaded.
+if [ -z "$HEIST_NO_DUMP" ] && "$heist/bin/heist-dump" --fresh casing; then
+  exec "$fixpt" resume "$heist/target/dumps/casing.img" -- "$@"
+fi
+exec "$fixpt" run casing.fx -- "$@"

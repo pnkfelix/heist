@@ -1,0 +1,20 @@
+;; Temporal operators on a value that alternates: x is empty in state 0,
+;; then present, then empty, …
+(sig S one (var x (lone S)))
+(fact (no x))
+(fact (always (iff (some (prime x)) (no x))))
+(assert alternates (always (or (some x) (after (some x)))))
+(check alternates (steps 1 4))
+(assert until-first (until (no x) (some x)))
+(check until-first (steps 1 4))
+(assert once-empty (always (implies (some x) (once (no x)))))
+(check once-empty (steps 1 4))
+(assert since-empty (always (implies (some x) (since (some x) (no x)))))
+(check since-empty (steps 1 4))
+(assert before-empty (always (implies (some x) (before (no x)))))
+(check before-empty (steps 1 4))
+(assert never (always (no x)))
+(check never (steps 1 4))
+;; releases: (no x) until and including when (some x) holds; never
+(run (releases (some x) (no x)) (steps 1 4))
+(run (then (no x) (some x)) (steps 1 4))

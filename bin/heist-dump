@@ -7,7 +7,7 @@
 #   bin/heist-dump --fresh NAME  exit 0 if NAME's dump is fresh (the
 #                                launchers' check), 1 if not
 #   bin/heist-dump --clean       remove them all
-# TARGET: editor, s7st, cfa, combo, ratfink, or all.
+# TARGET: editor, s7st, cfa, combo, ratfink, casing, or all.
 # A launcher resumes a dump only while it is fresh: newer than Fixpt's
 # executable and than each `.fx` (and `program`) of the program's
 # directories and kit/'s, tests/ aside. Else it loads the program as
@@ -24,6 +24,7 @@ dumps="$heist/target/dumps"
 dirs_of() {
   case "$1" in
     cfa) echo "$heist/s7st $heist/cfa $heist/kit";;
+    casing) echo "$heist/casing $heist/combo $heist/kit";;
     *) echo "$heist/$1 $heist/kit";;
   esac
 }
@@ -43,6 +44,7 @@ dump() {
   case "$1" in
     editor) (cd "$heist/editor" && "$fixpt" dump "$new" editor.fx);;
     combo) (cd "$heist/combo" && "$fixpt" dump "$new" combo.fx);;
+    casing) (cd "$heist/casing" && "$fixpt" dump "$new" casing.fx);;
     ratfink) "$fixpt" dump "$new" "$heist/ratfink/ratfink.fx";;
     s7st) "$fixpt" dump "$new" $(for f in $(cat "$heist/s7st/program"); do echo "$heist/s7st/$f"; done) \
                                "$heist/s7st/main.fx";;
@@ -52,7 +54,7 @@ dump() {
   mv "$new" "$img"
 }
 
-all="editor s7st cfa combo ratfink"
+all="editor s7st cfa combo ratfink casing"
 case "$1" in
   --clean) rm -f "$dumps"/*.img; exit 0;;
   --fresh) ! stale "$2"; exit;;
@@ -62,7 +64,7 @@ esac
 targets=
 for a in "$@"; do
   case "$a" in
-    editor|s7st|cfa|combo|ratfink) targets="$targets $a";;
+    editor|s7st|cfa|combo|ratfink|casing) targets="$targets $a";;
     all) targets=$all;;
     *) echo "heist-dump: unknown argument \`$a' (--help)" >&2; exit 2;;
   esac
