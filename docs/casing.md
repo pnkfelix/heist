@@ -189,8 +189,74 @@ An FX-style effect discipline goes further than this:
 - a predicate typed `pure` cannot mention `prime`;
 - a check could say which relations a property reads.
 
-## Not yet
+## Not yet: what Alloy 6 can say that casing cannot
 
+Taken from Alloy 6's grammar (`org.alloytools.alloy.core/parser/Alloy.cup`
+at ed89fdb) against what casing reads, 2026-11-08. Most of Alloy's
+relational and temporal logic is here: relations of any arity, every
+relational operator, the five quantifiers, `let`, `if`, predicates and
+functions, every temporal operator past and future, `prime` and `then`,
+`var` sigs and fields, subset and abstract sigs. What is missing is mostly
+integers and the declaration layer. In order of how much each limits what
+a model can say:
+
+1. **Integers.**
+   - No `Int` sig: an integer is never an atom, so no field `age: Int`
+     and no relation `Person -> Int`.
+   - No `sum x: S | e`, `mul`, `div`, `rem`, negative numbers, shifts
+     (`<<`, `>>`, `>>>`), `min`/`max`/`next`, or casts between an Int atom
+     and a number.
+   - No bitwidth scope (`5 Int`) and no wrapping. casing counts naturals
+     only: `size`, `+`, `-`, comparisons.
+
+   Integers as atoms need a design first: Alloy's two's complement that
+   wraps, or something more FX-like, such as arithmetic whose overflow is
+   reported rather than wrapped.
+2. **Declarations.**
+   - **Multiplicities of quantified variables and parameters:**
+     `all x: set S`, `some s: lone S`, parameters that are not `one`.
+     Alloy quantifies over higher-order things when it can skolemize them
+     (`some r: A -> B | …` at the top); casing grounds every quantifier
+     over atoms, and so does neither.
+   - **`disj`**, in quantifiers (`all disj x, y: S`) and in fields.
+   - **Per-column multiplicities** in an arrow, all sixteen of
+     `A m -> n B` (`ONE_ARROW_LONE` and the rest). casing has only the
+     last column's, as a field's option. They would be written in the
+     arrow: `(-> (one A) (lone B))`.
+   - **Fields that depend on the owner** (`this`) or on other fields:
+     `sig S { f: set T, g: f -> T }`.
+   - **Sig facts:** `sig S {…} { a constraint about this }`.
+   - **`enum`.**
+   - **Overloading and the receiver call** `x.p[y]`: sugar for `(p x y)`.
+3. **The library and modules.**
+   - **`util/ordering`**, which Alloy also builds into the solver as a
+     special total order (`TOTALORDER`); and `util/integer`,
+     `util/boolean`, `util/relation`, `util/graph`.
+   - **`seq`** and `util/sequniv`, which are indexed by Int (item 1).
+   - **`String`** and string literals.
+   - **Modules:** `open`, parameterized modules, `private`, top-level
+     `let` macros.
+4. **Commands.**
+   - **`expect 0` / `expect 1`.**
+   - **Scopes:** `but`, an Int bitwidth, a `seq` length.
+   - **Unbounded traces** (`1..` steps). With its nuXmv or NuSMV back end,
+     Alloy 6 checks temporal properties of traces of any length. That is
+     another decision procedure, not a missing piece of the translation.
+5. **Sugar.** `@f` (a field named raw in a sig fact, which needs sig facts
+   first), the box join `e[x]`, the negated comparisons `!in` and `!<`,
+   `else` after `=>`. casing has an equivalent of each but `@f`; they
+   matter only for transliterating Alloy's models.
+
+**Checks Alloy makes that casing does not** (`parser/CompModule.java`):
+- errors: an exact scope on a `var` sig, and a scope on a `var` sig that
+  is not top-level;
+- warnings: a static part of a `var` sig, `var` on a part of a static sig
+  (redundant), a static field inside a `var` sig, and a static field whose
+  type mentions a `var` sig;
+- Alloy's type system: casing checks arity only, not that a join relates
+  the sigs it should, and gives no relevance warnings.
+
+**Not of expressive power, but of the analysis:**
 - **Symmetry breaking.** Kodkod's lex-leader predicates over
   interchangeable atoms. Without them, an unsatisfiable check explores
   every permutation of each instance.
@@ -198,9 +264,10 @@ An FX-style effect discipline goes further than this:
   loop and position that reaches it. The circuits are hash-consed, so the
   formula is the same, but the time grows with temporal nesting.
 - **More instances**, by blocking each one found: Alloy's "next".
-- **Alloy's type system.** casing checks arity only, not that a join
-  relates the sigs it should, and it gives no relevance warnings.
-- **The rest:** decls of `set`, `some` or `lone` multiplicity, `disj`,
-  `seq`, `util/ordering`, strings, modules.
 - **Cross-checking against Alloy itself.** Run the same models in Alloy 6
   and compare the answers. This needs a JDK newer than this machine's 11.
+
+**A suggested order:** `disj` and declaration multiplicities (with
+skolemization at the top), which nearly every real model uses;
+`util/ordering`, which most models of protocols use; sig facts with
+`this`; then integers, after their design.
