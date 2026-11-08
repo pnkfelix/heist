@@ -27,13 +27,13 @@ temporal logic).
 ## The language
 
 ```scheme
-(sig Node (edges (set Node)))                       ; sig Node { edges: set Node }
-(sig Animal abstract (owner (lone Person)))
-(sig Dog (extends Animal))  (sig Rex one (extends Dog))
-(sig Light (var on (lone Light)))                   ; a field that changes
-(sig Lamp (var @lamp on (lone Lamp)))               ; …in region @lamp
-(sig Guest var @door)                               ; a sig that changes, in @door
-(sig Tmp (in Node))                                 ; a subset sig
+(sig Node (edges Node #:set))                       ; sig Node { edges: set Node }
+(sig Animal #:abstract (owner Person #:lone))
+(sig Dog #:extends Animal)  (sig Rex #:one #:extends Dog)
+(sig Light (on Light #:lone #:var))                 ; a field that changes
+(sig Lamp (on Lamp #:lone #:var @lamp))             ; …in region @lamp
+(sig Guest #:var @door)                             ; a sig that changes, in @door
+(sig Tmp #:in Node)                                 ; a subset sig
 (fact (all ((n Node)) (not (in n (join n (^ edges))))))
 (pred (two-cats (p Person)) (= (size (inter (join p owns) Cat)) 2))
 (fun (kids (p Person)) (join p owns))
@@ -42,18 +42,30 @@ temporal logic).
 (check acyclic 5 (Node 4) (exactly Dog 2) (steps 1 8))
 ```
 
-- **Sig options:**
-  - `abstract`, `one`, `lone`, `some`, `var` (or `var @r`, in region `r`);
-  - `(extends P)`, `(in P)`;
-  - fields, written `(f T)`, or `(var f T)` for one that changes, or
-    `(var @r f T)` for one that changes in region `r`.
-- **A field's type** is one of:
-  - `T`, meaning `one T`, as in Alloy;
-  - `(one T)`, `(lone T)`, `(some T)` or `(set T)`;
-  - `(-> T U …)`, of higher arity, or `(m (-> T U …))`.
+Every declaration is its kind, its name, what it needs, and then its
+options, each a keyword (FX-26's `#:name`), in any order. Alloy writes
+the same modifiers before the declaration (`abstract sig`, `var sig`,
+`f: lone T`); here they follow the name, so a declaration's name is
+always where a reader looks for it, and a modifier can never be taken
+for a name.
+- **A sig:** `(sig S option… field…)`, its options:
+  - `#:abstract`;
+  - a multiplicity, `#:one`, `#:lone`, `#:some` or `#:set` (the default);
+  - `#:extends P` (a part of `P`) or `#:in P` (a subset of `P`);
+  - `#:var`, or `#:var @r` for one that changes in region `r`.
+- **A field:** `(f T option…)`, `T` a sig (or an expression) or
+  `(-> T U …)`, its options:
+  - a multiplicity: `#:one` (the default for `T`), `#:lone`, `#:some` or
+    `#:set` (the default for an arrow). As in Alloy, it applies to the
+    last column: for each owner atom `x`, `(m (join x f))` holds. A sig's
+    multiplicity and a field's are the same kind of thing, a constraint on
+    the relation declared, so both are options. Alloy's per-column
+    multiplicities, `A one -> lone B`, are not here yet; they would belong
+    in the arrow, `(-> (one A) (lone B))`.
+  - `#:var`, or `#:var @r`.
 
-  The multiplicity applies to the last column: for each owner atom `x`,
-  `(m (join x f))` holds.
+  No field may be named after an option (`(extends P)` is refused, with
+  the keyword to write instead).
 - **Expressions:**
   - a name (a relation, a variable, `univ`, `iden`, `none`, or a function of
     no parameters);
@@ -81,8 +93,10 @@ temporal logic).
   - future: `after`, `always`, `eventually`, `until`, `releases`;
   - past: `before`, `historically`, `once`, `since`, `triggered`;
   - `(then f g)`, which is Alloy's `f ; g`.
-- **Events:** an event is a predicate that says which changing relations,
-  and which regions, it may write. The FX-flavoured part is below.
+- **Events:** `(event (e (x T) …) #:writes w body…)`, an event a predicate
+  that says which changing relations, and which regions, it may write:
+  `w` is one, or a list of them. Only an event writes. The FX-flavoured
+  part is below.
   - `(unchanged r …)`: the named relations are the same in the next state;
     a region `@r` names every relation that changes in it.
   - `(stutter)`: nothing that changes, changes.
@@ -143,7 +157,7 @@ says which changing relations it may write, as an FX procedure's effect
 says which regions it may write. The rest are unchanged, by construction:
 
 ```scheme
-(event (toggle (l Light)) (writes on)
+(event (toggle (l Light)) #:writes on
   (if (some (join l on)) (no (join l (prime on))) (= (join l (prime on)) l)))
 (fact (always (or (stutter) (some ((l Light)) (or (toggle l) (press l))))))
 ```
@@ -155,17 +169,17 @@ location it writes, a relation that changes may say the region it
 changes in, and an event may write the region:
 
 ```scheme
-(sig Lamp (var @lamp on (lone Lamp)) (var @lamp level (set Lamp)))
-(sig Door (var @door open (lone Door)))
-(sig Guest var @door)
-(event (switch (l Lamp)) (writes @lamp) …)          ; on and level
-(event (prop (l Lamp) (d Door)) (writes @lamp open) …)  ; both kinds at once
+(sig Lamp (on Lamp #:lone #:var @lamp) (level Lamp #:set #:var @lamp))
+(sig Door (open Door #:lone #:var @door))
+(sig Guest #:var @door)
+(event (switch (l Lamp)) #:writes @lamp …)            ; on and level
+(event (prop (l Lamp) (d Door)) #:writes (@lamp open) …)  ; both kinds at once
 (assert enter-alone (always (implies (enter) (unchanged @lamp))))
 ```
 
 Regions are declared by use: a region is the relations that name it.
-A relation is in at most one region, and need not be in any. Naming
-relations in `writes` still works, as above. casing refuses a `writes`
+A relation is in at most one region, and need not be in any. An event
+may name relations as well as regions, as above. casing refuses a `writes`
 that names a relation that does not change, or a region nothing changes
 in (`tests/regions.cs`).
 

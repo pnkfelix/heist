@@ -1,6 +1,6 @@
 ;; Temporal operators on a value that alternates: x is empty in state 0,
 ;; then present, then empty, …
-(sig S one (var x (lone S)))
+(sig S #:one (x S #:lone #:var))
 (fact (no x))
 (fact (always (iff (some (prime x)) (no x))))
 (assert alternates (always (or (some x) (after (some x)))))

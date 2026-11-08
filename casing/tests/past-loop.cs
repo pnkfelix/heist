@@ -1,6 +1,6 @@
 ;; Past operators where the loop comes back: state 0 seen again after x
 ;; was present has x in its past, though its first visit does not.
-(sig S one (var x (lone S)))
+(sig S #:one (x S #:lone #:var))
 (fact (no x))
 (fact (always (iff (some (prime x)) (no x))))
 (run (eventually (and (no x) (once (some x)))) (steps 1 4))

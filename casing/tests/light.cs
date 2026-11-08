@@ -1,10 +1,10 @@
 ;; A light that changes from state to state: events whose writes say
 ;; what they may change (every other relation that changes is unchanged).
-(sig Light (var on (lone Light)))  ; on: a light's own atom if it is on
-(sig Switch one (var pressed (set Light)))
-(event (toggle (l Light)) (writes on)
+(sig Light (on Light #:lone #:var))  ; on: a light's own atom if it is on
+(sig Switch #:one (pressed Light #:set #:var))
+(event (toggle (l Light)) #:writes on
   (if (some (join l on)) (no (join l (prime on))) (= (join l (prime on)) l)))
-(event (press (l Light)) (writes pressed)
+(event (press (l Light)) #:writes pressed
   (= (prime pressed) (union pressed (-> Switch l))))
 (fact (no on))
 (fact (no pressed))

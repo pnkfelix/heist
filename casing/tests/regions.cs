@@ -1,13 +1,13 @@
 ;; Regions: a relation that changes may say the region it changes in, and
 ;; an event may write a region (every relation in it) as well as relations.
-(sig Lamp (var @lamp on (lone Lamp)) (var @lamp level (set Lamp)))
-(sig Door (var @door open (lone Door)))
-(sig Guest var @door)                       ; who is in: changes with the door
-(event (switch (l Lamp)) (writes @lamp)
+(sig Lamp (on Lamp #:lone #:var @lamp) (level Lamp #:set #:var @lamp))
+(sig Door (open Door #:lone #:var @door))
+(sig Guest #:var @door)                     ; who is in: changes with the door
+(event (switch (l Lamp)) #:writes @lamp
   (and (= (join l (prime on)) l) (some (join l (prime level)))))
-(event (enter) (writes @door)
+(event (enter) #:writes @door
   (some (diff (prime Guest) Guest)))
-(event (prop (l Lamp) (d Door)) (writes @lamp open)   ; a region and a relation
+(event (prop (l Lamp) (d Door)) #:writes (@lamp open)   ; a region and a relation
   (and (= (join d (prime open)) d) (no (join l (prime on)))))
 (fact (no on) (no level) (no open) (no Guest))
 (fact (always (or (stutter) (enter) (some ((l Lamp)) (switch l))
