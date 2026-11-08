@@ -3,7 +3,7 @@
 (define m-matrix ((load-module "../matrix.fx") m-sat m-circuit))
 (import m-sat (effect cb-eff))
 (import m-circuit make-circuit c-input! c-assert! c-solve! c-value c-not)
-(import m-matrix m-build m-join m-closure m-some m-no m-ref m-iden m-inter m-count count-const count-eq m-tuple m-subset (type matrix))
+(import m-matrix m-build m-join m-closure m-some m-no m-ref m-iden m-inter m-count i-const i-eq m-tuple m-subset (type matrix))
 (define* say (subr (io stdout) (string) unit) (lambda (s) (tagcase (write-out s) (done u #u) (failed e #u))))
 ;; a graph on 3 atoms: edges free; closure must include (0 2), no self loop in closure, exactly 2 edges
 (define main (subr (maxeff cb-eff (io stdout)) () int)
@@ -14,7 +14,7 @@
       (begin
         (c-assert! c (m-subset c (m-tuple n 2 2) cl))
         (c-assert! c (m-no c (m-inter c cl (m-iden n))))
-        (c-assert! c (count-eq c (m-count c e) (count-const 2)))
+        (c-assert! c (i-eq c (m-count c e) (i-const 2)))
         (say (if (c-solve! c nil) "sat\n" "unsat\n"))
         (letrec ((show (subr (maxeff cb-eff (io stdout)) (int) unit)
                    (lambda (i) (if (>= i 9) #u

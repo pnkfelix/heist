@@ -1,0 +1,20 @@
+run (eventually (= (join Counter n) 7)): instance found (scope 3, steps 1..4), 3 states
+  Counter = {Counter$0}
+state 0:
+  n = {Counter$0->5}
+state 1:
+  n = {Counter$0->6}
+state 2 (the loop comes back here):
+  n = {Counter$0->7}
+check tick-stops: no counterexample found (scope 3, steps 1..4)
+check never-negative: counterexample found (scope 3, steps 1..5), 4 states
+  Counter = {Counter$0}
+state 0:
+  n = {Counter$0->5}
+state 1:
+  n = {Counter$0->6}
+state 2:
+  n = {Counter$0->7}
+state 3 (the loop comes back here):
+  n = {Counter$0->-8}
+[exit 0]

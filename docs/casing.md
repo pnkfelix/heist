@@ -19,7 +19,7 @@ temporal logic).
 | file | what | after |
 | --- | --- | --- |
 | `casing/circuit.fx` | Boolean circuits: hash-consed n-ary AND gates over signed ids, Tseitin-encoded into combo's solver lazily, only what an assertion reaches | Kodkod's `engine.bool` (`CBCFactory`, `Bool2CNFTranslator`) |
-| `casing/matrix.fx` | A relation as a dense matrix of circuits, one cell per tuple (tuple index = its atoms in base n). Union, intersection, difference, product, join (an (∨, ∧) matrix product), transpose, closure by squaring, override, restriction, `iden`/`univ`/`none`; subset, equality, `some`/`no`/`one`/`lone`; counts in unary | `BooleanMatrix`, which is sparse |
+| `casing/matrix.fx` | A relation as a dense matrix of circuits, one cell per tuple (tuple index = its atoms in base n). Union, intersection, difference, product, join (an (∨, ∧) matrix product), transpose, closure by squaring, override, restriction, `iden`/`univ`/`none`; subset, equality, `some`/`no`/`one`/`lone`; exact integers in two's complement, as wide as each value needs | `BooleanMatrix`, which is sparse |
 | `casing/model.fx` | A model's forms read; a scope made into bounds; formulas translated at each position of a trace; instances shown | Alloy's `translator/` (A4) and Pardinus's `ltl2fol` |
 | `casing/casing.fx` | The command line, reading with Fixpt's own reader (`fx26:eager-reader.fx`) | |
 | `casing/tests/` | Models (`.cs`) and their answers; `run.sh` (`cargo nextest run` runs each as `casing::FILE`) | |
@@ -105,10 +105,20 @@ for a name.
   - connectives: `not`, `and`, `or`, `implies` (or `=>`), `iff`,
     `(if f g h)`, `let`, `true`, `false`;
   - predicate calls.
-- **Integers:**
-  - expressions: `(size e)` (Alloy's `#`, which FX-26's reader reserves),
-    numerals, `(+ i j)`, `(- i j)`;
-  - comparisons: `=`, `<`, `<=`, `>`, `>=`.
+- **Integers** (below, "Integers never wrap"):
+  - `Int`, the sig of integer atoms, for fields and declarations:
+    `(age Int)`, `(all ((i Int)) …)`;
+  - expressions: numerals; `(size e)` (Alloy's `#`, which FX-26's reader
+    reserves); `(+ i j)`, `(- i j)`, `(- i)` or `(neg i)`, `(* i j)`,
+    `(div i j)`, `(rem i j)`, `(mod i j)`; `(sum ((x S)) i)`; `(int e)`,
+    the sum of a set's Int atoms (Alloy's `int[e]`), which a set in an
+    integer's place means anyway; `if` and `let`;
+  - wrapping, only when said: `(+% i j)`, `(-% i j)`, `(*% i j)`,
+    `(neg% i)`;
+  - comparisons: `=`, `!=`, `<`, `<=`, `>`, `>=`. `=` compares integers
+    when either side is one, and sets otherwise.
+
+  `(* r)` of one operand is the reflexive closure; of two, a product.
 - **Time:**
   - future: `after`, `always`, `eventually`, `until`, `releases`;
   - past: `before`, `historically`, `once`, `since`, `triggered`;
@@ -204,16 +214,39 @@ translates, each formula's polarity: positive, negative, or both (under
   strongly connected, works at small scopes (`tests/decls.cs`).
 
 **Not as Alloy.**
-- **Integers are naturals, in unary.** A count is a list of circuits, the
-  j-th saying "at least j+1". Sums and differences are exact, and a
-  difference stops at 0. Nothing wraps and nothing overflows. Alloy's
-  integers are two's complement of a bitwidth, and wrap; its `noOverflow`
-  option makes formulas depend on context. casing has no `Int` atoms, no
-  `sum` and no negative numbers. Those would need their own design.
+- **Integers never wrap** (decided 2026-11-08: "Arithmetic should never
+  wrap; we should have explicit modular atomic operations for the cases
+  where that is desired"). Alloy's integers are two's complement of the
+  scope's bitwidth, and every operation wraps: `7 + 1` is `-8` at
+  bitwidth 4, so `all i: Int | i + 1 > i` has a counterexample. Its
+  `noOverflow` option instead drops instances that overflow, which makes
+  a formula's meaning depend on where it stands. casing separates two
+  things Alloy joins:
+  - **an integer's value** is exact. Each operation's result is as wide as
+    it needs (`matrix.fx`: a sum one bit wider than its operands, a
+    product as wide as both), so `(all ((i Int)) (> (+ i 1) i))` holds,
+    a sum of prices may pass 7, and `(* -8 -8)` is 64;
+  - **Int's atoms** are a bounded set: `-2^(b-1)` to `2^(b-1) - 1` for
+    the scope's bitwidth `b` (`(Int b)`, 4 if not said, 1 to 8). An
+    integer where a set is expected is its atom, or none if no atom has
+    its value. So an event that sets a counter to `(+ n 1)` cannot happen
+    at the top (`tests/ints-time.cs`), where Alloy's would go to `-8`.
+
+  `+%`, `-%`, `*%` and `neg%` are the explicit modular operations: the
+  exact value, wrapped to the bitwidth, as Zig's `+%`. `mod`'s remainder
+  is never negative (Euclidean); `div` truncates toward zero and `rem`
+  takes the dividend's sign, as Alloy's (and Java's) do.
+- **Dividing by zero is not said.** Alloy (Kodkod) defines `x / 0`; casing
+  leaves its quotient and remainder to the solver, as SMT-LIB leaves them,
+  so a model that depends on them has a counterexample that shows it
+  (`tests/ints.cs`, `by-zero`).
+- **Int's atoms are in the universe only when a model mentions `Int`**
+  (or its scope does). Alloy's `univ` always holds them; casing's matrices
+  have a cell for each tuple of atoms, and 16 more atoms would make every
+  binary relation's matrix of a 3-atom model 40 times larger. A sig may not
+  be named `Int`.
 - **A relation's matrix is dense:** n^arity cells. That is fine at the
   scopes casing runs today, and too costly for arity 3 or more at large n.
-- **`univ` is every atom.** Alloy's `univ` also holds its Int atoms, which
-  casing has none of.
 
 ## FX's flavour: events say what they write
 
@@ -263,21 +296,12 @@ relational and temporal logic is here: relations of any arity, every
 relational operator, the five quantifiers, `let`, `if`, predicates and
 functions, every temporal operator past and future, `prime` and `then`,
 `var` sigs and fields, subset and abstract sigs. What is missing is mostly
-integers and the declaration layer. In order of how much each limits what
+the declaration layer and the library. In order of how much each limits what
 a model can say:
 
-1. **Integers.**
-   - No `Int` sig: an integer is never an atom, so no field `age: Int`
-     and no relation `Person -> Int`.
-   - No `sum x: S | e`, `mul`, `div`, `rem`, negative numbers, shifts
-     (`<<`, `>>`, `>>>`), `min`/`max`/`next`, or casts between an Int atom
-     and a number.
-   - No bitwidth scope (`5 Int`) and no wrapping. casing counts naturals
-     only: `size`, `+`, `-`, comparisons.
-
-   Integers as atoms need a design first: Alloy's two's complement that
-   wraps, or something more FX-like, such as arithmetic whose overflow is
-   reported rather than wrapped.
+1. **Integers.** casing has Alloy's, exact (above). Not yet: shifts
+   (`<<`, `>>`, `>>>`) and `util/integer`'s `min`, `max`, `next`, `prev`
+   over Int.
 2. **Declarations.**
    - **Per-column multiplicities** in an arrow, all sixteen of
      `A m -> n B` (`ONE_ARROW_LONE` and the rest). casing has only the
@@ -297,7 +321,7 @@ a model can say:
      `let` macros.
 4. **Commands.**
    - **`expect 0` / `expect 1`.**
-   - **Scopes:** `but`, an Int bitwidth, a `seq` length.
+   - **Scopes:** `but`, a `seq` length. (`(Int b)` is the bitwidth.)
    - **Unbounded traces** (`1..` steps). With its nuXmv or NuSMV back end,
      Alloy 6 checks temporal properties of traces of any length. That is
      another decision procedure, not a missing piece of the translation.
@@ -326,6 +350,5 @@ a model can say:
 - **Cross-checking against Alloy itself.** Run the same models in Alloy 6
   and compare the answers. This needs a JDK newer than this machine's 11.
 
-**Next:** integers, after their design. (`#:disj`, declarations'
-multiplicities, `util/ordering` and sig facts with `this`, before them on
-the list, were done 2026-11-08.)
+The list suggested on 2026-11-08 (`#:disj` and declarations'
+multiplicities, `util/ordering`, sig facts with `this`, integers) is done.

@@ -183,7 +183,7 @@ relation, as in Alloy); whether its names are bound to disjoint values."
     (let ((h (head d)) (xs (if (pair? d) (cdr (items d)) nil)))
       (cond
         ((string=? h "sig")
-         (let ((name (name-of (car xs))))
+         (let ((name (if (string=? (name-of (car xs)) "Int") (error "casing: Int is casing's own: its atoms are integers") (name-of (car xs)))))
            (letrec ((go (subr ro (datums string bool bool string bool string bool datums (listof field-info acyclic)) model)
                       (lambda (os parent subset abstract mult var region ordered sfs fs)
                         (if (null? os)
@@ -492,6 +492,35 @@ not say: a scope smaller than the atoms a sig may have."
                           (tops (cdr l) (extract u names) (extract u bounds) (extract u facts))))))))
       (tops (extract m sigs) nil nil nil))))
 
+"`u` with Int's atoms, of bitwidth `bw`, after the sigs': -2^(bw-1) up to
+2^(bw-1)-1, each named by its value; Int bound to them all. Alloy's univ
+always has them; casing's only when a model mentions Int (or its scope
+does), as a relation's matrix has a cell for each tuple of atoms."
+(define with-int-atoms (subr ro (universe int) universe)
+  (lambda (u bw)
+    (let* ((base (list-length (extract u names))) (k (power 2 bw)) (lo (- 0 (quotient k 2))) (atoms (range base (+ base k))))
+      (product (names (append (extract u names)
+                              (letrec ((go (subr ro (ints) strings) (lambda (l) (if (null? l) nil (cons (int->string (car l)) (go (cdr l)))))))
+                                (go (range lo (+ lo k))))))
+               (bounds (cons (product (name "Int") (lower atoms) (upper atoms)) (extract u bounds)))
+               (facts (extract u facts))))))
+
+"Whether a model mentions the name `n`: in its declarations, facts,
+definitions or assertions."
+(define model-mentions? (subr ro (model string) bool)
+  (lambda (m n)
+    (letrec ((any (subr ro (datums) bool) (lambda (l) (and (pair? l) (or (mentions? (car l) n) (any (cdr l)))))))
+      (or (letrec ((go (subr ro ((listof sig-info acyclic)) bool) (lambda (l) (and (pair? l) (or (any (extract (car l) facts)) (go (cdr l)))))))
+            (go (extract m sigs)))
+          (letrec ((go (subr ro ((listof field-info acyclic)) bool) (lambda (l) (and (pair? l) (or (any (extract (car l) cols)) (go (cdr l)))))))
+            (go (extract m fields)))
+          (any (extract m facts))
+          (letrec ((go (subr ro ((listof def-info acyclic)) bool)
+                     (lambda (l) (and (pair? l) (or (any (extract (car l) params)) (mentions? (extract (car l) body) n) (go (cdr l)))))))
+            (go (extract m defs)))
+          (letrec ((go (subr ro ((listof named acyclic)) bool) (lambda (l) (and (pair? l) (or (mentions? (extract (car l) body) n) (go (cdr l)))))))
+            (go (extract m asserts)))))))
+
 ;;; ------------------------------------------------------------ translation
 
 "A relation of the problem: its matrix in each state (one, if it does
@@ -505,16 +534,17 @@ copy 1 on, the loop again, so its states from the loop's; the loop goes
 back from the last copy's last state. A past formula nested d deep needs
 d+1 copies to say at copy d what it says at every later pass
 (Pardinus's unrolling; Latvala et al., \"Simple is better\", 2005).
-And the polarity of the formula being translated: 1 if it stands
+The bitwidth of Int's atoms, and the first of them (-1 if none). And the
+polarity of the formula being translated: 1 if it stands
 positively in what is asserted, -1 negatively, 0 both or not known; an
 existential quantifier where it stands may be skolemized (`ground`)."
 (define-type ctx (productof (c circuit) (n int) (k int) (u int) (loops ivec) (rels (listof rel acyclic)) (model model) (universe universe)
-                           (pol int)))
+                           (pol int) (bw int) (ibase int)))
 (define with-pol (subr ro (ctx int) ctx)
   (lambda (x p)
     (if (= p (extract x pol)) x
         (product (c (extract x c)) (n (extract x n)) (k (extract x k)) (u (extract x u)) (loops (extract x loops)) (rels (extract x rels))
-                 (model (extract x model)) (universe (extract x universe)) (pol p)))))
+                 (model (extract x model)) (universe (extract x universe)) (pol p) (bw (extract x bw)) (ibase (extract x ibase))))))
 "`x` with its polarity reversed, and neither."
 (define flipped (subr ro (ctx) ctx) (lambda (x) (with-pol x (- 0 (extract x pol)))))
 (define neutral (subr ro (ctx) ctx) (lambda (x) (with-pol x 0)))
@@ -603,6 +633,8 @@ state in the next copy (the last copy's own, from the last)."
 (define expr (subr cb-eff (ctx datum int env) matrix)
   (lambda (x d i e)
     (let ((c (cx x)) (n (extract x n)))
+      (if (or (datum-int? d) (int-op? d))
+          (int-set x (ival x d i e))                    ; an integer where a set is expected: its atom
       (if (symbol? d)
           (let ((s (symbol->string d)))
             (tagcase (lookup e s)
@@ -660,7 +692,7 @@ state in the next copy (the last copy's own, from the last)."
                  (tagcase (find-def (extract x model) h)
                    (some f (if (extract f fun) (expr x (extract f body) i (call-env x f args i e))
                                (arity-error d "a predicate, not a function")))
-                   (none u (arity-error d "unknown operator")))))))))))
+                   (none u (arity-error d "unknown operator"))))))))))))
 
 "`let`'s bindings, each evaluated where it is used."
 (define let-env (subr cb-eff (ctx datums env) env)
@@ -786,20 +818,120 @@ The names of a `#:disj` declaration are bound to disjoint values."
                                 (go (cdr l))))))))
         (go gs)))))
 
-"Whether `d` is an integer expression."
-(define int-expr? (subr ro (datum) bool)
-  (lambda (d) (or (datum-int? d) (let ((h (head d))) (or (string=? h "size") (string=? h "+") (string=? h "-"))))))
+"The operators whose values are integers. Arithmetic is exact: nothing
+wraps and nothing overflows. `+%`, `-%`, `*%` and `neg%` wrap, to the
+bitwidth of Int's atoms, and only they; `mod` is the remainder that is
+never negative."
+(define int-ops strings
+  (list "size" "+" "-" "*" "div" "rem" "mod" "neg" "+%" "-%" "*%" "neg%" "sum" "int"))
+"Whether `d` is an integer operator's: `(* r)`, of one operand, is the
+reflexive closure; `(* i j)` a product."
+(define int-op? (subr ro (datum) bool)
+  (lambda (d) (and (member-string? (head d) int-ops) (not (and (string=? (head d) "*") (= (len d) 2))))))
 
-"Integer expression `d` in state `i`: a count (matrix.fx)."
-(define ival (subr cb-eff (ctx datum int env) count)
+"Whether `d` is an integer expression: a numeral, an integer operator's,
+or a name, function or call standing for one."
+(define int-expr? (subr ro (ctx datum env) bool)
+  (lambda (x d e)
+    (cond ((datum-int? d) #t)
+          ((symbol? d)
+           (tagcase (lookup e (symbol->string d))
+             (some b (and (not (extract b now)) (int-expr? x (extract b code) (extract b scope))))
+             (none u (tagcase (find-def (extract x model) (symbol->string d))
+                       (some f (and (extract f fun) (null? (extract f params)) (int-expr? x (extract f body) nil)))
+                       (none u2 #f)))))
+          (else
+           (let ((h (head d)))
+             (cond ((int-op? d) #t)
+                   ((or (string=? h "if") (string=? h "let")) (int-expr? x (nth d 2) e))
+                   (else (tagcase (find-def (extract x model) h)
+                           (some f (and (extract f fun) (int-expr? x (extract f body) nil)))
+                           (none u #f)))))))))
+
+"Int's atom `a`'s value."
+(define atom-value (subr spin (ctx int) int)
+  (lambda (x a) (- (- a (extract x ibase)) (quotient (power 2 (extract x bw)) 2))))
+"Whether `a` is one of Int's atoms."
+(define int-atom? (subr spin (ctx int) bool)
+  (lambda (x a) (let ((b (extract x ibase))) (and (>= b 0) (>= a b) (< a (+ b (power 2 (extract x bw))))))))
+
+"The integer a set stands for: the sum of its Int atoms' values (Alloy's
+`int[e]`); other atoms add nothing."
+(define rel-int (subr cb-eff (ctx matrix) bits)
+  (lambda (x m)
+    (if (not (= (m-arity m) 1)) (error "casing: the integer of a relation that is not a set")
+        (let ((c (cx x)))
+          (i-sum c (letrec ((go (subr cb-eff (int) (listof bits acyclic))
+                                  (lambda (a)
+                                    (cond ((>= a (m-size m)) nil)
+                                          ((or (not (int-atom? x a)) (= (m-ref m a) c-false)) (go (+ a 1)))
+                                          (else (cons (i-ite c (m-ref m a) (i-const (atom-value x a)) (i-const 0)) (go (+ a 1))))))))
+                     (go 0)))))))
+"The set an integer stands for: its Int atom, or none if no atom has its
+value (Alloy's `Int[i]`). This never wraps."
+(define int-set (subr cb-eff (ctx bits) matrix)
+  (lambda (x v)
+    (let ((c (cx x)))
+      (m-build (extract x n) 1 (lambda ((a int)) (if (int-atom? x a) (i-eq c v (i-const (atom-value x a))) c-false))))))
+
+"Integer expression `d` in state `i`: its bits (matrix.fx), exact."
+(define ival (subr cb-eff (ctx datum int env) bits)
   (lambda (x d i e)
-    (if (datum-int? d)
-        (if (>= d 0) (count-const d) (arity-error d "casing's integers are not negative"))
-        (let ((h (head d)))
-          (cond ((string=? h "size") (m-count (cx x) (expr x (nth d 1) i e)))
-                ((string=? h "+") (count-add (cx x) (ival x (nth d 1) i e) (ival x (nth d 2) i e)))
-                ((string=? h "-") (count-sub (cx x) (ival x (nth d 1) i e) (ival x (nth d 2) i e)))
-                (else (arity-error d "not an integer expression")))))))
+    (let ((c (cx x)))
+      (letrec ((a1 (subr cb-eff () bits) (lambda () (ival x (nth d 1) i e)))
+               (a2 (subr cb-eff () bits) (lambda () (ival x (nth d 2) i e)))
+               (wrap (subr spin (bits) bits) (lambda (v) (i-wrap v (extract x bw))))
+               ;; a / b and its remainder; by 0, what the solver picks (as
+               ;; SMT-LIB leaves it): a model that divides by 0 shows it
+               (divrem (subr cb-eff (bits bits) quot-rem)
+                 (lambda (a b)
+                   (let ((qr (i-divrem c a b)) (zero (i-eq c b (i-const 0)))
+                         (free (lambda ((w int)) (letrec ((go (subr cb-eff (int) bits) (lambda (k) (if (<= k 0) nil (cons (c-input! c) (go (- k 1)))))))
+                                                   (go w)))))
+                     (product (q (i-ite c zero (free (+ 1 (i-width a))) (extract qr q)))
+                              (r (i-ite c zero (free (+ 1 (i-width a))) (extract qr r))))))))
+        (cond
+          ((datum-int? d) (i-const d))
+          ((symbol? d)
+           (let ((s (symbol->string d)))
+             (tagcase (lookup e s)
+               (some b (if (extract b now) (rel-int x (extract b val)) (ival x (extract b code) i (extract b scope))))
+               (none u (tagcase (find-def (extract x model) s)
+                         (some f (if (and (extract f fun) (null? (extract f params)) (int-expr? x (extract f body) nil))
+                                     (ival x (extract f body) i nil)
+                                     (rel-int x (expr x d i e))))
+                         (none u2 (rel-int x (expr x d i e))))))))
+          (else
+           (let ((h (head d)))
+             (cond
+               ((string=? h "size") (m-count c (expr x (nth d 1) i e)))
+               ((string=? h "+") (i-add c (a1) (a2)))
+               ((string=? h "-") (if (= (len d) 2) (i-neg c (a1)) (i-sub c (a1) (a2))))
+               ((string=? h "neg") (i-neg c (a1)))
+               ((string=? h "*") (i-mul c (a1) (a2)))
+               ((string=? h "div") (extract (divrem (a1) (a2)) q))
+               ((string=? h "rem") (extract (divrem (a1) (a2)) r))
+               ((string=? h "mod") (let* ((b (a2)) (r (extract (divrem (a1) b) r)))
+                                     (i-ite c (i-sign r) (i-add c r (i-abs c b)) r)))
+               ((string=? h "+%") (wrap (i-add c (a1) (a2))))
+               ((string=? h "-%") (wrap (i-sub c (a1) (a2))))
+               ((string=? h "*%") (wrap (i-mul c (a1) (a2))))
+               ((string=? h "neg%") (wrap (i-neg c (a1))))
+               ((string=? h "int") (rel-int x (expr x (nth d 1) i e)))
+               ((string=? h "sum")                    ; (sum ((x S)) i): over the bindings
+                (i-sum c (letrec ((go (subr cb-eff ((listof grounding acyclic)) (listof bits acyclic))
+                                        (lambda (l) (if (null? l) nil
+                                                        (cons (i-ite c (extract (car l) guard) (ival x (nth d 2) i (extract (car l) scope)) (i-const 0))
+                                                              (go (cdr l)))))))
+                           (go (ground x (items (nth d 1)) i e #f)))))
+               ((string=? h "if") (i-ite c (form (neutral x) (nth d 1) i e) (a2) (ival x (nth d 3) i e)))
+               ((string=? h "let") (ival x (nth d 2) i (let-env x (items (nth d 1)) e)))
+               (else
+                (tagcase (find-def (extract x model) h)
+                  (some f (if (and (extract f fun) (int-expr? x (extract f body) nil))
+                              (ival x (extract f body) i (call-env x f (cdr (items d)) i e))
+                              (rel-int x (expr x d i e))))
+                  (none u (rel-int x (expr x d i e)))))))))))))
 
 "Formula `d` in state `i`."
 (define form (subr cb-eff (ctx datum int env) int)
@@ -848,14 +980,14 @@ The names of a `#:disj` declaration are bound to disjoint values."
                        (none u (arity-error d "not a formula"))))))
           ((string=? h "in") (same2 (lambda ((a matrix) (b matrix)) (m-subset c a b))))
           ((string=? h "=")
-           (if (or (int-expr? (car args)) (int-expr? (car (cdr args))))
-               (count-eq c (ival x (car args) i e) (ival x (car (cdr args)) i e))
+           (if (or (int-expr? x (car args) e) (int-expr? x (car (cdr args)) e))
+               (i-eq c (ival x (car args) i e) (ival x (car (cdr args)) i e))
                (same2 (lambda ((a matrix) (b matrix)) (m-equal c a b)))))
           ((string=? h "!=") (c-not (form x (the datum (cons (sym "=") args)) i e)))
-          ((string=? h "<=") (count-ge c (ival x (car (cdr args)) i e) (ival x (car args) i e)))
-          ((string=? h ">=") (count-ge c (ival x (car args) i e) (ival x (car (cdr args)) i e)))
-          ((string=? h "<") (c-not (count-ge c (ival x (car args) i e) (ival x (car (cdr args)) i e))))
-          ((string=? h ">") (c-not (count-ge c (ival x (car (cdr args)) i e) (ival x (car args) i e))))
+          ((string=? h "<") (i-lt c (ival x (car args) i e) (ival x (car (cdr args)) i e)))
+          ((string=? h ">") (i-lt c (ival x (car (cdr args)) i e) (ival x (car args) i e)))
+          ((string=? h "<=") (c-not (i-lt c (ival x (car (cdr args)) i e) (ival x (car args) i e))))
+          ((string=? h ">=") (c-not (i-lt c (ival x (car args) i e) (ival x (car (cdr args)) i e))))
           ((string=? h "all") (quant "all"))
           ((string=? h "some") (if (quantified?) (quant "some") (m-some c (e1))))
           ((string=? h "no") (if (quantified?) (quant "no") (m-no c (e1))))
@@ -1023,8 +1155,8 @@ to the solver (and the facts `with-ordering` adds)."
                                (else c-false)))))))))
 
 "The problem's relations, `k` states of those that change, and the loop."
-(define make-ctx (subr cb-eff (model universe int int) ctx)
-  (lambda (m u k copies)
+(define make-ctx (subr cb-eff (model universe int int int) ctx)
+  (lambda (m u k copies bw)
     (let* ((c (make-circuit)) (n (list-length (extract u names)))
            (states (lambda ((var bool) (make (subr cb-eff () matrix)))
                (let ((a (the (arrayof matrix @cb) (make-array (if var k 1) (m-none 1 1)))))
@@ -1070,7 +1202,16 @@ to the solver (and the facts `with-ordering` adds)."
           (go 0))
         (c-assert! c (c-exactly-one c (letrec ((go (subr cb-eff (int) ints) (lambda (j) (if (>= j k) nil (cons (array-ref loops j) (go (+ j 1)))))))
                                         (go 0))))
-        (product (c c) (n n) (k k) (u copies) (loops loops) (rels (append sig-rels field-rels)) (model m) (universe u) (pol 1))))))
+        (product (c c) (n n) (k k) (u copies) (loops loops)
+                 (rels (append sig-rels
+                               ;; Int, its atoms, if there are any
+                               (tagcase (bound-of u "Int")
+                                 (some b (list (product (name "Int") (arity 1) (var #f)
+                                                        (mats (states #f (lambda () (bound-matrix c n 1 (lambda ((t int)) (if (in-ints? t (extract b upper)) 1 -1)))))))))
+                                 (none u2 nil))
+                               field-rels))
+                 (model m) (universe u) (pol 1) (bw bw)
+                 (ibase (tagcase (bound-of u "Int") (some b (car (extract b upper))) (none u2 -1))))))))
 
 ;;; ------------------------------------------------------------ what was found
 
@@ -1094,6 +1235,7 @@ to the solver (and the facts `with-ordering` adds)."
   (lambda (x i changing-only)
     (letrec ((go (subr cb-eff ((listof rel acyclic)) strings)
                (lambda (l) (cond ((null? l) nil)
+                                 ((string=? (extract (car l) name) "Int") (go (cdr l)))
                                  ((or (extract (car l) var) (not changing-only))
                                   (cons (string-append "  " (string-append (extract (car l) name) (string-append " = " (matrix-shown x (rel-at (car l) i))))) (go (cdr l))))
                                  (else (go (cdr l)))))))
@@ -1108,7 +1250,7 @@ then each state's that do, and where the loop goes back to."
                         (go 0)))
                 (static (letrec ((go (subr cb-eff ((listof rel acyclic)) strings)
                                    (lambda (l) (cond ((null? l) nil)
-                                                     ((extract (car l) var) (go (cdr l)))
+                                                     ((or (extract (car l) var) (string=? (extract (car l) name) "Int")) (go (cdr l)))
                                                      (else (cons (string-append "  " (string-append (extract (car l) name) (string-append " = " (matrix-shown x (rel-at (car l) 0))))) (go (cdr l))))))))
                           (go (extract x rels)))))
             (string-append
@@ -1172,7 +1314,11 @@ functions, assertions, and in `goal`."
   (lambda (m d)
     (let* ((g (command-goal m d))
            (sc (read-scope m (cdr (cdr (items d)))))
-           (u (make-universe m sc))
+           (bw (tagcase (scope-of sc "Int")
+                 (some e (if (and (>= (extract e count) 1) (<= (extract e count) 8)) (extract e count)
+                             (error "casing: Int's bitwidth is from 1 to 8")))
+                 (none u 4)))
+           (u (if (or (model-mentions? m "Int") (mentions? d "Int")) (with-int-atoms (make-universe m sc) bw) (make-universe m sc)))
            ;; a run's parameters become relations of their own, of their
            ;; type and multiplicity (and apart, if #:disj), as Alloy skolemizes
            (m2 (letrec ((go (subr ro ((listof decl acyclic) model) model)
@@ -1216,7 +1362,7 @@ functions, assertions, and in `goal`."
                    (if (> k (extract sc max-steps))
                        (string-append what (string-append (if (extract g check) ": no counterexample found" ": no instance found")
                                                           (scope-said sc temporal)))
-                       (let* ((x (make-ctx m2 u k (+ 1 (model-past-depth m2 goal)))) (c (cx x)))
+                       (let* ((x (make-ctx m2 u k (+ 1 (model-past-depth m2 goal)) bw)) (c (cx x)))
                          (begin
                            (letrec ((each (subr cb-eff (datums bool) unit)
                                       (lambda (l always) (if (null? l) #u
@@ -1230,7 +1376,7 @@ functions, assertions, and in `goal`."
                                (string-append what (string-append (if (extract g check) ": counterexample found" ": instance found")
                                                                   (string-append (scope-said sc temporal)
                                                                                  (string-append (if temporal (string-append ", " (string-append (int->string k) (if (= k 1) " state" " states"))) "")
-                                                                                                (string-append "\n" (instance-shown x))))))
+                                                                                                (let ((shown (instance-shown x))) (if (string=? shown "") "" (string-append "\n" shown)))))))
                                (try (+ k 1)))))))))
         (try (extract sc min-steps))))))
 

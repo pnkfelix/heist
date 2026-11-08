@@ -143,75 +143,116 @@ last is."
 (define* m-lone (subr cb-eff (circuit matrix) int) (lambda (c a) (c-at-most-one c (m-cells a))))
 (define* m-one (subr cb-eff (circuit matrix) int) (lambda (c a) (c-exactly-one c (m-cells a))))
 
-;;; ------------------------------------------------------------ counts
+;;; ------------------------------------------------------------ integers
 
-"A count, unary: element j (from 0) says the count is at least j+1."
-(define-type count ints)
+"An integer, exact: its bits, least significant first, two's complement,
+the last the sign. Each operation's result is as wide as its value
+needs, so nothing wraps and nothing overflows; `i-wrap` is the one
+operation that wraps, and only when asked."
+(define-type bits ints)
+
+(define* repeat (subr spin (int int) ints) (lambda (x k) (if (<= k 0) nil (cons x (repeat x (- k 1))))))
+(define* i-width (subr spin (bits) int) (lambda (a) (list-length a)))
+(define* i-sign (subr spin (bits) int) (lambda (a) (if (null? (cdr a)) (car a) (i-sign (cdr a)))))
+"The bits of the constant `k`, as few as hold it."
+(define* i-const (subr spin (int) bits)
+  (lambda (k) (if (or (= k 0) (= k -1)) (list (if (= k 0) c-false c-true))
+                  (cons (if (= (modulo k 2) 0) c-false c-true) (i-const (quotient (- k (modulo k 2)) 2))))))
+"`a` sign-extended to `w` bits, at least its width."
+(define* i-ext (subr spin (bits int) bits)
+  (lambda (a w) (append a (repeat (i-sign a) (- w (i-width a))))))
+"`a` without sign bits that repeat the one below (the same circuit)."
+(define* i-trim (subr spin (bits) bits)
+  (lambda (a) (let ((r (reverse a)))
+                (if (and (pair? (cdr r)) (= (car r) (car (cdr r)))) (i-trim (reverse (cdr r))) a))))
+(define* take-bits (subr spin (bits int) bits)
+  (lambda (a w) (if (or (<= w 0) (null? a)) nil (cons (car a) (take-bits (cdr a) (- w 1))))))
+(define* not-bits (subr spin (bits) bits) (lambda (a) (if (null? a) nil (cons (c-not (car a)) (not-bits (cdr a))))))
+
+"a + b + cin, of the same width w: the sum mod 2^w (a ripple of full adders)."
+(define* add-bits (subr cb-eff (circuit bits bits int) bits)
+  (lambda (c a b cin)
+    (if (null? a) nil
+        (let ((x (car a)) (y (car b)))
+          (cons (c-iff c (c-iff c x y) cin)                      ; x xor y xor cin
+                (add-bits c (cdr a) (cdr b) (c-or2 c (c-and2 c x y) (c-and2 c cin (c-or2 c x y)))))))))
+
+(define* i-add (subr cb-eff (circuit bits bits) bits)
+  (lambda (c a b) (let ((w (+ 1 (max (i-width a) (i-width b)))))
+                    (i-trim (add-bits c (i-ext a w) (i-ext b w) c-false)))))
+(define* i-sub (subr cb-eff (circuit bits bits) bits)
+  (lambda (c a b) (let ((w (+ 1 (max (i-width a) (i-width b)))))
+                    (i-trim (add-bits c (i-ext a w) (not-bits (i-ext b w)) c-true)))))
+(define* i-neg (subr cb-eff (circuit bits) bits) (lambda (c a) (i-sub c (i-const 0) a)))
+"a·b: both sign-extended to the width of the product, which holds it."
+(define* i-mul (subr cb-eff (circuit bits bits) bits)
+  (lambda (c a b)
+    (let* ((w (+ (i-width a) (i-width b))) (x (i-ext a w)))
+      (letrec ((and-all (subr cb-eff (bits int) bits)
+                 (lambda (l y) (if (null? l) nil (cons (c-and2 c (car l) y) (and-all (cdr l) y)))))
+               (go (subr cb-eff (bits int bits) bits)        ; acc + Σ y_i·(x << i), mod 2^w
+                 (lambda (ys i acc)
+                   (if (null? ys) acc
+                       (go (cdr ys) (+ i 1)
+                           (add-bits c acc (take-bits (append (repeat c-false i) (and-all x (car ys))) w) c-false))))))
+        (i-trim (go (i-ext b w) 0 (repeat c-false w)))))))
+"a < b: the sign of a - b, exact."
+(define* i-lt (subr cb-eff (circuit bits bits) int)
+  (lambda (c a b) (let ((w (+ 1 (max (i-width a) (i-width b)))))
+                    (i-sign (add-bits c (i-ext a w) (not-bits (i-ext b w)) c-true)))))
+(define* i-eq (subr cb-eff (circuit bits bits) int)
+  (lambda (c a b)
+    (let ((w (max (i-width a) (i-width b))))
+      (c-and c (letrec ((go (subr cb-eff (bits bits) ints)
+                          (lambda (x y) (if (null? x) nil (cons (c-iff c (car x) (car y)) (go (cdr x) (cdr y)))))))
+                 (go (i-ext a w) (i-ext b w)))))))
+"`i` ? a : b, bit by bit."
+(define* i-ite (subr cb-eff (circuit int bits bits) bits)
+  (lambda (c i a b)
+    (let ((w (max (i-width a) (i-width b))))
+      (i-trim (letrec ((go (subr cb-eff (bits bits) bits)
+                         (lambda (x y) (if (null? x) nil (cons (c-ite c i (car x) (car y)) (go (cdr x) (cdr y)))))))
+                (go (i-ext a w) (i-ext b w)))))))
+"The sum of integers, added in pairs."
+(define* i-sum (subr cb-eff (circuit (listof bits acyclic)) bits)
+  (lambda (c l)
+    (cond ((null? l) (i-const 0))
+          ((null? (cdr l)) (car l))
+          (else (i-sum c (letrec ((pairs (subr cb-eff ((listof bits acyclic)) (listof bits acyclic))
+                                    (lambda (l) (cond ((null? l) nil) ((null? (cdr l)) l)
+                                                      (else (cons (i-add c (car l) (car (cdr l))) (pairs (cdr (cdr l)))))))))
+                           (pairs l)))))))
+"`a` wrapped to `w` bits: its value mod 2^w, as a `w`-bit two's complement."
+(define* i-wrap (subr spin (bits int) bits)
+  (lambda (a w) (i-trim (take-bits (i-ext a w) w))))
+"|a|: nonnegative."
+(define* i-abs (subr cb-eff (circuit bits) bits) (lambda (c a) (i-ite c (i-sign a) (i-neg c a) a)))
+"a / b, truncated toward zero, and its remainder, of a's sign (as Alloy's
+and Java's): by restoring division of the magnitudes. For b = 0 the
+result is not said (the caller says it)."
+(define-type quot-rem (productof (q bits) (r bits)))
+(define* i-divrem (subr cb-eff (circuit bits bits) quot-rem)
+  (lambda (c a b)
+    (let* ((ua (i-abs c a)) (ub (i-abs c b))
+           (w (+ 2 (max (i-width ua) (i-width ub))))
+           (d (not-bits (i-ext ub w))))
+      (letrec ((go (subr cb-eff (bits bits bits) quot-rem)    ; n's bits, most significant first
+                 (lambda (ns r q)
+                   (if (null? ns) (product (q (i-trim (append q (list c-false)))) (r (i-trim r)))
+                       (let* ((r2 (cons (car ns) (take-bits r (- w 1))))       ; r·2 + n_i
+                              (t (add-bits c r2 d c-true))                     ; r2 - |b|
+                              (ge (c-not (i-sign t))))
+                         (go (cdr ns)
+                             (letrec ((pick (subr cb-eff (bits bits) bits)
+                                        (lambda (x y) (if (null? x) nil (cons (c-ite c ge (car x) (car y)) (pick (cdr x) (cdr y)))))))
+                               (pick t r2))
+                             (cons ge q)))))))
+        (let ((qr (go (reverse ua) (repeat c-false w) nil)))
+          (product (q (i-ite c (c-not (c-iff c (i-sign a) (i-sign b))) (i-neg c (extract qr q)) (extract qr q)))
+                   (r (i-ite c (i-sign a) (i-neg c (extract qr r)) (extract qr r)))))))))
 
 "How many of `a`'s tuples there are."
-(define* m-count (subr cb-eff (circuit matrix) count)
-  (lambda (c a)
-    ;; adding bit x to [s1 s2 …]: s'j = sj or (s(j-1) and x), s0 true
-    (letrec ((add (subr cb-eff (count int int) count)
-               (lambda (s x prev)
-                 (if (null? s) (if (= (c-and2 c prev x) c-false) nil (list (c-and2 c prev x)))
-                     (cons (c-or2 c (car s) (c-and2 c prev x)) (add (cdr s) x (car s))))))
-             (go (subr cb-eff (ints count) count)
-               (lambda (bits s) (if (null? bits) s (go (cdr bits) (add s (car bits) c-true))))))
-      (go (m-cells a) nil))))
-
-(define* count-const (subr spin (int) count)
-  (lambda (k) (if (<= k 0) nil (cons c-true (count-const (- k 1))))))
-
-"Element j of a count, false past its end."
-(define* count-at (subr spin (count int) int)
-  (lambda (s j) (cond ((null? s) c-false) ((= j 0) (car s)) (else (count-at (cdr s) (- j 1))))))
-
-(define* count-length (subr spin (count) int) (lambda (s) (list-length s)))
-
-"a + b: at least j+1 when a is at least p and b at least j+1-p."
-(define* count-add (subr cb-eff (circuit count count) count)
-  (lambda (c a b)
-    (let ((la (count-length a)) (lb (count-length b)))
-      (letrec ((at (subr cb-eff (int) int)
-                 (lambda (j)               ; sum >= j+1
-                   (c-or c (letrec ((go (subr cb-eff (int ints) ints)
-                                      (lambda (p acc)  ; a >= p, b >= j+1-p
-                                        (if (> p (+ j 1)) acc
-                                            (go (+ p 1)
-                                                (cons (c-and2 c (if (= p 0) c-true (count-at a (- p 1)))
-                                                              (if (= (- (+ j 1) p) 0) c-true (count-at b (- j p))))
-                                                      acc))))))
-                             (go 0 nil)))))
-               (all (subr cb-eff (int) count)
-                 (lambda (j) (if (>= j (+ la lb)) nil (cons (at j) (all (+ j 1)))))))
-        (all 0)))))
-
-"a - b, at least 0: at least j+1 when, for some p, a is at least p+j+1
-and b at most p."
-(define* count-sub (subr cb-eff (circuit count count) count)
-  (lambda (c a b)
-    (let ((la (count-length a)) (lb (count-length b)))
-      (letrec ((at (subr cb-eff (int) int)
-                 (lambda (j)
-                   (c-or c (letrec ((go (subr cb-eff (int ints) ints)
-                                      (lambda (p acc)  ; b = exactly p: b>=p and not b>=p+1
-                                        (if (> p lb) acc
-                                            (go (+ p 1)
-                                                (cons (c-and c (list (if (= p 0) c-true (count-at b (- p 1)))
-                                                                     (c-not (count-at b p))
-                                                                     (count-at a (+ p j))))
-                                                      acc))))))
-                             (go 0 nil)))))
-               (all (subr cb-eff (int) count)
-                 (lambda (j) (if (>= j la) nil (cons (at j) (all (+ j 1)))))))
-        (all 0)))))
-
-"a >= b: wherever b is at least j, so is a."
-(define* count-ge (subr cb-eff (circuit count count) int)
-  (lambda (c a b)
-    (c-and c (letrec ((go (subr cb-eff (int count ints) ints)
-                        (lambda (j bs acc) (if (null? bs) acc (go (+ j 1) (cdr bs) (cons (c-implies c (car bs) (count-at a j)) acc))))))
-               (go 0 b nil)))))
-(define* count-eq (subr cb-eff (circuit count count) int)
-  (lambda (c a b) (c-and2 c (count-ge c a b) (count-ge c b a))))
+(define* m-count (subr cb-eff (circuit matrix) bits)
+  (lambda (c a) (i-sum c (letrec ((go (subr cb-eff (ints) (listof bits acyclic))
+                                    (lambda (l) (if (null? l) nil (cons (list (car l) c-false) (go (cdr l)))))))
+                           (go (m-cells a))))))

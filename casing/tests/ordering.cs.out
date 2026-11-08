@@ -2,7 +2,7 @@ check grows: no counterexample found (scope 3)
 check at-most-two: counterexample found (scope 3, 4 State)
   Token = {Token$0, Token$1, Token$2}
   State = {State$0, State$1, State$2, State$3}
-  holds = {State$1->Token$2, State$2->Token$1, State$2->Token$2, State$3->Token$0, State$3->Token$1, State$3->Token$2}
+  holds = {State$1->Token$0, State$2->Token$0, State$2->Token$2, State$3->Token$0, State$3->Token$1, State$3->Token$2}
   next = {State$0->State$1, State$1->State$2, State$2->State$3}
 run (= (size Token) 1): no instance found (scope 3, 4 State)
 check ends: no counterexample found (scope 5)
