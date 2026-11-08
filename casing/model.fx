@@ -54,8 +54,10 @@
 "A sig: its parent (\"\" if none), whether it is a subset (`in`) of the
 parent, rather than a part of it (`extends`); abstract; its multiplicity
 (\"set\", \"one\", \"lone\", \"some\"); whether it changes from state to
-state, and the region it changes in (\"\" if none)."
-(define-type sig-info (productof (name string) (parent string) (subset bool) (abstract bool) (mult string) (var bool) (region string)))
+state, and the region it changes in (\"\" if none); whether it is
+totally ordered (`#:ordered`, Alloy's `util/ordering`)."
+(define-type sig-info (productof (name string) (parent string) (subset bool) (abstract bool) (mult string) (var bool) (region string)
+                                 (ordered bool)))
 "A field of `owner`: the columns after the owner's (expressions, sig
 names most often), the multiplicity of the last, whether it changes, and
 the region it changes in (\"\" if none)."
@@ -86,7 +88,7 @@ columns."
 written as a keyword, `#:w`; no field may be named so."
 (define option-word? (subr ro (string) bool)
   (lambda (w) (or (mult-name? w) (string=? w "abstract") (string=? w "extends") (string=? w "in")
-                  (string=? w "var") (string=? w "writes"))))
+                  (string=? w "var") (string=? w "writes") (string=? w "ordered"))))
 "A keyword's name, `#:k`; \"\" for anything else."
 (define option-name (subr ro (datum) string)
   (lambda (d) (if (keyword? d) (symbol->string (keyword->symbol d)) "")))
@@ -177,29 +179,30 @@ relation, as in Alloy); whether its names are bound to disjoint values."
       (cond
         ((string=? h "sig")
          (let ((name (name-of (car xs))))
-           (letrec ((go (subr ro (datums string bool bool string bool string (listof field-info acyclic)) model)
-                      (lambda (os parent subset abstract mult var region fs)
+           (letrec ((go (subr ro (datums string bool bool string bool string bool (listof field-info acyclic)) model)
+                      (lambda (os parent subset abstract mult var region ordered fs)
                         (if (null? os)
                             (product (sigs (cons (product (name name) (parent parent) (subset subset) (abstract abstract)
-                                                          (mult mult) (var var) (region region))
+                                                          (mult mult) (var var) (region region) (ordered ordered))
                                                  (extract m sigs)))
                                      (fields (append fs (extract m fields)))
                                      (facts (extract m facts)) (defs (extract m defs)) (asserts (extract m asserts)) (commands (extract m commands)))
                             (let* ((o (car os)) (k (option-name o)))
                               (cond
-                                ((string=? k "abstract") (go (cdr os) parent subset #t mult var region fs))
-                                ((mult-name? k) (go (cdr os) parent subset abstract k var region fs))
+                                ((string=? k "abstract") (go (cdr os) parent subset #t mult var region ordered fs))
+                                ((mult-name? k) (go (cdr os) parent subset abstract k var region ordered fs))
                                 ((or (string=? k "extends") (string=? k "in"))
                                  (if (pair? (cdr os))
-                                     (go (cdr (cdr os)) (name-of (car (cdr os))) (string=? k "in") abstract mult var region fs)
+                                     (go (cdr (cdr os)) (name-of (car (cdr os))) (string=? k "in") abstract mult var region ordered fs)
                                      (error (string-append "casing: whose part is this sig? " name))))
                                 ((string=? k "var")                                   ; #:var, or #:var @r
                                  (if (and (pair? (cdr os)) (region? (car (cdr os))))
-                                     (go (cdr (cdr os)) parent subset abstract mult #t (name-of (car (cdr os))) fs)
-                                     (go (cdr os) parent subset abstract mult #t "" fs)))
-                                ((pair? o) (go (cdr os) parent subset abstract mult var region (cons (read-field name o) fs)))
+                                     (go (cdr (cdr os)) parent subset abstract mult #t (name-of (car (cdr os))) ordered fs)
+                                     (go (cdr os) parent subset abstract mult #t "" ordered fs)))
+                                ((string=? k "ordered") (go (cdr os) parent subset abstract mult var region #t fs))
+                                ((pair? o) (go (cdr os) parent subset abstract mult var region ordered (cons (read-field name o) fs)))
                                 (else (error (string-append "casing: what is this in a sig? " (shown o))))))))))
-             (go (cdr xs) "" #f #f "set" #f "" nil))))
+             (go (cdr xs) "" #f #f "set" #f "" #f nil))))
         ((string=? h "fact")
          (let ((body (if (and (pair? xs) (symbol? (car xs)) (pair? (cdr xs))) (cdr xs) xs)))
            (product (sigs (extract m sigs)) (fields (extract m fields)) (facts (cons (conj body) (extract m facts)))
@@ -227,8 +230,104 @@ relation, as in Alloy); whether its names are bound to disjoint values."
   (lambda (ds)
     (letrec ((go (subr ro (datums model) model) (lambda (l m) (if (null? l) m (go (cdr l) (add-form m (car l)))))))
       (let ((m (go ds empty-model)))
-        (product (sigs (reverse (extract m sigs))) (fields (reverse (extract m fields))) (facts (reverse (extract m facts)))
-                 (defs (extract m defs)) (asserts (extract m asserts)) (commands (reverse (extract m commands))))))))
+        (with-ordering
+         (product (sigs (reverse (extract m sigs))) (fields (reverse (extract m fields))) (facts (reverse (extract m facts)))
+                  (defs (extract m defs)) (asserts (extract m asserts)) (commands (reverse (extract m commands)))))))))
+
+;;; ------------------------------------------------------------ util/ordering
+
+"The sigs a model orders."
+(define ordered-sigs (subr ro (model) (listof sig-info acyclic))
+  (lambda (m) (letrec ((go (subr ro ((listof sig-info acyclic)) (listof sig-info acyclic))
+                         (lambda (l) (cond ((null? l) nil) ((extract (car l) ordered) (cons (car l) (go (cdr l)))) (else (go (cdr l)))))))
+                (go (extract m sigs)))))
+
+"Alloy's `util/ordering`, for every ordered sig at once (their atoms are
+apart, each being top-level): `next`, a relation, each ordered sig's
+atoms in a line; and the rest of the module's functions and predicates,
+over `next`. `first` and `last` take the sig. A model's own definition
+of one of these names wins."
+(define ordering-defs datum
+  '((fun (prev) (~ next))
+    (fun (first (s univ #:set)) (diff s (join s next)))
+    (fun (last (s univ #:set)) (diff s (join next s)))
+    (fun (nexts (e univ #:set)) (join e (^ next)))
+    (fun (prevs (e univ #:set)) (join e (^ (~ next))))
+    (pred (lt (a b univ)) (in a (prevs b)))
+    (pred (gt (a b univ)) (in a (nexts b)))
+    (pred (lte (a b univ)) (or (= a b) (lt a b)))
+    (pred (gte (a b univ)) (or (= a b) (gt a b)))
+    (fun (larger (a b univ)) (if (lt a b) b a))
+    (fun (smaller (a b univ)) (if (lt a b) a b))
+    (fun (max (es univ #:set)) (diff es (join es (^ (~ next)))))
+    (fun (min (es univ #:set)) (diff es (join es (^ next))))))
+
+"Whether casing fixes `next` to the atoms' order, S$0, S$1, …: when the
+ordered sigs' atoms are interchangeable, as Kodkod's symmetry breaking
+does: no `one` part of one has an atom of its own."
+(define order-fixed? (subr ro (model) bool)
+  (lambda (m)
+    (letrec ((under? (subr ro (string string) bool)        ; whether sig a is a part of sig b, or below one
+               (lambda (a b) (tagcase (find-sig m a)
+                               (none u #f)
+                               (some g (and (not (extract g subset)) (not (string=? (extract g parent) ""))
+                                            (or (string=? (extract g parent) b) (under? (extract g parent) b)))))))
+             (any (subr ro (string (listof sig-info acyclic)) bool)
+               (lambda (a os) (and (pair? os) (or (under? a (extract (car os) name)) (any a (cdr os))))))
+             (go (subr ro ((listof sig-info acyclic)) bool)
+               (lambda (l) (or (null? l)
+                               (and (not (and (string=? (extract (car l) mult) "one") (not (extract (car l) subset))
+                                              (any (extract (car l) name) (ordered-sigs m))))
+                                    (go (cdr l)))))))
+      (go (extract m sigs)))))
+
+"`m` with its ordering, if it orders any sig: the relation `next`, the
+module's definitions, and, unless the order is fixed, the facts that
+make `next` a total order of each ordered sig."
+(define with-ordering (subr ro (model) model)
+  (lambda (m)
+    (let ((os (ordered-sigs m)))
+      (if (null? os) m
+          (letrec ((check (subr ro ((listof sig-info acyclic)) bool)
+                     (lambda (l) (or (null? l)
+                                     (cond ((not (string=? (extract (car l) parent) ""))
+                                            (error (string-append "casing: an ordered sig is top-level: " (extract (car l) name))))
+                                           ((extract (car l) var)
+                                            (error (string-append "casing: an ordered sig does not change: " (extract (car l) name))))
+                                           (else (check (cdr l)))))))
+                   (field? (subr ro ((listof field-info acyclic)) bool)
+                     (lambda (l) (and (pair? l) (or (string=? (extract (car l) name) "next") (field? (cdr l))))))
+                   (defs (subr ro (datums (listof def-info acyclic)) (listof def-info acyclic))
+                     (lambda (l acc)
+                       (if (null? l) acc
+                           (let ((nm (name-of (car (items (nth (car l) 1))))))
+                             (defs (cdr l) (tagcase (find-def m nm)
+                                             (some f acc)
+                                             (none u (extract (add-form (product (sigs nil) (fields nil) (facts nil) (defs acc) (asserts nil) (commands nil))
+                                                                        (car l))
+                                                              defs))))))))
+                   (orders (subr ro ((listof sig-info acyclic)) datums)
+                     ;; each ordered sig: next within it, from its first through all
+                     (lambda (l)
+                       (if (null? l) nil
+                           (let ((s (sym (extract (car l) name))))
+                             (append (list (the datum (list (sym "in") (list (sym "join") s (sym "next")) s))
+                                           (the datum (list (sym "lone") (list (sym "first") s)))
+                                           (the datum (list (sym "in") s (list (sym "join") (list (sym "first") s) (list (sym "*") (sym "next"))))))
+                                     (orders (cdr l))))))))
+            (if (and (check os) (not (field? (extract m fields))))
+                (product (sigs (extract m sigs))
+                         (fields (append (extract m fields)
+                                         (list (product (name "next") (owner "") (cols (list (sym "univ") (sym "univ"))) (mult "set") (var #f) (region "")))))
+                         (facts (if (order-fixed? m) (extract m facts)
+                                    (append (extract m facts)
+                                            (append (list (the datum '(all ((b univ)) (and (lone (join b next)) (lone (join next b)))))
+                                                          (the datum '(no (inter (^ next) iden))))
+                                                    (orders os)))))
+                         (defs (defs (items ordering-defs) (extract m defs)))
+                         (asserts (extract m asserts)) (commands (extract m commands)))
+                (error "casing: a model that orders a sig has no field named next")))))))
+
 
 (define find-sig (subr ro (model string) (sumof (none unit) (some sig-info)))
   (lambda (m n) (letrec ((go (subr ro ((listof sig-info acyclic)) (sumof (none unit) (some sig-info)))
@@ -335,7 +434,8 @@ not say: a scope smaller than the atoms a sig may have."
                (lambda (g) (if (or (string=? (extract g mult) "one") (string=? (extract g mult) "lone")) 1
                                (tagcase (scope-of s (extract g name)) (none u (extract s default)) (some e (extract e count))))))
              (exact? (subr ro (sig-info) bool)
-               (lambda (g) (or (and (string=? (extract g mult) "one") (string=? (extract g parent) ""))
+               ;; a top-level sig that is one, or ordered (Alloy's util/ordering[exactly elem]), or said exactly
+               (lambda (g) (or (and (or (string=? (extract g mult) "one") (extract g ordered)) (string=? (extract g parent) ""))
                                (tagcase (scope-of s (extract g name)) (none u #f) (some e (and (extract e exact) (string=? (extract g parent) "")))))))
              (children (subr ro (string (listof sig-info acyclic)) (listof sig-info acyclic))
                (lambda (p l) (cond ((null? l) nil) ((string=? (extract (car l) parent) p) (cons (car l) (children p (cdr l)))) (else (children p (cdr l))))))
@@ -867,6 +967,26 @@ the rest of its upper, false elsewhere."
 
 (define in-ints? (subr ro (int ints) bool) (lambda (x l) (and (pair? l) (or (= x (car l)) (in-ints? x (cdr l))))))
 
+"util/ordering's `next`: each ordered sig's atoms in their order, if the
+order is fixed (`order-fixed?`); else any pair of one sig's atoms, left
+to the solver (and the facts `with-ordering` adds)."
+(define order-matrix (subr cb-eff (circuit int model universe) matrix)
+  (lambda (c n m u)
+    (letrec ((atoms (subr ro ((listof sig-info acyclic)) (listof ints acyclic))
+               (lambda (l) (if (null? l) nil
+                               (cons (tagcase (bound-of u (extract (car l) name)) (some b (extract b upper)) (none u2 nil)) (atoms (cdr l))))))
+             (line? (subr ro (int int ints) bool)          ; b just after a in as
+               (lambda (a b as) (and (pair? as) (pair? (cdr as))
+                                     (or (and (= (car as) a) (= (car (cdr as)) b)) (line? a b (cdr as))))))
+             (any (subr ro (int int (listof ints acyclic) (subr ro (int int ints) bool)) bool)
+               (lambda (a b ls p) (and (pair? ls) (or (p a b (car ls)) (any a b (cdr ls) p))))))
+      (let ((ls (atoms (ordered-sigs m))) (fixed (order-fixed? m)))
+        (m-build n 2 (lambda ((t int))
+                       (let ((a (quotient t n)) (b (modulo t n)))
+                         (cond (fixed (if (any a b ls line?) c-true c-false))
+                               ((any a b ls (lambda ((a int) (b int) (as ints)) (and (in-ints? a as) (in-ints? b as)))) (c-input! c))
+                               (else c-false)))))))))
+
 "The problem's relations, `k` states of those that change, and the loop."
 (define make-ctx (subr cb-eff (model universe int int) ctx)
   (lambda (m u k copies)
@@ -903,7 +1023,10 @@ the rest of its upper, false elsewhere."
                                                                                                       (go (modulo t (power n j)) (cdr cs) (- j 1)))))))
                                                                (go t cols (- k2 1))))))
                                           (cons (product (name (extract f name)) (arity k2) (var (extract f var))
-                                                         (mats (states (extract f var) (lambda () (bound-matrix c n k2 (lambda ((t int)) (if (ok? t) 0 -1)))))))
+                                                         (mats (states (extract f var)
+                                                                       (if (and (string=? (extract f name) "next") (string=? (extract f owner) "") (pair? (ordered-sigs m)))
+                                                                           (lambda () (order-matrix c n m u))
+                                                                           (lambda () (bound-matrix c n k2 (lambda ((t int)) (if (ok? t) 0 -1))))))))
                                                 (go (cdr l))))))))
                          (go (extract m fields))))
            (loops (the ivec (make-array k c-false))))

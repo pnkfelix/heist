@@ -1,0 +1,10 @@
+run (= (last Day) Monday): instance found (scope 3)
+  Day = {Monday$0, Day$1, Day$2}
+  Monday = {Monday$0}
+  next = {Day$1->Day$2, Day$2->Monday$0}
+run (= (first Day) Monday): instance found (scope 3)
+  Day = {Monday$0, Day$1, Day$2}
+  Monday = {Monday$0}
+  next = {Monday$0->Day$1, Day$1->Day$2}
+check line: no counterexample found (scope 4)
+[exit 0]

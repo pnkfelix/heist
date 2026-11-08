@@ -52,7 +52,8 @@ for a name.
   - `#:abstract`;
   - a multiplicity, `#:one`, `#:lone`, `#:some` or `#:set` (the default);
   - `#:extends P` (a part of `P`) or `#:in P` (a subset of `P`);
-  - `#:var`, or `#:var @r` for one that changes in region `r`.
+  - `#:var`, or `#:var @r` for one that changes in region `r`;
+  - `#:ordered`: Alloy's `util/ordering` (below).
 - **A field:** `(f T option…)`, `T` a sig (or an expression) or
   `(-> T U …)`, its options:
   - a multiplicity: `#:one` (the default for `T`), `#:lone`, `#:some` or
@@ -150,6 +151,30 @@ for a name.
 - **`one` and `lone` over several variables** count the bindings
   together, as Alloy's comprehension does: `(one ((a b S)) f)` says one
   pair.
+
+**`util/ordering`, as a sig's option.** `(sig State #:ordered)` is
+Alloy's `open util/ordering[State]` (`util/ordering.als`):
+- its scope is exact, as the module's `exactly elem` makes it;
+- a relation `next` puts each ordered sig's atoms in a line;
+- the module's functions and predicates, written in casing
+  (`ordering-defs`), over `next`: `prev`, `(first S)`, `(last S)`,
+  `(nexts e)`, `(prevs e)`, `lt`, `lte`, `gt`, `gte`, `larger`,
+  `smaller`, `max`, `min`. A model's own definition of one of these names
+  wins over the module's.
+
+Alloy opens the module once per ordered sig, with names qualified as the
+model opens it (`so/next`); casing has one `next` for every ordered sig,
+which is sound because an ordered sig is top-level (so their atoms are
+apart), and `first` and `last` take the sig. An ordered sig does not
+change.
+
+**`next` fixed, as Kodkod's symmetry breaking fixes it.** When the
+ordered sigs' atoms are interchangeable, any line of them is a permutation
+away from `S$0 → S$1 → …`, so casing fixes `next` to that, with no
+inputs to the solver. They are not interchangeable when a `one` part of an
+ordered sig has an atom of its own: then `next` is the solver's to pick,
+within each ordered sig, with facts that make it a line
+(`tests/ordering-free.cs`, where Monday may be last).
 
 **More than Alloy: higher-order quantifiers.** Alloy translates a
 higher-order quantifier only when Kodkod can skolemize it; otherwise
@@ -257,9 +282,9 @@ a model can say:
    - **`enum`.**
    - **Overloading and the receiver call** `x.p[y]`: sugar for `(p x y)`.
 3. **The library and modules.**
-   - **`util/ordering`**, which Alloy also builds into the solver as a
-     special total order (`TOTALORDER`); and `util/integer`,
-     `util/boolean`, `util/relation`, `util/graph`.
+   - **`util/integer`, `util/boolean`, `util/relation`, `util/graph`.**
+     (`util/ordering` is `#:ordered`. An ordered sig must be top-level;
+     Alloy also orders subsigs.)
    - **`seq`** and `util/sequniv`, which are indexed by Int (item 1).
    - **`String`** and string literals.
    - **Modules:** `open`, parameterized modules, `private`, top-level
@@ -295,7 +320,6 @@ a model can say:
 - **Cross-checking against Alloy itself.** Run the same models in Alloy 6
   and compare the answers. This needs a JDK newer than this machine's 11.
 
-**A suggested order:** `util/ordering`, which most models of protocols
-use; sig facts with `this`; then integers, after their design. (`#:disj`
-and declarations' multiplicities, first on the list, were done
-2026-11-08.)
+**A suggested order:** sig facts with `this`; then integers, after their
+design. (`#:disj`, declarations' multiplicities and `util/ordering`, first
+on the list, were done 2026-11-08.)
