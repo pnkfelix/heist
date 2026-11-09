@@ -1,7 +1,7 @@
 check succ: no counterexample found (scope 3)
 check succ-wrapping: counterexample found (scope 3)
-  Item = {Item$0}
-  price = {Item$0->0}
+  Item = {Item$0, Item$1, Item$2}
+  price = {Item$0->-8, Item$1->-8, Item$2->7}
   $i = {7}
 check no-atom: no counterexample found (scope 3)
 check arith: no counterexample found (scope 3)
@@ -9,7 +9,7 @@ check divides: no counterexample found (scope 3, 3 Int)
 check mod-range: no counterexample found (scope 3, 3 Int)
 check by-zero: counterexample found (scope 3)
   Item = {Item$0, Item$1, Item$2}
-  price = {Item$0->-8, Item$1->-8, Item$2->-8}
+  price = {Item$0->-8, Item$1->-8, Item$2->7}
 run (> (sum ((t Item)) (join t price)) 20): instance found (scope 3, exactly 3 Item)
   Item = {Item$0, Item$1, Item$2}
   price = {Item$0->7, Item$1->7, Item$2->7}

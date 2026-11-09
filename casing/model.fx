@@ -9,7 +9,9 @@
                     (m-circuit (load-moduleof "circuit.fx" m-sat))
                     (m-matrix (load-moduleof "matrix.fx" m-sat m-circuit))))
 (hide (define kit-strings (load-module "../kit/strings.fx"))
-      (import kit-strings string-join))
+      (import kit-strings string-join)
+      (define kit-numbers (load-module "../kit/numbers.fx"))
+      (import kit-numbers lcm))
 
 (define-type datums (listof datum acyclic))
 "What the reading of a model does: it may loop, and reads the module's globals."
@@ -1834,11 +1836,278 @@ functions, assertions, and in `goal`."
                      (letrec ((go (subr ro ((listof named acyclic) int) int) (lambda (l k) (if (null? l) k (go (cdr l) (max k (past-depth (extract (car l) body))))))))
                        (go (extract m asserts) 0))))))))
 
+;;; ------------------------------------------------------------ symmetry
+
+"Tuple `t` (of arity k, over n atoms) with atoms a and b swapped."
+(define swapped (subr ro (int int int int int) int)
+  (lambda (n k t a b)
+    (letrec ((go (subr ro (int int int) int)
+               (lambda (t j acc)
+                 (if (>= j k) acc
+                     (let* ((d (modulo t n)) (d2 (cond ((= d a) b) ((= d b) a) (else d))))
+                       (go (quotient t n) (+ j 1) (+ acc (* d2 (power n j)))))))))
+      (go t 0 0))))
+
+"A cell's kind: true 1, false -1, an input (or a gate) 0."
+(define cell-kind (subr pure (int) int) (lambda (v) (cond ((= v c-true) 1) ((= v c-false) -1) (else 0))))
+
+"Every matrix of the problem: each relation's, state by state, then each
+witness's (a skolem's: Kodkod breaks symmetry on those too)."
+(define problem-mats (subr cb-eff (ctx) (listof matrix acyclic))
+  (lambda (x)
+    (letrec ((mats (subr cb-eff ((arrayof matrix @cb) int (listof matrix acyclic)) (listof matrix acyclic))
+               (lambda (ms j acc) (if (>= j (array-length ms)) acc (mats ms (+ j 1) (cons (array-ref ms j) acc)))))
+             (rels (subr cb-eff ((listof rel acyclic) (listof matrix acyclic)) (listof matrix acyclic))
+               (lambda (l acc) (if (null? l) acc (rels (cdr l) (mats (extract (car l) mats) 0 acc)))))
+             (wits (subr cb-eff ((listof witness acyclic) (listof matrix acyclic)) (listof matrix acyclic))
+               (lambda (l acc) (if (null? l) acc (wits (cdr l) (cons (extract (car l) val) acc))))))
+      (reverse (wits (reverse (array-ref (extract x witnesses) 0)) (rels (extract x rels) nil))))))
+
+"Whether swapping atoms a and b is a symmetry of the problem: it maps each
+relation's cells, in every state, and each witness's, to cells of the same
+kind (true, false, or an input). A formula cannot name an atom, only relations, so then it
+maps each instance to an instance (Kodkod's `SymmetryDetector`, which
+refines classes of atoms by the bounds). Int's atoms never are: arithmetic
+reads their values."
+(define swap-symmetric? (subr cb-eff (ctx (listof matrix acyclic) int int) bool)
+  (lambda (x all a b)
+    (let ((n (extract x n)))
+      (letrec ((mat-ok (subr cb-eff (matrix int) bool)
+                 (lambda (m t) (or (>= t (m-size m))
+                                   (and (= (cell-kind (m-ref m t)) (cell-kind (m-ref m (swapped n (m-arity m) t a b))))
+                                        (mat-ok m (+ t 1))))))
+               (mats-ok (subr cb-eff ((listof matrix acyclic)) bool)
+                 (lambda (l) (or (null? l) (and (mat-ok (car l) 0) (mats-ok (cdr l)))))))
+        (mats-ok all)))))
+
+"Kodkod's lex-leader (`SymmetryBreaker`): for each swap of two
+neighbouring atoms that is a symmetry, the cells it moves, in order (each
+relation's, state by state, tuple by tuple, then each witness's), read as
+a word, true before false, are no greater than their images. Of the
+instances that differ only by a permutation of such atoms some instance
+satisfies this: the least one. (Either order would do; true first puts an
+instance in the first atoms, as Alloy's are.) Only the first `limit`
+cells of each word are compared, as Alloy's symmetry setting (20) limits
+Kodkod's; 0 breaks nothing."
+(define break-symmetry! (subr cb-eff (ctx int) unit)
+  (lambda (x limit)
+    (let* ((n (extract x n)) (c (cx x))
+           (top (if (< (extract x ibase) 0) n (extract x ibase)))   ; Int's atoms are last
+           (all (problem-mats x)))
+      (letrec ((moved (subr cb-eff ((listof matrix acyclic) int int int ints ints) (productof (xs ints) (ys ints)))
+                 ;; the cells swapping a and b moves, and their images: from
+                 ;; matrix l's cell t on, up to `limit` in all
+                 (lambda (l t a b xs ys)
+                   (cond ((or (null? l) (>= (list-length xs) limit)) (product (xs (reverse xs)) (ys (reverse ys))))
+                         ((>= t (m-size (car l))) (moved (cdr l) 0 a b xs ys))
+                         (else
+                          (let* ((m (car l)) (v (m-ref m t)) (w (m-ref m (swapped n (m-arity m) t a b))))
+                            (if (or (not (= (cell-kind v) 0)) (= v w))
+                                (moved l (+ t 1) a b xs ys)
+                                (moved l (+ t 1) a b (cons v xs) (cons w ys))))))))
+               ;; xs ≤ ys as words, true first, given that the cells before are equal (e)
+               (leq! (subr cb-eff (ints ints int) unit)
+                 (lambda (xs ys e)
+                   (if (or (null? xs) (null? ys)) #u
+                       (begin (c-assert! c (c-implies c e (c-implies c (car ys) (car xs))))
+                              (leq! (cdr xs) (cdr ys) (c-and2 c e (c-iff c (car xs) (car ys))))))))
+               (each (subr cb-eff (int) unit)
+                 (lambda (a)
+                   (if (>= (+ a 1) top) #u
+                       (begin
+                         (if (swap-symmetric? x all a (+ a 1))
+                             (let ((p (moved all 0 a (+ a 1) nil nil)))
+                               (leq! (extract p xs) (extract p ys) c-true))
+                             #u)
+                         (each (+ a 1)))))))
+        (if (<= limit 0) #u (each 0))))))
+
+;;; ------------------------------------------------------------ more instances
+
+(define-type truths (listof bool acyclic))
+"An instance found, as values: each static relation's cells and each
+witness's (`statics`), each state's cells of the relations that change
+(`states`), its states and where its loop goes back to. Instances are
+told apart by these, as Alloy tells them: two that differ only in a
+skolem's value are two."
+(define-type snapshot (productof (statics (listof truths acyclic)) (states (listof (listof truths acyclic) acyclic)) (k int) (loop int)))
+
+"A problem's matrices that do not change (static relations', then the
+witnesses'), and those of state i of the relations that do."
+(define static-mats (subr cb-eff (ctx) (listof matrix acyclic))
+  (lambda (x)
+    (letrec ((rels (subr cb-eff ((listof rel acyclic)) (listof matrix acyclic))
+               (lambda (l) (cond ((null? l) nil) ((extract (car l) var) (rels (cdr l)))
+                                 (else (cons (array-ref (extract (car l) mats) 0) (rels (cdr l)))))))
+             (wits (subr cb-eff ((listof witness acyclic)) (listof matrix acyclic))
+               (lambda (l) (if (null? l) nil (cons (extract (car l) val) (wits (cdr l)))))))
+      (append (rels (extract x rels)) (wits (reverse (array-ref (extract x witnesses) 0)))))))
+(define state-mats (subr cb-eff (ctx int) (listof matrix acyclic))
+  (lambda (x i)
+    (letrec ((rels (subr cb-eff ((listof rel acyclic)) (listof matrix acyclic))
+               (lambda (l) (cond ((null? l) nil)
+                                 ((extract (car l) var) (cons (array-ref (extract (car l) mats) i) (rels (cdr l))))
+                                 (else (rels (cdr l)))))))
+      (rels (extract x rels)))))
+
+"The instance just found in `x`."
+(define snapshot-of (subr cb-eff (ctx) snapshot)
+  (lambda (x)
+    (let ((c (cx x)) (k (extract x k)))
+      (letrec ((vals (subr cb-eff (matrix int) truths)
+                 (lambda (m t) (if (>= t (m-size m)) nil (cons (c-value c (m-ref m t)) (vals m (+ t 1))))))
+               (all (subr cb-eff ((listof matrix acyclic)) (listof truths acyclic))
+                 (lambda (l) (if (null? l) nil (cons (vals (car l) 0) (all (cdr l))))))
+               (states (subr cb-eff (int) (listof (listof truths acyclic) acyclic))
+                 (lambda (i) (if (>= i k) nil (cons (all (state-mats x i)) (states (+ i 1))))))
+               (loop (subr cb-eff (int) int)
+                 (lambda (l) (if (or (>= l k) (c-value c (loop-at x l))) l (loop (+ l 1))))))
+        (product (statics (all (static-mats x))) (states (states 0)) (k k) (loop (loop 0)))))))
+
+"The cells of matrices `ms` as `vss` has them, one literal each (true
+for a cell that is true in vss, its negation if false)."
+(define alike (subr cb-eff ((listof matrix acyclic) (listof truths acyclic) ints) ints)
+  (lambda (ms vss acc)
+    (letrec ((lits (subr cb-eff (matrix truths int ints) ints)
+               (lambda (m vs t acc) (if (null? vs) acc
+                                        (lits m (cdr vs) (+ t 1) (cons (if (car vs) (m-ref m t) (c-not (m-ref m t))) acc))))))
+      (if (or (null? ms) (null? vss)) acc (alike (cdr ms) (cdr vss) (lits (car ms) (car vss) 0 acc))))))
+
+"In `x`, the configuration is `s`'s: each static relation, and witness,
+as it has them."
+(define fix-statics! (subr cb-eff (ctx snapshot) unit)
+  (lambda (x s) (c-assert! (cx x) (c-and (cx x) (alike (static-mats x) (extract s statics) nil)))))
+
+"Which state of a lasso of k states, its loop back to l, is at position p
+of the trace it makes."
+(define lasso-state (subr pure (int int int) int)
+  (lambda (p k l) (if (< p k) p (+ l (modulo (- p l) (- k l))))))
+
+"In `x`, the instance `s` is not to be found again: not as the same
+lasso, nor as another lasso that makes the same trace. Some static cell
+differs; or, wherever x's loop goes back to, some state of the trace it
+makes differs from s's at the same position. Two lassos, of k and k'
+states with loops of p and p', make the same trace if they agree at its
+first max(k, k') + lcm(p, p') positions (each is periodic from there).
+For a model that does not change: some cell differs."
+(define block-snapshot! (subr cb-eff (ctx snapshot) unit)
+  (lambda (x s)
+    (let* ((c (cx x)) (k2 (extract x k)) (k1 (extract s k)) (l1 (extract s loop)))
+      (letrec ((state-of (subr spin ((listof (listof truths acyclic) acyclic) int) (listof truths acyclic))
+                 (lambda (l i) (cond ((null? l) nil) ((= i 0) (car l)) (else (state-of (cdr l) (- i 1))))))
+               ;; x's loop back to l2: at each position, the states alike
+               (positions (subr cb-eff (int int int ints) ints)
+                 (lambda (l2 p top acc)
+                   (if (>= p top) acc
+                       (positions l2 (+ p 1) top
+                                  (alike (state-mats x (lasso-state p k2 l2)) (state-of (extract s states) (lasso-state p k1 l1)) acc)))))
+               (loops (subr cb-eff (int ints) ints)
+                 (lambda (l2 acc)
+                   (if (>= l2 k2) acc
+                       (loops (+ l2 1)
+                              (cons (c-and c (cons (loop-at x l2) (positions l2 0 (+ (max k1 k2) (lcm (- k1 l1) (- k2 l2))) nil)))
+                                    acc))))))
+        (c-assert! c (c-not (c-and2 c (c-and c (alike (static-mats x) (extract s statics) nil))
+                                      (c-or c (loops 0 nil)))))))))
+
+"How a command is run, beyond its scope: how many instances to show
+(`#:instances n`, 0 if not said: the first), whether to count them all
+(`#:count`), at most how many to find (`#:limit n`, 0 if not said: no
+limit), and how much symmetry to break (`#:symmetry n`: the length of
+each lex-leader predicate; 0, none). The command line says them for every
+command (`casing --instances n`); a command's own say wins."
+(define-type settings (productof (instances int) (count bool) (limit int) (symmetry int)))
+(define default-settings settings (product (instances 0) (count #f) (limit 0) (symmetry 20)))
+(define with-instances (subr pure (settings int) settings)
+  (lambda (s n) (product (instances n) (count (extract s count)) (limit (extract s limit)) (symmetry (extract s symmetry)))))
+(define with-count (subr pure (settings) settings)
+  (lambda (s) (product (instances (extract s instances)) (count #t) (limit (extract s limit)) (symmetry (extract s symmetry)))))
+(define with-limit (subr pure (settings int) settings)
+  (lambda (s n) (product (instances (extract s instances)) (count (extract s count)) (limit n) (symmetry (extract s symmetry)))))
+(define with-symmetry (subr pure (settings int) settings)
+  (lambda (s n) (product (instances (extract s instances)) (count (extract s count)) (limit (extract s limit)) (symmetry n))))
+
+"A command's items after its target: its scope, and its settings."
+(define command-options (subr ro (datums settings) (productof (specs datums) (settings settings)))
+  (lambda (l s)
+    (letrec ((num (subr ro (datums string) int)
+               (lambda (l k) (let ((bad (lambda () (error (string-append "casing: #:" (string-append k " N, N a whole number"))))))
+                               (if (pair? l)
+                                   (let ((d (car l))) (if (and (datum-int? d) (>= d 0)) d (bad)))
+                                   (bad)))))
+             (go (subr ro (datums datums settings) (productof (specs datums) (settings settings)))
+               (lambda (l specs s)
+                 (cond ((null? l) (product (specs (reverse specs)) (settings s)))
+                       ((not (keyword? (car l))) (go (cdr l) (cons (car l) specs) s))
+                       ((string=? (option-name (car l)) "instances") (go (cdr (cdr l)) specs (with-instances s (num (cdr l) "instances"))))
+                       ((string=? (option-name (car l)) "limit") (go (cdr (cdr l)) specs (with-limit s (num (cdr l) "limit"))))
+                       ((string=? (option-name (car l)) "symmetry") (go (cdr (cdr l)) specs (with-symmetry s (num (cdr l) "symmetry"))))
+                       ((string=? (option-name (car l)) "count") (go (cdr l) specs (with-count s)))
+                       (else (error (string-append "casing: what option is this? " (shown (car l)))))))))
+      (go l nil s))))
+
+"After the first instance, said as `first`: the next ones, each found by
+blocking those before (Alloy's \"next\", Kodkod's `SolutionIterator`):
+up to `#:instances` shown, all counted if `#:count`, and no more than
+`#:limit` found. A model that changes has its traces found as Alloy's
+\"next\" finds them (Pardinus's `nextP`): of the first's configuration
+(its static relations and witnesses as they are), when no other trace of
+k states is left, one of k+1, up to the scope's most steps (`most`); each
+a trace not found before, whatever lasso it was found as. `setup k` makes
+the problem of k states."
+(define more-instances (subr cb-eff ((subr cb-eff (int) ctx) int ctx settings bool bool string) string)
+  (lambda (setup most x0 st check temporal first)
+    (let ((want (extract st instances)) (counting (extract st count)) (limit (extract st limit)))
+      (if (and (= want 0) (not counting)) first
+          (let* ((noun (if check "counterexample" "instance"))
+                 (some-of (lambda ((i int)) (string-append (int->string i) (string-append " " (if (= i 1) noun (string-append noun "s"))))))
+                 (traces (if temporal (string-append " (traces of up to " (string-append (int->string most) (if (= most 1) " state, of the first's configuration)" " states, of the first's configuration)"))) ""))
+                 (said (lambda ((x ctx) (i int))
+                         (let ((s (instance-shown x)) (k (extract x k)))
+                           (string-append noun (string-append " " (string-append (int->string i)
+                             (string-append (if temporal (string-append ", " (string-append (int->string k) (if (= k 1) " state" " states"))) "")
+                                            (string-append ":" (if (string=? s "") "" (string-append "\n" s)))))))))))
+            (letrec ((finish (subr cb-eff (int strings bool) string)
+                       (lambda (i shown more)
+                         (string-join (cons first (reverse (cons (if counting (if more (string-append "at least " (string-append (some-of i) traces))
+                                                                                  (string-append (some-of i) (string-append " in all" traces)))
+                                                                     (string-append (some-of i) (string-append traces (if more "; there are more" ", and no more"))))
+                                                                 shown)))
+                                      "\n")))
+                     ;; blocked, and for a trace, the first's configuration kept
+                     (block-all! (subr cb-eff (ctx (listof snapshot acyclic)) unit)
+                       (lambda (x l) (if (null? l) #u
+                                         (begin (if (and temporal (null? (cdr l))) (fix-statics! x (car l)) #u)
+                                                (block-snapshot! x (car l)) (block-all! x (cdr l))))))
+                     ;; the next instance: in x, or in a longer trace's problem
+                     (advance (subr cb-eff (ctx (listof snapshot acyclic)) (sumof (none unit) (some ctx)))
+                       (lambda (x found)
+                         (cond ((c-solve! (cx x) nil) (sum some x))
+                               ((and temporal (< (extract x k) most))
+                                (let ((x2 (setup (+ (extract x k) 1))))
+                                  (begin (block-all! x2 found) (advance x2 found))))
+                               (else (sum none #u)))))
+                     ;; i found, the last just now in x; `shown`, the 2nd on, newest first
+                     (go (subr cb-eff (ctx int strings (listof snapshot acyclic)) string)
+                       (lambda (x i shown found0)
+                         (let* ((s (snapshot-of x)) (found (cons s found0)))
+                           (begin
+                             (if (and temporal (null? found0)) (fix-statics! x s) #u)
+                             (block-snapshot! x s)
+                             (if (or (and (not counting) (>= i want)) (and (> limit 0) (>= i limit)))
+                                 (finish i shown (tagcase (advance x found) (some y #t) (none u #f)))
+                                 (tagcase (advance x found)
+                                   (none u (finish i shown #f))
+                                   (some y (go y (+ i 1) (if (< i want) (cons (said y (+ i 1)) shown) shown) found)))))))))
+              (go x0 1 nil nil)))))))
+
 "A command run: what it found, said."
-(define run-command (subr cb-eff (model datum) string)
-  (lambda (m d)
+(define run-command (subr cb-eff (model datum settings) string)
+  (lambda (m d s0)
     (let* ((g (command-goal m d))
-           (sc (read-scope m (cdr (cdr (items d)))))
+           (opts (command-options (cdr (cdr (items d))) s0))
+           (st (extract opts settings))
+           (sc (read-scope m (extract opts specs)))
            (bw (tagcase (scope-of sc "Int")
                  (some e (if (and (>= (extract e count) 1) (<= (extract e count) 8)) (extract e count)
                              (error "casing: Int's bitwidth is from 1 to 8")))
@@ -1882,27 +2151,35 @@ functions, assertions, and in `goal`."
            (decls (declaration-facts m2))
            (temporal (any-var? m))
            (what (string-append (if (extract g check) "check " "run ") (if (string=? (extract g name) "") (shown (nth d 1)) (extract g name)))))
-      (letrec ((try (subr cb-eff (int) string)
+      (letrec ((setup (subr cb-eff (int) ctx)
+                 ;; the problem of k states: what is asserted, symmetry broken
+                 (lambda (k)
+                   (let* ((x (make-ctx m2 u k (+ 1 (model-past-depth m2 goal)) bw)) (c (cx x)))
+                     (begin
+                       (letrec ((each (subr cb-eff (datums bool) unit)
+                                  (lambda (l always) (if (null? l) #u
+                                                         (begin (c-assert! c (form x (if always (the datum (list (sym "always") (car l))) (car l)) 0 nil))
+                                                                (each (cdr l) always))))))
+                         (begin (each decls temporal)
+                                (each (extract u facts) temporal)
+                                (each (extract m2 facts) #f)
+                                (each (list goal) #f)))
+                       ;; after translating, so that the witnesses are there
+                       (break-symmetry! x (extract st symmetry))
+                       x))))
+               (try (subr cb-eff (int) string)
                  (lambda (k)
                    (if (> k (extract sc max-steps))
                        (string-append what (string-append (if (extract g check) ": no counterexample found" ": no instance found")
                                                           (scope-said sc temporal)))
-                       (let* ((x (make-ctx m2 u k (+ 1 (model-past-depth m2 goal)) bw)) (c (cx x)))
-                         (begin
-                           (letrec ((each (subr cb-eff (datums bool) unit)
-                                      (lambda (l always) (if (null? l) #u
-                                                             (begin (c-assert! c (form x (if always (the datum (list (sym "always") (car l))) (car l)) 0 nil))
-                                                                    (each (cdr l) always))))))
-                             (begin (each decls temporal)
-                                    (each (extract u facts) temporal)
-                                    (each (extract m2 facts) #f)
-                                    (each (list goal) #f)))
-                           (if (c-solve! c nil)
+                       (let ((x (setup k)))
+                         (if (c-solve! (cx x) nil)
+                             (more-instances setup (extract sc max-steps) x st (extract g check) temporal
                                (string-append what (string-append (if (extract g check) ": counterexample found" ": instance found")
                                                                   (string-append (scope-said sc temporal)
                                                                                  (string-append (if temporal (string-append ", " (string-append (int->string k) (if (= k 1) " state" " states"))) "")
-                                                                                                (let ((shown (instance-shown x))) (if (string=? shown "") "" (string-append "\n" shown)))))))
-                               (try (+ k 1)))))))))
+                                                                                                (let ((shown (instance-shown x))) (if (string=? shown "") "" (string-append "\n" shown))))))))
+                             (try (+ k 1))))))))
         (try (extract sc min-steps))))))
 
 (define scope-said (subr ro (scope bool) string)
@@ -1920,6 +2197,8 @@ functions, assertions, and in `goal`."
 
 "A model's warnings (its types), then every command, in order, each one's
 answer."
-(define run-model (subr cb-eff (model) strings)
-  (lambda (m) (letrec ((go (subr cb-eff (datums) strings) (lambda (l) (if (null? l) nil (cons (run-command m (car l)) (go (cdr l)))))))
-                (append (model-warnings m) (go (extract m commands))))))
+(define run-model (subr cb-eff (model) strings) (lambda (m) (run-model-with m default-settings)))
+"As `run-model`, each command run with settings `s` but for what it says."
+(define run-model-with (subr cb-eff (model settings) strings)
+  (lambda (m s) (letrec ((go (subr cb-eff (datums) strings) (lambda (l) (if (null? l) nil (cons (run-command m (car l) s) (go (cdr l)))))))
+                  (append (model-warnings m) (go (extract m commands))))))

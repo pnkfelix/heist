@@ -1,8 +1,8 @@
 check apart: no counterexample found (scope 3)
 check not-apart: counterexample found (scope 3)
-  Place = {Place$0}
-  Person = {Person$0}
-  home = {Person$0->Place$0}
-  work = {}
-  fav = {Person$0->Place$0}
+  Place = {Place$0, Place$1, Place$2}
+  Person = {Person$0, Person$1, Person$2}
+  home = {Person$0->Place$0, Person$1->Place$0, Person$2->Place$1}
+  work = {Person$0->Place$1, Person$2->Place$2}
+  fav = {Person$0->Place$0, Person$2->Place$2}
 [exit 0]

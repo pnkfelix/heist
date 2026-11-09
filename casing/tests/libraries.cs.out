@@ -1,22 +1,22 @@
 check dag-acyclic: no counterexample found (scope 3)
 run (and (tree edges) (some edges)): instance found (scope 3, exactly 3 Node)
   Node = {Node$0, Node$1, Node$2}
-  P = {}
-  edges = {Node$0->Node$1, Node$1->Node$2}
-  le = {}
+  P = {P$0, P$1, P$2}
+  edges = {Node$0->Node$1, Node$0->Node$2}
+  le = {P$0->P$1, P$2->P$0, P$2->P$1, P$2->P$2}
 check tree-one-root: no counterexample found (scope 3)
 check ring-strong: no counterexample found (scope 3)
 check strong-ring: counterexample found (scope 3)
-  Node = {Node$2}
-  P = {}
-  edges = {}
-  le = {}
+  Node = {Node$0, Node$1, Node$2}
+  P = {P$0, P$1, P$2}
+  edges = {Node$0->Node$1, Node$0->Node$2, Node$1->Node$0, Node$2->Node$1, Node$2->Node$2}
+  le = {P$0->P$1, P$2->P$0, P$2->P$1, P$2->P$2}
   $n = {Node$2}
 run (total-order le P): instance found (scope 3, exactly 3 P)
-  Node = {}
+  Node = {Node$0, Node$1, Node$2}
   P = {P$0, P$1, P$2}
-  edges = {}
-  le = {P$0->P$0, P$0->P$1, P$0->P$2, P$1->P$1, P$1->P$2, P$2->P$2}
+  edges = {Node$0->Node$1, Node$2->Node$0, Node$2->Node$1, Node$2->Node$2}
+  le = {P$0->P$0, P$0->P$1, P$1->P$1, P$2->P$0, P$2->P$1, P$2->P$2}
 check to-antisymmetric: no counterexample found (scope 3)
 check eq-symmetric: no counterexample found (scope 3)
 check dom-ran: no counterexample found (scope 3)

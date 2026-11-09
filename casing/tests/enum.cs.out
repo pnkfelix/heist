@@ -6,6 +6,6 @@ run (and (some (join color Green)) (no (join color Red))): instance found (scope
   Green = {Green$0}
   Blue = {Blue$0}
   Shirt = {Shirt$0, Shirt$1}
-  color = {Shirt$0->Green$0, Shirt$1->Green$0}
+  color = {Shirt$0->Green$0, Shirt$1->Blue$0}
   next = {Red$0->Green$0, Green$0->Blue$0}
 [exit 0]

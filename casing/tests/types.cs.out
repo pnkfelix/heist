@@ -7,12 +7,12 @@ warning: in run (in Rock Pet): (in Rock Pet): its left and right are always disj
 check fine: no counterexample found (scope 3)
 run (some (<: Rock owns)): no instance found (scope 3)
 run (in Rock Pet): instance found (scope 3)
-  Person = {}
-  Pet = {Pet$0}
-  Cat = {Pet$0}
-  Dog = {}
-  Tame = {Pet$0}
+  Person = {Person$0, Person$1, Person$2}
+  Pet = {Pet$0, Pet$1, Pet$2}
+  Cat = {Pet$0, Pet$1}
+  Dog = {Pet$2}
+  Tame = {Pet$0, Pet$2}
   Rock = {}
-  owns = {}
-  owner = {}
+  owns = {Person$0->Pet$0, Person$0->Pet$2, Person$1->Pet$0, Person$1->Pet$2, Person$2->Pet$2}
+  owner = {Pet$0->Person$0, Pet$2->Person$2}
 [exit 0]

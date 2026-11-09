@@ -12,7 +12,14 @@
 #   --# 4 skip: why
 # A line `--# options: -n` passes options to Alloy's exec (-n: noOverflow).
 #
-#   xcheck.sh [NAME …]       those models; all if none named
+# With --count, each command's instances (or counterexamples) are counted
+# instead, by both, with no symmetry broken (casing's --symmetry 0;
+# Alloy's -d 0, as its -y is not read), up to $XCHECK_CAP (2000): the
+# numbers must agree, or both reach the cap. A command marked `differs`
+# is not counted; `--# i uncounted: why` marks one whose counts may
+# differ though its verdicts agree.
+#
+#   xcheck.sh [--count] [NAME …]   those models; all if none named
 # Alloy is $ALLOY_JAR (default ~/Dev/LangPlay/alloy-6.2.0/
 # org.alloytools.alloy.dist.jar), run by $JAVA (default openjdk.java, or
 # java), which must be Java 17 or later.
@@ -23,6 +30,10 @@ jar=${ALLOY_JAR:-$HOME/Dev/LangPlay/alloy-6.2.0/org.alloytools.alloy.dist.jar}
 java=${JAVA:-$(command -v openjdk.java || command -v java)}
 [ -f "$jar" ] || { echo "no Alloy jar at $jar (set ALLOY_JAR)"; exit 2; }
 work=$(mktemp -d "${TMPDIR:-/tmp}/xcheck.XXXXXX")
+count=; cap=${XCHECK_CAP:-2000}
+if [ "$1" = "--count" ]; then count=1; shift; fi
+if [ -n "$count" ]; then casing_opts="--count --limit $cap --symmetry 0"; alloy_opts="-d 0 -r $cap"
+else casing_opts=; alloy_opts=; fi
 trap 'rm -rf "$work"' EXIT
 
 if [ $# -eq 0 ]; then
@@ -33,11 +44,17 @@ status=0; agree=0; differ=0; skip=0; bad=0; unchecked=0
 for name in "$@"; do
   name=$(basename "$name" .cs)
   [ -f "$tests/$name.cs" ] || { echo "FAIL $name: no tests/$name.cs"; status=1; continue; }
-  # casing's verdicts, one per line: sat or unsat
-  (cd "$tests" && "$casing" "$name.cs" 2>&1) > "$work/$name.casing"
+  # casing's verdicts, one per line: sat or unsat; or its counts
+  (cd "$tests" && "$casing" $casing_opts "$name.cs" 2>&1) > "$work/$name.casing"
+  if [ -n "$count" ]; then
+    grep -E '^(run|check) .*: (no )?(instance|counterexample) found|^[0-9]+ (instance|counterexample)s? in all|^at least [0-9]+ ' "$work/$name.casing" \
+      | grep -v -E '^(run|check) .*: (instance|counterexample) found' \
+      | sed -E 's/.*: no (instance|counterexample) found.*/0/; s/^at least ([0-9]+) .*/\1+/; s/^([0-9]+) .*/\1/' > "$work/$name.cv"
+  else
   grep -E '^(run|check) .*: (no )?(instance|counterexample) found' "$work/$name.casing" \
     | sed -E 's/.*: no (instance|counterexample) found.*/unsat/; t; s/.*: (instance|counterexample) found.*/sat/' \
     > "$work/$name.cv"
+  fi
   n=$(wc -l < "$work/$name.cv")
   : > "$work/$name.seen"
   for als in "$here/$name.als" "$here/$name".*.als; do
@@ -46,9 +63,14 @@ for name in "$@"; do
     opts=$(sed -n 's/^--# options: *//p' "$als")
     out="$work/out-$a"
     (cd "$work" && "$java" --enable-native-access=ALL-UNNAMED -jar "$jar" \
-       exec -f $opts -o "$work/sol-$a" -c '*' "$als" 2>&1) > "$out"
-    # Alloy's verdicts, in order: SAT or UNSAT (an error stops the file)
-    grep -E '^[0-9]+\. +(run|check) ' "$out" | awk '{print $NF}' > "$work/$a.av"
+       exec -f $opts $alloy_opts -o "$work/sol-$a" -c '*' "$als" 2>&1) > "$out"
+    # Alloy's verdicts, in order: SAT or UNSAT (an error stops the file);
+    # or its counts, the number before the last /
+    if [ -n "$count" ]; then
+      grep -E '^[0-9]+\. +(run|check) ' "$out" | awk -v cap="$cap" '{t=$(NF-1); sub("/.*","",t); print (t+0 >= cap+0 ? t "+" : t)}' > "$work/$a.av"
+    else
+      grep -E '^[0-9]+\. +(run|check) ' "$out" | awk '{print $NF}' > "$work/$a.av"
+    fi
     # the markers, in order, each before a command
     grep -E '^--# [0-9]+( |$)' "$als" | grep -v ' skip:' > "$work/$a.marks"
     grep -E '^--# [0-9]+ skip:' "$als" | while read -r _ i _ why; do
@@ -66,6 +88,14 @@ for name in "$@"; do
       av=$(sed -n "${j}p" "$work/$a.av" | tr 'A-Z' 'a-z')
       cv=$(sed -n "${i}p" "$work/$name.cv")
       [ -n "$cv" ] || { echo "FAIL $a: marker $i, but $name.cs has $n commands"; status=1; bad=$((bad + 1)); continue; }
+      if [ -n "$count" ]; then
+        case "$rest" in
+          differs:*|uncounted:*) skip=$((skip + 1)); echo "  uncounted $name #$i: casing $cv, Alloy $av (${rest#*: })";;
+          *) if [ "$av" = "$cv" ]; then agree=$((agree + 1))
+             else echo "FAIL $name #$i: casing $cv, Alloy $av"; status=1; bad=$((bad + 1)); fi;;
+        esac
+        continue
+      fi
       case "$rest" in
         differs:*)
           if [ "$av" != "$cv" ]; then differ=$((differ + 1)); echo "  differ $name #$i: casing $cv, Alloy $av (${rest#differs: })"

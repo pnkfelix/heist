@@ -1,0 +1,69 @@
+run (eventually (some on)): instance found (scope 3, 0 M, steps 1..2), 2 states
+  L = {L$0}
+  M = {}
+state 0 (the loop comes back here):
+  on = {}
+  lit = {}
+state 1:
+  on = {L$0->L$0}
+  lit = {}
+2 instances in all (traces of up to 2 states, of the first's configuration)
+run (eventually (some on)): instance found (scope 3, 0 M, steps 1..3), 2 states
+  L = {L$0}
+  M = {}
+state 0 (the loop comes back here):
+  on = {}
+  lit = {}
+state 1:
+  on = {L$0->L$0}
+  lit = {}
+8 instances in all (traces of up to 3 states, of the first's configuration)
+run (and (always (no on)) (eventually (one lit))): instance found (scope 3, exactly 2 M, steps 2..2), 2 states
+  L = {L$0}
+  M = {M$0, M$1}
+state 0 (the loop comes back here):
+  on = {}
+  lit = {}
+state 1:
+  on = {}
+  lit = {M$0->M$0}
+8 instances in all (traces of up to 2 states, of the first's configuration)
+run (and (always (no on)) (eventually (one lit))): instance found (scope 3, exactly 2 M, steps 2..2), 2 states
+  L = {L$0}
+  M = {M$0, M$1}
+state 0 (the loop comes back here):
+  on = {}
+  lit = {}
+state 1:
+  on = {}
+  lit = {M$0->M$0}
+4 instances in all (traces of up to 2 states, of the first's configuration)
+run (and (always (no on)) (= (size M) 2) (eventually (one lit))): instance found (scope 3, 3 M, steps 2..2), 2 states
+  L = {L$0}
+  M = {M$0, M$1}
+state 0 (the loop comes back here):
+  on = {}
+  lit = {}
+state 1:
+  on = {}
+  lit = {M$0->M$0}
+instance 2, 2 states:
+  L = {L$0}
+  M = {M$0, M$1}
+state 0:
+  on = {}
+  lit = {}
+state 1 (the loop comes back here):
+  on = {}
+  lit = {M$0->M$0}
+instance 3, 2 states:
+  L = {L$0}
+  M = {M$0, M$1}
+state 0:
+  on = {}
+  lit = {}
+state 1 (the loop comes back here):
+  on = {}
+  lit = {M$0->M$1}
+3 instances (traces of up to 2 states, of the first's configuration); there are more
+[exit 0]

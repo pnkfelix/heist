@@ -13,6 +13,9 @@ AlloyTools/org.alloytools.alloy ed89fdb (cloned to
 temporal logic).
 
     bin/casing MODEL.cs      every command of the model, in order
+    bin/casing --instances N MODEL.cs   up to N instances of each
+    bin/casing --count [--limit N] MODEL.cs   how many each has
+    bin/casing --symmetry N MODEL.cs    symmetry breaking (20; 0: none)
 
 ## Files
 
@@ -42,6 +45,8 @@ temporal logic).
 (assert acyclic (no (inter (^ edges) iden)))
 (run two-cats 3)                                    ; default scope 3
 (check acyclic 5 (Node 4) (exactly Dog 2) (steps 1 8))
+(run two-cats 3 #:instances 5)                      ; the first 5 instances
+(run two-cats 3 #:count #:limit 1000 #:symmetry 0)  ; how many, up to 1000
 ```
 
 Every declaration is its kind, its name, what it needs, and then its
@@ -193,6 +198,38 @@ for a name.
 - **`one` and `lone` over several variables** count the bindings
   together, as Alloy's comprehension does: `(one ((a b S)) f)` says one
   pair.
+- **More instances** (`#:instances n`, `#:count`, `#:limit n` on a
+  command, or `--instances N`, `--count`, `--limit N` for every command),
+  as Alloy's "next": each found, the solver is told it is not to be found
+  again, and asked again (combo's solver is incremental, so the problem is
+  not made again).
+  - Instances are told apart by every relation's tuples and every
+    witness's, as Alloy tells them: two that differ only in a skolem's
+    value are two.
+  - A model that changes: more traces of the first's configuration (its
+    static relations and witnesses as they are), as Alloy's "next" is
+    Pardinus's `nextP` ("New config" in Alloy's window, `nextC`, is not
+    here). When no other trace of k states is left, traces of k+1 are
+    sought, up to the scope's most steps; each a trace not found before,
+    whatever lasso spells it. Two lassos, of k and k' states looping back
+    p and p' states, spell one trace when they agree at its first max(k,
+    k') + lcm(p, p') positions; so the block is a circuit over the new
+    problem's states and its loop's inputs (`block-snapshot!`).
+- **Symmetry breaking** (`#:symmetry n`, `--symmetry N`; 20 if not said,
+  as Alloy's; 0, none), Kodkod's lex-leader (`break-symmetry!`):
+  - swapping two neighbouring atoms is a symmetry when it maps every
+    relation's cells, in every state, and every witness's, to cells of the
+    same kind (true, false, or an input): a formula names relations, not
+    atoms. Int's atoms never are (arithmetic reads their values); nor are a
+    `one` sig's atom, or an ordered sig's when its order is fixed, as the
+    bounds say;
+  - for each such swap: the cells it moves, read as a word, true before
+    false, are no greater than their images; only the first n cells. Of
+    each set of instances that differ by renaming such atoms, the least
+    satisfies it. True first puts an instance in the first atoms;
+  - so a check with no counterexample tries fewer permutations, and
+    `#:count` counts fewer instances: with `#:symmetry 0` the count is of
+    every instance, which is what can be compared with Alloy's (below).
 
 **Libraries: `(open util/relation)`, `(open util/graph S)`.** Alloy's
 `util/relation` and `util/graph[node]`, written in casing
@@ -404,13 +441,17 @@ a model can say:
   whose sides are always equal) and unused variables.
 
 **Not of expressive power, but of the analysis:**
-- **Symmetry breaking.** Kodkod's lex-leader predicates over
-  interchangeable atoms. Without them, an unsatisfiable check explores
-  every permutation of each instance.
+- **Symmetry breaking beyond neighbouring atoms.** Kodkod's detector
+  partitions the atoms into classes from the bounds; casing tries only
+  each atom and the next. Its universe puts each sig's atoms together,
+  but a class whose atoms are not next to each other would be missed
+  (not broken, never wrongly broken).
 - **Memoizing translations.** A subformula is translated again for each
   loop and position that reaches it. The circuits are hash-consed, so the
   formula is the same, but the time grows with temporal nesting.
-- **More instances**, by blocking each one found: Alloy's "next".
+- **New config and new fork** (Pardinus's `nextC` and `nextS`): more
+  instances of a model that changes are only more traces of the first's
+  configuration.
 - **Witnesses below the top.** An existential under a universal or in a
   state is translated once for each binding or state; its sets are not
   shown (Alloy shows skolem functions of the bindings outside).
@@ -420,7 +461,7 @@ multiplicities, `util/ordering`, sig facts with `this`, integers) is done.
 
 ## Cross-checked against Alloy
 
-`casing/xcheck/xcheck.sh [NAME …]` runs each test model `NAME.cs` and its
+`casing/xcheck/xcheck.sh [--count] [NAME …]` runs each test model `NAME.cs` and its
 Alloy version `xcheck/NAME.als` (and any `NAME.*.als`) in Alloy 6.2.0's
 command line, and compares the verdicts command by command: an instance
 or counterexample found, or not. Before each Alloy command a marker
@@ -442,9 +483,32 @@ On 2026-11-08, for all 19 models (90 commands, in 17 s):
   over sets, which Alloy cannot skolemize; values out of range; `mod`.
 
 Alloy's warnings on `types.als` are casing's on `types.cs`, one for one.
-Only the verdicts are compared, not instances or trace lengths: the
-two solvers may find different instances, and Alloy's command line does
-not print a trace's length.
+
+**Counts.** With `--count`, the instances (or counterexamples) of each
+command are counted by both, with no symmetry broken, up to 2000
+(`$XCHECK_CAP`), and the numbers must agree, or both reach the cap. A
+command marked `differs` is not counted, nor one marked
+`--# i uncounted: why`. With symmetry broken the counts are not
+comparable: Kodkod's breaking and casing's need not remove the same
+instances (on small models they do: `tests/instances.cs`'s 27 of 56).
+
+On 2026-11-09 (42 s): **81 agree**, 39 of them not 0 (from 1 to 1216,
+and 8 that reach the cap), the temporal ones among them (39 traces of
+`light`'s first command); 3 are not counted (`1 div 0`, the sum past 7,
+and `ints.wrap.als`, a smaller model than `ints.cs`).
+
+The counts found what the verdicts had not: `regions.als`'s `enter`
+kept the door's `opened` unchanged, but casing's writes `@door`, which
+holds `open` as well as `Guest`. The verdicts agreed by chance; the
+counts (16 against 12, 33 against 10) did not.
+
+Alloy's command line reads no `-y` (its symmetry setting): `CLI.java`
+sets the symmetry from `-d`, the skolem depth (`opt.symmetry =
+options.depth(opt.symmetry)`, at ed89fdb). So `-d 0` is how to turn
+symmetry breaking off (and skolemize only at the top, as casing's
+witnesses are). Alloy's "next" for a model that changes keeps the
+configuration (`TemporalPardinusSolver`'s `next` is `nextP`), and casing
+does the same.
 
 Writing the models in Alloy showed two differences of syntax, not of
 meaning:

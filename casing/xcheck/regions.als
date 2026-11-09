@@ -5,8 +5,8 @@ sig Door { var opened: lone Door }
 var sig Guest {}
 pred switch[l: Lamp] { l.on' = l and some l.level'
                        opened' = opened and Guest' = Guest }
-pred enter { some Guest' - Guest
-             on' = on and level' = level and opened' = opened }
+pred enter { some Guest' - Guest           -- writes @door: Guest and opened
+             on' = on and level' = level }
 pred prop[l: Lamp, d: Door] { d.opened' = d and no l.on'
                               Guest' = Guest }
 pred stutter { on' = on and level' = level and opened' = opened and Guest' = Guest }

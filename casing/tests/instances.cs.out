@@ -1,0 +1,86 @@
+run (in none none): instance found (scope 2)
+  A = {}
+  B = {}
+  f = {}
+56 instances in all
+run (in none none): instance found (scope 2)
+  A = {A$0}
+  B = {B$0, B$1}
+  f = {B$0->B$0, B$1->B$0}
+27 instances in all
+run (some ((a A)) (some a)): instance found (scope 2, exactly 2 A, 0 B)
+  A = {A$0, A$1}
+  B = {}
+  f = {}
+  $a = {A$0}
+2 instances in all
+run (some ((a A)) (some a)): instance found (scope 2, exactly 2 A, 0 B)
+  A = {A$0, A$1}
+  B = {}
+  f = {}
+  $a = {A$0}
+1 instance in all
+run p: instance found (scope 2, 0 A)
+  A = {}
+  B = {B$0, B$1}
+  f = {B$0->B$0, B$1->B$0}
+  $b = {B$1}
+instance 2:
+  A = {}
+  B = {B$0, B$1}
+  f = {B$0->B$0, B$1->B$1}
+  $b = {B$0}
+instance 3:
+  A = {}
+  B = {B$0, B$1}
+  f = {B$0->B$0}
+  $b = {B$0}
+3 instances; there are more
+run p: instance found (scope 2, 0 A)
+  A = {}
+  B = {B$0, B$1}
+  f = {B$0->B$0, B$1->B$0}
+  $b = {B$1}
+instance 2:
+  A = {}
+  B = {B$0, B$1}
+  f = {B$0->B$0, B$1->B$1}
+  $b = {B$0}
+instance 3:
+  A = {}
+  B = {B$0, B$1}
+  f = {B$0->B$0}
+  $b = {B$0}
+instance 4:
+  A = {}
+  B = {B$0}
+  f = {B$0->B$0}
+  $b = {B$0}
+instance 5:
+  A = {}
+  B = {B$0, B$1}
+  f = {B$0->B$1}
+  $b = {B$0}
+instance 6:
+  A = {}
+  B = {B$0, B$1}
+  f = {B$0->B$1, B$1->B$0}
+  $b = {B$0}
+instance 7:
+  A = {}
+  B = {B$0, B$1}
+  f = {B$0->B$0, B$1->B$0}
+  $b = {B$0}
+7 instances, and no more
+check has-f: counterexample found (scope 2, 0 A)
+  A = {}
+  B = {B$0, B$1}
+  f = {B$0->B$1}
+  $b = {B$1}
+counterexample 2:
+  A = {}
+  B = {B$0, B$1}
+  f = {}
+  $b = {B$0}
+4 counterexamples in all
+[exit 0]

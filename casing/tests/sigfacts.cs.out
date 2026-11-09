@@ -2,23 +2,23 @@ check no-self: no counterexample found (scope 3)
 check best-liked: no counterexample found (scope 3)
 run (some best): instance found (scope 3, 2 Person)
   Person = {Person$0, Person$1}
-  Key = {}
-  Room = {}
-  Box = {}
-  likes = {Person$1->Person$0}
-  best = {Person$1->Person$0}
-  keys = {}
-  things = {}
+  Key = {Key$0, Key$1, Key$2}
+  Room = {Room$0, Room$1, Room$2}
+  Box = {Box$0, Box$1, Box$2}
+  likes = {Person$0->Person$1}
+  best = {Person$0->Person$1}
+  keys = {Room$0->Key$0, Room$1->Key$1, Room$2->Key$2}
+  things = {Box$0->Key$0, Box$0->Key$2, Box$1->Key$1}
 check own-keys: no counterexample found (scope 3)
 check own-things: counterexample found (scope 3)
-  Person = {}
-  Key = {Key$0}
-  Room = {}
-  Box = {Box$0, Box$1}
-  likes = {}
-  best = {}
-  keys = {}
-  things = {Box$0->Key$0, Box$1->Key$0}
+  Person = {Person$0, Person$1}
+  Key = {Key$0, Key$1, Key$2}
+  Room = {Room$0, Room$1, Room$2}
+  Box = {Box$0, Box$1, Box$2}
+  likes = {Person$0->Person$1}
+  best = {Person$0->Person$1}
+  keys = {Room$0->Key$0, Room$1->Key$1, Room$2->Key$2}
+  things = {Box$0->Key$0, Box$0->Key$1, Box$1->Key$0, Box$1->Key$2, Box$2->Key$1, Box$2->Key$2}
   $a = {Box$1}
-  $b = {Box$0}
+  $b = {Box$2}
 [exit 0]
