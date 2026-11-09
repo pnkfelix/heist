@@ -1888,9 +1888,17 @@ instances that differ only by a permutation of such atoms some instance
 satisfies this: the least one. (Either order would do; true first puts an
 instance in the first atoms, as Alloy's are.) Only the first `limit`
 cells of each word are compared, as Alloy's symmetry setting (20) limits
-Kodkod's; 0 breaks nothing."
-(define break-symmetry! (subr cb-eff (ctx int) unit)
-  (lambda (x limit)
+Kodkod's; 0 breaks nothing.
+
+Only neighbours are tried. Swaps that are symmetries compose, so the atoms
+that can be swapped with each other form classes; neighbours find a class
+whole only when its atoms are one run (Kodkod refines its classes from
+the bounds, wherever their atoms are). The universe makes them so: each
+sig's atoms together, a `one` subsig's first. A class split by other atoms
+would only lose symmetry broken, not instances, but `check` (the tests')
+makes it an error: each run's first atom is tried with every later run's."
+(define break-symmetry! (subr cb-eff (ctx int bool) unit)
+  (lambda (x limit check)
     (let* ((n (extract x n)) (c (cx x))
            (top (if (< (extract x ibase) 0) n (extract x ibase)))   ; Int's atoms are last
            (all (problem-mats x)))
@@ -1911,16 +1919,30 @@ Kodkod's; 0 breaks nothing."
                    (if (or (null? xs) (null? ys)) #u
                        (begin (c-assert! c (c-implies c e (c-implies c (car ys) (car xs))))
                               (leq! (cdr xs) (cdr ys) (c-and2 c e (c-iff c (car xs) (car ys))))))))
-               (each (subr cb-eff (int) unit)
-                 (lambda (a)
-                   (if (>= (+ a 1) top) #u
-                       (begin
-                         (if (swap-symmetric? x all a (+ a 1))
-                             (let ((p (moved all 0 a (+ a 1) nil nil)))
-                               (leq! (extract p xs) (extract p ys) c-true))
-                             #u)
-                         (each (+ a 1)))))))
-        (if (<= limit 0) #u (each 0))))))
+               ;; from atom a on, each neighbour swap that is a symmetry
+               ;; broken; the first atom of each run, in reverse
+               (each (subr cb-eff (int ints) ints)
+                 (lambda (a starts)
+                   (if (>= (+ a 1) top) starts
+                       (if (swap-symmetric? x all a (+ a 1))
+                           (begin (if (> limit 0)
+                                      (let ((p (moved all 0 a (+ a 1) nil nil)))
+                                        (leq! (extract p xs) (extract p ys) c-true))
+                                      #u)
+                                  (each (+ a 1) starts))
+                           (each (+ a 1) (cons (+ a 1) starts))))))
+               ;; no run's first atom (a) swaps with a later one's
+               (apart! (subr cb-eff (ints ints) unit)
+                 (lambda (l bs)
+                   (cond ((null? l) #u)
+                         ((null? bs) (if (null? (cdr l)) #u (apart! (cdr l) (cdr (cdr l)))))
+                         ((swap-symmetric? x all (car l) (car bs))
+                          (error (string-append "casing: atoms " (string-append (int->string (car l))
+                                   (string-append " and " (string-append (int->string (car bs))
+                                     " are symmetric but not neighbours: their symmetry is not broken"))))))
+                         (else (apart! l (cdr bs)))))))
+        (let ((starts (if (or (> limit 0) check) (each 0 (if (> top 0) (list 0) nil)) nil)))
+          (if check (let ((l (reverse starts))) (if (null? l) #u (apart! l (cdr l)))) #u))))))
 
 ;;; ------------------------------------------------------------ more instances
 
@@ -2014,18 +2036,23 @@ For a model that does not change: some cell differs."
 (`#:instances n`, 0 if not said: the first), whether to count them all
 (`#:count`), at most how many to find (`#:limit n`, 0 if not said: no
 limit), and how much symmetry to break (`#:symmetry n`: the length of
-each lex-leader predicate; 0, none). The command line says them for every
+each lex-leader predicate; 0, none), and whether to check that its
+symmetries are all found (`check`, the tests'). The command line says them for every
 command (`casing --instances n`); a command's own say wins."
-(define-type settings (productof (instances int) (count bool) (limit int) (symmetry int)))
-(define default-settings settings (product (instances 0) (count #f) (limit 0) (symmetry 20)))
+(define-type settings (productof (instances int) (count bool) (limit int) (symmetry int) (check bool)))
+(define default-settings settings (product (instances 0) (count #f) (limit 0) (symmetry 20) (check #f)))
 (define with-instances (subr pure (settings int) settings)
-  (lambda (s n) (product (instances n) (count (extract s count)) (limit (extract s limit)) (symmetry (extract s symmetry)))))
+  (lambda (s n) (product (instances n) (count (extract s count)) (limit (extract s limit)) (symmetry (extract s symmetry)) (check (extract s check)))))
 (define with-count (subr pure (settings) settings)
-  (lambda (s) (product (instances (extract s instances)) (count #t) (limit (extract s limit)) (symmetry (extract s symmetry)))))
+  (lambda (s) (product (instances (extract s instances)) (count #t) (limit (extract s limit)) (symmetry (extract s symmetry)) (check (extract s check)))))
 (define with-limit (subr pure (settings int) settings)
-  (lambda (s n) (product (instances (extract s instances)) (count (extract s count)) (limit n) (symmetry (extract s symmetry)))))
+  (lambda (s n) (product (instances (extract s instances)) (count (extract s count)) (limit n) (symmetry (extract s symmetry)) (check (extract s check)))))
 (define with-symmetry (subr pure (settings int) settings)
-  (lambda (s n) (product (instances (extract s instances)) (count (extract s count)) (limit (extract s limit)) (symmetry n))))
+  (lambda (s n) (product (instances (extract s instances)) (count (extract s count)) (limit (extract s limit)) (symmetry n) (check (extract s check)))))
+"For the tests (`casing --check-symmetry`): that neighbouring atoms find all
+the symmetry there is (see `break-symmetry!`)."
+(define with-check (subr pure (settings) settings)
+  (lambda (s) (product (instances (extract s instances)) (count (extract s count)) (limit (extract s limit)) (symmetry (extract s symmetry)) (check #t))))
 
 "A command's items after its target: its scope, and its settings."
 (define command-options (subr ro (datums settings) (productof (specs datums) (settings settings)))
@@ -2165,7 +2192,7 @@ the problem of k states."
                                 (each (extract m2 facts) #f)
                                 (each (list goal) #f)))
                        ;; after translating, so that the witnesses are there
-                       (break-symmetry! x (extract st symmetry))
+                       (break-symmetry! x (extract st symmetry) (extract st check))
                        x))))
                (try (subr cb-eff (int) string)
                  (lambda (k)

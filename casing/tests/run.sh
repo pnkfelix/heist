@@ -19,7 +19,7 @@ for t in "$@"; do
   [ -e "$t" ] || continue
   name=$(basename "$t")
   got=$(cd "$here" && case "$name" in
-    *.cs) "$casing" "$name" 2>&1; echo "[exit $?]";;
+    *.cs) "$casing" --check-symmetry "$name" 2>&1; echo "[exit $?]";;
     *.fx) "$here/../../fixpt/target/release/fixpt" run "$name" 2>&1; echo "[exit $?]";;
   esac)
   if [ -n "$UPDATE" ]; then

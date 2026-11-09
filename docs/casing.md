@@ -222,7 +222,10 @@ for a name.
     same kind (true, false, or an input): a formula names relations, not
     atoms. Int's atoms never are (arithmetic reads their values); nor are a
     `one` sig's atom, or an ordered sig's when its order is fixed, as the
-    bounds say;
+    bounds say. Neighbours suffice when each class of interchangeable
+    atoms is one run, as casing's universe makes them; the tests check
+    it (`casing --check-symmetry`, which run.sh passes: an error if any
+    two runs' atoms swap);
   - for each such swap: the cells it moves, read as a word, true before
     false, are no greater than their images; only the first n cells. Of
     each set of instances that differ by renaming such atoms, the least
@@ -445,7 +448,9 @@ a model can say:
   partitions the atoms into classes from the bounds; casing tries only
   each atom and the next. Its universe puts each sig's atoms together,
   but a class whose atoms are not next to each other would be missed
-  (not broken, never wrongly broken).
+  (not broken, never wrongly broken). The tests check that none is
+  (`--check-symmetry`), so a change of layout that splits one fails them
+  rather than slowing quietly.
 - **Memoizing translations.** A subformula is translated again for each
   loop and position that reaches it. The circuits are hash-consed, so the
   formula is the same, but the time grows with temporal nesting.

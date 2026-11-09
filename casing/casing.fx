@@ -13,7 +13,7 @@
 (define m-matrix ((load-module "matrix.fx") m-sat m-circuit))
 (define m-model ((load-module "model.fx") m-sat m-circuit m-matrix))
 (import m-sat (effect cb-eff) (type strings))
-(import m-model read-model run-model-with default-settings with-instances with-count with-limit with-symmetry (type datums) (type settings))
+(import m-model read-model run-model-with default-settings with-instances with-count with-limit with-symmetry with-check (type datums) (type settings))
 
 "Fixpt's own reader of FX-26, which keeps its state in its regions and
 leaves a form it cannot read by an escape."
@@ -64,6 +64,7 @@ leaves a form it cannot read by an escape."
                  (let ((bad (lambda ((why string)) (product (settings s) (file file) (bad why)))))
                    (cond ((null? l) (if (string=? file "") (bad "no model named") (product (settings s) (file file) (bad ""))))
                          ((string=? (car l) "--count") (go (cdr l) (with-count s) file))
+                         ((string=? (car l) "--check-symmetry") (go (cdr l) (with-check s) file))
                          ((or (string=? (car l) "--instances") (string=? (car l) "--symmetry") (string=? (car l) "--limit"))
                           (if (null? (cdr l)) (bad (string-append (car l) " needs a number"))
                               (let ((n (whole (car (cdr l)))))
