@@ -8,7 +8,21 @@ do it, and what it cost. Kayak will need the same changes later
 
 ## Base
 
-- Fixpt `main` at 26ee4ad1 (2026-11-07), pulled from GitHub: true unions
+- Fixpt `main` at f6d31209 (2026-11-09), pulled from GitHub: macros in
+  FX-26 (`define-syntax`, `syntax-rules` with its signature inferred,
+  `import-with-syntax`, `#%toplevel`, keyword constructors, `define-data`);
+  each syntax node carries the expansion that made it (51684f66); a wait
+  masked away leaves `spin`, and typed cells' waits on a closing region
+  too; io kinds that never wait (`clock-read`, `stdin-poll`,
+  `process-control`); bounded effect variables `(e effect (within E))`.
+  Heist needed: the syntax nodes' new last field in every `tagcase` that
+  takes one apart (`atom`, `lst`, `dotted`, `vec`: 41 patterns in
+  `editor/resolve.fx`, `editor/syntax.fx` and `cfa/fx26.fx`). The new
+  effect rules refused nothing of ours. `fixpt/` is Fixpt's tree exactly.
+  After `fixpt prewarm` and `bin/heist-compile all`, all 209 tests pass,
+  with dumps (9.3 s) and without (15.5 s); ratfink's corpus 123 of 124,
+  playback 12 of 12, its FX-26 tests' reports unchanged.
+- Before: Fixpt `main` at 26ee4ad1 (2026-11-07), pulled from GitHub: true unions
   and intersections (`oneof`, which `union` was and is still read as;
   `anyof`; `allof`); `tupleof` and `tuple`, and `tagcase` taking apart by
   position only a tuple's fields; `(listof T)` acyclic by default; no

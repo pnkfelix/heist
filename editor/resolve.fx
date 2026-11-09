@@ -22,16 +22,16 @@
 (define* atom-symbol (subr spin (syn) string)
   (lambda (x)
     (tagcase x
-      (atom (d a b) (typecase d (symbol s (symbol->string s)) (else y "")))
+      (atom (d a b xpn) (typecase d (symbol s (symbol->string s)) (else y "")))
       (else y ""))))
 
 (define* syn-start (subr pure (syn) int)
-  (lambda (x) (tagcase x (atom (d a b) a) (lst (i d a b) a) (dotted (i t d a b) a) (vec (i d a b) a))))
+  (lambda (x) (tagcase x (atom (d a b xpn) a) (lst (i d a b xpn) a) (dotted (i t d a b xpn) a) (vec (i d a b xpn) a))))
 (define* syn-end (subr pure (syn) int)
-  (lambda (x) (tagcase x (atom (d a b) b) (lst (i d a b) b) (dotted (i t d a b) b) (vec (i d a b) b))))
+  (lambda (x) (tagcase x (atom (d a b xpn) b) (lst (i d a b xpn) b) (dotted (i t d a b xpn) b) (vec (i d a b xpn) b))))
 
 (define* items-of (subr pure (syn) syns-a)
-  (lambda (x) (tagcase x (lst (i d a b) i) (else y nil))))
+  (lambda (x) (tagcase x (lst (i d a b xpn) i) (else y nil))))
 
 ;; The binder an atom names, if it is a symbol.
 (define* binder-of (subr spin (syn binders) binders)
@@ -43,7 +43,7 @@
 (define* param-binder (subr spin (syn binders) binders)
   (lambda (p acc)
     (tagcase p
-      (lst (items d a b) (if (pair? items) (binder-of (car items) acc) acc))
+      (lst (items d a b xpn) (if (pair? items) (binder-of (car items) acc) acc))
       (else y (binder-of p acc)))))
 
 (define* params-binders (subr spin (syns-a binders) binders)
@@ -71,7 +71,7 @@ and each variant's constructor, `define-rec`'s names, and `import`'s."
       (cond ((member? head (list "define" "define*" "define-type" "define-effect" "define-generative") string=?)
              (if (pair? rest)
                  (tagcase (car rest)
-                   (lst (is d a b) (if (pair? is) (binder-of (car is) acc) acc))
+                   (lst (is d a b xpn) (if (pair? is) (binder-of (car is) acc) acc))
                    (else y (binder-of (car rest) acc)))
                  acc))
             ((string=? head "define-datatype")
@@ -84,7 +84,7 @@ and each variant's constructor, `define-rec`'s names, and `import`'s."
                                               (if (pair? is) (binder-of (car is) acc) acc)))))))
                    (variants (cdr rest)
                              (tagcase (car rest)
-                               (lst (is d a b) (if (pair? is) (binder-of (car is) acc) acc))
+                               (lst (is d a b xpn) (if (pair? is) (binder-of (car is) acc) acc))
                                (else y (binder-of (car rest) acc)))))
                  acc))
             ((string=? head "define-rec")
@@ -102,7 +102,7 @@ and each variant's constructor, `define-rec`'s names, and `import`'s."
                           (if (null? xs) acc
                               (go (cdr xs)
                                   (tagcase (car xs)
-                                    (lst (is d a b) (go (if (pair? is) (cdr is) nil) acc))
+                                    (lst (is d a b xpn) (go (if (pair? is) (cdr is) nil) acc))
                                     (else y (binder-of (car xs) acc))))))))
                (go (if (pair? rest) (cdr rest) nil) acc)))
             ((string=? head "hide")
@@ -124,7 +124,7 @@ and each variant's constructor, `define-rec`'s names, and `import`'s."
   (resolve-syn (->* (syn binders references) references)
     (lambda (x env acc)
       (tagcase x
-        (atom (d a b)
+        (atom (d a b xpn)
           (let ((n (atom-symbol x)))
             (if (string=? n "")
                 acc
@@ -132,9 +132,9 @@ and each variant's constructor, `define-rec`'s names, and `import`'s."
                   (found bd (cons (product (start a) (end b) (binder-start (extract bd start)) (binder-end (extract bd end)))
                                   acc))
                   (none u (cons (product (start a) (end b) (binder-start -1) (binder-end -1)) acc))))))
-        (dotted (items tail d a b) (resolve-syn tail env (resolve-all items env acc)))
-        (vec (items d a b) acc)
-        (lst (items d a b)
+        (dotted (items tail d a b xpn) (resolve-syn tail env (resolve-all items env acc)))
+        (vec (items d a b xpn) acc)
+        (lst (items d a b xpn)
           (let ((head (if (pair? items) (atom-symbol (car items)) ""))
                 (rest (if (pair? items) (cdr items) nil)))
             (resolve-form head rest items env acc))))))
@@ -192,7 +192,7 @@ and each variant's constructor, `define-rec`'s names, and `import`'s."
                                 (arms (cdr as)
                                       (if (and (pair? is) (pair? (cdr is)))
                                           (let ((names (tagcase (car (cdr is))
-                                                         (lst (ns d a b) (params-binders ns env))
+                                                         (lst (ns d a b xpn) (params-binders ns env))
                                                          (else y (binder-of (car (cdr is)) env)))))
                                             (resolve-all (cdr (cdr is)) names acc))
                                           acc)))))))
@@ -281,7 +281,7 @@ everywhere in it."
       (if (and (pair? is) (member? (atom-symbol (car is)) (list "load-module" "load-input") string=?)
                (pair? (cdr is)))
           (tagcase (car (cdr is))
-            (atom (d a b) (typecase d (string s s) (else y "")))
+            (atom (d a b xpn) (typecase d (string s s) (else y "")))
             (else y ""))
           (letrec ((go (subr spin ((listof syn acyclic)) string)
                      (lambda (xs)
@@ -315,8 +315,8 @@ place, and the file."
                  (if (null? xs) acc
                      (names (cdr xs) f
                             (tagcase (car xs)
-                              (lst (is d a b) (names (if (pair? is) (cdr is) nil) f acc))
-                              (atom (d a b)
+                              (lst (is d a b xpn) (names (if (pair? is) (cdr is) nil) f acc))
+                              (atom (d a b xpn)
                                 (let ((n (atom-symbol (car xs))))
                                   (if (string=? n "") acc (cons (product (name n) (start a) (end b) (file f)) acc))))
                               (else y acc))))))

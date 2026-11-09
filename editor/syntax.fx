@@ -72,9 +72,9 @@ with parameters, Scheme's procedure form), or nothing (\"\")."
 (define* defined-name (subr spin (syn) definition)
   (lambda (x)
     (tagcase x
-      (atom (d a b) (typecase d (symbol s (product (name (symbol->string s)) (start a) (end b)))
+      (atom (d a b xpn) (typecase d (symbol s (product (name (symbol->string s)) (start a) (end b)))
                       (else y (product (name "") (start 0) (end 0)))))
-      (lst (items d a b) (if (pair? items) (defined-name (car items)) (product (name "") (start 0) (end 0))))
+      (lst (items d a b xpn) (if (pair? items) (defined-name (car items)) (product (name "") (start 0) (end 0))))
       (else y (product (name "") (start 0) (end 0))))))
 
 (define* add-face (subr pure (found int int face) found)
@@ -98,10 +98,10 @@ with parameters, Scheme's procedure form), or nothing (\"\")."
   (syn-faces (->* (syn int found) found)
     (lambda (x depth acc)
       (tagcase x
-        (lst (items d a b)
+        (lst (items d a b xpn)
           (let ((head (if (pair? items)
                           (tagcase (car items)
-                            (atom (hd ha hb)
+                            (atom (hd ha hb xpn)
                               (typecase hd (symbol h (product (name (symbol->string h)) (start ha) (end hb)))
                                 (else y (product (name "") (start 0) (end 0)))))
                             (else y (product (name "") (start 0) (end 0))))
@@ -120,9 +120,9 @@ with parameters, Scheme's procedure form), or nothing (\"\")."
                                     (if (<= depth 1) (add-definition acc defined) acc))))
                             acc)))
               (tree-faces (if (pair? items) (cdr items) items) (+ depth 1) acc))))
-        (dotted (items tail d a b) (syn-faces tail (+ depth 1) (tree-faces items (+ depth 1) acc)))
-        (vec (items d a b) (tree-faces items (+ depth 1) acc))
-        (atom (d a b) acc)))))
+        (dotted (items tail d a b xpn) (syn-faces tail (+ depth 1) (tree-faces items (+ depth 1) acc)))
+        (vec (items d a b xpn) (tree-faces items (+ depth 1) acc))
+        (atom (d a b xpn) acc)))))
 
 "Two sorted lists of faces as one, a face of `a` before one of `b` that
 starts where it does."
