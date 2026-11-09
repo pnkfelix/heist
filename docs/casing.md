@@ -23,6 +23,7 @@ temporal logic).
 | `casing/model.fx` | A model's forms read; a scope made into bounds; formulas translated at each position of a trace; instances shown | Alloy's `translator/` (A4) and Pardinus's `ltl2fol` |
 | `casing/casing.fx` | The command line, reading with Fixpt's own reader (`fx26:eager-reader.fx`) | |
 | `casing/tests/` | Models (`.cs`) and their answers; `run.sh` (`cargo nextest run` runs each as `casing::FILE`) | |
+| `casing/xcheck/` | The test models in Alloy (`.als`) and `xcheck.sh`, which runs both and compares each command's verdict (below) | |
 
 ## The language
 
@@ -413,8 +414,41 @@ a model can say:
 - **Witnesses below the top.** An existential under a universal or in a
   state is translated once for each binding or state; its sets are not
   shown (Alloy shows skolem functions of the bindings outside).
-- **Cross-checking against Alloy itself.** Run the same models in Alloy 6
-  and compare the answers. This needs a JDK newer than this machine's 11.
 
 The list suggested on 2026-11-08 (`#:disj` and declarations'
 multiplicities, `util/ordering`, sig facts with `this`, integers) is done.
+
+## Cross-checked against Alloy
+
+`casing/xcheck/xcheck.sh [NAME …]` runs each test model `NAME.cs` and its
+Alloy version `xcheck/NAME.als` (and any `NAME.*.als`) in Alloy 6.2.0's
+command line, and compares the verdicts command by command: an instance
+or counterexample found, or not. Before each Alloy command a marker
+`--# i` names the casing command it stands for. `--# i differs: why`
+marks one meant to differ, and `--# i skip: why` one Alloy cannot say.
+It needs Alloy's jar (`$ALLOY_JAR`, by default
+`~/Dev/LangPlay/alloy-6.2.0/org.alloytools.alloy.dist.jar`, from the
+v6.2.0 release) and Java 17 or later (`$JAVA`, by default the snap's
+`openjdk.java`). It is not among `cargo nextest`'s tests, since it needs
+Java.
+
+On 2026-11-08, for all 19 models (90 commands, in 17 s):
+- **82 agree**, temporal ones among them (lassos, past operators over the
+  loop, var sigs, regions written out as frame conditions);
+- **2 differ, as meant:** `1 div 0` (Alloy defines it; casing leaves it to
+  the solver), and a sum past 7 (Alloy's noOverflow drops the instance;
+  casing's sum is exact);
+- **6 are not said in Alloy:** universal, `one` and `lone` quantifiers
+  over sets, which Alloy cannot skolemize; values out of range; `mod`.
+
+Alloy's warnings on `types.als` are casing's on `types.cs`, one for one.
+Only the verdicts are compared, not instances or trace lengths: the
+two solvers may find different instances, and Alloy's command line does
+not print a trace's length.
+
+Writing the models in Alloy showed two differences of syntax, not of
+meaning:
+- in a sig fact Alloy reads a field `f` as `this.f`, so `this.f` there is
+  `this.this.f`, a type error; casing's `(join this f)` is fine;
+- `next` and `prev` of `util/ordering` clash with `util/integer`'s
+  unless qualified (casing's `Int` has neither).
