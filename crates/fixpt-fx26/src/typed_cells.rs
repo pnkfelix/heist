@@ -888,7 +888,7 @@ impl Verifier<'_> {
         if let Some(latent) = &cert.effect {
             let effect = self.masked(&code, cert, &slot_types);
             let effect = self.masked_within(effect);
-            if !effect.within(latent) {
+            if !self.c.effect_le(&effect, latent) {
                 let msg = format!("effect {} is not within the latent {}", self.c.show_effect(&effect), self.c.show_effect(latent));
                 self.out.open.push(msg);
             }
@@ -903,10 +903,10 @@ impl Verifier<'_> {
     /// tell, and it is dropped.
     fn masked(&mut self, code: &[Ins], cert: &Cert, slot_types: &[TyId]) -> Effect {
         let mut seen: Vec<TyId> = slot_types.iter().chain(&cert.frees).copied().collect();
-        for ins in code {
-            if matches!(ins.name, Some("global" | "global!"))
-                && let Some(t) = self.certs.globals.get(&ins.ops[0].raw())
-            {
+        let mut named = Vec::new();
+        self.globals_named(code, &mut std::collections::HashSet::new(), &mut named);
+        for g in named {
+            if let Some(t) = self.certs.globals.get(&g) {
                 seen.push(*t);
             }
         }
@@ -918,7 +918,24 @@ impl Verifier<'_> {
         if let Some(r) = cert.result {
             self.c.regions_in(r, &mut in_result);
         }
-        Effect(self.effect.0.iter().copied().filter(|a| Checker::mask_keeps(*a, &visible, &in_result)).collect())
+        self.effect.waits_dropped(Effect(self.effect.0.iter().copied().filter(|a| Checker::mask_keeps(*a, &visible, &in_result)).collect()))
+    }
+
+    /// The globals `code`'s cells name, and those of the words of the
+    /// closures it makes, and theirs: as the checker masks an expression
+    /// with the globals it names seen, whichever of its lambdas names them
+    /// (`masked`; `TODO.md` §224, where a wait masked away leaves `spin`).
+    fn globals_named(&mut self, code: &[Ins], words: &mut std::collections::HashSet<u64>, out: &mut Vec<u64>) {
+        for ins in code {
+            match ins.name {
+                Some("global" | "global!") => out.push(ins.ops[0].raw()),
+                Some("closure" | "nclosure") if words.insert(ins.ops[0].raw()) => {
+                    let inner = self.decode(ins.ops[0]);
+                    self.globals_named(&inner, words, out);
+                }
+                _ => {}
+            }
+        }
     }
 
     /// At the cell `code[k]`, with state `s` there: each masked
@@ -999,7 +1016,7 @@ impl Verifier<'_> {
                     })
             })
             .collect();
-        Effect(kept)
+        effect.waits_dropped(Effect(kept))
     }
 
     /// The regions whose scopes end before cell `at`, innermost first, closed
@@ -1028,7 +1045,8 @@ impl Verifier<'_> {
                 return Err(());
             }
             let written = own.0.iter().any(|a| matches!(a, crate::ast::Atom::Write(g) | crate::ast::Atom::Init(g) if *g == region));
-            let masked = Effect(own.0.iter().copied().filter(|a| a.region() != Some(region)).collect());
+            // A wait on it dropped leaves `spin` (`Effect::waits_dropped`).
+            let masked = own.waits_dropped(Effect(own.0.iter().copied().filter(|a| a.region() != Some(region)).collect()));
             self.effect = self.effect.union(&masked);
             if let Some(s) = cur.as_mut()
                 && let Some(v) = s.stack.last_mut()
@@ -2162,14 +2180,14 @@ impl Verifier<'_> {
                                 }
                             }
                         }
-                        let latent = fits.iter().map(|(_, _, l)| l).find(|l| fits.iter().all(|(_, _, o)| l.within(o))).unwrap_or(&l0).clone();
+                        let latent = fits.iter().map(|(_, _, l)| l).find(|l| fits.iter().all(|(_, _, o)| self.c.effect_le(l, o))).unwrap_or(&l0).clone();
                         // Fitting whole, and by rule 5 too, of a result within
                         // the whole's and an effect within its: the closer, as
                         // the checkers take it where the whole's is not what
                         // is expected (an `(anyof expr op)` swapped, an
                         // `(anyof expr op)`, not an `sexp`).
                         match self.allof_split(&ms, &args) {
-                            Some((ps, r, l)) if r != result && self.c.subtype(r, result) && l.within(&latent) => (ps, r, l),
+                            Some((ps, r, l)) if r != result && self.c.subtype(r, result) && self.c.effect_le(&l, &latent) => (ps, r, l),
                             _ => (ps0, result, latent),
                         }
                     }
@@ -2296,7 +2314,7 @@ impl Verifier<'_> {
                         // tag).
                         if let Some((bound, r)) = &bound {
                             let own = Effect([crate::ast::Atom::Goto(*r), crate::ast::Atom::Comefrom(*r)].into_iter().collect());
-                            let beyond = Effect(te.0.iter().copied().filter(|a| !Effect::atom(*a).within(bound) && !own.0.contains(a)).collect());
+                            let beyond = Effect(te.0.iter().copied().filter(|a| !self.c.effect_le(&Effect::atom(*a), bound) && !own.0.contains(a)).collect());
                             if !beyond.is_pure() {
                                 self.out.failed.push(format!("{at}: the prompt's body does {}, beyond its tag's {}", self.c.show_effect(&beyond), self.c.show_effect(bound)));
                             }

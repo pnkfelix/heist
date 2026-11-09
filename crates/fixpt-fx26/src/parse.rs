@@ -55,7 +55,6 @@ pub enum FamilyArg {
     Fun(TyId),
 }
 
-/// The heads of the type forms `parse_type_node` reads.
 /// What `(abs (f (name kind) …) type)` is, when it is not.
 const ABS_CTOR_USAGE: &str = "an abstract type constructor is `(abs (f (name kind) …) type)`";
 
@@ -63,6 +62,15 @@ const ABS_CTOR_USAGE: &str = "an abstract type constructor is `(abs (f (name kin
 const ARROW_STAR_ONLY: &str = "`(->* (param …) result)` is only the type a definition declares (`define`, `define-rec`, `letrec`), \
      its effect found from its `lambda`: here, write `->` or `subr`";
 
+/// The heads of the effect forms `parse_effect_list` reads: as the type
+/// forms' names, each read by its name alone in head position, never looked
+/// up (`docs/research/typed-macros.md`, "Decided: a template's free
+/// description names, one qualified name each").
+pub const EFFECT_HEADS: &[&str] = &["read", "write", "alloc", "goto", "comefrom", "await", "init", "send", "receive", "io", "maxeff"];
+
+/// The heads of the type forms `parse_type_node` reads, each read by its
+/// name alone in head position, `(listof T)`, never looked up: what binds a
+/// name of one does not change what the form is.
 pub const TYPE_FORMS: &[&str] = &[
     "arrayof", "narrayof", "bloblet", "composable", "dletrec", "icell", "listof", "mark-key", "moduleof", "mu", "nat", "nlist", "oneshot", "pairof", "place",
     "poly", "productof", "prompt-tag", "proves", "ref", "select", "subr", "sumof", "tupleof", "bool", "oneof", "union", "anyof", "allof", "->", "->*", "restrict",
@@ -216,9 +224,10 @@ impl Checker {
     }
 
     /// What `read` reads, in the body of a `(with m …)`: `m`'s type names
-    /// shadowing those before (`withs_over`); `#%fx`'s are the standard's.
+    /// shadowing those before (`withs_over`); `#%fx`'s and `#%toplevel`'s
+    /// body is one name, of no type.
     fn with_types_of<T>(&mut self, m: Sym, read: impl FnOnce(&mut Self) -> R<T>) -> R<T> {
-        if self.name(m) == "#%fx" {
+        if self.name(m) == "#%fx" || self.name(m) == "#%toplevel" {
             return read(self);
         }
         let depth = self.dscope.len();
@@ -237,6 +246,27 @@ impl Checker {
             .rev()
             .find(|i| self.dscope[*i].0 == s && !hidden.is_some_and(|(a, b)| (a..b).contains(i)))
             .map(|i| self.dscope[i].1.clone())
+    }
+
+    /// `read` of `s`, or, `s` being `#%toplevel:n`, of `n` as the top level
+    /// reads it ([`Checker::at_toplevel`]).
+    /// `(select m n)`, a type or a description function: found where the
+    /// type it is in is checked (`resolve_selects`); or, `m` being
+    /// `#%toplevel:x`, the top level's `x`'s, found here, as the top level
+    /// reads it.
+    pub(crate) fn select_of(&mut self, m: Sym, n: Sym, span: fixpt_read::Span) -> R<TyId> {
+        match self.toplevel_unqualified(m) {
+            Some(p) => {
+                let t = self.arena.ty(Ty::Select(p, n));
+                self.at_toplevel(|c| c.resolve_selects(t, span))
+            }
+            None => Ok(self.arena.ty(Ty::Select(m, n))),
+        }
+    }
+
+    pub(crate) fn read_qualified<T>(&mut self, s: &Syntax, read: impl FnOnce(&mut Self, &Syntax) -> R<T>) -> Option<R<T>> {
+        let n = s.as_symbol().filter(|m| self.is_toplevel_qualified(*m)).and_then(|m| self.toplevel_unqualified(m))?;
+        Some(self.at_toplevel(|c| read(c, &Syntax::symbol(s.span, n))))
     }
 
     fn items<'s>(&self, s: &'s Syntax, what: &str) -> R<&'s [Syntax]> {
@@ -289,7 +319,7 @@ impl Checker {
     }
 
     /// `(conv C)`: the convention `C`.
-    fn parse_conv_form(&self, s: &Syntax) -> R<Conv> {
+    fn parse_conv_form(&mut self, s: &Syntax) -> R<Conv> {
         match self.items(s, "`(conv convention)`")? {
             [_, c] => self.parse_conv(c),
             _ => Err(FxError::at(s.span, "`(conv convention)`")),
@@ -297,7 +327,10 @@ impl Checker {
     }
 
     /// A convention: `cellular`, `native`, `fx`, or a name bound as one.
-    pub(crate) fn parse_conv(&self, s: &Syntax) -> R<Conv> {
+    pub(crate) fn parse_conv(&mut self, s: &Syntax) -> R<Conv> {
+        if let Some(r) = self.read_qualified(s, Self::parse_conv) {
+            return r;
+        }
         let Some(sym) = s.as_symbol() else {
             return Err(FxError::at(s.span, "a convention is `cellular`, `native`, `fx`, or a name bound as one"));
         };
@@ -335,10 +368,24 @@ impl Checker {
             // `(r region p)`: a region that won't outlive `p`, a place
             // bound before it. `(t data p)`: data at `p` or the heap
             // (`docs/research/shapes.md`; F13).
+            // `(e effect (within E))`: an effect within `E`, which may name
+            // the binders before it (`TODO.md` §226).
+            let mut within = None;
             let bound = match bound {
                 Some(p) if matches!(kind, Kind::Region | Kind::Data) => Some(self.parse_place(p)?),
+                Some(p) if kind == Kind::Effect => {
+                    let form = self.items(p, "an effect binder's bound")?;
+                    match form {
+                        [head, e] if head.as_symbol().is_some_and(|h| self.name(h) == "within") => within = Some(self.parse_effect(e)?),
+                        _ => return Err(FxError::at(p.span, "an effect binder's bound is `(within effect)`: `(name effect (within effect))`")),
+                    }
+                    None
+                }
                 Some(p) => {
-                    return Err(FxError::at(p.span, "only a region or data binder has a bound: `(name region place)` or `(name data place)`"));
+                    return Err(FxError::at(
+                        p.span,
+                        "only a region, data or effect binder has a bound: `(name region place)`, `(name data place)` or `(name effect (within effect))`",
+                    ));
                 }
                 None => None,
             };
@@ -348,6 +395,9 @@ impl Checker {
             let v = self.arena.dvar_of(name, kind);
             if let Some(p) = bound {
                 self.arena.set_bound(v, p);
+            }
+            if let Some(e) = within {
+                self.arena.set_effect_bound(v, e);
             }
             if distinct {
                 self.arena.set_distinct(v);
@@ -487,6 +537,9 @@ impl Checker {
 
     // ------------------------------------------------------------- effects
     pub(crate) fn parse_effect(&mut self, s: &Syntax) -> R<Effect> {
+        if let Some(r) = self.read_qualified(s, Self::parse_effect) {
+            return r;
+        }
         if let Some(sym) = s.as_symbol() {
             if self.name(sym) == "pure" {
                 return Ok(Effect::pure());
@@ -551,6 +604,10 @@ impl Checker {
             let (Some(m), Some(e)) = (m.as_symbol(), e.as_symbol()) else {
                 return Err(FxError::at(s.span, "`(select module name)`: a module's name, and a component's"));
             };
+            // `(select #%toplevel:m e)`: the top level's `m`'s, found here.
+            if let Some(p) = self.toplevel_unqualified(m) {
+                return self.at_toplevel(|c| c.selected_effect(p, e, s.span));
+            }
             return Ok(Effect::atom(Atom::Var(self.effect_select(m, e))));
         }
         // `(e d …)`: a description function to an effect, applied.
@@ -671,6 +728,11 @@ impl Checker {
     }
 
     fn parse_type_node(&mut self, s: &Syntax) -> R<TyId> {
+        // `#%toplevel:t`, its `select`s found there too, as `(select
+        // #%toplevel t)`'s are.
+        if let Some(r) = self.read_qualified(s, |c, n| c.parse_type_node(n).and_then(|t| c.resolve_selects(t, n.span))) {
+            return r;
+        }
         if let Some(sym) = s.as_symbol() {
             let name = self.name(sym);
             if name == "void" {
@@ -703,7 +765,7 @@ impl Checker {
         }
         // `(f d …)` in `with` bodies: the modules' `f` first, as names alone.
         let head = s.as_proper_list().and_then(|l| l.first()).and_then(|h| h.as_symbol());
-        if let Some(head) = head.filter(|h| !TYPE_FORMS.contains(&self.name(*h))) {
+        if let Some(head) = head.filter(|h| !TYPE_FORMS.contains(&self.name(*h)) && !self.is_toplevel_qualified(*h)) {
             let withs = self.withs_over(head);
             if !withs.is_empty() {
                 let outer = if self.lookup_desc(head).is_some() { Some(self.parse_type_list(s)?) } else { None };
@@ -744,8 +806,25 @@ impl Checker {
 
     fn parse_type_list(&mut self, s: &Syntax) -> R<TyId> {
         let items = self.items(s, "a type")?.to_vec();
+        // `(#%toplevel:f d …)`: `f` the top level's, a function it binds or
+        // else the type form of that name; `d …` read where they are.
+        if let Some(h) = items.first().and_then(|h| h.as_symbol()).filter(|h| self.is_toplevel_qualified(*h)) {
+            let n = self.toplevel_unqualified(h).expect("qualified");
+            let found = if TYPE_FORMS.contains(&self.name(n)) { None } else { self.at_toplevel(|c| c.lookup_desc(n)) };
+            let mut plain = items.clone();
+            plain[0] = Syntax::symbol(items[0].span, n);
+            return self.parse_type_list_found(&Syntax::list(s.span, plain), found, true);
+        }
+        let found = items.first().and_then(|h| h.as_symbol()).filter(|h| !TYPE_FORMS.contains(&self.name(*h))).and_then(|h| self.lookup_desc(h));
+        self.parse_type_list_found(s, found, false)
+    }
+
+    /// `parse_type_list` of `s`, its head bound to `found`, as the top level
+    /// binds it if `toplevel` (so no module's `include`s consulted).
+    fn parse_type_list_found(&mut self, s: &Syntax, found: Option<DScope>, toplevel: bool) -> R<TyId> {
+        let items = self.items(s, "a type")?.to_vec();
         if let Some(head) = items.first().and_then(|h| h.as_symbol()) {
-            match self.lookup_desc(head) {
+            match found {
                 Some(DScope::Abbrev { params, body }) => return self.expand_abbrev(s, head, &params, &body, &items[1..]),
                 Some(DScope::Generative(g)) => return self.apply_generative(s, g, &items[1..]),
                 Some(DScope::Var(v, Kind::Arrow(_))) => {
@@ -1018,6 +1097,34 @@ impl Checker {
             // `(moduleof (abs t type) … (desc d T) … (val x T) …)`: each
             // abstract type a binder, in scope in what follows it.
             "moduleof" => self.parse_moduleof(s.span, &items[1..]),
+            // `(select #%toplevel T)`: type `T` as the top level reads it,
+            // whatever the form binds around it (a template's type, as it
+            // expands: `typed-macros.md`, item 5); `(select #%fx T)`, as the
+            // standard environment does.
+            "select" if matches!(items.get(1).and_then(|m| m.as_symbol()).map(|m| self.name(m)), Some("#%toplevel" | "#%fx")) => {
+                let [_, m, t] = &items[..] else {
+                    return Err(FxError::at(s.span, "`(select #%toplevel type)` or `(select #%fx type)`"));
+                };
+                // The modules its `select`s name found here too, not where the
+                // type is checked (`resolve_selects`), as the top level has them.
+                let standard = m.as_symbol().is_some_and(|m| self.name(m) == "#%fx");
+                let outer = self.hidden.replace(self.toplevel_hidden(standard));
+                let r = self.parse_type(t).and_then(|ty| self.resolve_selects(ty, s.span));
+                self.hidden = outer;
+                r
+            }
+            // `(select m T)`, `T` a type, not a name: `T` read as a `with` of
+            // module `m` reads types, over the standard environment's alone
+            // (a file's macro's type, `m` the one value every load of the
+            // file is: `typed-macros.md`, "Decided: macros come with a
+            // file"), its `select`s resolved there.
+            "select" if matches!(&items[..], [_, m, t] if m.as_symbol().is_some() && t.as_symbol().is_none()) => {
+                let (m, t) = (items[1].as_symbol().expect("matched"), &items[2]);
+                let outer = self.hidden.replace(self.toplevel_hidden(true));
+                let r = self.with_types_of(m, |c| c.parse_type(t)).and_then(|ty| self.resolve_selects(ty, s.span));
+                self.hidden = outer;
+                r
+            }
             "select" => {
                 let [_, m, n] = &items[..] else {
                     return Err(FxError::at(s.span, "`(select module name)`"));
@@ -1025,7 +1132,7 @@ impl Checker {
                 let (Some(m), Some(n)) = (m.as_symbol(), n.as_symbol()) else {
                     return Err(FxError::at(s.span, "`(select module name)`: a module's name, and a component's"));
                 };
-                Ok(self.arena.ty(Ty::Select(m, n)))
+                self.select_of(m, n, s.span)
             }
             "arrayof" => {
                 let [_, t, r] = &items[..] else {
@@ -1090,7 +1197,7 @@ impl Checker {
             // is the modules included's family, found when they are typed,
             // as a type's name is (`TODO.md` §69).
             _ => match items.first().and_then(|h| h.as_symbol()) {
-                Some(h) if self.include_scope > 0 && self.lookup_desc(h).is_none() => {
+                Some(h) if !toplevel && self.include_scope > 0 && self.lookup_desc(h).is_none() => {
                     let inc = self.interner.intern("%include");
                     let f = self.arena.ty(Ty::Select(inc, h));
                     self.parse_app(s, f, &items[1..])
@@ -1532,6 +1639,9 @@ impl Checker {
     /// or, for a bare name, in how the name is bound; the checker confirms it
     /// against the binder when it sees the `poly` being projected.
     pub(crate) fn parse_d(&mut self, s: &Syntax) -> R<D> {
+        if let Some(r) = self.read_qualified(s, Self::parse_d) {
+            return r;
+        }
         // A natural number can only be a size.
         if self.literal_int(s).is_some() {
             return Ok(D::Size(self.parse_size(s)?));
@@ -1674,6 +1784,13 @@ impl Checker {
                 let name = self.arena.exp(span, Exp::Symbol(*sym));
                 return Ok(self.arena.exp(span, Exp::App { fun, args: vec![name] }));
             }
+            // `#%toplevel:x`, `(with #%toplevel x)`: the top level's `x`.
+            Datum::Symbol(sym) if self.is_toplevel_qualified(*sym) => {
+                let n = self.toplevel_unqualified(*sym).expect("qualified");
+                let (with, top) = (self.interner.intern("with"), self.interner.intern("#%toplevel"));
+                let whole = Syntax::list(span, vec![Syntax::symbol(span, with), Syntax::symbol(span, top), Syntax::symbol(span, n)]);
+                return self.parse_exp(&whole);
+            }
             Datum::Symbol(sym) => {
                 // `#u` reads as a symbol; `#t` and `#f` did too in FX-87's
                 // profile, which FX-26 used to be read with.
@@ -1689,6 +1806,20 @@ impl Checker {
             _ => return Err(FxError::at(span, "not an expression in the FX-26 kernel")),
         }
         let items = self.items(s, "an expression")?;
+        // `(#:t e …)`, a sum constructed (`docs/research/datatype-macro.md`,
+        // "Keyword constructors: decided"): `(sum #:t #u)` of none, `(sum
+        // #:t e)` of one, `(sum #:t (tuple e …))` of more. A keyword
+        // anywhere else is a keyword, which constructs nothing.
+        if matches!(items[0].datum, Datum::Keyword(_)) {
+            let sym = |p: &mut Self, n: &str| Syntax::symbol(span, p.interner.intern(n));
+            let payload = match &items[1..] {
+                [] => sym(self, "#u"),
+                [e] => e.clone(),
+                es => Syntax::list(span, std::iter::once(sym(self, "tuple")).chain(es.iter().cloned()).collect()),
+            };
+            let made = Syntax::list(span, vec![sym(self, "sum"), items[0].clone(), payload]);
+            return self.parse_exp(&made);
+        }
         match self.head(&items).unwrap_or("") {
             "lambda" => {
                 let [_, params, body @ ..] = &items[..] else {

@@ -4093,3 +4093,305 @@ The user read the paper as supporting the distribution. Mine:
   which reading again does; only `k-tag`'s type widened, not the
   `checks` effect every signature spells out.
 
+## `#%toplevel`: a template's free names, the top level's (2026-11-07)
+
+- **The user's calls**: a special module name, as `#%fx` is, not a
+  primitive; named `#%toplevel` (not `#%top`, a lattice's); every free
+  name in a template through it, standard names too, `#%fx` the opt-out;
+  types now as well as values.
+- **`with` only, of one name**: the top level has no fixed type (it grows,
+  it is redefined), so it is no first-class module; `extract` would need
+  one.
+- **Types by the whole part, `(select #%toplevel T)`**: a template's type
+  parts hold none of the use's syntax, so every name in one is the
+  template's; wrapping the part needs no knowledge of type syntax in the
+  expander, and binders inside `T` still bind inside it. The Rust checker
+  reads `T` with what the form binds hidden (`hidden`, `form_began`) and
+  resolves its `select`s there and then; the checker written in FX-26,
+  whose `select`s resolve later in another module, reads `T` in the
+  description scope the form began in and marks the module names its
+  `select`s name (`#%toplevel:m`), resolved as the top level's.
+- **Lowered locals got a prefix of their own** (`fx.`, globals keep
+  `fx:`): in Scheme a local named as a global shadowed it, so
+  `(with #%toplevel n)` could not name the global past it.
+- **What each compiler does unshadowed is what it does with the plain
+  name**: the checkers note it plain (`fx_plain`, `k-note-fx-plain`), so
+  the fast paths for an unredefined standard name stay.
+- **Termination sees a group's member through `#%toplevel`**: a recursion
+  through the top level's name past a local is still one.
+
+## `import-with-syntax`, as built (2026-11-07)
+
+- **The design is the user's** (`typed-macros.md`, "Decided: macros come
+  with a file"); these follow from its principle, a template means what
+  it meant where it was defined, and I chose them:
+- **Standard names in a file's macro are `#%fx`'s**, not `#%toplevel`'s:
+  the file sees the standard environment alone, so its macros must not
+  see the importer's redefinitions.
+- **Types through `(select %shared:key T)` with `T` a whole type**: the
+  `(select #%toplevel T)` idea, generalized to a real module, read as a
+  `with` of it reads types over the standard environment.
+- **File macros by internal names** (`%syntax:key:name`): a file's macro
+  using a hidden helper macro must reach it at the importer, where the
+  helper's own name is not in scope.
+- **A file's own use of its macros refused**, rather than expanded with
+  free names that a local binding in the file could capture: no
+  unshadowable reference to a module's own items exists yet.
+- **Macro file reading gets file ids of its own** (2,000,000 on), not the
+  loads' count, which places the real load's positions and must match the
+  FX-26 parser's.
+
+
+## `only` and `except` for `import-with-syntax` (2026-11-07)
+
+- **Spelled after the name, `(import-with-syntax lib (only n …))`**, not
+  R7RS's `(only lib n …)` around it: `lib` stays where the form takes a
+  name, and `import` already lists names after the module.
+- **One list for macros, values, types and effects, unmarked**: unlike
+  `import`'s `(type t …)`, nothing needs telling apart before checking,
+  since the macros are known as the form is read and the rest when its
+  `include` is checked, from the module's type.
+- **Carried by the top-level `include` it expands to**, `(include lib
+  (only n …))`, the names that are not the file's macros: the Rust checker
+  filters what it gives, and the FX-26 front end, told what each
+  `include` gives, needed only to accept the third item. So a program may
+  write it too, at the top level (a module's `include` is unchanged).
+- **A name listed must be one given**: a hidden macro or value, or one
+  the file lacks, is refused (`` `twice` is nothing `lib` gives ``), as
+  R7RS refuses one.
+- **Nothing left to include is no error there**: `(only macro …)` makes
+  no `include`, and an `(except …)` that leaves nothing runs as nothing,
+  shown as nothing; a plain `(include m)` of nothing is still refused.
+
+## A `with` and the macros used in its body (2026-11-07)
+
+- **The rule is the user's** (refuse, rather than either meaning winning
+  silently); these are mine:
+- **Refused on use, not on any name given**: a `with` of a module that
+  gives a macro's name is fine unless the body uses the macro by it,
+  so modules need not avoid every macro's name.
+- **Only names the program wrote**: a use whose head came from a template
+  (its span in an expansion) is the macro by hygiene, whatever the
+  `with` around the use binds.
+- **The record is the expander's** (`Macros::with_uses`, by the `with`
+  form's span), read by the Rust checker at the `with`, where the
+  module's names are known. No FX-26 side yet: that front end has no
+  expander and checks only expansions, which the Rust checker has
+  checked first; it goes with the expander's port.
+- **The same hole at the top level closed with it**: an `import`'s or a
+  top-level `include`'s definition of a macro's name (made after
+  expansion, so the expander's refusal of `define` missed them), and a
+  macro of a global's name (refused where the macro is: at expansion in
+  the REPL, at the global's check in a program, which is expanded before
+  anything is checked, so each macro keeps where it was defined).
+
+## The expander in FX-26 (2026-11-07)
+
+- **The design is the user's** (the port's four decisions: in
+  `parse-tops`; an expansion field on `syn`; macros in the form's state;
+  the expanders compared); these are mine:
+- **Three files**, as `macros.rs`'s parts: syntax types, aligning and the
+  binding walk, defining and expanding; each part's instance taken from
+  the one that loads it, so all see one table of `mu`s and one of
+  macros, and each fails through the parser's `pfail-at`, as
+  `parser-forms.fx` does.
+- **One kernel file for both**, `macros-kernel.fx`, quoted data the Rust
+  expander reads too, in place of `macros-kernel.sx`; its keywords held
+  to `top::KEYWORDS` by a test rather than replacing it.
+- **Macros by state**: a table from each session state to the macros
+  defined after the form that left it, looked up when a parse begins.
+  So a program begun in the standard state has none, an entry has its
+  session's, and a test may run every program in one session.
+- **Coinduction by structure**: the Rust `sub` assumes pairs of types by
+  pointer; FX-26's `eq?` says nothing of immutable data, so pairs are
+  assumed by structural equality, a `mu` by its number.
+- **The aligner's nodes in a growable array**, reset for each alignment,
+  as the Rust one makes a new arena for each; template binders by node
+  number, as there.
+- **The reading is of the form as written**, the macros it is expanded
+  with in the state it is read in, rather than of its expansion.
+- **`import-with-syntax` in FX-26 reads the file the driver read** for the
+  `load-module` its name's definition makes, found by path, its key the
+  one both front ends' `%shared:` names use; its load definitions are in
+  the state's table with the macros.
+- **The standard names come from the driver** (`standard-names!`, beside
+  `includes-given!`, both told by `compare::tell_front_end`), as the Rust
+  checker has them, rather than handing the parser the standard
+  environment, which only the conductor holds.
+- **Rust's `includes_given` reads the program again from no macros**: a
+  second whole read in the checker that checked it imported a file's
+  macros twice, refused as defined already, and so said no `include`.
+- **Refusals of macros' names in the FX-26 parser, as checker errors**:
+  the parser sees the forms ahead, so a definition whose name a later
+  form makes a macro is refused where that form is, as the Rust checker
+  (which has every macro of the program before it checks) says; made a
+  form the checker refuses in its place, as a refused `include` is, so
+  errors before it come first. A macro of a global's name from an
+  earlier parse is refused by the parser at once, as Rust's expander
+  does; the globals are in the state's table.
+- **The `with` check in the checker, told by the conductor**: the parser's
+  record of each parse (reset as a parse begins, so no program's places
+  meet another's) handed to the checker by `check-macro-uses!`, which the
+  driver calls after each parse, and by the conductor's own parses.
+
+## Errors in an expansion, from the FX-26 front end (2026-11-07)
+
+- **The user's design**: a side table, its keys each a source's alone,
+  its values the diagnostic extras. Mine: the keys are the places of the
+  parts a template makes, each part a fresh one from a counter past every
+  text's place (2^50), a list's start before its parts and its end after;
+  the table, by key, the template's place and the expansion. So two
+  expansions' copies of one template part are apart, a place is one
+  number naming one place, and what compares places (all at one place, a
+  part within its list) is as it was. A first try packed the expansion's
+  number above the template's place; the user asked about it, and it was
+  undone before it was committed.
+- **The table is the session's**, keys never given twice, so no key of
+  one parse is taken for another's.
+- **Two checkers' errors are the same** by message, place and each use's
+  name and place (`compare::same_error`), not by the numbers each
+  expander gives its expansions.
+
+## Typed holes (2026-11-07)
+
+- **The template check is a hidden top-level definition**, rather than a
+  form of its own: both checkers check it as they check anything, and a
+  redefinition of a global its template uses has it checked again, by
+  what re-runs any definition's users. Neither front end shows it
+  (`%template:`, `macros::template_check`, `k-template-check?`).
+- **Made by transcription**, the template's holes bound to their calls, so
+  that free names, renaming and types are as at a use; each call put
+  where the template has the hole, so an error says that place.
+- **A partly typed macro is refused**, not left unchecked, so that a typed
+  macro's check is never silently skipped.
+- **A left-out part's binder is named for its hole** (`%type-of-e`), not
+  numbered, so that a message about it says which hole wants a type.
+- **`macros-templates.fx`** holds the FX-26 side, on top of `macros.fx`,
+  which would have passed 1000 lines.
+- **Found on the way**: a template's `#u` was taken for a name of the top
+  level (both expanders); the FX-26 expander made `()` as an atom, not the
+  empty list the reader makes.
+- **`lambda` is a syntax type of its own**, a narrower `expr`, with the
+  kernel's `letrec` saying where it is wanted, rather than the template
+  check knowing `letrec`: the user's "generalize what goes in the hole".
+  Its shape is what `Checker::is_lambda` takes. Untyped parts keep their
+  leniency there (two tiers); typed ones say `lambda`.
+- **The FX-26 expander's count of fresh names is in the state's table**
+  too, so that a program begun in the standard state counts from 0, as
+  the Rust expander begun anew does (names show in messages).
+
+## Macros that make definitions (2026-11-07)
+
+- **A use is spliced as the expander reads it**, its definitions each a
+  top-level form at the use's place, rather than a top-level `begin` both
+  checkers learn: the forms after are checked as after any definitions,
+  and the REPL, which takes each form's text by its place, adds one text
+  once (the definitions of one use are consecutive).
+- **The kernel says each definition's scopes** (`definition` entries), so
+  the same Herman machinery checks templates of definitions as of
+  expressions; `(define x T e)` puts `e` in `x`'s scope whether or not it
+  is a lambda, the larger scope, which the checker narrows.
+- **`()` is an address**, the part the annotation is on, so `define-rec`'s
+  group is in its own scope without a new annotation.
+- **What a nested definition macro defines is not seen by its template**
+  rather than guessed: its signature does not say.
+- **A template's own definitions are shown** at the REPL and by `fixpt
+  check` (`%count:1`), unlike templates' checks: they are the program's
+  globals, named in the effects of what uses them.
+- **Types' and effects' definitions left out**: made fresh, a type's name
+  would not reach the types that name it, which the expander does not look
+  into; binders of types (item 8) first.
+- **Nested definitions' names, by signature** (decided with the user,
+  2026-11-07, built): a macro sees what another's use defines as that
+  one's signature exports, checked at its definition; an undeclared
+  reference refused, where it read the top level's name (hygienic by what
+  was declared, and surprising). The refusal is of any template binder in
+  a nested use of the name, a lambda's parameter too: the conservative
+  reading, `(with #%toplevel x)` the way out. Exports are compared as sets
+  of what uses give; the message lists names sorted, so both front ends
+  say it alike.
+
+
+## Binders of descriptions, the first stage (2026-11-08)
+
+- **One walk of a template's descriptions, not a grammar in signatures**:
+  the forms that bind (`poly`, `dlambda`, `mu`, `dletrec`) and the
+  positions of labels and values are known to the walk; every other name
+  is a reference. A grammar of every description form as kernel syntax
+  types would say the same at many times the size, and the checkers'
+  readers stay the authority on what a description is.
+- **What a description binds is a rib of what was found** (`Bind::Direct`):
+  Herman's imports, the shadow restriction and the declared scopes then
+  check descriptions unchanged, with no addresses into a form that has
+  no signature.
+- **A type form's or effect form's name at a list's head is that form**,
+  in both checkers, rather than qualifying every head in an expansion:
+  the head was looked up first, a family or an arrow-kinded variable
+  taking it over, so a template's `(listof …)` could be captured; now
+  nothing binding the name changes the form. A family named `listof` is
+  definable and never applied by that head: to be refused, or to become
+  the standard library's own binding (`lang-items.md`). Names (`int`,
+  `box`) are qualified, heads not.
+- **Free description names in regions or sizes are qualified too**, not
+  refused where the macro is defined: the top level binds none, so the
+  use says "not a region"; refusing needs the walk to know each
+  position's sort, the second stage's.
+- **A `dvar` part, like a `bvar`, may be placed any number of times**: a
+  binder and its references are names, nothing that runs.
+- **A use's type exports nothing to the template** (`(ℓ rib)` on a type
+  part): what its own `poly`s bind is the use's, which no name the
+  template writes can be.
+- **A file's macro's descriptions stay read whole** through its module,
+  and one with a binder of its own or a part a use gives in it is
+  refused, not yet: qualifying names through a file's module needs a
+  name that is the file's, per position, as `#%toplevel:` is the top
+  level's.
+- **Atoms say their namespace, and δ `place` binds both** (stage 1b): a
+  `letrena`'s name is a place and a value of it; one binder, made fresh
+  once, two atoms. A namespace on each atom is Herman's δ per namespace,
+  and lets a use's place be referred to as a value only where the
+  signature says `place`.
+- **A placed name never fits a list's shape**: a pattern variable that
+  is a `bvar`, `dvar`, `id` or `label` cannot be a list, so a union of a
+  name's form and a list's (`define-type`'s plain form and a family's) is
+  not ambiguous where a template places one.
+- **A template's `begin` makes its types in `let*` order**, as its
+  values: a type named before its `define-type` in the same template is
+  the top level's. The checkers declare a program's types ahead, the
+  expanded ones among them, so a use's types are seen before the use.
+
+## Ellipsis (2026-11-08)
+
+- **A repeated binder says how many times**, where Racket's ellipsis needs
+  a pattern variable: `(let ((t e) ...) (list t ...))` is accepted, `t ...`
+  repeated as many times as its binder was. The spike's constructor,
+  `(lambda ((x field) ...) (sum t (tuple x ...)))`, needs it, and it
+  computes nothing: the count is the use's. Every count a part is
+  repeated by, the pattern variables' and the binders', must agree, so
+  that neither expander chooses among them.
+- **`(bvar ...)` binds each**: a list of bare binders exports them, as a
+  `lambda`'s parameters do, rather than nothing.
+- **A pattern variable where elements of several shapes may be** (a
+  `lambda`'s parameter, a name or `(name type)`) takes the shape it fits
+  and that shape's export, which placing a variable as a whole had
+  skipped; only under an ellipsis, where it matters, for now.
+- **Ellipsis only last in a list**, as `(a ... b)` needs matching from both
+  ends; refused where written elsewhere.
+
+## Keyword constructors and macros that make descriptions (2026-11-08)
+
+- **A keyword constructor is a rewrite in both parsers**, `(#:t e …)` to
+  `(sum #:t …)` by arity, so the checkers, compilers and machines see only
+  `sum` and `tuple`, which they have.
+- **A macro that makes a description is expanded where it is used**, the
+  expander not knowing a description's place from an expression's: in a
+  template, its place is checked (refused where an expression is); in a
+  program, a use where an expression is expands, and the checker refuses
+  what it made.
+- **A label a use gives, in a `productof` or `sumof` a template writes, is
+  placed**, so its depth under ellipses is checked as any part's.
+- **A pattern variable where a name or a list may be takes the name's
+  shape** (the family form of `define-data`), if exactly one of the
+  union's members is a name's, and then matches a name alone, so that a
+  variable typed as a name is never given a list; a `label` may also be a
+  keyword, so labels are not held to names when matching.

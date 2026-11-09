@@ -110,6 +110,43 @@
   (lambda (p kinds solved done i r)
     (begin (k-unify p (extract r 1) kinds solved (k-new-trail))
            (k-arg-found done i (extract r 1) (extract r 2)))))
+;; By each `with` form's place, the macros its body uses by names the
+;; program wrote, each with the use's place (`macros.fx`'s `with-uses`),
+;; as the conductor says for the program parsed (`k-macro-uses!`).
+(define-type k-macro-uses (listof (tupleof int int symbol int int bool) acyclic))
+(define k-macro-uses (ref k-macro-uses @t) (new nil))
+(define k-macro-uses! (->* (k-macro-uses) unit) (lambda (us) (set k-macro-uses us)))
+;; `k-with-used` of `(with m …)` at `a`..`b`, its module's values `ps`, once
+;; a macro its body uses by a name of one of them is refused there: the
+;; program would seem to call the value (`Checker::with_as`).
+(define k-with-used-at
+  (->* (k-parts k-names int int int symbol) (productof (1 k-parts) (2 k-ids)))
+  (lambda (ps free i a b m)
+    (begin (k-macro-clash ps (get k-macro-uses) a b m) (k-with-used ps free i))))
+(define k-macro-clash (->* (k-parts k-macro-uses int int symbol) unit)
+  (lambda (ps us a b m)
+    (cond ((null? us) #u)
+          ;; A template's `(with m name)` (`#t`): a value `m` gives, never
+          ;; what `name` is where the macro is used.
+          ((and (= (extract (car us) 1) a) (= (extract (car us) 2) b) (extract (car us) 6)
+                (not (k-part-named? ps (extract (car us) 3))))
+           (let ((n (symbol->string (extract (car us) 3))) (shown (symbol->string m)))
+             (k-fail (string-append "`" shown "` gives no value `" n "`, which a template's `(with "
+                                    shown " " n ")` takes from it alone")
+                     (extract (car us) 4) (extract (car us) 5))))
+          ((and (= (extract (car us) 1) a) (= (extract (car us) 2) b) (extract (car us) 6))
+           (k-macro-clash ps (cdr us) a b m))
+          ((and (= (extract (car us) 1) a) (= (extract (car us) 2) b)
+                (k-part-named? ps (extract (car us) 3)))
+           (k-fail (string-append "`" (symbol->string (extract (car us) 3))
+                                  "` is a macro here, and `" (symbol->string m)
+                                  "` gives a value of that name, which this `with` would seem to "
+                                  "call")
+                   (extract (car us) 4) (extract (car us) 5)))
+          (else (k-macro-clash ps (cdr us) a b m)))))
+(define k-part-named? (->* (k-parts symbol) bool)
+  (lambda (ps n)
+    (and (not (null? ps)) (or (symbol=? n (extract (car ps) 1)) (k-part-named? (cdr ps) n)))))
 (define k-no-call k-call-checked (product (1 (product (1 -1) (2 -1) (3 -1) (4 -1))) (2 -1)))
 (define k-checked-call (ref k-call-checked @t) (new k-no-call))
 ;; Call `x`, found `r`, as `expected`: its effect, and its type noted.
@@ -267,12 +304,20 @@
               (set solved (cons (cons v (dt (k-subst slot (get solved)))) (get solved)))))
           #u))))
 ;; `(with m body)` checked as a `expected`, if `m` is `#%fx` and `body` a
-;; standard name of a polymorphic type: instantiated as the plain name is
-;; (`TODO.md` §46); its effect, in a list of one, or none.
+;; standard name of a polymorphic type, or `#%toplevel` and the top level's
+;; binding of it is: instantiated as the plain name is (`TODO.md` §46); its
+;; effect, in a list of one, or none.
 (define k-fx-poly-check (->* (kx symbol kx int) (listof k-eff @t))
   (lambda (x m body expected)
     (let ((t (tagcase body
-               (x-var (n a b abk abkr) (if (k-fx-module? m) (k-std-type n) -1))
+               (x-var (n a b abk abkr)
+                 (cond ((k-fx-module? m) (k-std-type n))
+                       ((k-toplevel-module? m)
+                        (let ((i (k-toplevel-index n)))
+                          (if (and (>= i 0) (null? (k-toplevel-broken n i)))
+                              (k-toplevel-type n i)
+                              -1)))
+                       (else -1)))
                (else y -1))))
       (if (and (>= t 0) (tagcase (k-get t) (ty-poly (bs pb) #t) (else y #f)))
           (begin (k-expect x (k-instantiate-against t expected (k-start x) (k-end x)) expected)

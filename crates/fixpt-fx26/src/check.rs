@@ -347,6 +347,10 @@ pub struct Checker {
     /// Why each member of a recursive group that may not end may not: said
     /// when its declared type leaves out `spin`.
     pub(crate) spin_why: Vec<((Sym, TyId), String)>,
+    /// Each wait masking or freezing dropped, leaving `spin`: where, and
+    /// why that may not end, said when a declared type around it leaves
+    /// out `spin` (`declared_error`; `TODO.md` §224).
+    pub(crate) waits_spun: Vec<(fixpt_read::Span, String)>,
     /// Of each binding of a recursive group with an `allof`, for each
     /// member (one for a binding of no `allof`), whether a call of it at
     /// that member may not end (`termination_by_member`, noted by
@@ -553,6 +557,10 @@ pub struct Checker {
     /// bindings, and the description names, past the standard ones and
     /// before it, which it may not see.
     pub(crate) hidden: Option<((usize, usize), (usize, usize))>,
+    /// Where the top-level form being checked began, the environment's and
+    /// the description names' lengths then: what is bound past them, the
+    /// form binds (`toplevel_hidden`).
+    pub(crate) form_began: Option<(usize, usize)>,
     /// Each file loaded, by its path (`input:` before a `load-input`'s),
     /// and the hidden global its one value is (`%shared:…`): every load of
     /// a path is that value (`TODO.md` §68), made once, purely.
@@ -603,6 +611,12 @@ pub struct Checker {
     /// order they are begun, a file a loaded file loads after it, as the
     /// driver supplies them to the parser written in FX-26 (`syn.rs`).
     pub(crate) files_read: u32,
+    /// Each top-level name defined as `(load-module "path")` so far, its
+    /// path as written: what `(import-with-syntax name)` reads the macros
+    /// of (`import_file_macros`). And how many files have been read so, each
+    /// a file id of its own, apart from the loads'.
+    pub(crate) load_defs: HashMap<Sym, String>,
+    pub(crate) macro_files: u32,
     /// Where a `load-module`'s relative path is from: the program's own
     /// directory, when it was read from a file; else the current one.
     pub base_dir: Option<std::path::PathBuf>,
@@ -1153,6 +1167,7 @@ impl Checker {
             holes: None,
             hole_hint: None,
             spin_why: Vec::new(),
+            waits_spun: Vec::new(),
             member_spins: HashMap::new(),
             macros: Default::default(),
             pinned: Vec::new(),
@@ -1212,6 +1227,7 @@ impl Checker {
             operator_at: None,
             standard_dscope: 0,
             hidden: None,
+            form_began: None,
             shared_loads: HashMap::new(),
             shared_files: HashMap::new(),
             reading_deps: Vec::new(),
@@ -1227,6 +1243,8 @@ impl Checker {
             in_built_in: 0,
             load_sites: HashMap::new(),
             files_read: 0,
+            load_defs: HashMap::new(),
+            macro_files: 0,
             base_dir: None,
             ahead: Vec::new(),
             ahead_filled: Vec::new(),
@@ -2105,6 +2123,12 @@ impl Checker {
     }
 
     /// The type of the global `s` as defined now, broken or not.
+    /// The standard bindings' names, which a file's macro may name
+    /// (`standard_type`): for the expander written in FX-26.
+    pub fn standard_names(&self) -> Vec<String> {
+        (0..self.standard_len).map(|i| self.interner.name(self.env[i].0).to_string()).collect()
+    }
+
     pub fn global_type(&self, s: Sym) -> Option<TyId> {
         self.env.rpos(s).filter(|i| *i >= self.standard_len).map(|i| self.env[i].1)
     }
@@ -2421,12 +2445,33 @@ impl Checker {
         }
     }
 
+    /// Subeffecting with effect variables' bounds (`TODO.md` §226): each
+    /// atom of `a` is within `b`, or is a variable whose bound is.
+    pub(crate) fn effect_le(&self, a: &Effect, b: &Effect) -> bool {
+        self.effect_le_by(a, b, &|v| self.arena.effect_bound(v).cloned())
+    }
+
+    /// [`effect_le`](Self::effect_le), the bounds of variables as `bound`
+    /// gives them: a comparison's labels' as well (`BinderEnv`). A bound
+    /// names only the binders before its own, so this ends.
+    fn effect_le_by(&self, a: &Effect, b: &Effect, bound: &dyn Fn(DVar) -> Option<Effect>) -> bool {
+        a.0.iter().all(|x| {
+            Effect::atom(*x).within(b) || matches!(x, Atom::Var(v) if bound(*v).is_some_and(|bv| self.effect_le_by(&bv, b, bound)))
+        })
+    }
+
+    /// [`effect_le`](Self::effect_le) within a comparison of types, whose
+    /// binders' labels have the bounds `env` gives them.
+    fn effect_le_in(&self, a: &Effect, b: &Effect, env: &BinderEnv) -> bool {
+        self.effect_le_by(a, b, &|v| env.bounds.get(&v).cloned().or_else(|| self.arena.effect_bound(v).cloned()))
+    }
+
     /// The second line of an "is expected here" message, where `got` and
     /// `want` are procedures: the atoms of `got`'s latent effect that
     /// `want`'s does not cover, which the two whole types can bury.
     pub(crate) fn effect_delta(&self, got: TyId, want: TyId) -> String {
         let (Some(g), Some(w)) = (self.latent_of(got), self.latent_of(want)) else { return String::new() };
-        let beyond = Effect(g.0.into_iter().filter(|a| !Effect::atom(*a).within(&w)).collect());
+        let beyond = Effect(g.0.into_iter().filter(|a| !self.effect_le(&Effect::atom(*a), &w)).collect());
         if beyond.is_pure() {
             return self.spec_delta(got, want).to_string();
         }
@@ -2443,7 +2488,7 @@ impl Checker {
     /// ends, and the atom is what ties a closure that reads the data to it
     /// (`docs/research/soundness-findings.md`, F2), until masking removes
     /// it where the place is no longer seen.
-    pub(crate) fn frozen(&self, e: ExpId, eff: Effect) -> R<Effect> {
+    pub(crate) fn frozen(&mut self, e: ExpId, eff: Effect) -> R<Effect> {
         if !eff.0.iter().any(|a| a.region().is_some_and(Region::is_frozen)) {
             return Ok(eff);
         }
@@ -2451,7 +2496,11 @@ impl Checker {
             return Err(FxError::at(self.arena.span_of(e), "this writes frozen data, whose region is `const`"));
         }
         let in_heap = |r: &Region| matches!(r, Region::Frozen(None, _));
-        Ok(Effect(eff.0.into_iter().filter(|a| !matches!(a, Atom::Read(r) | Atom::Alloc(r) | Atom::Await(r) if in_heap(r))).collect()))
+        // An I-cell frozen in the heap cannot be filled after, so a wait on
+        // one is dropped as masking drops one: leaving `spin`.
+        let kept = Effect(eff.0.iter().copied().filter(|a| !matches!(a, Atom::Read(r) | Atom::Alloc(r) | Atom::Await(r) if in_heap(r))).collect());
+        self.note_waits_spun(e, &eff, &kept, "on an I-cell frozen in the heap, which nothing can fill");
+        Ok(eff.waits_dropped(kept))
     }
 
     /// A summary of an effect, for a compiler, each a stronger claim on what
@@ -2522,6 +2571,82 @@ impl Checker {
         self.interner.name(m) == "#%fx"
     }
 
+    /// Whether `m` is `#%toplevel`, the top level's module, which nothing
+    /// binds: `(with #%toplevel n)` is the top level's `n` as it is where it
+    /// is named, whatever binds `n` between: what a template's free name
+    /// expands to (`typed-macros.md`, item 5).
+    pub(crate) fn is_toplevel_module(&self, m: Sym) -> bool {
+        self.interner.name(m) == "#%toplevel"
+    }
+
+    /// Whether `m` is a module only a name is, `#%fx` or `#%toplevel`.
+    pub(crate) fn is_named_module(&self, m: Sym) -> bool {
+        self.is_fx_module(m) || self.is_toplevel_module(m)
+    }
+
+    /// Where `s` is bound where it is named, of what may be seen there (a
+    /// file loaded sees the standard environment alone: `hidden`), the
+    /// innermost; and where the top level binds it, the newest of the
+    /// program's globals of that name, else the standard binding.
+    fn scope_pos(&self, s: Sym, top: bool) -> Option<usize> {
+        let hidden = self.hidden.map(|(e, _)| e);
+        let seen = |i: usize| !hidden.is_some_and(|(a, b)| (a..b).contains(&i)) || self.shared_globals.contains(&s);
+        let i = self.env.positions(s).find(|i| seen(*i) && (!top || *i < self.standard_len || self.global_slots.contains(i)))?;
+        if i < self.standard_len && self.in_built_in == 0 && built_in_only(self.interner.name(s)) {
+            return None;
+        }
+        Some(i)
+    }
+
+    /// What to hide to read as the top level reads (`(select #%toplevel T)`),
+    /// or, `standard`, as the standard environment does (`(select #%fx T)`):
+    /// what the form being checked binds, or all past the standard
+    /// environment. In a file loaded, which sees the standard environment
+    /// alone, its top level is that.
+    pub(crate) fn toplevel_hidden(&self, standard: bool) -> ((usize, usize), (usize, usize)) {
+        let (env, ds) = (self.env.len(), self.dscope.len());
+        match self.form_began {
+            Some((e, d)) if !standard && self.hidden.is_none() => ((e, env), (d, ds)),
+            _ => ((self.standard_len, env), (self.standard_dscope, ds)),
+        }
+    }
+
+    /// Whether `s` is `#%toplevel:n`, the top level's `n` (a template's free
+    /// name: `typed-macros.md`, "Decided: a template's free description
+    /// names, one qualified name each").
+    pub(crate) fn is_toplevel_qualified(&self, s: Sym) -> bool {
+        self.interner.name(s).starts_with("#%toplevel:")
+    }
+
+    /// `n`, of `#%toplevel:n`.
+    pub(crate) fn toplevel_unqualified(&mut self, s: Sym) -> Option<Sym> {
+        let n = self.interner.name(s).strip_prefix("#%toplevel:")?.to_string();
+        Some(self.interner.intern(&n))
+    }
+
+    /// What `read` gives, read as the top level reads, as `(select
+    /// #%toplevel T)` reads `T`: what the form being checked binds hidden,
+    /// and no module's `include`s around it consulted.
+    pub(crate) fn at_toplevel<T>(&mut self, read: impl FnOnce(&mut Self) -> T) -> T {
+        let outer = self.hidden.replace(self.toplevel_hidden(false));
+        let includes = std::mem::replace(&mut self.include_scope, 0);
+        let r = read(self);
+        self.hidden = outer;
+        self.include_scope = includes;
+        r
+    }
+
+    /// Where the top level binds `s` ([`Self::scope_pos`]).
+    pub(crate) fn toplevel_pos(&self, s: Sym) -> Option<usize> {
+        self.scope_pos(s, true)
+    }
+
+    /// Whether `(with #%toplevel s)` is the plain `s`: nothing shadows the
+    /// top level's `s` where it is named.
+    pub(crate) fn toplevel_unshadowed(&self, s: Sym) -> bool {
+        self.toplevel_pos(s).is_some_and(|i| self.scope_pos(s, false) == Some(i))
+    }
+
     /// The standard binding of `s`'s type, whatever binds `s` since.
     pub(crate) fn standard_type(&self, s: Sym) -> Option<TyId> {
         self.env.positions(s).find(|i| *i < self.standard_len).map(|i| self.env[i].1)
@@ -2533,9 +2658,8 @@ impl Checker {
     /// operator of, or else by the `with`, as `k-note-fx-plain` does.
     pub(crate) fn plain_fx(&mut self, e: ExpId) {
         if let Exp::With { module, body } = *self.arena.exp_at(e)
-            && self.is_fx_module(module)
             && let Exp::Var(n) = *self.arena.exp_at(body)
-            && self.is_standard(n)
+            && ((self.is_fx_module(module) && self.is_standard(n)) || (self.is_toplevel_module(module) && self.toplevel_unshadowed(n)))
         {
             self.facts.fx_plain.insert(e, body);
         }
@@ -2558,21 +2682,30 @@ impl Checker {
     /// The standard type of `(with module body)`, if `module` is `#%fx` and
     /// `body` a standard name whose type is polymorphic.
     pub(crate) fn fx_poly(&self, module: Sym, body: ExpId) -> Option<TyId> {
-        if !self.is_fx_module(module) {
-            return None;
-        }
         let Exp::Var(n) = *self.arena.exp_at(body) else { return None };
-        self.standard_type(n).filter(|t| matches!(self.arena.get(*t), Ty::Poly { .. }))
+        let t = if self.is_fx_module(module) {
+            self.standard_type(n)
+        } else if self.is_toplevel_module(module) {
+            self.toplevel_pos(n).filter(|i| self.broken.get(&n).is_none_or(|(b, _)| b != i)).map(|i| self.env[i].1)
+        } else {
+            None
+        };
+        t.filter(|t| matches!(self.arena.get(*t), Ty::Poly { .. }))
     }
 
     /// The standard name `e` refers to, if it refers to one: a variable the
-    /// initial environment binds where it is used, or `(with #%fx n)`.
+    /// initial environment binds where it is used, `(with #%fx n)`, or
+    /// `(with #%toplevel n)` where the top level's `n` is the standard one.
     /// Every rule for a standard operation asks this.
     pub(crate) fn standard_ref(&self, e: ExpId) -> Option<Sym> {
         match self.arena.exp_at(e) {
             Exp::Var(s) if self.is_standard(*s) => Some(*s),
             Exp::With { module, body } if self.is_fx_module(*module) => match self.arena.exp_at(*body) {
                 Exp::Var(n) if self.standard_type(*n).is_some() => Some(*n),
+                _ => None,
+            },
+            Exp::With { module, body } if self.is_toplevel_module(*module) => match self.arena.exp_at(*body) {
+                Exp::Var(n) if self.toplevel_pos(*n).is_some_and(|i| i < self.standard_len) => Some(*n),
                 _ => None,
             },
             _ => None,
@@ -2975,6 +3108,16 @@ impl Checker {
         }
     }
 
+    /// The waits of `effect`, `e`'s, that `kept` has not, noted with why
+    /// they may not end (`waits_spun`).
+    fn note_waits_spun(&mut self, e: ExpId, effect: &Effect, kept: &Effect, how: &str) {
+        let dropped = Effect(effect.0.iter().copied().filter(|a| matches!(a, Atom::Await(_) | Atom::Receive(_)) && !kept.0.contains(a)).collect());
+        if !dropped.is_pure() {
+            let why = format!("it waits, {}, {how}", self.show_effect(&dropped));
+            self.waits_spun.push((self.arena.span_of(e), why));
+        }
+    }
+
     /// An error checking `init` against `t`, the type `n` is declared: at
     /// `init` itself it says so, and, if it is about `spin` and `n`'s group
     /// may not end, why not.
@@ -2983,8 +3126,16 @@ impl Checker {
             return err;
         }
         let mut msg = format!("`{}` is declared a {}: {}", self.interner.name(n), self.show_ty(t), err.message);
+        // Why it may not end: its group's, else the first wait inside it
+        // masked or frozen away.
+        let at = self.arena.span_of(init);
+        let waits = || {
+            let inside = self.waits_spun.iter().filter(|(s, _)| s.file == at.file && at.start <= s.start && s.end <= at.end);
+            inside.min_by_key(|(s, _)| (s.start, s.end)).map(|(_, why)| why)
+        };
+        let why = self.spin_why.iter().rev().find(|(k, _)| *k == (n, t)).map(|(_, why)| why).or_else(waits);
         if about_spin(&err.message)
-            && let Some((_, why)) = self.spin_why.iter().rev().find(|(k, _)| *k == (n, t))
+            && let Some(why) = why
         {
             // On the line it is about: before why control was not masked.
             let tail = format!("; it may not end: {why}");
@@ -3026,6 +3177,8 @@ impl Checker {
         let mut in_result = HashSet::new();
         self.regions_in(result, &mut in_result);
         let kept = Effect(effect.0.iter().copied().filter(|a| Self::mask_keeps(*a, &visible, &in_result)).collect());
+        self.note_waits_spun(e, effect, &kept, "on what nothing outside it sees");
+        let kept = effect.waits_dropped(kept);
         // Where masking dropped something, noted for the cells' verifier,
         // which masks the expression's cells as it finds them seen.
         if self.record_types && kept.0.len() < effect.0.len() {
@@ -3189,6 +3342,14 @@ impl Checker {
             // written (`hazard_modules`).
             // The standard `n`: nothing free.
             &Exp::With { module, .. } if self.is_fx_module(module) => {}
+            // The top level's `n`: a use of it, whatever binds `n` here.
+            &Exp::With { module, body } if self.is_toplevel_module(module) => {
+                if let Exp::Var(n) = *self.arena.exp_at(body)
+                    && !out.contains(&n)
+                {
+                    out.push(n);
+                }
+            }
             &Exp::With { module, body } => {
                 let unbound = !bound.contains(&module);
                 if unbound && !out.contains(&module) {
@@ -4360,7 +4521,7 @@ impl Checker {
             let (xa, pa, qa) = ta.as_subr().expect("callable");
             let (xb, pb, qb) = tb.as_subr().expect("callable");
             return pa.len() == pb.len()
-                && ea(&xa).within(&eb(&xb))
+                && self.effect_le_in(&ea(&xa), &eb(&xb), env)
                 && pa.iter().zip(&pb).all(|(x, y)| self.sub(*y, *x, &flip, st))
                 && self.sub(qa, qb, env, st)
                 && crate::logic::spec_within(None, spec.as_deref());
@@ -4453,7 +4614,7 @@ impl Checker {
                 };
                 conv_ok
                     && pa.len() == pb.len()
-                    && ea(&xa).within(&eb(&xb))
+                    && self.effect_le_in(&ea(&xa), &eb(&xb), env)
                     && pa.iter().zip(&pb).all(|(x, y)| self.sub(*y, *x, &flip, st))
                     && self.sub(qa, qb, env, st)
                     && crate::logic::spec_within(sa.as_deref(), sb.as_deref())
@@ -4501,7 +4662,7 @@ impl Checker {
             (
                 Ty::Composable { arg: t1, answer: a1, effect: d1, region: r1, once: o1 },
                 Ty::Composable { arg: t2, answer: a2, effect: d2, region: r2, once: o2 },
-            ) => o1 == o2 && ra(r1) == rb(r2) && ea(&d1).within(&eb(&d2)) && self.sub(t2, t1, &flip, st) && self.sub(a1, a2, env, st),
+            ) => o1 == o2 && ra(r1) == rb(r2) && self.effect_le_in(&ea(&d1), &eb(&d2), env) && self.sub(t2, t1, &flip, st) && self.sub(a1, a2, env, st),
             (Ty::MarkKey(x, r), Ty::MarkKey(y, s)) => ra(r) == rb(s) && self.sub(x, y, env, st) && self.sub(y, x, &flip, st),
             // A bloblet's fields are invariant, as a reference's contents
             // are, unless they are frozen, when nothing can store into them.
@@ -4582,8 +4743,8 @@ impl Checker {
                     (D::Conv(Conv::Var(x)), D::Conv(Conv::Var(y))) => env.var(&env.a, *x) == env.var(&env.b, *y),
                     (D::Conv(c), D::Conv(d)) => c == d,
                     (D::Effect(d), D::Effect(e)) => match v {
-                        Variance::Co => ea(d).within(&eb(e)),
-                        Variance::Contra => eb(e).within(&ea(d)),
+                        Variance::Co => self.effect_le_in(&ea(d), &eb(e), env),
+                        Variance::Contra => self.effect_le_in(&eb(e), &ea(d), env),
                         Variance::Inv => ea(d) == eb(e),
                     },
                     (D::Fun(f), D::Fun(g)) => self.fun_same(*f, *g, env, st),
@@ -4630,7 +4791,28 @@ impl Checker {
                     };
                     same && (!self.arena.is_distinct(*va) || self.arena.is_distinct(*vb))
                 });
-                bounds && self.sub(xa, xb, &inner, st)
+                // An effect binder's bound (`TODO.md` §226): the expected
+                // side's within the other's, none the loosest, so that
+                // what may be given there may be given here; assumed in
+                // comparing the bodies. As `F<:`'s rule, decidable here as
+                // effects are finite sets.
+                let mut effects = true;
+                for ((va, _), (vb, _)) in ba.iter().zip(&bb) {
+                    let l = inner.var(&inner.a, *va);
+                    let (x, y) = (self.arena.effect_bound(*va).cloned(), self.arena.effect_bound(*vb).cloned());
+                    let apps = self.arena.effect_apps.clone();
+                    let x = x.map(|x| inner.effect(&inner.a, &x, &apps));
+                    let y = y.map(|y| inner.effect(&inner.b, &y, &apps));
+                    effects &= match (&x, &y) {
+                        (None, _) => true,
+                        (Some(_), None) => false,
+                        (Some(x), Some(y)) => self.effect_le_in(y, x, &inner),
+                    };
+                    if let Some(y) = y {
+                        inner.bounds.insert(l, y);
+                    }
+                }
+                bounds && effects && self.sub(xa, xb, &inner, st)
             }
             _ => false,
         }
@@ -5121,6 +5303,10 @@ pub(crate) fn subst_effect(e: &Effect, map: &HashMap<DVar, D>, arena: &crate::as
         if let Atom::Read(r) | Atom::Alloc(r) | Atom::Await(r) = *a
             && matches!(sub_r(r), Region::Frozen(None, _))
         {
+            // A wait dropped leaves `spin` (`Effect::waits_dropped`).
+            if matches!(a, Atom::Await(_)) {
+                out.0.insert(Atom::Spin);
+            }
             continue;
         }
         let piece = match *a {
@@ -5693,7 +5879,7 @@ impl Checker {
         })?;
         let own = Effect([Atom::Goto(region), Atom::Comefrom(region)].into_iter().collect());
         let beyond = match &bound {
-            Some(bound) => Effect(be.0.iter().copied().filter(|a| !Effect::atom(*a).within(bound) && !own.contains(*a)).collect()),
+            Some(bound) => Effect(be.0.iter().copied().filter(|a| !self.effect_le(&Effect::atom(*a), bound) && !own.contains(*a)).collect()),
             None => Effect::pure(),
         };
         if let (Some(bound), false) = (&bound, beyond.is_pure()) {
@@ -5828,6 +6014,9 @@ type ModuleView<'a> = (&'a [(Sym, DVar)], &'a [(Sym, TyId)], &'a [(Sym, TyId)]);
 struct BinderEnv {
     a: std::collections::BTreeMap<DVar, DVar>,
     b: std::collections::BTreeMap<DVar, DVar>,
+    /// Each pair of effect binders' bound, by the name the pair was given:
+    /// the expected side's, assumed while comparing their bodies.
+    bounds: std::collections::BTreeMap<DVar, Effect>,
 }
 
 impl BinderEnv {
@@ -5836,7 +6025,7 @@ impl BinderEnv {
     }
     /// The same environment, for the question asked the other way round.
     fn flip(&self) -> BinderEnv {
-        BinderEnv { a: self.b.clone(), b: self.a.clone() }
+        BinderEnv { a: self.b.clone(), b: self.a.clone(), bounds: self.bounds.clone() }
     }
     fn var(&self, side: &std::collections::BTreeMap<DVar, DVar>, v: DVar) -> DVar {
         side.get(&v).copied().unwrap_or(v)

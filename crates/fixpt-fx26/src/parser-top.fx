@@ -20,12 +20,20 @@
 (import parser-module parse-tag syn-start syn-end pfail syn-symbol? syn-symbol syn-items len nth
         keep mk-list form-head form-of? datatype? mk-pure-subr mk-poly expand-datatype import?
         expand-import e-var e-lambda t-define t-define-rec t-define-type t-define-effect
-        includes-given include-given-at mk-symbol syn-name loaded-error e-module
+        includes-given include-given-at mk-symbol syn-name loaded-error e-module pfail-at
         (type include-given)
         t-define-convention t-define-syscall t-define-generative t-exp p-ok p-err shared-taken
         shared-reset! loaded input-key?
         (type syns-a exp top param-list top-list presult names) (effect parses))
 (import parser-exps-module parse-exp parse-rec-bindings type-loaded)
+;; The expander (`macros.fx`), which each form goes through first.
+(define imports-module ((proj (load-module "fx26:macros-imports.fx") rs re rm rc rp)))
+(define templates-module (with imports-module templates-module))
+(define macros-module (with templates-module macros-module))
+(import templates-module template-checks)
+(import imports-module import-file-macros note-load-def!)
+(import macros-module expand expand-top define-macro defines-syntax? macros-at! macros-after!
+        syntax-names imports-syntax? globals! global-before? macro? later-macro-site)
 ;; `(define name type expression)` or `(define name expression)`; for a
 ;; `define*` (`star?`), the type's list holds the head too.
 (define parse-define (->* (syn bool) top)
@@ -111,7 +119,7 @@
           (pfail usage s)
           (let* ((head (nth items 1))
                  (rep (nth items 2))
-                 (family? (tagcase head (lst (hs d ha hb) (not (null? hs))) (else x #f)))
+                 (family? (tagcase head (lst (hs d ha hb xpn) (not (null? hs))) (else x #f)))
                  (hs (if family? (syn-items head "a generative type's name") (the syns-a nil)))
                  (name (if family? (car hs) head))
                  (n (if (syn-symbol? name) (symbol->string (syn-symbol name)) (pfail usage s)))
@@ -162,11 +170,13 @@
           (parse-each-top (expand-import (include-import x (car given))))
           (the top-list (list (t-exp (e-module (loaded-error why) at end 0 0))))))))
 ;; A top-level `(include m)`, `x`: the `(import m x … (type t …) (effect e
-;; …))` of what `m` gives, `g`, at `x`'s span (`Checker::include_forms`).
+;; …))` of what `m` gives, `g`, at `x`'s span (`Checker::include_forms`);
+;; of `(include m (only n …))` or `(except n …)`, what `g` says it takes.
 (define include-import (->* (syn include-given) syn)
   (lambda (x g)
     (let* ((items (syn-items x "a top-level `include`")) (a (syn-start x)) (b (syn-end x)))
-      (cond ((not (= (len items) 2)) (pfail "a top-level `include` names a module" x))
+      (cond ((not (or (= (len items) 2) (= (len items) 3)))
+             (pfail "a top-level `include` names a module" x))
             (else
              (begin
                (mk-list (cons (mk-symbol "import" a b)
@@ -188,19 +198,125 @@
 
 ;; Forms `xs`, each read in the state the one before left (`t`), under the
 ;; switches `settings`: to trees, each expression numbered (`parser-ids.fx`)
-;; of the form's reading (`form-reading`).
+;; of the form's reading (`form-reading`). Each form is expanded first
+;; (`macros.fx`): a `define-syntax` defines a macro and makes nothing, and
+;; is in the state after it, as every form is; any other is its expansion.
+;; The reading is of the form as written, the macros it was expanded with
+;; in the state it was read in.
 (define parse-tops (->* (seen string syns-a) top-list)
   (lambda (t settings xs)
     (if (null? xs)
         nil
         ;; Before each form, the hidden globals of the files it loads first
         ;; (`parse-loaded`), those its types name first (`type-loaded`).
-        (let* ((made (parse-made (type-loaded (car xs))))
+        (let* ((written (car xs))
+               ;; A `define-syntax`: the checks of its templates, once, there.
+               (made (cond ((defines-syntax? written)
+                            (begin (global-macro written)
+                                   (macro-checks (define-macro pfail-at written nil))))
+                           ;; A file's macros, and the `include` of the rest.
+                           ((imports-syntax? written)
+                            (let ((inc (import-file-macros pfail-at written (get loaded))))
+                              (if (null? inc) (the top-list nil) (parse-made (car inc)))))
+                           (else (expanded-tops (expand-top pfail-at written)))))
+               (guarded (guard-defs made (cdr xs)))
                (before (shared-taken))
-               (r (form-reading (walk-state t) settings (car xs) (loads-of before)))
-               (form (number-form t r (append-tops before made)))
-               (rest (parse-tops t settings (cdr xs))))
+               (r (form-reading (walk-state t) settings written (loads-of before)))
+               (form (number-form t r (append-tops before guarded)))
+               (rest (begin (macros-after! r) (parse-tops t settings (cdr xs)))))
           (append-tops form rest)))))
+;; Each form a top-level form is expanded to (a use of a macro that makes
+;; definitions, several), parsed, each as it is noted.
+(define expanded-tops (->* (syns-a) top-list)
+  (lambda (xs)
+    (if (null? xs)
+        nil
+        (let* ((x (car xs))
+               (made (begin (note-load-def! x) (parse-made (type-loaded x)))))
+          (append-tops made (expanded-tops (cdr xs)))))))
+;; Each of macros `ns`' templates' checks, expanded and parsed.
+(define macro-checks (->* (names) top-list)
+  (lambda (ns)
+    (if (null? ns)
+        nil
+        (append-tops (parse-checks (template-checks pfail-at (car ns))) (macro-checks (cdr ns))))))
+;; Each of a macro's templates' checks, expanded and parsed.
+(define parse-checks (->* (syns-a) top-list)
+  (lambda (cs)
+    (if (null? cs)
+        nil
+        (append-tops (parse-made (expand pfail-at (car cs))) (parse-checks (cdr cs))))))
+;; A `define-syntax` (or `define-syntax-rec`) of a name a form before this
+;; parse defined as a global: refused, where it is
+;; (`Checker::macro_expanded`, which knows the globals checked; a program's
+;; own are refused where each is checked, `guard-defs`).
+(define global-macro (->* (syn) unit)
+  (lambda (s) (globals-taken (syntax-names s) s)))
+(define globals-taken (->* (names syn) unit)
+  (lambda (ns s)
+    (cond ((null? ns) #u)
+          ((global-before? (car ns))
+           (pfail (string-append "`" (symbol->string (car ns))
+                                 "` is defined already: a macro may not take its name")
+                  s))
+          (else (globals-taken (cdr ns) s)))))
+;; Tops `ts`, each definition's names noted as globals, until one of them
+;; is a macro's: as the Rust checker refuses it where it is checked
+;; (`top_defining_kept`), a form refused there, said where the macro is if
+;; a form after this one (of `later`) makes it; else said at the
+;; definition, which an `import` or `include` made after expansion.
+(define guard-defs (->* (top-list syns-a) top-list)
+  (lambda (ts later)
+    (if (null? ts)
+        nil
+        (let ((bad (bad-name (top-names (car ts)) later)))
+          (if (null? bad)
+              (begin (globals! (top-names (car ts)))
+                     (cons (car ts) (guard-defs (cdr ts) later)))
+              (let* ((n (symbol->string (extract (car bad) 1))) (site (extract (car bad) 2))
+                     (why (if (null? site)
+                              (string-append "`" n "` is a macro's name, which is not defined "
+                                             "again")
+                              (string-append "`" n "` is defined already: a macro may not take its "
+                                             "name")))
+                     (a (if (null? site) (top-start (car ts)) (extract (car site) 1)))
+                     (b (if (null? site) (top-end (car ts)) (extract (car site) 2))))
+                (the top-list (list (t-exp (e-module (loaded-error why) a b 0 0))))))))))
+;; The first of `ns` a macro's, with where a later form makes it one (none
+;; if no later form does), in a list of one.
+(define-type sites (listof (tupleof int int) acyclic))
+(define bad-name (->* (names syns-a) (listof (productof (1 symbol) (2 sites)) acyclic))
+  (lambda (ns later)
+    (if (null? ns)
+        nil
+        (let ((site (later-macro-site (car ns) later (get loaded))))
+          (if (or (not (null? site)) (macro? (car ns)))
+              (list (product (1 (car ns)) (2 site)))
+              (bad-name (cdr ns) later))))))
+;; The names a top-level form defines as values (`Checker::defined_names`).
+(define top-names (->* (top) names)
+  (lambda (x)
+    (tagcase x
+      (t-define (n ty e a b) (list n))
+      (t-define-rec (bs a b) (rec-binding-names bs))
+      (t-define-syscall (req s a b)
+        (let ((items (syn-items s "a syscall")))
+          (if (and (> (len items) 1) (syn-symbol? (nth items 1)))
+              (list (syn-symbol (nth items 1)))
+              nil)))
+      (else y nil))))
+(define rec-binding-names (->* ((listof (productof (1 symbol) (2 syn) (3 exp)) acyclic)) names)
+  (lambda (bs) (if (null? bs) nil (cons (extract (car bs) 1) (rec-binding-names (cdr bs))))))
+(define top-start (->* (top) int)
+  (lambda (x)
+    (tagcase x
+      (t-define (n ty e a b) a) (t-define-rec (bs a b) a) (t-define-syscall (q s a b) a)
+      (else y 0))))
+(define top-end (->* (top) int)
+  (lambda (x)
+    (tagcase x
+      (t-define (n ty e a b) b) (t-define-rec (bs a b) b) (t-define-syscall (q s a b) b)
+      (else y 0))))
 ;; The files the hidden globals `ts` are, each by its key and its trees.
 (define loads-of (->* (top-list) loads)
   (lambda (ts)
@@ -238,6 +354,7 @@
   (lambda (keys forms)
     (let* ((t (walk-of keys)) (base (walk-count t)))
       (begin (shared-reset!)
+             (macros-at! (walk-state t))
              (let* ((parsed (prompt parse-tag (p-ok (parse-tops t (extract keys 3) forms))
                                     (lambda (r) r)))
                     (done (walk-done! t))

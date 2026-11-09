@@ -44,3 +44,14 @@
         (effect parses))
 ;; From `parser-top.fx`.
 (define parse-program (with parser-top-module parse-program))
+;; For a driver: the standard bindings' names, which a file's macro may name.
+(define macros-module (with parser-top-module macros-module))
+(define imports-module (with parser-top-module imports-module))
+(define standard-names! (with imports-module standard-names!))
+;; For the conductor: the macros each `with`'s body used, as the expander
+;; met them, for the checker (`k-macro-uses!`).
+(define with-macro-uses (with macros-module with-uses-given))
+;; For the driver: each expansion made, by its number, and where a key a
+;; template's part was given is (`syn.rs`'s `fx26_span`).
+(define expansions-made (with macros-module expansions-given))
+(define macro-source (with macros-module source-of))

@@ -259,6 +259,15 @@
 ;; Each bounded region binder's bound: `(r region p)`, a region that won't
 ;; outlive `p` (`docs/research/places-and-regions.md`).
 (define-type k-bounded (listof (pairof int k-region @t) acyclic))
+;; Each effect binder's bound as written, to be read once the binders are
+;; (`k-settle-withins`): its variable, its `E`, and the description scope
+;; at its binder, which has the binders before it and not itself.
+(define-type k-withins
+  (listof (productof (1 int) (2 syn) (3 (listof (pairof symbol k-ds @t) acyclic))) acyclic))
+;; Each bounded effect binder's bound: `(e effect (within E))` (`TODO.md`
+;; §226), by its variable, or by the label a comparison of `poly`s gave a
+;; pair of binders (negative), none or one.
+(define-type k-effect-bounded (listof (pairof int (listof k-eff acyclic) @t) acyclic))
 ;; The region and place variables bound around each one's binder, which it
 ;; won't outlive: the order of lifetimes, by nesting.
 (define-type k-nesting (listof (pairof int k-ids @t) acyclic))
@@ -357,6 +366,7 @@
         (subr (maxeff (read @globals) (read @t) spin) (k-parts symbol int) int))
    (val k-io-kind-name (subr pure (int) string))
    (val k-io-kind-code (subr pure (string) int))
+   (val k-io-wider (subr pure (int) int))
    (val k-io-kinds-shown string)
    (val k-ty-new
         (subr (maxeff (alloc @t) (read @globals) (read @t) (write @t) spin) (k-ty) int))
@@ -380,6 +390,7 @@
    (val k-path-narrowed (ref k-path-facts @t))
    (val k-dvar-name (subr (maxeff (read @globals) spin (read @t)) (int) symbol))
    (val k-spin-why (ref (listof (productof (1 symbol) (2 int) (3 string)) acyclic) @t))
+   (val k-waits-spun (ref (listof (productof (1 int) (2 int) (3 string)) acyclic) @t))
    (val k-member-spins (ref k-member-spin-list @t))
    (val k-pinned (ref (listof (productof (1 k-at) (2 int)) acyclic) @t))
    (val k-pinned-of (subr (maxeff (read @globals) spin (read @t)) (k-at) int))
@@ -420,6 +431,11 @@
    (val k-flats (ref k-ids @t))
    (val k-arrow-vars (ref (listof (pairof int int @t) acyclic) @t))
    (val k-bounds (ref k-bounded @t))
+   (val k-effect-bounds (ref k-effect-bounded @t))
+   (val k-label-bounds (ref k-effect-bounded @t))
+   (val k-pending-withins (ref k-withins @t))
+   (val k-effect-bound-of
+        (subr (maxeff (alloc @t) (read @globals) spin (read @t)) (int) (listof k-eff acyclic)))
    (val k-outers (ref k-nesting @t))
    (val k-distincts (ref k-ids @t))
    (val k-distinct-var? (subr (maxeff (read @globals) spin (read @t)) (int) bool))
