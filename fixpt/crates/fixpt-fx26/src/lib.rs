@@ -484,6 +484,56 @@ pub const PARSER_IDS: &str = include_str!("parser-ids.fx");
 /// shared loads: loaded by [`PARSER`], which gives on what it defines.
 pub const PARSER_LOADS: &str = include_str!("parser-loads.fx");
 
+/// The macros' kernel: the kernel's forms' syntax types and the keywords, as
+/// data, which both expanders read (`macros.rs`, [`MACROS`]).
+pub const MACROS_KERNEL: &str = include_str!("macros-kernel.fx");
+
+/// The expander's syntax types, read and compared (`macros.rs`'s first half).
+pub const MACROS_TYPES: &str = include_str!("macros-types.fx");
+
+/// The expander's aligning of syntax with syntax types, and the macros
+/// defined (`macros.rs`'s second half).
+pub const MACROS_ALIGN: &str = include_str!("macros-align.fx");
+
+/// What binds what in a template's nodes, walked by Herman's rules, and a
+/// pattern variable placed checked (`macros.rs`'s `walk`, `placed`).
+pub const MACROS_SCOPES: &str = include_str!("macros-scopes.fx");
+
+/// Signatures inferred, a `syntax-rules` macro's: its shape, kinds and
+/// placements (`macros/infer.rs`'s first half).
+pub const MACROS_INFER: &str = include_str!("macros-infer.fx");
+
+/// A signature inferred, as written and as a message says it
+/// (`macros/infer.rs`'s `shown_sty`, `sig_text`), on top of [`MACROS_INFER`].
+pub const MACROS_SHOW: &str = include_str!("macros-show.fx");
+
+/// Signatures inferred: the scopes and the iterations (`macros/infer.rs`'s
+/// second half), on top of [`MACROS_SHOW`].
+pub const MACROS_SOLVE: &str = include_str!("macros-solve.fx");
+
+/// A use matched against a clause's pattern (`macros.rs`'s `matches`).
+pub const MACROS_MATCH: &str = include_str!("macros-match.fx");
+
+/// What a template's exports bind, compared and said, and the names its
+/// nested uses bind (`macros.rs`'s `exports`, `binders_under`).
+pub const MACROS_EXPORTS: &str = include_str!("macros-exports.fx");
+
+/// What the expander reads of a file's macros and of the forms ahead, which
+/// holds no state of its own (`macros.rs`'s `import_file_macros`).
+pub const MACROS_FILES: &str = include_str!("macros-files.fx");
+
+/// Each typed macro's templates checked once, where it is defined
+/// (`macros.rs`'s `template_checks`), on top of [`MACROS`].
+pub const MACROS_TEMPLATES: &str = include_str!("macros-templates.fx");
+
+/// A file's macros, which `import-with-syntax` brings (`macros.rs`'s
+/// `define_file`), on top of [`MACROS_TEMPLATES`].
+pub const MACROS_IMPORTS: &str = include_str!("macros-imports.fx");
+
+/// The expander of the front end written in FX-26: `define-syntax` checked
+/// and defined, each use of a macro expanded (`macros.rs`'s).
+pub const MACROS: &str = include_str!("macros.fx");
+
 /// The parser's expressions, and its `load-module`
 /// (`docs/research/first-class-modules.md`, M7): the files a program names,
 /// as the driver read them. After [`PARSER`], before [`PARSER_TOP`].
@@ -748,7 +798,7 @@ pub const READER: &str = include_str!("reader.fx");
 /// The module files built in, each loaded by the one after
 /// (`(load-module "fx26:name")`, [`built_in_module`]), the last by
 /// [`READER`]: the reader and the parser, of the reader's regions.
-pub const FRONT_END_MODULES: [(&str, &str); 203] = [
+pub const FRONT_END_MODULES: [(&str, &str); 216] = [
     ("eager-reader-types.fx", EAGER_READER_TYPES),
     ("eager-reader-states.fx", EAGER_READER_STATES),
     ("syn.fx", SYN),
@@ -805,6 +855,19 @@ pub const FRONT_END_MODULES: [(&str, &str); 203] = [
     ("parser-exps.fx", PARSER_EXPS),
     ("parser-ids.fx", PARSER_IDS),
     ("parser-top.fx", PARSER_TOP),
+    ("macros-kernel.fx", MACROS_KERNEL),
+    ("macros-types.fx", MACROS_TYPES),
+    ("macros-align.fx", MACROS_ALIGN),
+    ("macros-scopes.fx", MACROS_SCOPES),
+    ("macros-match.fx", MACROS_MATCH),
+    ("macros-exports.fx", MACROS_EXPORTS),
+    ("macros-files.fx", MACROS_FILES),
+    ("macros-infer.fx", MACROS_INFER),
+    ("macros-show.fx", MACROS_SHOW),
+    ("macros-solve.fx", MACROS_SOLVE),
+    ("macros.fx", MACROS),
+    ("macros-templates.fx", MACROS_TEMPLATES),
+    ("macros-imports.fx", MACROS_IMPORTS),
     ("eval-types.fx", EVAL_TYPES),
     ("eval-values.fx", EVAL_VALUES),
     ("eval-prims.fx", EVAL_PRIMS),

@@ -420,6 +420,7 @@
   (lambda ()
     (begin
       (set k-dvars nil) (set k-ndvars 0) (set k-places nil) (set k-bounds nil) (set k-outers nil)
+      (set k-effect-bounds nil) (set k-label-bounds nil)
       (set k-distincts nil)
       (set k-lifetimes nil) (set k-freezing nil) (set k-written nil)
       (set k-arrow-vars nil) (set k-abstract-funs nil))))
@@ -453,6 +454,7 @@
       (set k-regions-memo (make-array 512 nil)) (k-fv-forget) (set k-dscope nil)
       (set k-with-depth 0) (set k-with-fallbacks nil) (set k-with-apps nil)
       (set k-fresh 0) (set k-base nil) (set k-expanding 0) (set k-knots nil) (set k-spin-why nil)
+      (set k-waits-spun nil)
       (k-forget-closed-named)
       (set k-gens nil) (set k-ngens 0) (set k-transparent nil) (set k-inside nil)
       (set k-conversions nil) (k-reset-facts)
@@ -753,10 +755,12 @@
         ;; The module, and the body, which sees its values once checked (or, an
         ;; earlier item's of a module being ordered, `k-with-bound`; or a
         ;; module a `let` binds to one written there, `ls`'s).
-        ;; `(with #%fx n)`, the standard `n`: nothing free.
+        ;; `(with #%fx n)`, the standard `n`: nothing free. `(with #%toplevel
+        ;; n)`, the top level's `n`: a use of it, whatever binds `n` here.
         (x-with (m body a b abk abkr)
-          (if (k-fx-module? m)
-              out
+          (if (k-named-module? m)
+              (let ((n (tagcase body (x-var (n c d cdk cdkr) n) (else y '||))))
+                (if (or (k-fx-module? m) (k-has-name? out n)) out (the k-names (cons n out))))
               (k-free-in body
                          (k-names-onto (k-with-bound m a b abk abkr bound)
                                        (k-names-onto (k-wlocal-vals ls (k-bound-at bound m))

@@ -24,6 +24,9 @@ pub fn check_with_rust_checker(c: &mut Checker, text: &str) -> Checked26 {
         for (top, _) in c.top_defining(f)?.run {
             match top {
                 // Not named by its own module's descriptions (`print_self`).
+                // Not a macro's template's check, which the program does
+                // not name (`Macros::template_checks`).
+                Top::Define { name, .. } if crate::macros::template_check(c.interner.name(name)) => {}
                 Top::Define { name, ty, effect, .. } => {
                     c.print_self.set(Some(name));
                     out.push(format!("define {} : {} ! {}", c.interner.name(name), c.show_ty(ty), c.show_effect(&effect)));
@@ -123,6 +126,15 @@ pub fn canonical_checked(r: Checked26) -> Checked26 {
     })
 }
 
+/// Whether two checkers' errors are one: their messages, where each is
+/// said, and the uses of macros that made the text there, each where it is
+/// (not the numbers the two expanders gave their expansions).
+pub fn same_error(a: &crate::FxError, b: &crate::FxError) -> bool {
+    let place = |s: fixpt_read::Span| (s.file, s.start, s.end);
+    let uses = |s: fixpt_read::Span| fixpt_read::expansion_trace(s).into_iter().map(|u| (u.name, place(u.at))).collect::<Vec<_>>();
+    a.message == b.message && place(a.span) == place(b.span) && uses(a.span) == uses(b.span)
+}
+
 /// Both checkers on `text`, canonical: the FX-26 one's, then the Rust
 /// one's, with `s`'s convention. The outer error is the FX-26 front end
 /// failing to read or parse.
@@ -134,7 +146,7 @@ pub fn both_checkers(s: &mut Fx26Session, text: &str) -> R<(Checked26, Checked26
     let rust = canonical_checked(check_with_rust_checker(&mut c, text));
     // The Rust checker first, so that the FX-26 front end can be told what
     // each top-level `include` gives, which only a checker knows.
-    crate::syn::set_includes(includes_given(&mut c, text));
+    tell_front_end(&mut c, text);
     let between = std::time::Instant::now();
     let fx26 = canonical_checked(s.check_with_own_checker(text)?);
     if timing {
@@ -143,11 +155,27 @@ pub fn both_checkers(s: &mut Fx26Session, text: &str) -> R<(Checked26, Checked26
     Ok((fx26, rust))
 }
 
+/// What the FX-26 front end is told of `text` before it parses it, which
+/// only a checker knows, `c` having checked it: what each top-level
+/// `include` gives (`includes_given`), and the standard bindings' names,
+/// which a file's macro may name (`standard-names!`).
+pub fn tell_front_end(c: &mut Checker, text: &str) {
+    crate::syn::set_includes(includes_given(c, text));
+    crate::syn::set_standard_names(c.standard_names());
+}
+
 /// Each top-level `include` of `text`, checked by `c`: where it starts,
 /// and the names of what its module gives (`Checker::include_names`); or
 /// why it is refused, and where.
 pub fn includes_given(c: &mut Checker, text: &str) -> Vec<crate::syn::IncludeGiven> {
-    let Ok(forms) = c.read_in(FileId(0), text) else { return Vec::new() };
+    // The whole text read again, as it was first: from no macros, which
+    // reading it defines again (an `import-with-syntax`'s, refused as
+    // defined already otherwise); those the check left, put back.
+    let kept = c.macros_kept();
+    c.macros_put_back(Default::default());
+    let forms = c.read_in(FileId(0), text);
+    c.macros_put_back(kept);
+    let Ok(forms) = forms else { return Vec::new() };
     let mut out = Vec::new();
     for f in &forms {
         match c.include_names(f) {

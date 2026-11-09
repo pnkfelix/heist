@@ -26,14 +26,14 @@
         syn-symbol syn-items len nth drop label keep arity big-literal mod-item-of with-includes
         any-include? hide-forms hide-form? hidden-marks item-in-includes datatype? expand-datatype
         import? expand-import e-var e-int e-bool e-str e-char e-float e-sym e-unit e-lambda e-app
-        e-plambda e-proj e-if e-letrec e-let e-begin e-prompt e-letregion e-rlambda e-the
+        e-plambda e-proj e-if e-letrec e-let e-begin e-prompt e-letregion e-rlambda e-the kw-sum
         e-convention e-bloblet e-product e-extract e-sum e-tagcase e-module e-with t-define t-exp
         p-ok p-err sym-true sym-false sym-unit at-least vlambda-usage stage-usage parse-vparam
         region-form? confirm-length-k bloblet-form? syn-string? syn-string parse-params freeze-pair
         region-kind region-name-error one-let call-tmp standard-ref field-index bloblet-untagged?
         arm-else? arm-names identity-at one-syn param-head? param-desc-item mk-symbol mk-list quoted
         rec-names rec-types rec-inits module-usage loaded loaded-next-at in-loaded loaded-mark
-        loaded-error loaded-params loaded-made mk-form dt-labelled
+        loaded-error loaded-params loaded-made mk-form dt-labelled without-syntax var-ref kw-head?
         (type syns-a exp top exp-list mod-item mod-items letrec-list let-list arm-list loaded-file)
         (effect parses))
 ;; A `case`'s data by halving (`parser.fx`).
@@ -45,10 +45,10 @@
 (define syn-mentions? (->* (symbol syn) bool)
   (lambda (n s)
     (tagcase s
-      (atom (d a b) (and (symbol? d) (symbol=? d n)))
-      (lst (items d a b) (syns-mention? n items))
-      (dotted (items t d a b) (or (syns-mention? n items) (syn-mentions? n t)))
-      (vec (items d a b) (syns-mention? n items)))))
+      (atom (d a b xpn) (and (symbol? d) (symbol=? d n)))
+      (lst (items d a b xpn) (syns-mention? n items))
+      (dotted (items t d a b xpn) (or (syns-mention? n items) (syn-mentions? n t)))
+      (vec (items d a b xpn) (syns-mention? n items)))))
 (define syns-mention? (->* (symbol syns-a) bool)
   (lambda (n ss) (and (not (null? ss)) (or (syn-mentions? n (car ss)) (syns-mention? n (cdr ss))))))
 ;; A name for an expansion's own variable that `forms` never mention:
@@ -84,7 +84,7 @@
 (define case-kind (->* (syn) int)
   (lambda (s)
     (tagcase s
-      (atom (d a b)
+      (atom (d a b xpn)
         (cond ((or (datum-int? d) (int? d)) 0)
               ((char? d) 1)
               ((string? d) 2)
@@ -166,7 +166,7 @@
   (lambda (c)
     (let ((parts (cdr (syn-items c "a case clause"))))
       (if (and (not (null? parts)) (null? (cdr parts)))
-          (tagcase (car parts) (atom (d x y) parts) (else z nil))
+          (tagcase (car parts) (atom (d x y xpn) parts) (else z nil))
           nil))))
 ;; The entries' tests in turn, each giving its clause (or, `bodies` given,
 ;; its body); `m` (or `els`) for none.
@@ -233,7 +233,7 @@
   (parse-exp (->* (syn) exp)
     (lambda (s)
       (tagcase s
-        (atom (d a b)
+        (atom (d a b xpn)
           (cond ((datum-int? d) (e-int d a b 0 0))
                 ((int? d) (big-literal d a b))
                 ((string? d) (e-str d a b 0 0))
@@ -252,9 +252,9 @@
                    (cond ((symbol=? n sym-true) (e-bool #t a b 0 0))
                          ((symbol=? n sym-false) (e-bool #f a b 0 0))
                          ((symbol=? n sym-unit) (e-unit a b 0 0))
-                         (else (e-var n a b 0 0)))))
+                         (else (var-ref n a b)))))
                 (else (pfail "not an expression in the FX-26 kernel" s))))
-        (lst (items d a b)
+        (lst (items d a b xpn)
           (if (null? items)
               (pfail "not an expression in the FX-26 kernel" s)
               (parse-form s items (syn-head (car items)) a b)))
@@ -444,8 +444,8 @@
         (else
          (cond ((region-form? head) (parse-region-form items head a b))
                ((bloblet-form? head) (parse-bloblet head (cdr items) a b))
-               (else (let ((f (parse-exp (car items))))
-                       (e-app f (parse-exps (cdr items)) a b 0 0))))))))
+               ((kw-head? items) (parse-exp (kw-sum items a b)))
+               (else (e-app (parse-exp (car items)) (parse-exps (cdr items)) a b 0 0)))))))
   ;; Item `i`, an expression.
   (parse-nth (->* (syns-a int) exp)
     (lambda (items i) (parse-exp (nth items i))))
@@ -819,7 +819,7 @@
                ;; `(define-generative (t (p k) …) T)`: a type constructor, its
                ;; head kept after its representation for the checker to read.
                (let* ((head (nth parts 1))
-                      (hs (tagcase head (lst (xs d a b) xs) (else x (the syns-a nil))))
+                      (hs (tagcase head (lst (xs d a b xpn) xs) (else x (the syns-a nil))))
                       (params? (and (not (null? hs)) (not (null? (cdr hs)))))
                       (name (syn-symbol (if params? (car hs) head)))
                       (up (identity-at (syn-start f) (syn-end f)))
@@ -921,7 +921,7 @@
                                                     (parse-module-items
                                                      (input-items pfail-at forms a b)))
                                               base end 0 0))
-                             (let* ((ps (loaded-params forms))
+                             (let* ((forms (without-syntax forms)) (ps (loaded-params forms))
                                     (items (parse-module-items (if (null? ps) forms (cdr forms))))
                                     (m (e-module (cons (loaded-mark base path ps) items)
                                                  base end 0 0)))
@@ -946,7 +946,7 @@
 (define type-loaded (->* (syn) syn)
   (lambda (s)
     (tagcase s
-      (lst (items d a b)
+      (lst (items d a b xpn)
         (let ((h (if (and (not (null? items)) (syn-symbol? (car items)))
                      (syn-symbol (car items))
                      '|()|)))
@@ -964,8 +964,8 @@
                                          (string=? (substring shown 0 14) "%shared:input:")))))
                    (lst (cons (mk-symbol (if input? "%input-made" "%type-made") a b)
                               (cons (mk-symbol (symbol->string name) a b) (cdr items)))
-                        d a b)))
-                ((type-loads? items) (lst (type-loaded-each items) d a b))
+                        d a b 0)))
+                ((type-loads? items) (lst (type-loaded-each items) d a b 0))
                 (else s))))
       (else y s))))
 (define type-loaded-each (->* (syns-a) syns-a)
@@ -975,7 +975,7 @@
   (lambda (xs)
     (and (not (null? xs))
          (or (tagcase (car xs)
-               (lst (items d a b)
+               (lst (items d a b xpn)
                  (let ((h (if (and (not (null? items)) (syn-symbol? (car items)))
                               (syn-symbol (car items))
                               '|()|)))

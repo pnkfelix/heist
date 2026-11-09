@@ -48,7 +48,8 @@
         x-tagcase x-module x-with k-ok k-err k-done st-car st-cdr st-field (type k-region k-atom
         k-eff k-vsub k-ids k-term k-prop k-props k-binders k-parts k-names k-strings k-conv k-terms
         k-size k-desc k-descs k-ty k-map k-ds kx kxs k-item k-items k-te k-result k-narrows
-        k-pendings k-cert-len k-arrow-kind k-bounded k-nesting k-named k-settleds k-gen k-hyps
+        k-pendings k-cert-len k-arrow-kind k-bounded k-effect-bounded k-withins k-nesting k-named
+        k-settleds k-gen k-hyps
         k-lemma k-regions k-step k-steps k-path-fact k-path-facts k-member-spin-list k-at)
         (effect kstate checks kreads kbuilds))
 ;; The types it uses of the files before it.
@@ -127,16 +128,23 @@
   (lambda (k)
     (case k ((0) "stdin") ((1) "stdout") ((2) "stderr") ((3) "fs-read") ((4) "fs-write")
             ((5) "clock") ((6) "args") ((7) "exit") ((8) "terminal") ((9) "native") ((10) "sys")
-            (else "process"))))
+            ((11) "process") ((12) "clock-read") ((13) "stdin-poll") (else "process-control"))))
 (define k-io-kind-code (subr pure (string) int)
   (lambda (n)
     (case n (("stdin") 0) (("stdout") 1) (("stderr") 2) (("fs-read") 3) (("fs-write") 4)
             (("clock") 5) (("args") 6) (("exit") 7) (("terminal") 8) (("native") 9)
-            (("sys") 10) (("process") 11)
+            (("sys") 10) (("process") 11) (("clock-read") 12) (("stdin-poll") 13)
+            (("process-control") 14)
             (else -1))))
+;; The kind an I/O kind is the part of that never waits, or -1 (`TODO.md`
+;; §225; `IoKind::wider`): `clock-read` of `clock`, `stdin-poll` of `stdin`,
+;; `process-control` of `process`.
+(define k-io-wider (subr pure (int) int)
+  (lambda (k) (case k ((12) 5) ((13) 0) ((14) 11) (else -1))))
 (define k-io-kinds-shown string
   (string-append "`stdin`, `stdout`, `stderr`, `fs-read`, `fs-write`, `clock`, `args`, `exit`, "
-                 "`terminal`, `native`, `sys`, `process`"))
+                 "`terminal`, `native`, `sys`, `process`, `clock-read`, `stdin-poll`, "
+                 "`process-control`"))
 ;; The part of `ps` labelled `l`: its type (or what else it holds), or -1;
 ;; and where it is, from `i`, or -1. Once here, for every file of the
 ;; checker (`TODO.md` §188: eight of the one and three of the other were
@@ -722,6 +730,12 @@
         (cond ((>= a 0) a) ((k-place-var? v) 3) ((k-data-var? v) 4) ((k-flat-var? v) 7)
               (else 2))))))
 (define k-bounds (ref k-bounded @t) (new nil))
+;; Each effect binder's bound, and each label's a comparison of `poly`s
+;; named (`Arena::effect_bound`, `BinderEnv::bounds`): every pair of binders
+;; it names is noted, so that a label's is always its own question's.
+(define k-effect-bounds (ref k-effect-bounded @t) (new nil))
+(define k-label-bounds (ref k-effect-bounded @t) (new nil))
+(define k-pending-withins (ref k-withins @t) (new nil))
 (define k-outers (ref k-nesting @t) (new nil))
 ;; Region variables that alias no other region in their scope: binders
 ;; marked `distinct`, and `letregion`'s fresh regions (`Arena::set_distinct`;
@@ -801,6 +815,9 @@
   (lambda (r) (let ((v (k-region-var r))) (and (>= v 0) (k-gen-param? v)))))
 ;; Why each member of a recursive group that may not end may not.
 (define k-spin-why (ref (listof (productof (1 symbol) (2 int) (3 string)) acyclic) @t) (new nil))
+;; Each wait masking or freezing dropped, leaving `spin`: where, and why
+;; that may not end (`k-note-waits-spun`; `TODO.md` §224).
+(define k-waits-spun (ref (listof (productof (1 int) (2 int) (3 string)) acyclic) @t) (new nil))
 ;; Of each binding of a recursive group with an `allof`, for each member (one
 ;; for a binding of no `allof`), whether a call of it at that member may not
 ;; end (`k-termination-by-member`): a call says `spin` only for the members
@@ -844,6 +861,15 @@
           (else (k-bound-in (cdr bs) v)))))
 (define k-bound-of (subr (maxeff kreads (alloc @t)) (int) k-regions)
   (lambda (v) (k-bound-in (get k-bounds) v)))
+;; The bound of effect variable `v`, or of a label (negative): none or one.
+(define k-effect-bound-in
+  (subr (maxeff kreads (alloc @t)) (k-effect-bounded int) (listof k-eff acyclic))
+  (lambda (bs v)
+    (cond ((null? bs) nil)
+          ((= (car (car bs)) v) (cdr (car bs)))
+          (else (k-effect-bound-in (cdr bs) v)))))
+(define k-effect-bound-of (subr (maxeff kreads (alloc @t)) (int) (listof k-eff acyclic))
+  (lambda (v) (k-effect-bound-in (if (< v 0) (get k-label-bounds) (get k-effect-bounds)) v)))
 ;; The variables bound around `v`'s binder, among `os`.
 (define k-outer-in (subr kreads (k-nesting int) k-ids)
   (lambda (os v)

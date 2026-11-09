@@ -4307,11 +4307,27 @@ later). The user's answers (2026-11-06): Herman's foundations first, his
 tree addresses (with comments in the readable names), recursion not
 ellipsis, a template's globals as at the use, keyword labels in templates.
 Prototype built (2026-11-06, `typed-macros.md`, "The prototype, as
-built"; `macros.rs`, `tests/macros.rs`). Next, its "Not yet": templates
-naming the program's globals (an unshadowable reference to one, as
-`#%fx` is to the standard's); errors in expansions mapped back (item 4);
-macro names a local binder may shadow; `(expr T E)` and templates
-checked once (item 7); the port to the front end written in FX-26.
+built"; `macros.rs`, `tests/macros.rs`). Done since: templates naming the
+program's globals through `#%toplevel` (item 5, 2026-11-07); a file's
+macros brought by `import-with-syntax`, with `only` and `except`
+(2026-11-07). Next, its "Not yet": errors in expansions mapped back for
+the FX-26 checker's places (item 4); macro names a local binder may
+shadow (a `with`'s, a macro used in its body by a name the module gives,
+refused since 2026-11-07; `rename`/`prefix` for `import-with-syntax` the
+way out, when wanted); a file's own use of its
+macros, files of module parameters; `(expr T E)` and templates checked
+once (item 7); the port to the front end written in FX-26 (begun
+2026-11-07: `define-syntax`, expansion, `#%toplevel`, `import-with-syntax`,
+the refusals of macros' names, errors said at each use that made them;
+the port is done). Typed holes (item 7) built 2026-11-07, both front ends
+(`typed-macros.md`, "Typed holes"): two tiers, the user's; a `lambda` syntax
+type where a form wants one. Macros that make definitions, `(-> σ defn)`
+(item 9), built 2026-11-07, both front ends, at the top level, untyped
+(`typed-macros.md`, "Macros that make definitions"). Next, of what it
+leaves: definitions of types and effects (binders of types, item 8); a
+template's sight of what another such macro's use defines (an `export` in
+its signature); typed parts, its template checked once; uses in a
+module's items; names a template constructs (`make-point`), if wanted.
 
 ## 183. Keywords, `#:tag`, for tags and labels (the user's, 2026-10-30)
 Keywords as values done (2026-10-30, `docs/fx26.md`, "Keywords"): `#:name`
@@ -5236,3 +5252,217 @@ convention, by a type digest written in both languages; checked in
 its key and not the trees' one, their facts must agree). Tabled by the
 user, 2026-11-07, after stage 2: the state by trees, the reference, is
 done and is what every mode keys by.
+
+## 216. The REPL's `,verify` loses what makes no form (found 2026-11-07)
+The REPL keeps the program `,verify` verifies as the text of each form
+that ran (`fx26.rs`, `program`), and a `define-syntax` runs as none (or as
+its templates' hidden checks, whose text is the template's): so a session
+that defines a macro and uses it verifies as `unbound variable` of the
+macro. Found while making macros that make definitions, whose use is
+several forms of one text (each added once since). Keep the text of each
+entry's forms as written, those of an entry that failed up to the
+failure.
+
+
+## 217. Lang items: the standard library's special names, tagged (the user's, 2026-11-08)
+`listof`, `pairof`, `int` and the other built-in type constructors are a
+fixed list the parser reads by name in head position (`TYPE_FORMS`), while
+the same names alone are looked up in scope: `(listof listof)` under a
+binder named `listof` is the built-in list of the binder. Proposed: a real
+`#%fx` module with source, its special items tagged (Rust's lang items), so
+that the names are ordinary bindings and the checkers, compilers and
+runtime find each special thing by its tag. Design, sorting of today's
+built-ins, open questions and stages: `docs/research/lang-items.md`. To be
+discussed before building. Binders of descriptions treats `TYPE_FORMS` as
+syntax meanwhile, and the reserved-words fix does not reserve them.
+
+## 218. Nothing may bind `#%fx`, `#%toplevel` or a qualified name; both checkers let it (found 2026-11-08)
+`docs/fx26.md` says of `#%fx` and `#%toplevel` that nothing binds or
+defines them, but both checkers accept `(lambda ((#%toplevel int)) 1)`,
+`(define #%fx 3)` and `(define-type #%fx int)`. The binding is inert, as
+`(with #%fx n)` and `(with #%toplevel n)` go by the spelling, and a
+binding of `#%toplevel:x` likewise is never what `#%toplevel:x` reads; but
+the rule the docs state is not the one checked. Refuse every `#%` name as
+a binder or a definition's name, value or description, in both checkers.
+
+## 219. `define-datatype` as a macro, the macro system's spike goal (the user's, 2026-11-08)
+A user macro whose uses expand to what the built-in `define-datatype`
+does. It needs repetition that splices into one form (ellipsis in
+patterns and templates, primitive, not sugar for recursion: the variants
+make one `sumof`, the fields one parameter list, with fresh names per
+repetition) and a name that is both a label and a value's binder (a
+syntax type `tag`, or keyword constructors instead). Design, acceptance
+tests and the user's two choices: `docs/research/datatype-macro.md`.
+Decided (the user, 2026-11-08): ellipsis primitive; keyword constructors,
+none as values. Built the same day: ellipsis, keyword constructors,
+macros that make descriptions, and `define-data` (the spike passes,
+`macros/define-data*.fx`). Left: the family form, and the changeover of
+`define-datatype`'s programs to keyword construction.
+
+## 220. The verifier and a dependent `lambda` called where it is written (found 2026-11-08)
+
+`((lambda ((o ordered) (a (select o t)) (b (select o t))) (if ((with o
+less) a b) b a)) int-order 3 5)` checks (both checkers agree, it runs to
+5), and `fixpt verify` leaves the call unverified: `(nat 5) is not
+within t`, `o..t is not within int`. The same procedure bound by a
+`define` of its dependent type, `(subr pure ((o : ordered) (select o t)
+(select o t)) (select o t))`, then called, verifies
+(`modules/functor-max.fx`); so does the direct call whose body has no
+`with`. Not yet looked into; a guess: the verifier's reading of a call of
+a lambda in place does not take the module argument for `o` in the
+parameters' `(select o t)` once the body opens `o`. Found while testing a template's `(with m
+name)` (`macros/with-value.fx`, which binds by `define` instead).
+
+## 221. Signatures inferred: what is not yet (the user's, 2026-11-08)
+
+`syntax-rules` with its signature left out (`docs/research/typed-macros.md`,
+"Inferred signatures"). Not inferred, so written:
+
+- A part in a list by ellipsis whose elements are each in the scope of
+  those before: a pattern's binders through a template's `let*` of them by
+  ellipsis, `((_ ((x e) ...) body) (let* ((x e) ...) body))`. The walk finds
+  the repetitions before (`Level::Earlier`); the signature would be a
+  ribcage's list, `(mu c (union (export () (cage)) …))`, made for the
+  pattern's ellipsis.
+- Typed holes; a signature in part, `_` where it is inferred.
+- What `((_ f) f)` makes, and a tag placed only at an application's head,
+  `(t e)`: a template alone does not say. Taken: an expression, an
+  application.
+- Showing the signature inferred without a refusal: the REPL, `fixpt
+  check`.
+
+## 222. A `syntax-rules`' literals matched by meaning (found 2026-11-08)
+
+A literal is matched by its name (`macros.rs`'s `matches`, the `Mode::Use`
+fit of `(literal name)`): a reserved word is safe, since nothing binds it,
+but another, `for-sum`'s `in` (`macros/infer-literal.fx`), matches a use's
+local variable `in`, and misses an alias of `in` another macro's template
+passed on. Clinger and Rees's `match` and Hanson's `identifier=?` compare
+meanings: the use's environment's against the macro's
+(`docs/research/typed-macros.md`, "Syntactic closures: what an expansion
+means"). Both front ends.
+
+
+## 223. A repeated binder's atom is one repetition's or every one's, unsaid (found 2026-11-08)
+
+A soundness hole in the ellipsis checking (both front ends). A pattern
+binder under an ellipsis is one atom, `v`, in the environments compared
+(`Aligner::placed`): a signature naming it inside its element means that
+repetition's `v`; a template's `(lambda ((v int) ...) …)` binds every
+repetition's. So this is accepted, though each `step` is placed in the
+scope of every `v` and its signature says its own alone:
+
+```scheme
+(define-syntax my-do
+  (((export (bvar expr (import expr (rho (A var)))) (rho (A var))) ...)
+   (import (expr expr) (rho (A rib)))
+   (import expr (rho (A rib))))
+  (syntax-rules ()
+    ((_ ((v init step) ...) (test res) body)
+     (letrec ((loop (subr spin (int int) int)
+                    (lambda ((v int) ...) (if test res (begin body (loop step ...))))))
+       (loop init ...)))))
+(my-do ((i 0 (+ i 1)) (acc 0 (+ acc i))) ((= i 5) acc) #u)
+```
+
+By the signature, the `i` in `acc`'s step is not the macro's; the
+expansion binds it.
+
+**Fixed** (2026-11-08, both front ends): the atom says how many lists by
+ellipsis gathered it (`Atom::Var`'s third field, `atm-var`'s), 0 its own
+repetition's, 1 every repetition's, as a list's export gathers its
+elements'; environments compare it, a reference's lookup by name does
+not. Inference says each binder through as many lists as gathered it.
+Tests: `macros/ellipsis-every-scope.fx` (refused), `ellipsis-own-scope.fx`,
+`ellipsis-letrec-scope.fx`, `infer-do.fx` (refused).
+
+**Left**: `do` is now refused, honestly: Herman's addresses cannot say a
+part in an element sees every element's binders while the element's other
+part sees none (nor can contract notation C: `typed-macros.md`, "Three
+notations"); saying it needs named scopes (Ott's; Pombrio et al.'s
+conclusion), a design of its own.
+
+## 224. A wait on a private region masks to nothing: neither `spin` nor a wait shows (found 2026-11-09; fixed 2026-11-09)
+
+A soundness gap in what `spin` promises (both front ends, and the cells'
+verifier). `mask_keeps` (`check.rs`) drops `(await r)` and `(receive r)`
+where nothing outside sees `r`, so a procedure that makes a private I-cell,
+spawns a process to fill it, and awaits it may have the effect `pure`. Yet
+it waits on the other process, and never ends if that never fills the
+cell. A type without `spin` is trusted to end, and a masked `pure` is
+claimed to the expander as `pure`. Shown (2026-11-09), in both checkers:
+`(define stuck (subr pure (int) int) (lambda (n) (let ((c (the (icell int
+@q) (make-icell)))) (icell-get c))))` is accepted, and `(begin (stuck 1)
+7)` fails with a deadlock on every machine tried (native, the Scheme VM,
+the cellular machine in Rust). So a `pure` procedure does not end. The
+call is kept, not dropped, so nothing is miscompiled yet; but the type
+is wrong. The fix, the user's (2026-11-09): masking leaves `spin`
+behind where it drops a waiting atom, since a wait on something private
+is, from outside, unbounded internal work. `spawn` dropping a process's
+place leaves nothing, as the spawner does not wait. See
+`docs/research/effect-markers.md`. Later, perhaps: a proof that a wait is
+fulfilled (a substructural account of who fills an I-cell, say) would
+let masking drop it with no `spin`; not now (the user's, 2026-11-09).
+Fixed: masking, freezing and substitution leave `spin` where they drop a
+wait, in both checkers (`Effect::waits_dropped`, `k-waits-dropped`); the
+cells' verifier too, which now counts the globals its closures' words
+name as seen, as the checker does (`globals_named`): without that it
+dropped `par.fx`'s awaits on a global's I-cell and found a `spin` the
+checker had not. `key-or-message.fx` says `spin` now. A declared type
+that leaves the `spin` out is refused saying why: "it may not end: it
+waits, (await @q), on what nothing outside it sees" (`waits_spun`,
+`k-waits-spun`). Left: an await dropped by substitution (`icell-get` at
+`const`) says no why; and no wait is known fulfilled, even one whose cell
+the same expression fills first, which a proof of fulfilment would let
+masking drop with no `spin`.
+
+## 225. The `io` capabilities that sometimes wait, split (kayak's request, 2026-11-09; done 2026-11-09)
+
+For effect markers (`docs/research/effect-markers.md`), each capability
+must either always wait or never wait. Three do not: `(io clock)` is
+`clock` and `sleep-until`; `(io stdin)` is the reads and `stdin-ready?`;
+`(io process)` is `process-exit` and `process-write`, which wait, and
+`process-output`, `process-status` and `process-news`, which do not. Split
+each (spellings open: `(io sleep)`, `(io process-wait)`, the stdin
+query's), in both checkers, the `io` table of `fx26.md`, and the
+annotations it breaks, kayak's included. The file operations refuse what
+is not a regular file (or a directory, for `list-dir`), so that
+`fs-read` and `fs-write` never wait on another party.
+
+Done (2026-11-09), compatibly rather than split (the user's): each kind
+stays the whole, and gains a part that never waits, within it
+(`IoKind::wider`, `k-io-wider`): `(io clock-read)`, `(io stdin-poll)`,
+`(io process-control)` (start, close-input, signal, output, status,
+news). No annotation breaks, Heist's (14 files) and kayak's included.
+`read-file` opens without waiting and refuses what is not a regular
+file; `write-file` renames a file written beside, and `list-dir` of a
+FIFO fails at once, so neither could wait. `programs/io/io-parts.fx`,
+`io-part-sleeps.fx`.
+
+## 226. Effect markers, and bounds on effect variables (kayak's request, 2026-11-09; `within` done 2026-11-09)
+
+Markers, derived from an effect's atoms by a fixed table: `nonblocking`
+(no waiting atom: `(receive r)`, `(await r)`, `(io clock)`, `(io stdin)`,
+`(io process)`, `(io stdout)`, `(io stderr)`), `terminating` (no
+`spin`), `deterministic` (no `nondet`), and `wait-free` (`nonblocking`
+and `terminating`). Bounds on a `poly`'s effect variable: `(e effect
+(within E))` and markers, `(e effect (within E) wait-free)`, checked at
+each instantiation, assumed in the body, closed under `maxeff`, and
+carried by `(effectbound e)` and `given`. Both front ends. Needs §225
+for the markers; `within` does not. `docs/research/effect-markers.md`.
+
+Done (2026-11-09): `within` bounds, in both checkers (`docs/fx26.md`,
+"Bounded effect variables"; `programs/higher-kinds/effect-within*.fx`):
+parsed, printed, kept by reps and `.fasl`s; each instantiation checked;
+`e` within its bound wherever effects are compared; `poly`s compared by
+`F<:`'s rule. Left: markers, waiting on whether they are cofinite effects
+(the note's option); a binder only a bound mentions, found from it; the
+bound in `effectbound` evidence and `given`.
+
+## 227. `effect-case`: effect evidence tested, and its variable narrowed (kayak's request, 2026-11-09)
+
+`(effect-case er ((wait-free) …) ((within E) …) (else …))`, `er` an
+`(effectrep e)`: tests the effect the evidence describes at run time,
+and in a branch that passes, `e` has that bound or those markers, as a
+bounded binder's has (§226). In place of kayak's `rep` supertype and
+`effect-within` syscall. Both front ends. `docs/research/effect-markers.md`.

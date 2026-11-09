@@ -91,6 +91,19 @@
                                spin)
                        (k-syns)
                        k-binders))
+            (val k-settle-withins
+                 (subr (maxeff (alloc @t)
+                               (goto @z)
+                               (read @globals)
+                               (read @s)
+                               (read @t)
+                               (write @t)
+                               spin)
+                       ((subr (maxeff (alloc @t) (goto @z) (read @globals) (read @s) (read @t)
+                                      (write @t) spin)
+                              (syn)
+                              k-eff))
+                       unit))
             (val k-parse-binders
                  (subr (maxeff (alloc @t)
                                (goto @z)
@@ -161,6 +174,8 @@
                                spin)
                        (syn)
                        k-region))
+            (val k-qualified? (subr (maxeff (read @globals) (read @s) spin) (syn) bool))
+            (val k-unqualified (subr (maxeff (read @globals) (read @s) spin) (syn) syn))
             (val k-effect-named
                  (subr (maxeff (alloc @t)
                                (goto @z)

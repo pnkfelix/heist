@@ -119,6 +119,12 @@ fn show(session: &Fx26Session, out: &Outcome, show_code: bool) {
         }
     }
     print!("{}", out.printed);
+    // Not a macro's template's check, which the program does not name.
+    if let Top::Define { name, .. } = &out.top
+        && fixpt_fx26::macros::template_check(session.checker.interner.name(*name))
+    {
+        return;
+    }
     let found = report(&session.checker, &out.top);
     match &out.value {
         Ok(Some(v)) => println!("{v}{found}"),
@@ -601,6 +607,9 @@ pub fn repl(backend: Backend) -> i32 {
             }
             Consider::Run => {}
         }
+        // The place of the form before: the definitions a use of a macro
+        // makes are each at the use's (`Macros::expand_top`), its text one.
+        let mut last = None;
         for form in &forms {
             if let Some(lines) = answer_hole(&mut session.checker, form) {
                 for l in lines {
@@ -618,7 +627,7 @@ pub fn repl(backend: Backend) -> i32 {
                 GcStats::of(&mut session).form_since(&b);
                 GcStats::end_form(&mut session, &b);
             }
-            if ran.is_ok() {
+            if ran.is_ok() && last.replace(form.span) != Some(form.span) {
                 program += session.session_text_at(form.span);
                 program.push('\n');
                 // What comes before it in its entry blank, so that its places
@@ -1186,7 +1195,7 @@ pub fn check(backend: Backend, name: &str, text: &str) -> i32 {
     };
     let same = match (&fx26, &rust) {
         (Ok(a), Ok(b)) => a == b,
-        (Err(a), Err(b)) => a.message == b.message && a.span == b.span,
+        (Err(a), Err(b)) => fixpt_fx26::compare::same_error(a, b),
         _ => false,
     };
     if same {
@@ -1218,7 +1227,7 @@ pub fn check_reps(backend: Backend, name: &str, text: &str, readable: bool) -> i
     let (rust, refused) = fixpt_fx26::compare::rust_reps(&mut c, text);
     // The FX-26 checker's, if it takes the whole program, told of the
     // `include`s as `both_checkers` tells it.
-    fixpt_fx26::syn::set_includes(fixpt_fx26::compare::includes_given(&mut c, text));
+    fixpt_fx26::compare::tell_front_end(&mut c, text);
     let ours = match session.check_with_own_checker(text) {
         Ok(Ok(_)) => session.own_checked_reps().unwrap_or_default(),
         _ => Vec::new(),
@@ -1919,8 +1928,8 @@ mod speculative {
         let mut s = session();
         let e = s.run_program(text).err().expect("refused");
         let lines: Vec<String> = located("p.fx", text, &e).lines().map(String::from).collect();
-        assert_eq!(lines[0], "p.fx:6:15: argument 2 is a bool, where a int is expected");
-        assert_eq!(lines[1..], ["  in the expansion of `add-one` at p.fx:9:10", "  in the expansion of `twice-add` at p.fx:10:1"]);
+        assert_eq!(lines[0], "p.fx:7:17: argument 2 is a bool, where a int is expected");
+        assert_eq!(lines[1..], ["  in the expansion of `add-one` at p.fx:11:12", "  in the expansion of `twice-add` at p.fx:12:1"]);
     }
 
     /// A macro defined in what is typed is used there, and is not defined
@@ -1928,7 +1937,7 @@ mod speculative {
     #[test]
     fn a_macro_typed_is_defined_for_it_alone() {
         let mut s = session();
-        let n = notes_in(&mut s, "(define-syntax m (expr) ((_ e) e)) (m 5)");
+        let n = notes_in(&mut s, "(define-syntax m (expr) (syntax-rules () ((_ e) e))) (m 5)");
         assert!(n.iter().all(|n| !n.error), "{n:?}");
         assert!(notes_in(&mut s, "(m 5)").first().is_some_and(|n| n.error));
     }

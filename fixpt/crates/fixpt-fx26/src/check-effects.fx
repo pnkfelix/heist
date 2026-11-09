@@ -239,10 +239,28 @@
 ;; (writes) `@globals`: they say nothing more, within `@globals`, nor of
 ;; whether it reaches itself, as reading `@globals` may
 ;; (`Effect::absorbed`, the Rust checker's; the user's, 2026-10-31).
+;; Whether `e` does the part of an I/O kind that never waits: what only
+;; `k-covered?` sees within the whole.
+(define k-has-io-part? (->* (k-eff) bool)
+  (lambda (e)
+    (and (not (null? e))
+         (or (tagcase (car e) (a-io (k) (>= (k-io-wider k) 0)) (else y #f))
+             (k-has-io-part? (cdr e))))))
 (define k-absorbed (->* (k-eff) k-eff)
   (lambda (e)
-    (let ((r (k-contains? e (a-read (r-globals)))) (w (k-contains? e (a-write (r-globals)))))
-      (if (or r w) (k-absorb-drop e r w) e))))
+    (let* ((r (k-contains? e (a-read (r-globals)))) (w (k-contains? e (a-write (r-globals))))
+           (e1 (if (or r w) (k-absorb-drop e r w) e)))
+      (if (k-has-io-part? e1) (k-absorb-io e1 e1) e1))))
+;; `e` without the parts of I/O kinds that `all` has the whole of
+;; (`Effect::absorbed`).
+(define k-absorb-io (->* (k-eff k-eff) k-eff)
+  (lambda (e all)
+    (cond ((null? e) nil)
+          ((tagcase (car e)
+             (a-io (k) (let ((w (k-io-wider k))) (and (>= w 0) (k-contains? all (a-io w)))))
+             (else y #f))
+           (k-absorb-io (cdr e) all))
+          (else (cons (car e) (k-absorb-io (cdr e) all))))))
 (define k-absorb-drop (->* (k-eff bool bool) k-eff)
   (lambda (e r w)
     (cond ((null? e) nil)
@@ -254,6 +272,20 @@
           (else (cons (car e) (k-absorb-drop (cdr e) r w))))))
 (define k-contains? (->* (k-eff k-atom) bool)
   (lambda (e a) (cond ((null? e) #f) ((k-atom=? (car e) a) #t) (else (k-contains? (cdr e) a)))))
+;; The waits of `e` that `kept` has not.
+(define k-dropped-waits (->* (k-eff k-eff) k-eff)
+  (lambda (e kept)
+    (cond ((null? e) nil)
+          ((and (tagcase (car e) (a-await (r) #t) (a-receive (r) #t) (else y #f))
+                (not (k-contains? kept (car e))))
+           (k-insert (car e) (k-dropped-waits (cdr e) kept)))
+          (else (k-dropped-waits (cdr e) kept)))))
+;; `kept`, what is left of `e` once masking (or freezing) dropped some of
+;; it, with `spin` where a wait was dropped: a wait on what nothing outside
+;; sees is, to anything outside, work of unbounded length, and never ends
+;; if nothing fills what it waits on (`Effect::waits_dropped`).
+(define k-waits-dropped (->* (k-eff k-eff) k-eff)
+  (lambda (e kept) (if (null? (k-dropped-waits e kept)) kept (k-insert (a-spin) kept))))
 ;; Whether `a` is in `e`, or, reading or writing one global, `e` does so to
 ;; `@globals`.
 (define k-covered? (->* (k-eff k-atom) bool)
@@ -264,12 +296,27 @@
           (a-write (r) (tagcase r (r-global (g) (k-contains? e (a-write (r-globals)))) (else y #f)))
           ;; An I-cell's fill is within writing its region.
           (a-init (r) (k-contains? e (a-write r)))
+          ;; The part of an I/O kind that never waits, within the whole.
+          (a-io (k) (let ((w (k-io-wider k))) (and (>= w 0) (k-contains? e (a-io w)))))
           ;; Data frozen into a place as it is made, the place's allocation.
           (a-alloc (r)
             (tagcase r
               (r-frozen (p f) (and (>= p 0) (k-contains? e (a-alloc (r-var p)))))
               (else y #f)))
           (else y #f)))))
+;; Subeffecting with effect variables' bounds (`TODO.md` §226;
+;; `Checker::effect_le`): each atom of `x` is within `y`, or is a variable,
+;; or a comparison's label, whose bound is. A bound names only the binders
+;; before its own, so this ends.
+(define k-effect-le? (->* (k-eff k-eff) bool)
+  (lambda (x y) (or (null? x) (and (k-atom-le? y (car x)) (k-effect-le? (cdr x) y)))))
+(define k-atom-le? (->* (k-eff k-atom) bool)
+  (lambda (y a)
+    (or (k-covered? y a)
+        (tagcase a
+          (a-var (v)
+            (let ((b (k-effect-bound-of v))) (and (not (null? b)) (k-effect-le? (car b) y))))
+          (else z #f)))))
 ;; Whether `e` makes data frozen into a place: what only `k-covered?` sees
 ;; within the place's allocation.
 (define k-frozen-alloc? (->* (k-eff) bool)
@@ -301,7 +348,8 @@
 ;; as effects made here are, by one walk of the two; else atom by atom.
 (define k-within? (->* (k-eff k-eff) bool)
   (lambda (x y)
-    (if (and (k-sorted? x) (k-sorted? y) (not (k-has-init? x)) (not (k-frozen-alloc? x)))
+    (if (and (k-sorted? x) (k-sorted? y) (not (k-has-init? x)) (not (k-frozen-alloc? x))
+             (not (k-has-io-part? x)))
         (let ((rg (k-contains? y (a-read (r-globals)))) (wg (k-contains? y (a-write (r-globals)))))
           (k-within-sorted? x y rg wg))
         (k-within-each? x y))))

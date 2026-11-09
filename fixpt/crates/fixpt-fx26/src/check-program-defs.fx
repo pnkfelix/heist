@@ -107,7 +107,7 @@
 (define k-conv-name? (->* (syn) bool)
   (lambda (s)
     (tagcase s
-      (atom (d a b)
+      (atom (d a b xpn)
         (if (symbol? d)
             (let ((n (symbol->string d)))
               (not (and (> (string-length n) 0) (string=? (substring n 0 1) "#"))))
@@ -117,11 +117,11 @@
 (define k-conv-text (->* (syn) string)
   (lambda (s)
     (tagcase s
-      (atom (d a b)
+      (atom (d a b xpn)
         (if (datum-int? d)
             (int->string d)
             (if (k-conv-name? s) (symbol->string (k-name-of s "a name")) (k-sfail k-conv-atoms s))))
-      (lst (items d a b) (string-append "(" (k-conv-texts items) ")"))
+      (lst (items d a b xpn) (string-append "(" (k-conv-texts items) ")"))
       (else x (k-sfail k-conv-atoms s)))))
 (define k-conv-texts (->* ((listof syn acyclic)) string)
   (lambda (xs)
@@ -141,7 +141,7 @@
         acc
         (let* ((c (car xs))
                (role (tagcase c
-                       (lst (items d a b)
+                       (lst (items d a b xpn)
                          (if (and (not (null? items)) (k-conv-name? (car items)))
                              (symbol->string (k-name-of (car items) "a name"))
                              (k-sfail "a convention's clause is `(role …)`" c)))
@@ -268,14 +268,21 @@
 ;; modules is most of the cost of checking a front end of them, which the
 ;; compile paths never read (`check-lines!`).
 (define k-show-lines (ref bool @t) (new #t))
+;; Whether `name` is a macro's template's check (`Macros::template_checks`).
+(define k-template-check? (->* (symbol) bool)
+  (lambda (name)
+    (let ((s (symbol->string name)))
+      (and (> (string-length s) 10) (string=? (substring s 0 10) "%template:")))))
 ;; The line for a form of type `t` and effect `e`; empty, if none are made.
 (define k-line (->* (int k-eff) string)
   (lambda (t e)
     (if (get k-show-lines) (k-cat3 (k-show-ty t) " ! " (k-show-effect e)) "")))
-;; The line for a definition of `name`, of type `t` and effect `e`.
+;; The line for a definition of `name`, of type `t` and effect `e`; none for
+;; a macro's template's check (`%template:`), which the program does not
+;; name.
 (define k-define-line (->* (symbol int k-eff) string)
   (lambda (name t e)
-    (if (get k-show-lines)
+    (if (and (get k-show-lines) (not (k-template-check? name)))
         ;; Not named by its own module's descriptions (`k-print-self`).
         (let* ((self (k-print-self! name)) (line (k-line t e)) (none (k-print-self! '||)))
           (k-cat4 "define " (symbol->string name) " : " line))
@@ -618,9 +625,13 @@
              (if (k-shared-name? name)
                  nil
                  (cons (k-define-line name (extract r 1) (extract r 2)) nil))))))
-;; One top-level form's lines: what each definition and expression is.
+;; One top-level form's lines: what each definition and expression is. The
+;; description scope as it begins, the top level's (`k-form-dscope`).
 (define k-top-lines (->* (top) k-out)
   (lambda (form)
+   (begin
+    (set k-form-dscope (get k-dscope))
+    (set k-toplevel-reading #f)
     (the k-out (tagcase form
                  (t-define (name ty init a b)
                    (if (null? ty)
@@ -630,7 +641,7 @@
                  (t-exp (e)
                    (let* ((x (k-resolve-exp e)) (r (k-synth x)))
                      (cons (k-line (extract r 1) (extract r 2)) nil)))
-                 (else y nil)))))
+                 (else y nil))))))
 (define k-lines-append-names (->* (k-names k-names) k-names)
   (lambda (xs ys)
     (if (null? xs) ys (the k-names (cons (car xs) (k-lines-append-names (cdr xs) ys))))))

@@ -32,7 +32,7 @@
 (import check-types-types a-alloc a-await a-comefrom a-goto a-read a-spin a-io a-init a-send
         a-receive a-nondet a-stage a-var a-write de ds-eff ds-region ds-var r-const r-frozen
         r-global r-globals r-heap r-var ty-lam
-        (type k-atom k-binders k-eff k-names k-ids k-region k-regions k-items)
+        (type k-atom k-binders k-eff k-names k-ids k-region k-regions k-items k-withins)
         (effect checks kbuilds kreads kstate))
 ;; What it uses of the modules it is given: all of each, hidden.
 (hide (include check-types) (include check-env) (include check-print-parts) (include parser))
@@ -43,7 +43,7 @@
 (define k-items (->* (syn string) k-syns)
   (lambda (s what)
     (tagcase s
-      (lst (items d a b) items)
+      (lst (items d a b xpn) items)
       (else x (k-sfail (string-append what ": expected a list") s)))))
 (define k-head (->* (k-syns) string)
   (lambda (items) (if (null? items) "" (syn-name (car items)))))
@@ -56,7 +56,7 @@
 (define k-at-name? (->* (string) bool)
   (lambda (n) (and (> (string-length n) 0) (string=? (substring n 0 1) "@"))))
 (define k-nil-syn? (->* (syn) bool)
-  (lambda (s) (tagcase s (lst (items d a b) (null? items)) (else x #f))))
+  (lambda (s) (tagcase s (lst (items d a b xpn) (null? items)) (else x #f))))
 ;; The items of a list that may be written `()`.
 (define k-items-or-nil (->* (syn string) k-syns)
   (lambda (s what) (if (k-nil-syn? s) nil (k-items s what))))
@@ -79,10 +79,10 @@
   "a description function to an effect takes regions, places, effects, sizes and conventions")
 (define k-arrow-syntax (->* (syn) k-arrow-syns)
   (lambda (s)
-    (let ((items (tagcase s (lst (items d a b) items) (else x (the k-syns nil)))))
+    (let ((items (tagcase s (lst (items d a b xpn) items) (else x (the k-syns nil)))))
       (if (and (= (k-length items) 3) (string=? (k-symbol-head items) "=>"))
           (tagcase (k-nth items 1)
-            (lst (ps d a b)
+            (lst (ps d a b xpn)
               (if (null? ps) nil (the k-arrow-syns (list (cons ps (k-nth items 2))))))
             (else x nil))
           nil))))
@@ -229,14 +229,31 @@
   (string-append "a binder is `(name kind)`, `(name region place)` "
                  "or `(name data place)`, a region's perhaps `distinct` last"))
 ;; A binder's bound, none or one, from what follows its kind: `(r region
-;; p)` is a region that won't outlive `p`, a place bound before it.
+;; p)` is a region that won't outlive `p`, a place bound before it. An
+;; effect binder's, `(within E)`, is read once the binders are
+;; (`k-within-of`, `k-settle-withins`).
 (define k-parse-bound (->* (k-syns int) k-regions)
   (lambda (rest kind)
     (cond ((null? rest) (the k-regions nil))
           ((or (= kind 0) (= kind 4)) (the k-regions (cons (k-parse-place (car rest)) nil)))
-          (else (k-sfail (string-append "only a region or data binder has a bound: "
-                                        "`(name region place)` or `(name data place)`")
+          ((= kind 1) (the k-regions nil))
+          (else (k-sfail (string-append "only a region, data or effect binder has a bound: "
+                                        "`(name region place)`, `(name data place)` or "
+                                        "`(name effect (within effect))`")
                          (car rest))))))
+;; An effect binder's bound as written, `(within E)`: its `E`, none or one
+;; (`TODO.md` §226).
+(define k-within-of (->* (k-syns int) k-syns)
+  (lambda (rest kind)
+    (if (or (null? rest) (not (= kind 1)))
+        nil
+        (let ((form (k-items (car rest) "an effect binder's bound")))
+          (if (and (= (k-length form) 2) (syn-symbol? (car form))
+                   (string=? (syn-name (car form)) "within"))
+              (the k-syns (cons (k-nth form 1) nil))
+              (k-sfail (string-append "an effect binder's bound is `(within effect)`: "
+                                      "`(name effect (within effect))`")
+                       (car rest)))))))
 ;; Note region variable `v`'s bound, if it has one.
 (define k-note-bound (->* (int k-regions) unit)
   (lambda (v bound)
@@ -254,10 +271,16 @@
               (let* ((name (k-name-of (car pair) "a binder's name"))
                      (kind (k-parse-kind (k-nth pair 1)))
                      (bound (k-parse-bound (cdr (cdr pair)) kind))
+                     (within (k-within-of (cdr (cdr pair)) kind))
                      (v (if (and distinct (not (= kind 0)))
                             (k-sfail "only a region binder is `distinct`" (car bs))
                             (k-new-dvar-of name kind)))
                      (bounded (begin (k-note-bound v bound) (if distinct (k-set-distinct v) #u)))
+                     (pending (if (null? within)
+                                  #u
+                                  (set k-pending-withins
+                                       (cons (product (1 v) (2 (car within)) (3 (get k-dscope)))
+                                             (get k-pending-withins)))))
                      (pushed (k-push-desc name (ds-var v kind)))
                      (rest (k-binders-each (cdr bs))))
                 (cons (product (1 v) (2 kind)) rest))
@@ -272,6 +295,30 @@
 (define k-drop-last (->* (k-syns) k-syns)
   (lambda (xs) (if (null? (cdr xs)) nil (the k-syns (cons (car xs) (k-drop-last (cdr xs)))))))
 
+;; How an effect is read, given to `k-settle-withins` by the file that
+;; reads them, which comes after this one.
+(define-type k-effect-reader
+  (subr (maxeff (alloc @t) (goto @z) (read @globals) (read @s) (read @t) (write @t) spin)
+        (syn)
+        k-eff))
+;; Each effect binder's bound read with `read-effect`, in the scope at its
+;; binder (`k-pending-withins`; `Checker::parse_binders`, `TODO.md` §226).
+(define k-settle-withins (->* (k-effect-reader) unit)
+  (lambda (read-effect)
+    (let ((ws (get k-pending-withins)))
+      (begin (set k-pending-withins nil) (k-settle-each ws read-effect)))))
+(define k-settle-each (->* (k-withins k-effect-reader) unit)
+  (lambda (ws read-effect)
+    (if (null? ws)
+        #u
+        (let* ((w (car ws)) (saved (get k-dscope))
+               (e (begin (set k-dscope (extract w 3)) (read-effect (extract w 2)))))
+          (begin
+            (set k-dscope saved)
+            (set k-effect-bounds
+                 (cons (cons (extract w 1) (the (listof k-eff acyclic) (cons e nil)))
+                       (get k-effect-bounds)))
+            (k-settle-each (cdr ws) read-effect))))))
 ;; `((name kind) …)`, binding each name for the rest of the reading.
 (define k-parse-binders (->* (syn) k-binders)
   (lambda (s) (k-binders-each (k-items s "binders"))))
@@ -284,23 +331,39 @@
     (if (not (null? (k-lookup-desc '%include-scope)))
         (k-one (a-var (k-effect-select '%include sym)))
         (k-sfail (no) s))))
+;; Whether `s` is a name `#%toplevel:n`, the top level's `n`, whatever binds
+;; `n` where it is written (`typed-macros.md`, "Decided: a template's free
+;; description names, one qualified name each").
+(define k-qualified? (->* (syn) bool)
+  (lambda (s)
+    (and (syn-symbol? s)
+         (let ((n (syn-name s)))
+           (and (> (string-length n) 11) (string=? (substring n 0 11) "#%toplevel:"))))))
+;; `n`, of `#%toplevel:n` written `s`, where `s` is.
+(define k-unqualified (->* (syn) syn)
+  (lambda (s)
+    (let ((n (syn-name s)))
+      (atom (string->symbol (substring n 11 (string-length n))) (syn-start s) (syn-end s) 0))))
 ;; The effect a name stands for: in `with` bodies, the modules' first
-;; (`k-with-effect-selected`).
+;; (`k-with-effect-selected`); `#%toplevel:n`, the top level's `n`.
 (define k-effect-named (->* (syn) k-eff)
   (lambda (s)
-    (let* ((n (syn-name s)) (sym (string->symbol n)))
-      (case n (("pure") nil)
-              (("spin") (k-one (a-spin)))
-              (("nondet") (k-one (a-nondet)))
-              (("stage") (k-one (a-stage)))
-              (else
-               (let ((withs (k-withs-over sym)))
-                 (if (null? withs)
-                     (k-effect-name-read s n)
-                     (let ((has (or (not (null? (k-lookup-desc sym)))
-                                    (not (null? (k-lookup-desc '%include-scope))))))
-                       (k-with-effect-selected
-                         withs sym has (if has (k-effect-name-read s n) nil))))))))))
+    (if (k-qualified? s)
+        (let* ((was (k-toplevel-enter)) (e (k-effect-named (k-unqualified s))))
+          (begin (k-toplevel-leave was) e))
+        (let* ((n (syn-name s)) (sym (string->symbol n)))
+          (case n (("pure") nil)
+                  (("spin") (k-one (a-spin)))
+                  (("nondet") (k-one (a-nondet)))
+                  (("stage") (k-one (a-stage)))
+                  (else
+                   (let ((withs (k-withs-over sym)))
+                     (if (null? withs)
+                         (k-effect-name-read s n)
+                         (let ((has (or (not (null? (k-lookup-desc sym)))
+                                        (not (null? (k-lookup-desc '%include-scope))))))
+                           (k-with-effect-selected
+                             withs sym has (if has (k-effect-name-read s n) nil)))))))))))
 ;; Effect name `n`, written `s`, as the description scope and `include`s say.
 (define k-effect-name-read (->* (syn string) k-eff)
   (lambda (s n)
@@ -391,7 +454,7 @@
 (define k-effect-selected (->* (syn k-syns) (listof k-eff acyclic))
   (lambda (s items)
     (if (and (= (k-length items) 3) (syn-symbol? (k-nth items 1)) (syn-symbol? (k-nth items 2)))
-        (let ((m (syn-head (k-nth items 1))) (e (syn-head (k-nth items 2))))
+        (let ((m (k-toplevel-qualified (syn-head (k-nth items 1)))) (e (syn-head (k-nth items 2))))
           (the (listof k-eff acyclic) (list (k-one (a-var (k-effect-select m e))))))
         (begin (k-sfail "`(select module name)`: a module's name, and a component's" s) nil))))
 

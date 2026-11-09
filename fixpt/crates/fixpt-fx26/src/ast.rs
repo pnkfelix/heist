@@ -144,10 +144,22 @@ pub enum IoKind {
     Sys,
     /// Heist's (`FIXPT-CHANGES.md` F4): programs run beside this one.
     Process,
+    /// Reading the clock, never sleeping: within `(io clock)` (`TODO.md`
+    /// §225). Each of these three is the part of a kind that never waits,
+    /// so that a procedure may say it does that part alone.
+    ClockRead,
+    /// Asking whether a read of the standard input would wait: within
+    /// `(io stdin)`.
+    StdinPoll,
+    /// Managing programs run beside this one without waiting on them:
+    /// starting, signalling, closing their input, taking their output so
+    /// far, their status, news of any. Within `(io process)`, which waits
+    /// for one to end, or to take what is written to it.
+    ProcessControl,
 }
 
 impl IoKind {
-    pub const ALL: [IoKind; 12] = [
+    pub const ALL: [IoKind; 15] = [
         IoKind::Stdin,
         IoKind::Stdout,
         IoKind::Stderr,
@@ -160,6 +172,9 @@ impl IoKind {
         IoKind::Native,
         IoKind::Sys,
         IoKind::Process,
+        IoKind::ClockRead,
+        IoKind::StdinPoll,
+        IoKind::ProcessControl,
     ];
     /// Its name, as `(io k)` writes it.
     pub fn name(self) -> &'static str {
@@ -176,6 +191,19 @@ impl IoKind {
             IoKind::Native => "native",
             IoKind::Sys => "sys",
             IoKind::Process => "process",
+            IoKind::ClockRead => "clock-read",
+            IoKind::StdinPoll => "stdin-poll",
+            IoKind::ProcessControl => "process-control",
+        }
+    }
+    /// The kind this one is part of, if it is part of one: the part that
+    /// never waits, within the whole (`TODO.md` §225).
+    pub fn wider(self) -> Option<IoKind> {
+        match self {
+            IoKind::ClockRead => Some(IoKind::Clock),
+            IoKind::StdinPoll => Some(IoKind::Stdin),
+            IoKind::ProcessControl => Some(IoKind::Process),
+            _ => None,
         }
     }
     pub fn named(n: &str) -> Option<IoKind> {
@@ -321,6 +349,17 @@ impl Effect {
     pub fn union(&self, other: &Effect) -> Effect {
         Effect(self.0.union(&other.0).copied().collect()).absorbed()
     }
+    /// `kept`, what is left of this effect once masking (or freezing)
+    /// dropped some of it, with `spin` where a wait was dropped: a wait on
+    /// what nothing outside sees is, to anything outside, work of unbounded
+    /// length, and never ends if nothing fills what it waits on (the
+    /// user's, 2026-11-09; `TODO.md` §224).
+    pub fn waits_dropped(&self, mut kept: Effect) -> Effect {
+        if self.0.iter().any(|a| matches!(a, Atom::Await(_) | Atom::Receive(_)) && !kept.0.contains(a)) {
+            kept.0.insert(Atom::Spin);
+        }
+        kept
+    }
     /// Whether this reads `@globals`, and writes it: what makes its reads
     /// and writes of single globals nothing more ([`absorbed`](Self::absorbed)).
     pub fn absorbs(&self) -> (bool, bool) {
@@ -338,6 +377,15 @@ impl Effect {
         if r || w {
             self.0.retain(|a| !matches!((a, r, w), (Atom::Read(Region::Global(_)), true, _) | (Atom::Write(Region::Global(_)), _, true)));
         }
+        // An I/O kind's part that never waits, said with the whole, is the
+        // whole's (`IoKind::wider`).
+        let wide: Vec<Atom> = self.0.iter().filter_map(|a| match a {
+            Atom::Io(k) => k.wider().map(Atom::Io).filter(|w| self.0.contains(w)).map(|_| *a),
+            _ => None,
+        }).collect();
+        for a in wide {
+            self.0.remove(&a);
+        }
         self
     }
     /// Subeffecting: every atom of `self` is in `other`, or, if it reads or
@@ -354,6 +402,9 @@ impl Effect {
                     // Data frozen into a place as it is made is the
                     // place's allocation (Kayak's, 2026-10-28).
                     Atom::Alloc(Region::Frozen(Some(p), _)) => other.0.contains(&Atom::Alloc(Region::Var(*p))),
+                    // The part of an I/O kind that never waits is within
+                    // the whole (`TODO.md` §225).
+                    Atom::Io(k) => k.wider().is_some_and(|w| other.0.contains(&Atom::Io(w))),
                     _ => false,
                 }
         })
@@ -894,6 +945,9 @@ pub struct Arena {
     /// Each region binder's bound, if it has one: `(r region p)`, a region
     /// that won't outlive `p` (`docs/research/places-and-regions.md`).
     dvar_bounds: Vec<Option<Region>>,
+    /// Each effect binder's bound, if it has one: `(e effect (within E))`,
+    /// an effect `e` is within wherever it is bound (`TODO.md` §226).
+    dvar_effect_bounds: Vec<Option<Effect>>,
     /// Region binders that alias no other region in their scope: a
     /// `(r region distinct)` binder, or a `letregion`'s fresh region
     /// (`docs/research/region-anti-aliasing.md`, variant (C)).
@@ -993,6 +1047,7 @@ impl Arena {
         self.dvar_places.push(false);
         self.dvar_data.push(false);
         self.dvar_bounds.push(None);
+        self.dvar_effect_bounds.push(None);
         self.dvar_distinct.push(false);
         self.dvar_outer.push(Vec::new());
         self.dvar_kinds.push(Kind::Type);
@@ -1056,6 +1111,15 @@ impl Arena {
     pub fn bound(&self, v: DVar) -> Option<Region> {
         self.dvar_bounds[v.0 as usize]
     }
+    /// Give effect binder `v` a bound: an effect it is within.
+    pub fn set_effect_bound(&mut self, v: DVar, b: Effect) {
+        self.dvar_effect_bounds[v.0 as usize] = Some(b);
+    }
+    /// The bound of effect binder `v`, if it has one; none for a label a
+    /// comparison made (`BinderEnv`).
+    pub fn effect_bound(&self, v: DVar) -> Option<&Effect> {
+        self.dvar_effect_bounds.get(v.0 as usize).and_then(|b| b.as_ref())
+    }
     /// Record the region and place variables bound around `v`'s binder.
     pub fn set_outer(&mut self, v: DVar, outer: Vec<DVar>) {
         self.dvar_outer[v.0 as usize] = outer;
@@ -1112,6 +1176,7 @@ impl Arena {
         self.dvar_places.truncate(mark.dvars);
         self.dvar_data.truncate(mark.dvars);
         self.dvar_bounds.truncate(mark.dvars);
+        self.dvar_effect_bounds.truncate(mark.dvars);
         self.dvar_distinct.truncate(mark.dvars);
         self.dvar_outer.truncate(mark.dvars);
         self.dvar_kinds.truncate(mark.dvars);
