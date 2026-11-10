@@ -1,0 +1,5 @@
+(define-type (nestof (l type)) (mu n (listof (oneof l n) acyclic)))
+(define-type atom (oneof int f64 char bool string symbol keyword))
+(define-type form (nestof atom))
+(define a form (quote (a (b c) 1)))
+(write-out "ok")

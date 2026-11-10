@@ -1,0 +1,5 @@
+(define-type (nestof (l type)) (mu n (listof (oneof l n) acyclic)))
+(define-type atom (oneof int f64 char bool string symbol keyword))
+(define-type form (nestof atom))
+(define* f (subr spin (form) string) (lambda (l) (if (null? l) "empty" (typecase (car l) (symbol s (symbol->string s)) (else y "?")))))
+(write-out (f (list (quote head) 1)))

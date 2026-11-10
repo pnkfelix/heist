@@ -1,0 +1,6 @@
+(define-type (nestof (l type)) (mu n (listof (oneof l n) acyclic)))
+(define-type atom (oneof int f64 char bool string symbol keyword))
+(define-type form (nestof atom))
+(define-type (nestof-at (l type) (p place)) (mu n (listof (oneof l n) (acyclic p))))
+(define* len (poly ((p place)) (subr (read (acyclic p)) ((nestof-at atom p)) int)) (lambda (l) (letrec ((go (subr (read (acyclic p)) ((nestof-at atom p)) int) (lambda (l) (if (null? l) 0 (+ 1 (go (cdr l))))))) (go l))))
+(write-out (int->string (len (list 1 2))))

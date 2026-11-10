@@ -85,7 +85,8 @@ your own every time (`transformer-datums.fx`, a record with `with-FIELD`
 setters, which works once these are written out):
 - **`,@x` needs `x` to be a `(listof datum acyclic)`.** A datum that is a
   proper list is refused.
-- **`map` does not take a datum.**
+- **There is no standard `map`** (`,apropos map` finds none), so a
+  transformer writes its own, over a datum it must narrow.
 - **`(symbol->string (car f))` is refused.** `car` of a datum is a datum,
   so each use needs a `typecase` to narrow it.
 - **None of these refusals has a position inside the transformer.** Each

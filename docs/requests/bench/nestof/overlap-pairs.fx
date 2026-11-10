@@ -1,0 +1,6 @@
+(define-type (nestof (l type)) (mu n (listof (oneof l n) acyclic)))
+(define-type atom (oneof int f64 char bool string symbol keyword))
+(define-type form (nestof atom))
+(define-type bad (nestof (listof int acyclic)))
+(define* f (subr spin ((oneof (listof int acyclic) bad)) string) (lambda (e) (if (pair? e) (typecase (car e) (int i "int") (else y "nest")) "nil")))
+(write-out (f (list 1 2)))
