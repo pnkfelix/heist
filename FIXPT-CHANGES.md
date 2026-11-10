@@ -8,7 +8,16 @@ do it, and what it cost. Kayak will need the same changes later
 
 ## Base
 
-- Fixpt `main` at f6d31209 (2026-11-09), pulled from GitHub: macros in
+- Fixpt `main` at 07b0d743 (2026-11-09), pulled from GitHub: procedural
+  macros (`er-`, `sc-` and `rsc-macro-transformer`, a prototype, in both
+  front ends); an error carries the expression whose check found it; the
+  checker's frames made small and held to a budget, with a shadow stack
+  for when the stack runs low. Heist needed no change. `fixpt/` is
+  Fixpt's tree exactly. After `fixpt prewarm` and `bin/heist-compile
+  all`, all 209 tests pass, with dumps (9.3 s) and without (16.0 s);
+  ratfink's corpus 123 of 124, playback 12 of 12, its FX-26 tests'
+  reports unchanged.
+- Before: Fixpt `main` at f6d31209 (2026-11-09), pulled from GitHub: macros in
   FX-26 (`define-syntax`, `syntax-rules` with its signature inferred,
   `import-with-syntax`, `#%toplevel`, keyword constructors, `define-data`);
   each syntax node carries the expansion that made it (51684f66); a wait
