@@ -344,7 +344,7 @@ impl Checker {
                     for n in &u.names {
                         self.break_global(*n, why.clone());
                     }
-                    done.broken.push((u.names, e.message));
+                    done.broken.push((u.names, e.message.into()));
                 }
             }
         }
@@ -601,6 +601,10 @@ impl Checker {
     /// `text`: a REPL's entry, in the session's text
     /// (`Fx26Session::read_entry`).
     pub fn read_in_from(&mut self, file: FileId, text: &str, start: usize) -> R<Vec<Syntax>> {
+        // Where its spans are, for what is said of the checks when the stack
+        // runs low (`debug_stack`).
+        #[cfg(debug_assertions)]
+        fixpt_read::note_source(file, if file.0 == 0 { "<program>" } else { "<text>" }, text.into());
         let mut interner = std::mem::take(&mut self.interner);
         let mut reader = Reader::new(text, file, SyntaxProfile::FX26, &mut interner);
         reader.seek(start);
@@ -764,6 +768,8 @@ impl Checker {
         self.macro_files += 1;
         let file = FileId(2_000_000 + self.macro_files);
         self.load_sites.insert(file, (form.span, path.clone(), text.as_str().into()));
+        #[cfg(debug_assertions)]
+        fixpt_read::note_source(file, &path, text.as_str().into());
         let mut interner = std::mem::take(&mut self.interner);
         let read = Reader::new(&text, file, SyntaxProfile::FX26, &mut interner).read_all();
         self.interner = interner;
@@ -1175,7 +1181,7 @@ impl Checker {
                 Ok(Top::DefineType { name, ty })
             }
             _ => {
-                let e = self.parse_exp(form)?;
+                let e = self.parse_top_exp(form, &[])?;
                 let (ty, effect) = self.synth(e)?;
                 Ok(Top::Exp(Checked { ty, effect, exp: e }))
             }
@@ -1247,7 +1253,7 @@ impl Checker {
                 // (lambda ((x t)) x))` means what a `plambda` would.
                 let depth = self.dscope.len();
                 self.bind_signature(ty);
-                let e = self.parse_exp(init);
+                let e = self.parse_top_exp(init, &[name]);
                 self.dscope.truncate(depth);
                 let e = e?;
                 if infer && !self.is_lambda(e) {
@@ -1309,7 +1315,7 @@ impl Checker {
                         let again = again.map_err(|err| {
                             let shown = self.show_ty(found);
                             let how = if star { "`->*`" } else { "`define*`" };
-                            FxError::at(err.span, format!("{how} found `{}` to be a {shown}: {}", self.interner.name(name), err.message))
+                            err.reworded(err.span, format!("{how} found `{}` to be a {shown}: {}", self.interner.name(name), err.message))
                         });
                         (again, found)
                     }
@@ -1350,7 +1356,7 @@ impl Checker {
             }
             [_, name, init] => {
                 let name = self.binder_name(name)?;
-                let e = self.parse_exp(init)?;
+                let e = self.parse_top_exp(init, &[name])?;
                 let (ty, effect) = self.synth(e)?;
                 if self.is_lambda(e) {
                     self.known.insert((name, self.env.len()));
@@ -1458,10 +1464,11 @@ impl Checker {
                 return Err(FxError::at(span, "`(define-rec (name type lambda) …)`"));
             }
             let mut bindings = Vec::new();
+            let group: Vec<Sym> = parts.iter().map(|(n, _, _)| *n).collect();
             for (name, ty, init) in parts {
                 let d = self.dscope.len();
                 self.bind_signature(ty);
-                let e = self.parse_exp(&init);
+                let e = self.parse_top_exp(&init, &group);
                 self.dscope.truncate(d);
                 let e = e?;
                 if !self.is_lambda(e) {

@@ -5466,3 +5466,36 @@ bound in `effectbound` evidence and `given`.
 and in a branch that passes, `e` has that bound or those markers, as a
 bounded binder's has (§226). In place of kayak's `rep` supertype and
 `effect-within` syscall. Both front ends. `docs/research/effect-markers.md`.
+
+## 228. Procedural macros, a prototype: explicit renaming and syntactic closures (the user's, 2026-11-09)
+
+Built in both front ends, to compare writing macros three ways:
+`er-macro-transformer`, `sc-macro-transformer`, `rsc-macro-transformer`
+beside `syntax-rules` (`docs/research/typed-macros.md`, "Procedural macros,
+prototyped"; tests `tests/programs/procedural/`). A transformer is FX-26
+code over `datum`s, checked and run by a session of its own
+(`macros/procedural.rs`; from FX-26, `%macros:expand-procedural`); hygiene
+by aliases, `%~N:x`. Left: `capture-syntactic-environment`; `compare` and
+`identifier=?` by meaning, not name (§222); a transformer that sees the
+program's own definitions (phases); contracts, checked at each expansion
+(the note's proposal); a transformer run each use is checked again each
+use, which a definition's compiled transformer kept would not need.
+
+## 229. A quoted list's length is how deep every phase recurses (found 2026-11-09)
+
+Both parsers rewrite `'(a b c …)` as `(cons a (cons b (cons c … nil)))`
+(`Checker::quoted`, `quoted` in `parser.fx`), so a list of n elements is
+calls nested n deep: in the parsers, the checkers, the lowering, the
+evaluator and every compiler. `macros-kernel.fx`'s reserved words, 115
+long, were the deepest stack in checking the front end (`debug_stack`'s
+report, `docs/research/debugging.md`); a list of some thousands overflows a
+release build's stack. Not a frame to make smaller: a representation.
+Options: `(list a b c …)` (one call, flat, `list` being a `vsubr`; a dotted
+tail through `append`), or a constant node of its own, typed `datum` with no
+look inside (a quote that unquotes nothing is a constant, which the
+compilers intern already). Undecided: the user's.
+
+Left from the stack work: the methods `frame-debt.txt` lists, the recursive
+first (`sub_rules`, `show_ty_body`, `unify`, `module_items_from`,
+`synth_module_items`); and the checker written in FX-26, whose depth is each
+machine's.
