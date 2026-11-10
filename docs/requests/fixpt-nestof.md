@@ -30,8 +30,9 @@ This exact definition can be written in FX-26 today, and much of it works
 1. `nestof` as a standard type constructor, beside `listof`;
 2. procedural macros' input typed `(nestof atom)`;
 3. quoted literals that are nests typed as nests;
-4. code polymorphic over the leaf type, which needs bounded type
-   variables.
+4. code polymorphic over the leaf type, which needs a type variable
+   bounded negatively, by the shapes it excludes (item 2 below). With
+   that, 1 could be a library definition.
 
 ## Why: the transformer that motivated it
 
@@ -91,7 +92,7 @@ it:
   `oneof` side, and say why in its refusal: a nest's leaves must not be
   nil or pairs.
 
-### 2. Code polymorphic over the leaf type: bounded type variables
+### 2. Code polymorphic over the leaf type: a negative shape bound
 
 `(poly ((l type)) (subr spin ((nestof l)) int))` is refused, even with
 the type argument given (`build-poly.fx`): `` a l cannot be in a
@@ -99,12 +100,40 @@ the type argument given (`build-poly.fx`): `` a l cannot be in a
 offer one `nest-length` or `nest-map` for every leaf type. Each leaf type
 needs its own copy, which defeats the point of a type constructor.
 
-What would fix it is a type variable bounded by shape. Fixpt f6d31209
-added bounded effect variables, `(e effect (within E))`. The type-side
-equivalent, say `(l type (within atom))`, would tell `oneof` that `l`'s
-shapes are among `atom`'s, so none is nil or a pair. Then `(oneof l
-(nestof l))` is told apart at run time for every `l` within the bound. A
-built-in `nestof` could take its parameter with exactly that bound.
+What `oneof` needs to know about `l` is negative: none of `l`'s values
+is accepted by `pair?` or `null?`. Fixpt is designing exactly this kind
+of bound for effects (`docs/research/effect-markers.md`, "negative
+bounds as cofinite effects", not decided): `(e effect (within (except
+spin (receive *) …)))`. The type version would bound a type variable by
+its shapes at run time, in the shape vocabulary that propositions already
+use (`keyword?`'s `(else (not (shape 0 keyword)))`):
+
+```
+(define-type (nestof (l type (within (except (shape pair) (shape nil)))))
+  (mu n (listof (oneof l n) acyclic)))
+```
+
+- **It's a negative bound, not a positive one.** A positive bound such as
+  `(within atom)` would also make `oneof` work, but it shuts out every
+  leaf type that is not an atom: products, sums, closures, vectors. A
+  nest of records could not be written. The negative bound is exactly
+  what `oneof` needs.
+- **The open-world cost goes the other way.** For effects, the worry is
+  that an `except` written today admits a waiting effect the language
+  adds later. For leaves, admitting a kind of value the language adds
+  later is what we want; it is a fine leaf. The one trap is a kind that
+  `pair?` accepts. So the bound should mean "what `pair?` and `null?`
+  accept", whatever values that covers (mutable pairs as well as frozen
+  ones, if they are told apart), not a list of types.
+- **`nestof` would need no special support.** With the bound, a library
+  defines `nestof`, checked once for every `l`. An overlapping leaf type
+  is then refused where it's used, at the bound, which also fixes
+  item 1's misplaced error. Our first ask, `nestof` as a standard type
+  constructor, becomes optional; it might still belong in the standard
+  environment, beside `listof`, for macros' sake (item 2 of the summary).
+- **Narrowing under the bound.** In `(oneof l (nestof l))`, `pair?` true
+  gives a nonempty nest, `null?` true gives nil, and both false give `l`.
+  The checker needs nothing about `l` beyond the bound for this.
 
 ### 3. Quoted literals are always `datum`
 
