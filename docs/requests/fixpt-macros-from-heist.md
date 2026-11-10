@@ -95,7 +95,19 @@ setters, which works once these are written out):
 What would help:
 - a narrowing test, datum to `(listof datum acyclic)`. `datum-proper-list?`
   exists but does not narrow.
-- `,@` accepting a datum that is a proper list.
+- `,@` accepting a `datum`. Its use already says the operand is a list.
+  The refusal comes from the rewrite, not from what `,@` means:
+  `parser.fx`'s `quoted` makes `,@e` into `((with #%fx append) e …)`,
+  and `append` takes a `(listof datum R)`. `car` and `cdr` take a
+  `datum` and trap at run time if it is not a pair, "so that Scheme code
+  that takes apart data it has not tested ports as written" (`fx26.md`,
+  Datums). `,@` could do the same:
+  - in the middle of a list, walk the datum with checked `car` and
+    `cdr`, and trap if it is not a proper list;
+  - last in a list, `` `(a ,@e) ``, check nothing: R7RS's `append`
+    takes any value as its last argument, so this is `(cons a e)`, a
+    `datum` already. All three of `transformer-datums.fx`'s `,@`s are
+    of this kind.
 - positions within the transformer in its refusals.
 
 ## 6. Smaller things
