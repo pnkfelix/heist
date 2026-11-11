@@ -61,8 +61,7 @@ out, as `session-check` takes it."
             (val insert (subr pure (string) ed-action))
             (val then (subr pure (ed-action ed-action) ed-action))
             (val define-command (subr pure (string (subr user-eff () ed-action)) ed-action))
-            (val define-key (subr pure (string string) ed-action))
-            (val %unit unit)))
+            (val define-key (subr pure (string string) ed-action))))
 (define eval-api eval-api-type
   (module
     (define nothing ed-action (sum nothing #u))
@@ -78,9 +77,7 @@ out, as `session-check` takes it."
       (lambda ((name string) (body (subr user-eff () ed-action))) (sum command (product (name name) (body body)))))
     ;; Keys `ks` (as `kbd` reads them) bound to the command `name`.
     (define define-key (subr pure (string string) ed-action)
-      (lambda ((ks string) (name string)) (sum key (product (keys ks) (command name)))))
-    ;; What a form of another type is run before: `(begin form %unit)`.
-    (define %unit unit #u)))
+      (lambda ((ks string) (name string)) (sum key (product (keys ks) (command name)))))))
 
 (define eval-session (sessionof eval-api-type @ed) (make-session eval-api))
 
@@ -148,9 +145,9 @@ is of another type (which), or for another reason (why)."
             (sum none #u)
             (sum runs init))))))
 
-"`(begin x %unit)`: `x` run at `unit`, whatever its type."
+"`(begin x #u)`: `x` run at `unit`, whatever its type."
 (define* run-for-effect (subr pure (datum) datum)
-  (lambda (x) (the datum (list (the datum 'begin) x (the datum '%unit)))))
+  (lambda (x) (the datum (list (the datum 'begin) x (the datum '#u)))))
 
 "Form `code` checked as an `ed-action`; a definition, whatever its type."
 (define* check-action (subr cmd-eff (datum) checked)

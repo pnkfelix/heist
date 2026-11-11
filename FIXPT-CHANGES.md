@@ -8,7 +8,28 @@ do it, and what it cost. Kayak will need the same changes later
 
 ## Base
 
-- Fixpt `main` at 07b0d743 (2026-11-09), pulled from GitHub: procedural
+- Fixpt `main` at 5983942d (2026-11-11), pulled from GitHub: binding
+  shapes (`docs/research/binding-shapes.md`: each form's binding
+  structure known before it is checked; `with`'s fallback for names
+  defined nowhere retired; `modnames`); hygiene step 3 (a module file
+  uses its own macros, our macros request's 1(a)); macro provenance;
+  faster shaping and parsing. Heist changed for one rule: **a module's
+  names that begin with `%` are not given by `with`**, as they are the
+  checkers' own (`k-type-shape`, `Checker::shape_held`). Code staged
+  against s7st's `s7-rt` named its abstract types `%value`, `%global`,
+  `%lams` and its tables `%tables`: refused, `` `%value` is not a type ``,
+  on every machine. Renamed `rt-value`, `rt-global`, `rt-lams`,
+  `rt-tables` (`s7st/lower.fx`). The editor's eval session gave `%unit`
+  for `(begin form %unit)`: refused, `` `stage-module` gives other names
+  than were read from the program before it was checked ``; the code now
+  ends in `#u`, and the session gives no `%unit`. `fixpt/` is Fixpt's tree
+  exactly. After `fixpt prewarm` and `bin/heist-compile all` (its first
+  run says each old `.fasl` stale as it replaces it), all 209 tests pass,
+  with dumps (9.6 s) and without (20.1 s, from 16.0); ratfink's corpus
+  123 of 124, playback 12 of 12, its FX-26 tests' reports unchanged.
+  `import-with-syntax` in a module file now panics (`parse.rs:1971`), where
+  it was refused: noted in `docs/requests/fixpt-macros-from-heist.md`.
+- Before: Fixpt `main` at 07b0d743 (2026-11-09), pulled from GitHub: procedural
   macros (`er-`, `sc-` and `rsc-macro-transformer`, a prototype, in both
   front ends); an error carries the expression whose check found it; the
   checker's frames made small and held to a budget, with a shadow stack

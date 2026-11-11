@@ -1,6 +1,7 @@
 # Request to Fixpt: macros, as Heist found them
 
-Status: open. Drafted 2026-11-09 by Heist, against Fixpt 07b0d743. While
+Status: open; 1(a) done in Fixpt 5983942d (2026-11-11, below). Drafted
+2026-11-09 by Heist, against Fixpt 07b0d743. While
 surveying where Heist's FX-26 code could use macros, we wrote macros for
 it and probed what the macro system can and cannot do. These are the
 problems we hit, most important first. Each has a repro in
@@ -22,8 +23,8 @@ A module file cannot use a macro by any of the three routes we tried:
 
 | route | repro | refusal |
 | --- | --- | --- |
-| a macro the file defines itself | `module-own/` | `` `twice` is a macro of this file: one is used where its file is imported (`import-with-syntax`), not in its file, for now `` |
-| a macro imported from another file | `module-import/` | `` unbound variable `import-with-syntax` `` |
+| a macro the file defines itself | `module-own/` | `` `twice` is a macro of this file: one is used where its file is imported (`import-with-syntax`), not in its file, for now ``; **works since 5983942d** |
+| a macro imported from another file | `module-import/` | `` unbound variable `import-with-syntax` ``; **since 5983942d, a panic** (below) |
 | a macro the loading program defines | `module-toplevel/` | `` unbound variable `twice` `` |
 
 The third is expected, since a module file is read against the standard
@@ -37,6 +38,16 @@ What we ask, in order of value to us:
   `import-with-syntax`'s condition already.
 - **(c) Later, `import-with-syntax` of a file with module parameters.**
   Most of Heist's files have them.
+
+**On 5983942d** (2026-11-11): (a) works (`module-own/` prints `10`).
+`import-with-syntax` in a module file now panics, where it was refused:
+`parse.rs:1971:21: index out of bounds: the len is 0 but the index is 0`,
+the `items[0]` of `parse_exp`'s empty list. It does so whether or not the
+file uses the macro, and whether or not the imported file defines a
+value besides. Until (b), a refusal would do. Separately, a program's
+`import-with-syntax` of a file that defines only macros is refused with
+`this module gives nothing to include`; with one value beside the macro,
+it works.
 
 ## 2. `syntax-rules` lacks R7RS's ellipsis tails
 

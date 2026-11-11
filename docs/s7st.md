@@ -216,7 +216,7 @@ lowering makes plain FX-26 of what it can:
 
 What it takes to keep compiled code cheap, all found by profiling:
 - **The module staged code is checked against is sealed:** its types
-  abstract (`%value`), and what the code is given (its constants, cells
+  abstract (`rt-value`), and what the code is given (its constants, cells
   and lambdas' descriptions, and the runtime's procedures) one product,
   `T`. Fixpt prints every type a stage is checked against whole: with
   s7st's value type in it, a stage took 49 ms; sealed, 8 ms.

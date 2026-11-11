@@ -9,7 +9,7 @@
 ;;; object each time), the global cells it names (G) and its lambdas'
 ;;; descriptions (L), so that its text holds none of them. In BODY:
 ;;;   - a local is an FX-26 variable; one assigned (`set!`, a definition in
-;;;     a body, `letrec`'s) is a box, `(ref %value @sc)`, read through
+;;;     a body, `letrec`'s) is a box, `(ref rt-value @sc)`, read through
 ;;;     `%lref`, which says if it is not yet defined;
 ;;;   - a lambda is `(%proc lN (sum aR (lambda (…) …)))`, an FX-26 procedure
 ;;;     of its R arguments (up to four, one clause, no rest); else of their
@@ -108,9 +108,9 @@ entry each, so that most closures have few enough (8) to be made in line."
         (n-scope x (s7-assigned (extract x body) (+ depth 1) acc))
         (else y acc)))))
 
-"`(the (ref %value @sc) (new init))`."
+"`(the (ref rt-value @sc) (new init))`."
 (define* s7-box-datum (subr (alloc @sc) (datum) datum)
-  (lambda (init) (list 'the '(ref %value @sc) (list 'new init))))
+  (lambda (init) (list 'the '(ref rt-value @sc) (list 'new init))))
 "`body` within `bindings` (a let's), if there are any."
 (define* s7-let-datum (subr (alloc @sc) ((listof datum acyclic) datum) datum)
   (lambda (bindings body) (if (null? bindings) body (list 'let bindings body))))
@@ -232,8 +232,8 @@ clause of at most four parameters, and sets nowhere else (`assigned`)."
 (define* s7-raw-type (subr (maxeff spin (alloc @sc)) (int) datum)
   (lambda (n)
     (letrec ((go (subr (maxeff spin (alloc @sc)) (int (listof datum acyclic)) (listof datum acyclic))
-               (lambda (i acc) (if (<= i 0) acc (go (- i 1) (cons '%value acc))))))
-      (list 'subr s7-eff-datum (go n nil) '%value))))
+               (lambda (i acc) (if (<= i 0) acc (go (- i 1) (cons 'rt-value acc))))))
+      (list 'subr s7-eff-datum (go n nil) 'rt-value))))
 
 (define-rec
   ;; Node `n` lowered, in `frames` (innermost first).
@@ -334,7 +334,7 @@ clause of at most four parameters, and sets nowhere else (`assigned`)."
   (s7-lower-raw (subr s7-eff (s7-lambda s7-lframes s7-lowering) datum)
   (lambda (l frames cx)
     (let ((ps (s7-fresh-vars cx (extract l required))))
-      (list 'lambda (map (lambda ((p symbol)) (the datum (list p '%value))) ps)
+      (list 'lambda (map (lambda ((p symbol)) (the datum (list p 'rt-value))) ps)
             (list 'begin (list (s7-rt-op 'tick)) (s7-lower-body cx frames ps (extract l size) (extract l body)))))))
 
   ;; Lambdas `ls` (a `case-lambda`'s clauses, or one) lowered.
@@ -351,7 +351,7 @@ clause of at most four parameters, and sets nowhere else (`assigned`)."
       (if (and (pair? ls) (null? (cdr ls)) (not (extract (car ls) rest)) (<= (extract (car ls) required) 4))
           (let* ((l (car ls)) (ps (params (extract l required))) (body (body-of l ps)))
             (list (s7-proc-op (extract l required)) lv
-                  (list 'lambda (map (lambda ((p symbol)) (the datum (list p '%value))) ps)
+                  (list 'lambda (map (lambda ((p symbol)) (the datum (list p 'rt-value))) ps)
                         (list 'begin (list (s7-rt-op 'tick)) body))))
           (let ((args (s7-fresh-var cx "as")))
             (letrec ((clauses (subr s7-eff ((listof s7-lambda acyclic)) datum)
@@ -368,7 +368,7 @@ clause of at most four parameters, and sets nowhere else (`assigned`)."
                                     (body (body-of l ps))
                                     (next (clauses (cdr cs))))
                                (list 'if (list (s7-rt-op 'fits?) args r rest) (s7-let-datum gets body) next))))))
-              (list (s7-rt-op 'procn) lv (list 'lambda (list (list args '(listof %value acyclic))) (list 'begin (list (s7-rt-op 'tick)) (clauses ls)))))))))))
+              (list (s7-rt-op 'procn) lv (list 'lambda (list (list args '(listof rt-value acyclic))) (list 'begin (list (s7-rt-op 'tick)) (clauses ls)))))))))))
 
 "The values of list `l`, last first, `n` of them, as an array."
 (define* s7-array-of (subr (maxeff spin (alloc @sc) (write @sc)) (s7-values int) (arrayof s7-value @sc))
@@ -414,7 +414,7 @@ clause of at most four parameters, and sets nowhere else (`assigned`)."
       (else x "?"))))
 
 "The tables of the forms being staged (`s7-run-nodes`), which its code takes
-as it is made (`%tables`); and the value it gives (`%result!`):
+as it is made (`rt-tables`); and the value it gives (`result!`):
 so that the type staged code is checked against is small, naming none of
 s7st's types, each of which is printed whole for the check."
 (define s7-staged-k (ref (arrayof s7-value @sc) @sc) (new (the (arrayof s7-value @sc) (make-array 0 s7-undefined))))
@@ -440,16 +440,18 @@ what lowered code runs on (machine.fx's), as it names them."
 
 "What lowered code may name (machine.fx's), as it names it: sealed, its
 types abstract, so that what staged code is checked against is small (a
-type is printed whole for the check: `s7-value`'s is some 20 KB)."
+type is printed whole for the check: `s7-value`'s is some 20 KB). Its
+names do not begin with `%`: since Fixpt 5983942d, a `with` gives no such
+name, as they are the checkers' own (`k-type-shape`)."
 (define-effect s7-rt-eff (maxeff s7-eff))
 (define s7-rt
-  (the (moduleof (abs %value type) (abs %global type) (abs %lams type)
-                 (val %tables (subr s7-rt-eff () (productof (k (arrayof %value @sc)) (g (arrayof %global @sc)) (l (arrayof %lams @sc)) (call0 (subr s7-rt-eff (%value) %value)) (call1 (subr s7-rt-eff (%value %value) %value)) (call2 (subr s7-rt-eff (%value %value %value) %value)) (call3 (subr s7-rt-eff (%value %value %value %value) %value)) (call4 (subr s7-rt-eff (%value %value %value %value %value) %value)) (calln (subr s7-rt-eff (%value (listof %value acyclic)) %value)) (proc0 (subr s7-rt-eff (%lams (subr s7-rt-eff () %value)) %value)) (proc1 (subr s7-rt-eff (%lams (subr s7-rt-eff (%value) %value)) %value)) (proc2 (subr s7-rt-eff (%lams (subr s7-rt-eff (%value %value) %value)) %value)) (proc3 (subr s7-rt-eff (%lams (subr s7-rt-eff (%value %value %value) %value)) %value)) (proc4 (subr s7-rt-eff (%lams (subr s7-rt-eff (%value %value %value %value) %value)) %value)) (procn (subr s7-rt-eff (%lams (subr s7-rt-eff ((listof %value acyclic)) %value)) %value)) (fits? (subr s7-rt-eff ((listof %value acyclic) int bool) bool)) (arg (subr s7-rt-eff ((listof %value acyclic) int) %value)) (args-rest (subr s7-rt-eff ((listof %value acyclic) int) %value)) (no-clause (subr s7-rt-eff (%lams (listof %value acyclic)) %value)) (gref (subr s7-rt-eff (%global) %value)) (gset! (subr s7-rt-eff (%global %value) %value)) (gdefine! (subr s7-rt-eff (%global %value) %value)) (lref (subr s7-rt-eff ((ref %value @sc) %value) %value)) (true? (subr pure (%value) bool)) (fail-syntax (subr s7-rt-eff (string) %value)) (tick (subr s7-rt-eff () unit)) (unspec %value) (undef %value) (result! (subr s7-rt-eff (%value) unit)) (show! (subr s7-rt-eff (%value) %value)) (add (subr s7-rt-eff (%global %value %value) %value)) (sub (subr s7-rt-eff (%global %value %value) %value)) (mul (subr s7-rt-eff (%global %value %value) %value)) (lt (subr s7-rt-eff (%global %value %value) %value)) (lt? (subr s7-rt-eff (%global %value %value) bool)) (gt (subr s7-rt-eff (%global %value %value) %value)) (gt? (subr s7-rt-eff (%global %value %value) bool)) (le (subr s7-rt-eff (%global %value %value) %value)) (le? (subr s7-rt-eff (%global %value %value) bool)) (ge (subr s7-rt-eff (%global %value %value) %value)) (ge? (subr s7-rt-eff (%global %value %value) bool)) (num= (subr s7-rt-eff (%global %value %value) %value)) (num=? (subr s7-rt-eff (%global %value %value) bool)) (car (subr s7-rt-eff (%global %value) %value)) (cdr (subr s7-rt-eff (%global %value) %value)) (null (subr s7-rt-eff (%global %value) %value)) (null? (subr s7-rt-eff (%global %value) bool)) (pair (subr s7-rt-eff (%global %value) %value)) (pair? (subr s7-rt-eff (%global %value) bool)) (not (subr s7-rt-eff (%global %value) %value)) (not? (subr s7-rt-eff (%global %value) bool)) (zero (subr s7-rt-eff (%global %value) %value)) (zero? (subr s7-rt-eff (%global %value) bool)) (eq (subr s7-rt-eff (%global %value %value) %value)) (eq? (subr s7-rt-eff (%global %value %value) bool)) (cons (subr s7-rt-eff (%global %value %value) %value)) (gcall0 (subr s7-rt-eff (%global) %value)) (gcall1 (subr s7-rt-eff (%global %value) %value)) (gcall2 (subr s7-rt-eff (%global %value %value) %value)) (gcall3 (subr s7-rt-eff (%global %value %value %value) %value)) (gcall4 (subr s7-rt-eff (%global %value %value %value %value) %value))))))
+  (the (moduleof (abs rt-value type) (abs rt-global type) (abs rt-lams type)
+                 (val rt-tables (subr s7-rt-eff () (productof (k (arrayof rt-value @sc)) (g (arrayof rt-global @sc)) (l (arrayof rt-lams @sc)) (call0 (subr s7-rt-eff (rt-value) rt-value)) (call1 (subr s7-rt-eff (rt-value rt-value) rt-value)) (call2 (subr s7-rt-eff (rt-value rt-value rt-value) rt-value)) (call3 (subr s7-rt-eff (rt-value rt-value rt-value rt-value) rt-value)) (call4 (subr s7-rt-eff (rt-value rt-value rt-value rt-value rt-value) rt-value)) (calln (subr s7-rt-eff (rt-value (listof rt-value acyclic)) rt-value)) (proc0 (subr s7-rt-eff (rt-lams (subr s7-rt-eff () rt-value)) rt-value)) (proc1 (subr s7-rt-eff (rt-lams (subr s7-rt-eff (rt-value) rt-value)) rt-value)) (proc2 (subr s7-rt-eff (rt-lams (subr s7-rt-eff (rt-value rt-value) rt-value)) rt-value)) (proc3 (subr s7-rt-eff (rt-lams (subr s7-rt-eff (rt-value rt-value rt-value) rt-value)) rt-value)) (proc4 (subr s7-rt-eff (rt-lams (subr s7-rt-eff (rt-value rt-value rt-value rt-value) rt-value)) rt-value)) (procn (subr s7-rt-eff (rt-lams (subr s7-rt-eff ((listof rt-value acyclic)) rt-value)) rt-value)) (fits? (subr s7-rt-eff ((listof rt-value acyclic) int bool) bool)) (arg (subr s7-rt-eff ((listof rt-value acyclic) int) rt-value)) (args-rest (subr s7-rt-eff ((listof rt-value acyclic) int) rt-value)) (no-clause (subr s7-rt-eff (rt-lams (listof rt-value acyclic)) rt-value)) (gref (subr s7-rt-eff (rt-global) rt-value)) (gset! (subr s7-rt-eff (rt-global rt-value) rt-value)) (gdefine! (subr s7-rt-eff (rt-global rt-value) rt-value)) (lref (subr s7-rt-eff ((ref rt-value @sc) rt-value) rt-value)) (true? (subr pure (rt-value) bool)) (fail-syntax (subr s7-rt-eff (string) rt-value)) (tick (subr s7-rt-eff () unit)) (unspec rt-value) (undef rt-value) (result! (subr s7-rt-eff (rt-value) unit)) (show! (subr s7-rt-eff (rt-value) rt-value)) (add (subr s7-rt-eff (rt-global rt-value rt-value) rt-value)) (sub (subr s7-rt-eff (rt-global rt-value rt-value) rt-value)) (mul (subr s7-rt-eff (rt-global rt-value rt-value) rt-value)) (lt (subr s7-rt-eff (rt-global rt-value rt-value) rt-value)) (lt? (subr s7-rt-eff (rt-global rt-value rt-value) bool)) (gt (subr s7-rt-eff (rt-global rt-value rt-value) rt-value)) (gt? (subr s7-rt-eff (rt-global rt-value rt-value) bool)) (le (subr s7-rt-eff (rt-global rt-value rt-value) rt-value)) (le? (subr s7-rt-eff (rt-global rt-value rt-value) bool)) (ge (subr s7-rt-eff (rt-global rt-value rt-value) rt-value)) (ge? (subr s7-rt-eff (rt-global rt-value rt-value) bool)) (num= (subr s7-rt-eff (rt-global rt-value rt-value) rt-value)) (num=? (subr s7-rt-eff (rt-global rt-value rt-value) bool)) (car (subr s7-rt-eff (rt-global rt-value) rt-value)) (cdr (subr s7-rt-eff (rt-global rt-value) rt-value)) (null (subr s7-rt-eff (rt-global rt-value) rt-value)) (null? (subr s7-rt-eff (rt-global rt-value) bool)) (pair (subr s7-rt-eff (rt-global rt-value) rt-value)) (pair? (subr s7-rt-eff (rt-global rt-value) bool)) (not (subr s7-rt-eff (rt-global rt-value) rt-value)) (not? (subr s7-rt-eff (rt-global rt-value) bool)) (zero (subr s7-rt-eff (rt-global rt-value) rt-value)) (zero? (subr s7-rt-eff (rt-global rt-value) bool)) (eq (subr s7-rt-eff (rt-global rt-value rt-value) rt-value)) (eq? (subr s7-rt-eff (rt-global rt-value rt-value) bool)) (cons (subr s7-rt-eff (rt-global rt-value rt-value) rt-value)) (gcall0 (subr s7-rt-eff (rt-global) rt-value)) (gcall1 (subr s7-rt-eff (rt-global rt-value) rt-value)) (gcall2 (subr s7-rt-eff (rt-global rt-value rt-value) rt-value)) (gcall3 (subr s7-rt-eff (rt-global rt-value rt-value rt-value) rt-value)) (gcall4 (subr s7-rt-eff (rt-global rt-value rt-value rt-value rt-value) rt-value))))))
     (module
-      (define-type %value s7-value)
-      (define-type %global s7-global)
-      (define-type %lams (listof s7-lambda acyclic))
-      (define %tables s7-staged-tables))))
+      (define-type rt-value s7-value)
+      (define-type rt-global s7-global)
+      (define-type rt-lams (listof s7-lambda acyclic))
+      (define rt-tables s7-staged-tables))))
 "What a form's code is, staged: what, given its tables, makes its thunk."
 (define-type s7-made (subr s7-eff () (subr s7-eff () unit)))
 
@@ -469,7 +471,7 @@ code's (some 8 ms, against a quarter of one a definition)."
                          (go ns))))
            (nk (get (extract cx nconsts))) (ng (get (extract cx ncells))) (nl (get (extract cx nlams)))
            (code (the datum (list 'lambda '()
-                                  (list 'let '((T (%tables)))
+                                  (list 'let '((T (rt-tables)))
                                         (list 'lambda '() (list (s7-rt-op 'result!) body)))))))
       (stage s7-rt pure s7-made code
         (p (begin
