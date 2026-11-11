@@ -354,12 +354,55 @@
          (compile-inline
           ((load-input "fx26:compile-inline.fx")
            compile compile-plan compile-exps tables compile-state))
+         ;; The expander told the shapes of the globals `forms` name, as the
+         ;; checker has their types (`k-global-shapes`); if `fresh`, the parse
+         ;; beginning the standard environment's again, none but the types
+         ;; named by reps, `named` (a stage's `%stage-type`).
+         (global-shapes
+          (lambda ((forms (listof syn acyclic)) (fresh bool)
+                   (named (listof (productof (1 symbol) (2 (bytevectorof @t))) acyclic)))
+            (if fresh
+                ((with shapes-module globals-given!)
+                 nil ((with check-program k-named-shapes) named))
+                (let ((g ((with check-program k-global-shapes) forms)))
+                  ((with shapes-module globals-given!) (extract g 1) (extract g 2))))))
+         ;; What the register compiler needs of the keys and expansions the
+         ;; expander made since it was last told: each key's template
+         ;; place and expansion, each expansion's use site, copied to its
+         ;; region (`regcode.fx`'s provenance; `docs/research/macro-provenance.md`).
+         (keys-mirrored!
+          (lambda ()
+            (letrec ((keys (subr (maxeff (alloc @k) (read @k) (write @k) (read @s) (read @globals)
+                                         spin)
+                                 (int int) unit)
+                           (lambda (i n)
+                             (if (>= i n)
+                                 #u
+                                 (let ((s (macro-source (+ 1125899906842624 i))))
+                                   (begin ((with regcode r-key-given!) (extract s 1) (extract s 2))
+                                          (keys (+ i 1) n))))))
+                     (uses (subr (maxeff (alloc @k) (read @k) (write @k) (read @s) (read @globals)
+                                         spin)
+                                 ((listof (tupleof int symbol int int) acyclic) int) unit)
+                           (lambda (xs known)
+                             (if (or (null? xs) (< (extract (car xs) 1) known))
+                                 #u
+                                 (begin (uses (cdr xs) known)
+                                        ((with regcode r-use-given!) (extract (car xs) 1)
+                                                                     (extract (car xs) 3)))))))
+              (begin (keys ((with regcode r-keys-known)) (macro-sources-made))
+                     (uses (expansions-made) ((with regcode r-uses-known)))))))
          ;; A parse, and what the checker is told of it: the macros each
          ;; `with`'s body used (`k-macro-uses!`), this parse's alone.
+         ;; Before it, the expander told the shapes of the globals the forms
+         ;; name, as the checker has their types, if `globals` (in a state
+         ;; that goes on from the checker's); else of the types `named` alone
+         ;; (`global-shapes`).
          (parse-checked
-          (lambda ((keys (select parser-types keys)) (forms (listof syn acyclic)))
-            (let ((p (parse-program keys forms)))
-              (begin ((with check-synth k-macro-uses!) (with-macro-uses)) p))))
+          (lambda ((keys (select parser-types keys)) (forms (listof syn acyclic)) (globals bool)
+                   (named (listof (productof (1 symbol) (2 (bytevectorof @t))) acyclic)))
+            (let ((p (begin (global-shapes forms (not globals) named) (parse-program keys forms))))
+              (begin ((with check-synth k-macro-uses!) (with-macro-uses)) (keys-mirrored!) p))))
          ;; The evaluator.
          (eval-values ((load-input "fx26:eval-values.fx") check-types))
          (eval-prims ((load-input "fx26:eval-prims.fx") eval-values tables check-types))
@@ -539,7 +582,11 @@
                       (includes-given! nil)
                       ((with check-print-parts check-conv-native!) native)
                       (tagcase (let ((s ((with readings with-reps) (begun standard) rep nil)))
-                                 (extract (parse-checked (keys-in mode s) (car read)) 1))
+                                 (extract (parse-checked (keys-in mode s) (car read) #f
+                                                (if (= (bytevector-length rep) 0)
+                                                    nil
+                                                    (list (product (1 '%stage-type) (2 rep)))))
+                                 1))
                         (p-err (m a b)
                           (fail (sum malformed #u) m (clamp a k len) (clamp b k len)))
                         (p-ok (tops) (checked standard tops k len native registers rep mode)))))))))
@@ -560,7 +607,7 @@
                     (loaded-files! nil)
                     (includes-given! nil)
                     ((with check-program check-lines!) #f)
-                    (let ((p (parse-checked (keys-in mode s) (car read))))
+                    (let ((p (parse-checked (keys-in mode s) (car read) #t nil)))
                       (tagcase (extract p 1)
                         (p-err (m a b) (said m s))
                         (p-ok (tops)
@@ -606,7 +653,7 @@
                     ;; The state after is the parse's if the checker keeps the
                     ;; text; a try, or a text refused, leaves it as it was
                     ;; (the standard environment's, where it began).
-                    (let* ((p (parse-checked (keys-in mode s) (car read)))
+                    (let* ((p (parse-checked (keys-in mode s) (car read) #t nil))
                            (r (extract p 2)))
                      (tagcase (extract p 1)
                       (p-err (m a b)
@@ -677,7 +724,8 @@
                   (begin
                     (loaded-files! nil)
                     (includes-given! nil)
-                    (let ((p (parse-checked (product (1 mode) (2 s) (3 settings)) (car read))))
+                    (let ((p (parse-checked (product (1 mode) (2 s) (3 settings)) (car read)
+                                            #t nil)))
                      (tagcase (extract p 1)
                       (p-err (m a b) (sum failed m))
                       (p-ok (tops)
@@ -736,6 +784,15 @@
              ;; parses, then checks.
              (check-macro-uses!
               (lambda () ((with check-synth k-macro-uses!) (with-macro-uses))))
+             ;; What the register compiler is told after a parse: the keys
+             ;; and expansions the expander made (`keys-mirrored!`), for a
+             ;; driver that parses, then compiles.
+             (keys-mirrored! keys-mirrored!)
+             ;; What the expander is told before a parse: the shapes of the
+             ;; globals the forms name (`global-shapes`), for a driver that
+             ;; parses, then checks.
+             (check-global-shapes!
+              (lambda ((forms (listof syn acyclic)) (fresh bool)) (global-shapes forms fresh nil)))
              (checked-tops (with check-program checked-tops))
              (check-conv-native! (with check-print-parts check-conv-native!))
              (check-globals-effects! (with check-env check-globals-effects!))
@@ -810,6 +867,8 @@
 (define import-types (extract front-end-entries import-types))
 (define check-program (extract front-end-entries check-program))
 (define check-macro-uses! (extract front-end-entries check-macro-uses!))
+(define keys-mirrored! (extract front-end-entries keys-mirrored!))
+(define check-global-shapes! (extract front-end-entries check-global-shapes!))
 (define checked-tops (extract front-end-entries checked-tops))
 (define checked-reps (extract front-end-entries checked-reps))
 (define checked-reps-again (extract front-end-entries checked-reps-again))

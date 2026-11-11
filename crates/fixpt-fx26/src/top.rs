@@ -597,6 +597,54 @@ impl Checker {
         self.read_in_from(file, text, 0)
     }
 
+    /// Program `text`, expanded (`read_in`), each local value binder and
+    /// the references to it renamed as the expander's walk finds their
+    /// scopes (`Macros::alpha_renamed`; `binding-shapes.md`, step 1): its
+    /// forms, written, to be read again; so without the conversions a
+    /// `define-generative` makes, which reading it makes again.
+    pub fn alpha_renamed(&mut self, text: &str) -> R<Vec<String>> {
+        let forms = self.read_in(FileId(0), text)?;
+        let mut out = Vec::new();
+        let mut made = 0;
+        for f in forms {
+            if made > 0 {
+                made -= 1;
+                continue;
+            }
+            if f.as_proper_list().and_then(|l| l.first()).and_then(|h| h.as_symbol()).is_some_and(|h| self.interner.name(h) == "define-generative") {
+                made = 2;
+            }
+            let mut macros = std::mem::take(&mut self.macros);
+            let mut interner = std::mem::take(&mut self.interner);
+            let r = macros.alpha_renamed(&f, &mut interner).map(|s| fixpt_read::write_syntax(&s, &interner));
+            self.macros = macros;
+            self.interner = interner;
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    /// Program `text`, expanded (`read_in`), each form written as
+    /// `alpha_renamed` walks it, without the conversions a
+    /// `define-generative` makes: for giving the expander written in FX-26
+    /// the forms this one walked (`tests/scopes.rs`).
+    pub fn expanded_written(&mut self, text: &str) -> R<Vec<String>> {
+        let forms = self.read_in(FileId(0), text)?;
+        let mut out = Vec::new();
+        let mut made = 0;
+        for f in forms {
+            if made > 0 {
+                made -= 1;
+                continue;
+            }
+            if f.as_proper_list().and_then(|l| l.first()).and_then(|h| h.as_symbol()).is_some_and(|h| self.interner.name(h) == "define-generative") {
+                made = 2;
+            }
+            out.push(fixpt_read::write_syntax(&f, &self.interner));
+        }
+        Ok(out)
+    }
+
     /// The forms of `text` from byte `start` on, their places in all of
     /// `text`: a REPL's entry, in the session's text
     /// (`Fx26Session::read_entry`).
@@ -618,18 +666,52 @@ impl Checker {
         r
     }
 
-    /// A module's file (`load-module`) read: its `define-datatype`s
-    /// expanded, its `define-generative`s left as they are, a module's own.
-    /// Its macros, `define-syntax`es (hidden or not), are no items: what
-    /// `import-with-syntax` brings (`import_file_macros`); a use of one in
-    /// the file itself is refused, for now (no reference to a module's own
-    /// items is one a local binding cannot shadow, which its template's free
-    /// names would need).
+    /// A module's file (`load-module`) read: its own macros' uses expanded
+    /// (`file_own_expanded`), its `define-datatype`s expanded, its
+    /// `define-generative`s left as they are, a module's own. Its macros,
+    /// `define-syntax`es (hidden or not), are no items: what
+    /// `import-with-syntax` brings (`import_file_macros`); a use of one
+    /// left, before its definition, is refused.
     pub(crate) fn read_module_file(&mut self, file: FileId, text: &str) -> R<Vec<Syntax>> {
-        let mut interner = std::mem::take(&mut self.interner);
-        let r = Reader::new(text, file, SyntaxProfile::FX26, &mut interner).read_all();
-        self.interner = interner;
-        let forms = r.map_err(|e| FxError::at(e.span, e.message))?;
+        self.read_module_file_at(file, text, None)
+    }
+
+    /// `read_module_file`, of the file at `at` (an `input`'s, or not): its
+    /// forms with the shapes of what they open written in, before anything
+    /// else is made of them (`Macros::file_forms_shaped`).
+    pub(crate) fn read_module_file_at(&mut self, file: FileId, text: &str, at: Option<(&std::path::Path, bool)>) -> R<Vec<Syntax>> {
+        // As read for its shape, if it was: its places made this file's.
+        let kept = at.and_then(|(at, _)| self.macros.forms_read(&at.display().to_string(), text));
+        let mut forms = match kept {
+            Some(mut forms) => {
+                forms.iter_mut().for_each(|f| placed_in(f, file));
+                forms
+            }
+            None => self.module_file_forms(file, text)?,
+        };
+        if let Some((at, input)) = at {
+            let params = forms.first().is_some_and(|f| crate::parse::module_parameters_of(f, &self.interner).is_some());
+            let key = format!("{}{}", if input && !params { "input:" } else { "" }, at.display());
+            let dir = at.parent().map(|d| d.to_path_buf());
+            self.file_shapes_for(&forms, dir.clone());
+            let mut macros = std::mem::take(&mut self.macros);
+            let mut interner = std::mem::take(&mut self.interner);
+            forms = macros.file_forms_shaped(&key, forms, input, dir, &mut interner);
+            self.macros = macros;
+            self.interner = interner;
+        }
+        let kept = self.without_own_macros(forms)?;
+        let mut out = Vec::new();
+        for f in kept {
+            self.expand_datatype(f, &mut out)?;
+        }
+        Ok(out)
+    }
+
+    /// A module file's forms, `forms`, its own macros' uses expanded, without
+    /// their definitions (`define-syntax`es, hidden or not), which are no
+    /// items; refused if a use of one is left, which comes before it.
+    fn without_own_macros(&mut self, forms: Vec<Syntax>) -> R<Vec<Syntax>> {
         let defines_syntax = |c: &Self, s: &Syntax| syntax_names(s, &c.interner).is_some();
         let names_of = |c: &Self, s: &Syntax| syntax_names(s, &c.interner).unwrap_or_default().into_iter().map(|(n, _)| n);
         let mut macros = Vec::new();
@@ -650,15 +732,202 @@ impl Checker {
                 _ => kept.push(f),
             }
         }
+        // Each use after its macro's definition is expanded: what is left
+        // comes before it.
         if let Some(at) = kept.iter().find_map(|f| uses_one_of(f, &macros)) {
             let shown = self.interner.name(at.1);
-            return Err(FxError::at(at.0, format!("`{shown}` is a macro of this file: one is used where its file is imported (`import-with-syntax`), not in its file, for now")));
+            return Err(FxError::at(at.0, format!("`{shown}` is a macro of this file used before the file defines it")));
         }
-        let mut out = Vec::new();
-        for f in kept {
-            self.expand_datatype(f, &mut out)?;
+        Ok(kept)
+    }
+
+    /// A built-in module file's items, `text`, as a module file is read
+    /// (`module_file_forms`, `without_own_macros`), if it defines macros of
+    /// its own; none if it does not, when its text is its items as written.
+    pub(crate) fn built_in_items(&mut self, text: &str) -> R<Option<Vec<Syntax>>> {
+        let mut interner = std::mem::take(&mut self.interner);
+        let read = Reader::new(text, FileId(0), SyntaxProfile::FX26, &mut interner).read_all();
+        self.interner = interner;
+        let forms = read.map_err(|e| FxError::at(e.span, e.message))?;
+        let defines = |s: &Syntax| syntax_names(s, &self.interner).is_some();
+        let own = forms.iter().any(|f| {
+            defines(f)
+                || matches!(f.as_proper_list(), Some([h, items @ ..]) if h.as_symbol().is_some_and(|h| self.interner.name(h) == "hide") && items.iter().any(defines))
+        });
+        if !own {
+            return Ok(None);
         }
-        Ok(out)
+        let forms = self.module_file_forms(FileId(0), text)?;
+        self.without_own_macros(forms).map(Some)
+    }
+
+    /// `form`, a top-level form or (not `top`) a file's module or one
+    /// expression, with the shapes of the modules its `with`s, `extend`s
+    /// and `include`s open written in (`Macros::shaped`;
+    /// `binding-shapes.md`, step 2), the files it loads read for theirs
+    /// first. A form the walk does not take is left as it is, for the
+    /// checkers to say why.
+    pub(crate) fn shapes_written(&mut self, form: &Syntax, top: bool) -> Syntax {
+        let dir = self.base_dir.clone();
+        self.file_shapes_for(std::slice::from_ref(form), dir.clone());
+        let mut macros = std::mem::take(&mut self.macros);
+        let r = macros.shapes_prepared(&mut self.interner).and_then(|()| {
+            let global = |n: Sym, ns: crate::macros::Ns, k: Option<usize>| match (ns, k) {
+                (crate::macros::Ns::Value, _) => self.lookup(n).and_then(|t| self.type_shape(t, 0)),
+                (crate::macros::Ns::Desc, None) => self.type_named(n).and_then(|t| self.type_shape(t, 0)),
+                (crate::macros::Ns::Desc, Some(k)) => self.type_named(n).and_then(|t| self.param_shape(t, k)),
+            };
+            macros.shaped(form, top, dir, Some(&global), &self.interner)
+        });
+        self.macros = macros;
+        r.unwrap_or_else(|_| form.clone())
+    }
+
+    /// The shape a module of type `t` has, as the type says it: its values'
+    /// names, each with its own if it is a module's (or a procedure's that
+    /// makes one), and its descriptions'. The checkers' own names are
+    /// kept, for the walk to leave out (`Shaper::own`).
+    fn type_shape(&self, t: TyId, depth: usize) -> Option<std::rc::Rc<crate::macros::shapes::Shape>> {
+        use crate::macros::shapes::Shape;
+        if depth > 8 {
+            return None;
+        }
+        match self.arena.get(self.arena.resolve(t)) {
+            crate::ast::Ty::Module { abs, descs, vals } => Some(std::rc::Rc::new(Shape::Module {
+                vals: vals.iter().map(|(n, t)| (*n, self.type_shape(*t, depth + 1))).collect(),
+                descs: abs.iter().map(|(n, _)| (*n, None)).chain(descs.iter().map(|(n, _)| (*n, None))).collect(),
+            })),
+            crate::ast::Ty::Subr { params, result, .. } => {
+                let params: Vec<_> = params.iter().map(|p| self.type_shape(*p, depth + 1)).collect();
+                let result = self.type_shape(*result, depth + 1);
+                (result.is_some() || params.iter().any(Option::is_some)).then(|| std::rc::Rc::new(Shape::Fun { params, result }))
+            }
+            crate::ast::Ty::Poly { body, .. } => self.type_shape(*body, depth + 1),
+            _ => None,
+        }
+    }
+
+    /// The shape of parameter `k` of procedure type `t`, under its `poly`s.
+    fn param_shape(&self, t: TyId, k: usize) -> Option<std::rc::Rc<crate::macros::shapes::Shape>> {
+        match self.arena.get(self.arena.resolve(t)) {
+            crate::ast::Ty::Poly { body, .. } => self.param_shape(*body, k),
+            crate::ast::Ty::Subr { params, .. } => self.type_shape(*params.get(k)?, 0),
+            _ => None,
+        }
+    }
+
+    /// The shapes of the files `forms` load, read from directory `dir`, and
+    /// of those they load, each read once (`Macros::file_shaped`). A file
+    /// not read has none, which the checkers will say why of where it is
+    /// loaded.
+    fn file_shapes_for(&mut self, forms: &[Syntax], dir: Option<std::path::PathBuf>) {
+        let mut loads = Vec::new();
+        for f in forms {
+            crate::macros::shapes::loads_in(f, &self.interner, &mut loads);
+        }
+        for (path, input) in loads {
+            let (at, key) = crate::macros::shapes::load_key(dir.as_deref(), &path, input);
+            if self.macros.file_shape_known(&key) {
+                continue;
+            }
+            self.macros.file_shape_begun(key.clone());
+            let text = match crate::built_in_module(&path) {
+                Some(t) => t.to_string(),
+                None => match std::fs::read_to_string(&at) {
+                    Ok(t) => t,
+                    Err(_) => continue,
+                },
+            };
+            let mut interner = std::mem::take(&mut self.interner);
+            let r = Reader::new(&text, FileId(0), SyntaxProfile::FX26, &mut interner).read_all();
+            self.interner = interner;
+            let Ok(forms) = r else { continue };
+            let Ok(forms) = forms.iter().map(|f| self.sealed_written(f)).collect::<R<Vec<_>>>() else { continue };
+            let Ok(forms) = self.file_own_expanded(forms, &text) else { continue };
+            let sub = at.parent().map(|d| d.to_path_buf());
+            self.file_shapes_for(&forms, sub.clone());
+            let mut macros = std::mem::take(&mut self.macros);
+            let mut interner = std::mem::take(&mut self.interner);
+            let _ = macros.file_shaped(key, &forms, input, sub, &mut interner);
+            macros.keep_forms_read(at.display().to_string(), text, forms);
+            self.macros = macros;
+            self.interner = interner;
+        }
+    }
+
+    /// A module file's forms, `text` read as file `file`: the shapes named
+    /// written in (`sealed_written`), and its own macros' uses expanded
+    /// (`file_own_expanded`). Apart from `read_module_file_at`, whose frame
+    /// it would grow.
+    fn module_file_forms(&mut self, file: FileId, text: &str) -> R<Vec<Syntax>> {
+        let mut interner = std::mem::take(&mut self.interner);
+        let r = Reader::new(text, file, SyntaxProfile::FX26, &mut interner).read_all();
+        self.interner = interner;
+        let forms = r.map_err(|e| FxError::at(e.span, e.message))?;
+        let forms = forms.iter().map(|f| self.sealed_written(f)).collect::<R<Vec<_>>>()?;
+        self.file_own_expanded(forms, text)
+    }
+
+    /// A module file's forms, `forms`, of `text`, with its own macros' uses
+    /// expanded (`binding-shapes.md`, step 3; Heist's (a)): each
+    /// `define-syntax`, hidden or not, defined in order where the file's
+    /// items are (`Macros::in_file_scope`), and the items after it
+    /// expanded by them, each name a template leaves free the file's item
+    /// or standard binding of that name, a binder at the use that would
+    /// capture it renamed (`hygiene::DefEnv::Within`). Its `define-syntax`es
+    /// kept, which `import-with-syntax` reads; a shape's,
+    /// `(define-syntax s (modnames …))`, no macro. Itself if it defines no
+    /// macro.
+    pub(crate) fn file_own_expanded(&mut self, forms: Vec<Syntax>, text: &str) -> R<Vec<Syntax>> {
+        let interner = &self.interner;
+        let head = |s: &Syntax| s.as_proper_list().and_then(|l| l.first()).and_then(|h| h.as_symbol()).map(|h| interner.name(h).to_string());
+        let shape = |s: &Syntax| matches!(s.as_proper_list(), Some([_, _, m]) if head(m).as_deref() == Some("modnames"));
+        let macro_of = |s: &Syntax| syntax_names(s, interner).is_some() && !shape(s);
+        let hidden = |s: &Syntax| head(s).as_deref() == Some("hide") && s.as_proper_list().is_some_and(|l| l[1..].iter().any(macro_of));
+        if !forms.iter().any(|f| macro_of(f) || hidden(f)) {
+            return Ok(forms);
+        }
+        let kinds: Vec<u8> = forms.iter().map(|f| if head(f).as_deref() == Some("module-parameters") || shape(f) { 0 } else if macro_of(f) { 1 } else if head(f).as_deref() == Some("hide") { 2 } else { 3 }).collect();
+        let marks: Vec<Vec<bool>> = forms.iter().map(|f| f.as_proper_list().map(|l| l.iter().map(macro_of).collect()).unwrap_or_default()).collect();
+        let mut macros = std::mem::take(&mut self.macros);
+        let mut interner = std::mem::take(&mut self.interner);
+        let r = macros.in_file_scope(text, |m| {
+            let expanded = |m: &mut crate::macros::Macros, f: &Syntax, out: &mut Vec<Syntax>, interner: &mut fixpt_read::Interner| -> R<()> {
+                for f in m.expand_top(f, interner)? {
+                    let f = m.sealed_written(&f, interner)?;
+                    out.push(m.aliases_resolved(&f, interner)?);
+                }
+                Ok(())
+            };
+            let mut out = Vec::new();
+            for ((f, kind), marks) in forms.into_iter().zip(kinds).zip(marks) {
+                match kind {
+                    0 => out.push(f),
+                    1 => {
+                        m.define(&f, &mut interner)?;
+                        out.push(f);
+                    }
+                    2 => {
+                        let items = f.as_proper_list().expect("a `hide`");
+                        let mut kept = vec![items[0].clone()];
+                        for (i, is_macro) in items.iter().zip(marks).skip(1) {
+                            if is_macro {
+                                m.define(i, &mut interner)?;
+                                kept.push(i.clone());
+                            } else {
+                                expanded(m, i, &mut kept, &mut interner)?;
+                            }
+                        }
+                        out.push(Syntax::list(f.span, kept));
+                    }
+                    _ => expanded(m, &f, &mut out, &mut interner)?,
+                }
+            }
+            Ok(out)
+        });
+        self.macros = macros;
+        self.interner = interner;
+        r
     }
 
     /// What is expanded as it is read (`define-datatype`), for forms read
@@ -865,18 +1134,28 @@ impl Checker {
         }
         let mut macros = std::mem::take(&mut self.macros);
         let mut interner = std::mem::take(&mut self.interner);
-        let r = if defines {
+        let r = if defines && macros.shape_defined(&form, &interner).is_some() {
+            Ok(Vec::new())
+        } else if defines {
             macros.define(&form, &mut interner).and_then(|ns| {
                 let mut out = Vec::new();
                 for n in ns {
                     for c in macros.template_checks(n, &mut interner)? {
-                        out.push(macros.expand(&c, &mut interner)?);
+                        let e = macros.expand(&c, &mut interner)?;
+                        out.push(macros.aliases_resolved(&e, &mut interner)?);
                     }
                 }
                 Ok(out)
             })
         } else {
-            macros.expand_top(&form, &mut interner)
+            // Each shape a name stands for written in where a value supplies
+            // its types (`Macros::sealed_written`): what is expanded is
+            // what a driver hands the checker written in FX-26.
+            // And each alias it leaves free the name it stands for
+            // (`Macros::aliases_resolved`).
+            macros.expand_top(&form, &mut interner).and_then(|fs| {
+                fs.iter().map(|f| macros.sealed_written(f, &mut interner).and_then(|f| macros.aliases_resolved(&f, &mut interner))).collect()
+            })
         };
         self.macros = macros;
         self.interner = interner;
@@ -1102,6 +1381,63 @@ impl Checker {
         // Where the top level ends as it begins: past it, what the form
         // binds (`toplevel_hidden`).
         let outer = self.form_began.replace((self.env.len(), self.dscope.len()));
+        let form = &self.sealed_written(form)?;
+        let shaped = self.shapes_written(form, true);
+        if self.macros.shapes_seen().is_some() {
+            self.shapes_noted(form, &shaped);
+        }
+        let r = self.top_here(&shaped);
+        self.form_began = outer;
+        r
+    }
+
+    /// Form `form` and `shaped`, it with its shapes written, noted
+    /// (`keep_shapes_seen`); out of line, as `top`'s frame is small.
+    #[inline(never)]
+    fn shapes_noted(&mut self, form: &Syntax, shaped: &Syntax) {
+        let seen = (fixpt_read::write_syntax(form, &self.interner), fixpt_read::write_syntax(shaped, &self.interner));
+        if let Some(s) = self.macros.shapes_seen() {
+            s.push(seen);
+        }
+    }
+
+    /// Form `form` with each shape a name stands for written, and each
+    /// `define` of a shape's type made a `the` of it (`Macros::sealed_written`).
+    pub(crate) fn sealed_written(&mut self, form: &Syntax) -> R<Syntax> {
+        let mut interner = std::mem::take(&mut self.interner);
+        let r = self.macros.sealed_written(form, &mut interner);
+        self.interner = interner;
+        r
+    }
+
+    /// From here on, each top-level form noted as it was before and after
+    /// its shapes were written (`shapes_written`), written: for holding the
+    /// two expanders' records to one another (`tests/scopes.rs`). A form
+    /// declared ahead, which is not shaped, with none after
+    /// (`compare::check_with_rust_checker`).
+    pub fn keep_shapes_seen(&mut self) {
+        *self.macros.shapes_seen() = Some(Vec::new());
+    }
+
+    /// The forms noted since `keep_shapes_seen`, taken.
+    pub fn shapes_seen(&mut self) -> Vec<(String, String)> {
+        self.macros.shapes_seen().take().unwrap_or_default()
+    }
+
+    /// Form `f`, declared ahead, noted with no shapes written, if forms are
+    /// noted (`keep_shapes_seen`).
+    pub(crate) fn declared_noted(&mut self, f: &Syntax) {
+        if self.macros.shapes_seen().is_some() {
+            let seen = (fixpt_read::write_syntax(f, &self.interner), String::new());
+            self.macros.shapes_seen().as_mut().expect("kept").push(seen);
+        }
+    }
+
+    /// `top` of `form` as it is, its shapes not written again: for a test
+    /// of what the checkers make of a shape that is wrong.
+    #[cfg(test)]
+    pub(crate) fn top_as_shaped(&mut self, form: &Syntax) -> R<Top> {
+        let outer = self.form_began.replace((self.env.len(), self.dscope.len()));
         let r = self.top_here(form);
         self.form_began = outer;
         r
@@ -1181,7 +1517,7 @@ impl Checker {
                 Ok(Top::DefineType { name, ty })
             }
             _ => {
-                let e = self.parse_top_exp(form, &[])?;
+                let e = self.parse_exp(form)?;
                 let (ty, effect) = self.synth(e)?;
                 Ok(Top::Exp(Checked { ty, effect, exp: e }))
             }
@@ -1253,7 +1589,7 @@ impl Checker {
                 // (lambda ((x t)) x))` means what a `plambda` would.
                 let depth = self.dscope.len();
                 self.bind_signature(ty);
-                let e = self.parse_top_exp(init, &[name]);
+                let e = self.parse_exp(init);
                 self.dscope.truncate(depth);
                 let e = e?;
                 if infer && !self.is_lambda(e) {
@@ -1356,7 +1692,7 @@ impl Checker {
             }
             [_, name, init] => {
                 let name = self.binder_name(name)?;
-                let e = self.parse_top_exp(init, &[name])?;
+                let e = self.parse_exp(init)?;
                 let (ty, effect) = self.synth(e)?;
                 if self.is_lambda(e) {
                     self.known.insert((name, self.env.len()));
@@ -1464,11 +1800,10 @@ impl Checker {
                 return Err(FxError::at(span, "`(define-rec (name type lambda) …)`"));
             }
             let mut bindings = Vec::new();
-            let group: Vec<Sym> = parts.iter().map(|(n, _, _)| *n).collect();
             for (name, ty, init) in parts {
                 let d = self.dscope.len();
                 self.bind_signature(ty);
-                let e = self.parse_top_exp(&init, &group);
+                let e = self.parse_exp(&init);
                 self.dscope.truncate(d);
                 let e = e?;
                 if !self.is_lambda(e) {
@@ -1763,7 +2098,7 @@ impl Checker {
                     ("generative", format!("{head} = {}", self.show_ty(family.rep)))
                 }
                 DScope::Fun(t) => ("function", format!("{n} = {}", self.show_ty(*t))),
-                DScope::Var(..) | DScope::Region(_) | DScope::SizeVal(_) | DScope::ConvVal(_) | DScope::With(_) => continue,
+                DScope::Var(..) | DScope::Region(_) | DScope::SizeVal(_) | DScope::ConvVal(_) | DScope::With(..) => continue,
             };
             out.push((*name, entry.0, entry.1));
         }
@@ -2070,5 +2405,24 @@ fn syntax_names(s: &Syntax, interner: &fixpt_read::Interner) -> Option<Vec<(Sym,
         "define-syntax" => Some(items.get(1).and_then(named).into_iter().collect()),
         "define-syntax-rec" => Some(items[1..].iter().filter_map(|m| m.as_proper_list().and_then(|l| l.first()).and_then(named)).collect()),
         _ => None,
+    }
+}
+
+/// `s`, its places made places of `file`, in place.
+fn placed_in(s: &mut Syntax, file: FileId) {
+    s.span.file = file;
+    // The expansion that made it, if one did, read in the same reading:
+    // its use this file's too.
+    if s.span.expansion != 0 {
+        fixpt_read::expansion_placed_in(s.span.expansion, file);
+    }
+    if let fixpt_read::Datum::List { items, tail } = &mut s.datum {
+        items.iter_mut().for_each(|i| placed_in(i, file));
+        if let Some(t) = tail {
+            placed_in(t, file);
+        }
+    }
+    if let fixpt_read::Datum::Vector(items) = &mut s.datum {
+        items.iter_mut().for_each(|i| placed_in(i, file));
     }
 }

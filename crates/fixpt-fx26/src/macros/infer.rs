@@ -20,7 +20,7 @@
 //! What is inferred is then checked as a written signature is: inference
 //! decides which macros need none written, never what is safe.
 
-use super::{ellipsis, exports, normal, reserved, split, Addr, Aligner, Atom, Bind, Delta, Kids, Level, Macro, Macros, Mode, Ns, PInfo, Ring, STy};
+use super::{ellipsis, exports, normal, reserved, split, Addr, Aligner, Atom, Bind, Delta, Env, Kids, Level, Macro, Macros, Mode, Ns, PInfo, Ring, STy};
 use crate::error::{FxError, R};
 use fixpt_read::{Datum, Interner, Span, Sym, Syntax};
 use std::collections::{HashMap, HashSet};
@@ -643,10 +643,10 @@ impl Macros {
                             let each: Vec<Makes> = items[1..].iter().filter_map(|i| self.makes(i, pv, us, known, interner)).collect();
                             if each.contains(&Makes::Defn) { Some(Makes::Defn) } else { each.first().copied() }
                         }
-                        n if self.kernel.contains_key(n) => Some(Makes::Expr),
+                        n if self.k.forms.contains_key(n) => Some(Makes::Expr),
                         // A type form's head; not `+` and the like, which
                         // descriptions share with expressions.
-                        n if self.type_forms.contains(n) => Some(Makes::Type),
+                        n if self.k.type_forms.contains(n) => Some(Makes::Type),
                         _ => None,
                     }
                 }
@@ -772,7 +772,7 @@ impl Macros {
             };
             pvars.insert(n, PInfo { core, declared: Vec::new(), many: false, hole: None, depth: parts.depth[&(c, n)] });
         }
-        let mut t = Aligner { m: self, interner, mode: Mode::Template, pvars: &pvars, nodes: Vec::new() };
+        let mut t = Aligner { m: self, interner, mode: Mode::Template, pvars: &pvars, nodes: Vec::new(), unplaced: Vec::new(), work: Vec::new() };
         let ty = Rc::new(match made {
             Makes::Defn => STy::Defn,
             Makes::Type => STy::Type,
@@ -780,11 +780,11 @@ impl Macros {
         });
         let root = t.align(&ty, template, None, Vec::new())?;
         let (mut found, mut seqs) = (Vec::new(), Vec::new());
-        t.walk(root, &Vec::new(), false, 0, &mut found, &mut seqs)?;
+        t.walk(root, &Env::default(), false, 0, &mut found, &mut seqs)?;
         let mut out = Vec::new();
         for (at, env, many, depth) in found {
             if let Kids::PVar(n) = t.nodes[at].kids {
-                out.push(Placed { n, core: t.nodes[at].core.clone(), env: normal(&env), many, depth });
+                out.push(Placed { n, core: t.nodes[at].core.clone(), env: normal(&env.to_vec()), many, depth });
             }
         }
         let defined = if made == Makes::Defn { Some(exports(&t.levels_of(root, template.span)?)) } else { None };
@@ -915,7 +915,7 @@ impl Macros {
                 let Some((atoms, cages)) = m.as_ref().filter(|_| of[cid] == mi) else { continue };
                 let mut lvs = Vec::new();
                 if !atoms.is_empty() {
-                    if let Some(Lv::Rib(es)) = Self::lvs(parts, cid, &[Level::Rib(atoms.clone())]).and_then(|l| l.into_iter().next()) {
+                    if let Some(Lv::Rib(es)) = Self::lvs(parts, cid, &[Level::Rib(Rc::new(atoms.clone()))]).and_then(|l| l.into_iter().next()) {
                         lvs.push(Lv::Rib(es));
                     }
                 }
@@ -970,9 +970,10 @@ impl Macros {
         let mut out = Vec::new();
         for l in env {
             match l {
+                Level::Shape(_) => return None,
                 Level::Rib(atoms) => {
                     let mut es: Vec<(usize, Delta, usize)> = Vec::new();
-                    for a in atoms {
+                    for a in atoms.iter() {
                         let (n, d, g) = match a {
                             Atom::Var(n, Ns::Value, g) => (*n, Delta::Var, *g),
                             Atom::Var(n, Ns::Desc, g) => (*n, Delta::Dvar, *g),
@@ -1156,6 +1157,7 @@ impl Macros {
         match &**t {
             STy::Expr => sym("expr", interner),
             STy::Lambda => sym("lambda", interner),
+            STy::Item => sym("item", interner),
             STy::Bvar => sym("bvar", interner),
             STy::Id => sym("id", interner),
             STy::Data => sym("data", interner),
@@ -1301,12 +1303,14 @@ fn shown_bind(b: &Bind, at: Span, interner: &mut Interner) -> Syntax {
     };
     match b {
         Bind::Rib(es) => rib(es, interner),
+        Bind::Shape(a) => Syntax::list(at, vec![sym("shape", interner), addr(a, interner)]),
         Bind::Cage(rings) => {
             let mut items = vec![sym("cage", interner)];
             for r in rings {
                 items.push(match r {
                     Ring::Rib(es) => rib(es, interner),
                     Ring::At(a) => Syntax::list(at, vec![sym("at", interner), addr(a, interner)]),
+                    Ring::Shape(a) => Syntax::list(at, vec![sym("shape", interner), addr(a, interner)]),
                 });
             }
             Syntax::list(at, items)

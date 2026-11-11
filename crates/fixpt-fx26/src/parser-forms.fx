@@ -14,8 +14,10 @@
 (module-parameters ((rs region) (re region) (rm region) (rc region) (rp region)))
 (define parser-module ((proj (load-module "fx26:parser.fx") rs re rm rc rp)))
 (define reader-types (with parser-module reader-types))
-(import reader-types atom lst (type syn))
-(import parser-module syn-symbol? syn-head syn-start syn-end len nth drop (type syns-a exp)
+(import reader-types atom lst dotted vec (type syn))
+(import parser-module syn-symbol? syn-symbol syn-name syn-head syn-start syn-end len nth drop
+        rl-none rl-unknown rl-names
+        (type syns-a exp names relied)
         (effect parses))
 
 ;; How a form here fails: the caller's `pfail-at`, as this file's instance
@@ -30,6 +32,42 @@
 (define fail-at-syn (->* (fails string syn) void)
   (lambda (fail message s) (fail message (syn-start s) (syn-end s))))
 (import parser-module mk-symbol mk-list mk-int form-of?)
+
+;; The first atom of constant `x`, in the order written, that `bad?`
+;; refuses: `why`, there.
+(define refuse-atoms (->* (fails syn (subr pure (datum) bool) string) unit)
+  (lambda (fail x bad? why)
+    (letrec ((each (subr (maxeff (read @globals) spin parses) (syns-a) unit)
+               (lambda (xs) (if (null? xs) #u (begin (one (car xs)) (each (cdr xs))))))
+             (one (subr (maxeff (read @globals) spin parses) (syn) unit)
+               (lambda (y)
+                 (tagcase y
+                   (atom (d a b xpn) (if (bad? d) (fail-at-syn fail why y) #u))
+                   (lst (items d a b xpn) (each items))
+                   (dotted (items tail d a b xpn) (begin (each items) (one tail)))
+                   (vec (items d a b xpn) (each items))))))
+      (one x))))
+;; `(%datum x)`, which the quote rewrites make of a list or vector
+;; (`quoted-in`): `x`, one constant (TODO §229), its type the checker's
+;; (`k-resolve-exp`). It may hold no bytevector, and then no integer past a
+;; fixnum or ratio, each refused at the first. As
+;; `Checker::parse_datum_form`.
+(define datum-form (->* (fails syns-a int int) syn)
+  (lambda (fail items a b)
+    (let ((x (begin (arity fail items 2 "`(%datum list-or-vector)`" a b) (nth items 1))))
+    (begin
+      (tagcase x
+        (atom (d c e xpn) (fail-at-syn fail "`(%datum list-or-vector)`" x))
+        (lst (xs d c e xpn) (if (null? xs) (fail-at-syn fail "`(%datum list-or-vector)`" x) #u))
+        (else y #u))
+      (refuse-atoms fail x (lambda (d) (bytevector? d)) "a bytevector cannot be quoted yet")
+      (refuse-atoms fail x
+                    (lambda (d)
+                      (and (not (datum-int? d))
+                           (or (int? d) (and (datum-rational? d) (not (f64? d))))))
+                    (string-append "an integer past a fixnum, or a ratio, cannot be quoted"
+                                   " in a list or vector yet"))
+      x))))
 
 ;; Evidence (`docs/research/eval.md`, "Evidence"): item `i` of `items`,
 ;; `(given g …)`, each a variable, as `(product (1 g) …)`, what a staging
@@ -488,3 +526,71 @@
                (item (the syns-a (list (mk-symbol "define" a b) (mk-symbol "input" a b) one))))
           (the syns-a (cons (mk-list item (syn-start one) (syn-end one)) nil)))
         (fail "a `load-input` file is one expression" a b))))
+
+;; Whether `s` mentions the name `n` anywhere, quoted or not.
+(define syn-mentions? (->* (symbol syn) bool)
+  (lambda (n s)
+    (tagcase s
+      (atom (d a b xpn) (and (symbol? d) (symbol=? d n)))
+      (lst (items d a b xpn) (syns-mention? n items))
+      (dotted (items t d a b xpn) (or (syns-mention? n items) (syn-mentions? n t)))
+      (vec (items d a b xpn) (syns-mention? n items)))))
+(define syns-mention? (->* (symbol syns-a) bool)
+  (lambda (n ss) (and (not (null? ss)) (or (syn-mentions? n (car ss)) (syns-mention? n (cdr ss))))))
+;; A name for an expansion's own variable that `forms` never mention:
+;; `base`, else `base1`, `base2` and so on. Its scope is within the form,
+;; and nothing refers to a name it does not write, so it captures nothing
+;; and nothing captures it.
+(define fresh-name (->* (string syns-a) symbol)
+  (lambda (base forms) (fresh-from base forms 0)))
+(define fresh-from (->* (string syns-a int) symbol)
+  (lambda (base forms i)
+    (let ((n (string->symbol (if (= i 0) base (string-append base (int->string i))))))
+      (if (syns-mention? n forms) (fresh-from base forms (+ i 1)) n))))
+;; `#:relied S` at the start of `rest`, as the expander writes it into a
+;; form that opens a module (`macros-shapes.fx`): the module's names,
+;; `((value …) (description …))`, or `#f` where they are not known; and
+;; what follows it (`parse.rs`'s `written_shape`).
+(define written-relied (->* (fails syns-a) (tupleof relied syns-a))
+  (lambda (fail rest)
+    (if (or (< (len rest) 2) (not (relied-word? (car rest))))
+        (tuple (rl-none) rest)
+        (let ((s (nth rest 1)))
+          (cond ((and (syn-symbol? s) (string=? (syn-name s) "#f"))
+                 (tuple (rl-unknown) (drop rest 2)))
+                (else
+                 (let ((parts (relied-parts s)))
+                   (if (null? parts)
+                       (fail-at-syn fail relied-usage s)
+                       (tuple (car parts) (drop rest 2))))))))))
+(define relied-usage string
+  (string-append "a module's shape: `((value …) (description …))`, "
+                 "the names it gives that the program asked of it"))
+(define relied-word? (->* (syn) bool)
+  (lambda (s)
+    (tagcase s
+      (atom (d a b x) (and (keyword? d) (symbol=? (keyword->symbol d) 'relied)))
+      (else y #f))))
+;; `((value …) (description …))`, `s`, read: in a list of one, none if it
+;; is not.
+(define relied-parts (->* (syn) (listof relied acyclic))
+  (lambda (s)
+    (tagcase s
+      (lst (items d a b x)
+        (if (= (len items) 2)
+            (let ((vs (symbols-in (car items))) (ds (symbols-in (nth items 1))))
+              (if (or (null? vs) (null? ds)) nil (list (rl-names (car vs) (car ds)))))
+            nil))
+      (else y nil))))
+;; The names list `s` is, in a list of one; none if it is not one of names.
+(define symbols-in (->* (syn) (listof names acyclic))
+  (lambda (s)
+    (tagcase s
+      (lst (items d a b x) (symbols-of items nil))
+      (atom (d a b x) (if (null? d) (list (the names nil)) nil))
+      (else y nil))))
+(define symbols-of (->* (syns-a names) (listof names acyclic))
+  (lambda (xs out)
+    (cond ((null? xs) (list (reverse out)))
+          ((syn-symbol? (car xs)) (symbols-of (cdr xs) (cons (syn-symbol (car xs)) out)))
+          (else nil))))

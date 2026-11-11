@@ -60,11 +60,13 @@ impl Style {
     }
 }
 
-/// A procedural macro: its style, and its transformer's text.
+/// A procedural macro: its style, its transformer's text, and where it is
+/// defined, what its aliases are read in (`hygiene::DefEnv`).
 #[derive(Debug)]
 pub(crate) struct Procedural {
     pub style: Style,
     pub code: String,
+    pub def_env: super::hygiene::DefEnv,
 }
 
 /// The syntactic environments a syntactic-closure transformer is given and
@@ -149,8 +151,14 @@ pub fn alias_base(x: &str) -> Option<&str> {
     any.then_some(s)
 }
 
+/// The expansion that made alias `x`, its outermost `%~N:`'s `N`.
+pub(crate) fn alias_made(x: &str) -> Option<u32> {
+    let rest = x.strip_prefix("%~")?;
+    rest[..rest.find(':')?].parse().ok()
+}
+
 /// `x`'s alias, made by expansion `made`.
-fn alias(x: &str, made: u32) -> String {
+pub(crate) fn alias(x: &str, made: u32) -> String {
     format!("%~{made}:{x}")
 }
 
@@ -282,7 +290,7 @@ pub(crate) fn placed(s: &Syntax, at: Span, made: u32) -> Syntax {
 
 #[cfg(test)]
 mod tests {
-    use super::alias_base;
+    use super::{alias_base, alias_made};
 
     #[test]
     fn an_alias_is_its_base_name_marked() {
@@ -291,5 +299,7 @@ mod tests {
         assert_eq!(alias_base("let"), None);
         assert_eq!(alias_base("%x:3"), None);
         assert_eq!(alias_base("%~:x"), None);
+        assert_eq!(alias_made("%~7:%~3:x"), Some(7));
+        assert_eq!(alias_made("x"), None);
     }
 }

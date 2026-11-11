@@ -208,7 +208,7 @@
     (tagcase x
       (e-var (n a b abk abkr) #t) (e-int (n a b abk abkr) #t) (e-bool (v a b abk abkr) #t)
       (e-char (v a b abk abkr) #t) (e-str (s a b abk abkr) #t) (e-float (v a b abk abkr) #t)
-      (e-sym (s a b abk abkr) #t) (e-unit (a b abk abkr) #t)
+      (e-sym (s a b abk abkr) #t) (e-quote (s a b abk abkr) #t) (e-unit (a b abk abkr) #t)
       (else y #f))))
 ;; `x`'s code to come: its place marked, unless it is the one already, or
 ;; `x` a leaf; the place before, for `r-leave-place!`.
@@ -217,9 +217,83 @@
     (let ((outer (get r-at)))
       (if (r-leaf? x)
           outer
-          (let ((here (exp-start x)))
+          (let ((here (r-place-of (exp-start x))))
             (begin (if (= here outer) #u (begin (set r-at here) (r-emit g (r-pos here))))
                    outer))))))
+
+;;; ------------------------------------------------------------- provenance
+
+;; Where code a macro made comes from, as the Rust compiler's `place_of`
+;; records it (`docs/research/macro-provenance.md`): a part a template made
+;; has a key of the expander's for its place (`macros-procedural.fx`'s
+;; `source-key`, from `source-base`), and its code is placed at the id of
+;; its provenance, its template's place, then each expansion's use site,
+;; out (`provenance-id`). What the expander keeps of each key and each
+;; expansion is in its own region, so the conductor copies what this needs
+;; here as each parse ends (`r-key-given!`, `r-use-given!`): a key's
+;; template place and expansion, by its number; an expansion's use site,
+;; by its number (0, none).
+(define r-source-base int 1125899906842624)
+(define r-key-places (ref (arrayof int @k) @k) (new (make-array 64 0)))
+(define r-key-mades (ref (arrayof int @k) @k) (new (make-array 64 0)))
+(define r-nkeys (ref int @k) (new 0))
+(define r-uses (ref (arrayof int @k) @k) (new (make-array 64 0)))
+(define r-nuses (ref int @k) (new 1))
+;; How many keys, and expansions, have been given (the next one's number).
+(define r-keys-known (->* () int) (lambda () (get r-nkeys)))
+(define r-uses-known (->* () int) (lambda () (get r-nuses)))
+;; Key number `i`'s template place `p` and expansion `made`, the next.
+(define r-key-given! (->* (int int) unit)
+  (lambda (p made)
+    (let ((i (get r-nkeys)))
+      (begin
+        (if (= i (array-length (get r-key-places)))
+            (begin (set r-key-places (r-ints-grown (get r-key-places)))
+                   (set r-key-mades (r-ints-grown (get r-key-mades))))
+            #u)
+        (array-set! (get r-key-places) i p)
+        (array-set! (get r-key-mades) i made)
+        (set r-nkeys (+ i 1))))))
+;; Expansion number `n`'s use site `at` (its numbers given in order, each
+;; the next).
+(define r-use-given! (->* (int int) unit)
+  (lambda (n at)
+    (begin
+      (if (>= n (array-length (get r-uses))) (set r-uses (r-ints-grown (get r-uses))) #u)
+      (array-set! (get r-uses) n at)
+      (set r-nuses (+ n 1)))))
+(define r-ints-grown (->* ((arrayof int @k)) (arrayof int @k))
+  (lambda (a)
+    (let ((b (the (arrayof int @k) (make-array (* 2 (array-length a)) 0))))
+      (letrec ((copied (subr (maxeff (read @k) (write @k) spin) (int) unit)
+                       (lambda (i)
+                         (if (= i (array-length a))
+                             #u
+                             (begin (array-set! b i (array-ref a i)) (copied (+ i 1)))))))
+        (begin (copied 0) b)))))
+;; Whether place `p` is a key given.
+(define r-key? (->* (int) bool)
+  (lambda (p) (and (>= p r-source-base) (< p (+ r-source-base (get r-nkeys))))))
+;; Place `p` as code records it: a key, its provenance's id; else itself.
+(define r-place-of (->* (int) int)
+  (lambda (p) (if (r-key? p) (provenance-id (r-chain p)) p)))
+;; Key `k`'s provenance: its template place (a key's itself, if a template
+;; wrote the template: what that one's has), then its expansion's use
+;; site's, out.
+(define r-chain (->* (int) rints)
+  (lambda (k)
+    (let ((i (- k r-source-base)))
+      (cons (r-written (array-ref (get r-key-places) i))
+            (r-uses-of (array-ref (get r-key-mades) i))))))
+(define r-written (->* (int) int)
+  (lambda (p)
+    (if (r-key? p) (r-written (array-ref (get r-key-places) (- p r-source-base))) p)))
+(define r-uses-of (->* (int) rints)
+  (lambda (made)
+    (if (or (<= made 0) (>= made (get r-nuses)))
+        nil
+        (let ((at (array-ref (get r-uses) made)))
+          (if (r-key? at) (r-chain at) (cons at nil))))))
 ;; `x`'s code made: the place before it marked again, if it changed.
 (define r-leave-place! (->* (rgen int) unit)
   (lambda (g outer)
@@ -275,7 +349,7 @@
            (e-var (n a b abk abkr) (not (c-has-standard-value? (symbol->string n))))
            (e-int (n a b abk abkr) #t) (e-bool (v a b abk abkr) #t) (e-char (v a b abk abkr) #t)
            (e-sym (v a b abk abkr) #t) (e-unit (a b abk abkr) #t) (e-str (v a b abk abkr) #t)
-           (e-float (v a b abk abkr) #t)
+           (e-float (v a b abk abkr) #t) (e-quote (v a b abk abkr) #t)
            (else y #f)))))
 
 ;; A constant's cell.
@@ -561,7 +635,7 @@
   (lambda (env f)
     (tagcase (r-operator f)
       (e-var (n a b abk abkr) (if (null? (r-where env n)) (symbol->string n) ""))
-      (e-with (m body a b abk abkr) (c-fx-name m body))
+      (e-with (m body a b abk abkr wrl) (c-fx-name m body))
       (else y ""))))
 ;; Whether `e` is a `+` or `-` of two.
 (define r-adds? (->* (renv exp) bool)
@@ -636,6 +710,7 @@
         (e-int (n a b abk abkr) (r-known-as (rc-int n)))
         (e-bool (v a b abk abkr) (r-known-as (rc-bool v)))
         (e-char (v a b abk abkr) (r-known-as (rc-char v)))
+        (e-quote (v a b abk abkr) (r-known-as (rc-data (c-quote-cell v))))
         (e-var (n a b abk abkr)
           (let ((l (r-where env n)))
             (if (null? l)
@@ -656,11 +731,6 @@
             (cond
               ((not (null? decided)) decided)
               ((string=? name "") nil)
-              ;; A quoted datum (TODO §51), made once where it is all
-              ;; literals, as the stack code makes it.
-              ((and (string=? name "%quote") (= (c-count-exps args) 1))
-               (let ((k (c-quote-now (car args))))
-                 (if (null? k) nil (r-known-as (rc-data (car k))))))
               (else
                 (let ((vs (r-knowns env args nil)))
                   (if (or (null? vs) (not (= (c-length-consts (car vs)) (c-count-exps args))))

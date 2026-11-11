@@ -687,7 +687,141 @@ impl Checker {
         Ok((t, eff))
     }
 
+    /// `(the (modnames …) exp)`, its type the slot `slot`: `exp`'s type
+    /// sealed to the names (`sealed`), the slot linked to it, and `exp`
+    /// held to it as `the` holds a value to its type (a module of more
+    /// values made into one of these, `expect`'s reshape).
+    #[inline(never)]
+    pub(crate) fn the_sealed(&mut self, slot: TyId, exp: crate::ast::ExpId) -> R<(TyId, crate::ast::Effect)> {
+        let names = self.arena.withs.sealed[&slot].clone();
+        let (got, eff) = self.synth(exp)?;
+        let sealed = self.sealed(got, &names, self.arena.span_of(exp))?;
+        self.arena.set_link(slot, sealed);
+        self.expect(exp, got, sealed)?;
+        // Checked against it, as `check` would note it.
+        if self.record_types {
+            self.facts.types.insert(exp, sealed);
+        }
+        Ok((sealed, eff))
+    }
+
+    /// Module type `got` with the names `names` alone (`binding-shapes.md`,
+    /// "leaving names out seals"): each as `got` has it, a value named as
+    /// a module itself sealed so; each type's and effect's kind as written
+    /// (an abstract type `(abs t)`, a transparent one `(desc u)`, an effect
+    /// `(eff e)`: the user's, 2026-11-10); an abstract type left out that
+    /// what is kept mentions kept hidden, as `restrict` keeps it.
+    fn sealed(&mut self, got: TyId, names: &[crate::ast::ShapeMember], span: Span) -> R<TyId> {
+        use crate::ast::ShapeMember as Named;
+        let Ty::Module { abs, descs, vals } = self.arena.get(self.arena.resolve(got)).clone() else {
+            return Err(FxError::at(span, format!("`modnames` names a module's members, and this is a {}", self.show_ty(got))));
+        };
+        let mut kept = Vec::new();
+        let mut inner = Vec::new();
+        for n in names {
+            let (name, at) = match n {
+                Named::Val(x, at, _) | Named::Abs(x, at) | Named::Desc(x, at) | Named::Eff(x, at) => (*x, *at),
+            };
+            let shown = self.interner.name(name).to_string();
+            let is_abs = abs.iter().any(|(m, _)| *m == name);
+            let desc = descs.iter().find(|(m, _)| *m == name).map(|(_, d)| self.desc_effect(*d).is_some());
+            let is_val = vals.iter().any(|(m, _)| *m == name);
+            let said = |c: &Self, w: &str| FxError::at(at, format!("`{shown}` is {w} of {}: `({} {shown})`", c.show_ty(got), match w {
+                "an abstract type" => "abs",
+                "a transparent type" => "desc",
+                _ => "eff",
+            }));
+            match (n, is_abs, desc, is_val) {
+                (Named::Val(_, _, sub), _, _, true) => {
+                    if let Some(sub) = sub {
+                        inner.push((name, sub.clone(), at));
+                    }
+                }
+                (Named::Abs(..), true, _, _) | (Named::Desc(..), _, Some(false), _) | (Named::Eff(..), _, Some(true), _) => {}
+                (Named::Val(..), false, None, false) | (Named::Abs(..) | Named::Desc(..) | Named::Eff(..), false, None, _) => {
+                    // (A value named as a type is no type the module gives.)
+                    return Err(FxError::at(at, format!("the module gives no `{shown}`")));
+                }
+                (_, true, _, _) => return Err(said(self, "an abstract type")),
+                (_, _, Some(false), _) => return Err(said(self, "a transparent type")),
+                (_, _, Some(true), _) => return Err(said(self, "an effect")),
+            }
+            kept.push(name);
+        }
+        let descs: Vec<(Sym, TyId)> = descs.into_iter().filter(|(n, _)| kept.contains(n)).collect();
+        let mut out_vals = Vec::new();
+        for (n, t) in vals.into_iter().filter(|(n, _)| kept.contains(n)) {
+            let t = match inner.iter().find(|(m, _, _)| *m == n) {
+                // A module inside, its names as written; not sealed to fewer
+                // yet, which would make a new product of it inside the one
+                // made of this (no reshape reaches inside a value).
+                Some((_, sub, at)) => {
+                    let s = self.sealed(t, sub, *at)?;
+                    let count = |c: &Self, t: TyId| match c.arena.get(c.arena.resolve(t)) {
+                        Ty::Module { abs, descs, vals } => abs.len() + descs.len() + vals.len(),
+                        _ => 0,
+                    };
+                    if count(self, s) != count(self, t) {
+                        let shown = self.interner.name(n);
+                        return Err(FxError::at(*at, format!("`{shown}` gives more than this names of it: a `modnames` seals a module's own names, not yet those of one inside it; name all of `{shown}`'s here, or seal it where it is defined")));
+                    }
+                    s
+                }
+                None => t,
+            };
+            out_vals.push((n, t));
+        }
+        let mut out = Vec::new();
+        for (n, v) in abs {
+            if kept.contains(&n) {
+                out.push((n, v));
+            } else if descs.iter().chain(&out_vals).any(|(_, t)| self.mentions_var(*t, v)) {
+                let hidden = format!("%hidden:{}", self.interner.name(n));
+                out.push((self.interner.intern(&hidden), v));
+            }
+        }
+        Ok(self.arena.ty(Ty::Module { abs: out, descs, vals: out_vals }))
+    }
+
     /// `(with m body)`: its body synthesized, or checked against `expected`.
+    /// Module type `mt`, of `m`, held to the shape the expander read it as
+    /// (`binding-shapes.md`): what it gives, by namespace, exactly the
+    /// shape's names, so that what the expander took a `with` or an
+    /// `include` to bind is what it binds. A name of the checkers' own
+    /// (`%…`) is no name a program reads.
+    pub(crate) fn shape_held(&self, span: Span, m: Option<Sym>, mt: TyId, shape: &Option<crate::ast::Relied>, used: &[Sym], past: &[Sym]) -> R<()> {
+        let Ty::Module { vals, abs, descs } = self.arena.get(self.arena.resolve(mt)) else { return Ok(()) };
+        let shown = match m.map(|m| self.interner.name(m)) {
+            Some(m) if !m.starts_with('%') => format!("`{m}`"),
+            _ => "this module".to_string(),
+        };
+        // A module whose names the program does not say before it is
+        // checked: what opens it cannot know what it binds.
+        let Some(shape) = shape else {
+            return Err(FxError::at(span, format!("the names {shown} gives are not known before it is checked: give it a type where it is bound, `(the (moduleof …) e)` or a parameter's")));
+        };
+        let gives_val = |n: &Sym| vals.iter().any(|(v, _)| v == n);
+        let gives_desc = |n: &Sym| abs.iter().any(|(v, _)| v == n) || descs.iter().any(|(v, _)| v == n);
+        let names = |ns: Vec<&Sym>| ns.iter().map(|n| format!("`{}`", self.interner.name(**n))).collect::<Vec<_>>().join(", ");
+        // What the program took to be the module's, it gives; what it took
+        // to be bound outside it, and names here, it does not: a value the
+        // body uses that the module gives (`used`), a description read past
+        // it (`past`).
+        let fewer: Vec<&Sym> = shape.vals.iter().filter(|n| !gives_val(n)).chain(shape.descs.iter().filter(|n| !gives_desc(n))).collect();
+        let more: Vec<&Sym> = used.iter().filter(|n| !shape.vals.contains(n)).chain(past.iter().filter(|n| gives_desc(n))).collect();
+        let mut said = Vec::new();
+        if !more.is_empty() {
+            said.push(format!("its type gives {}, which the program took to be bound outside it", names(more)));
+        }
+        if !fewer.is_empty() {
+            said.push(format!("its type has no {}", names(fewer)));
+        }
+        if said.is_empty() {
+            return Ok(());
+        }
+        Err(FxError::at(span, format!("{shown} gives other names than were read from the program before it was checked: {}", said.join(", and "))))
+    }
+
     pub(crate) fn with_as(&mut self, e: ExpId, m: Sym, body: ExpId, expected: Option<TyId>) -> R<(TyId, Effect)> {
         let span = self.arena.span_of(e);
         if self.is_toplevel_module(m) {
@@ -729,7 +863,7 @@ impl Checker {
         // A macro used in the body by a name the module gives a value of:
         // the program would seem to call the value, and the expander, which
         // cannot know the module's names, made the macro's use of it.
-        if let Some(uses) = self.macros.with_uses.get(&span)
+        if let Some(uses) = self.macros.withs.with_uses.get(&span)
             && let Some((n, at)) = uses.iter().find(|(n, _)| vals.iter().any(|(v, _)| v == n))
         {
             let (n, shown) = (self.interner.name(*n), self.interner.name(m));
@@ -737,7 +871,7 @@ impl Checker {
         }
         // A template's `(with m name)`: a value `m` gives, never what `name`
         // is where the macro is used.
-        if let Some((n, at)) = self.macros.projections.get(&span)
+        if let Some((n, at)) = self.macros.withs.projections.get(&span)
             && !vals.iter().any(|(v, _)| v == n)
         {
             let (n, shown) = (self.interner.name(*n), self.interner.name(m));
@@ -753,6 +887,11 @@ impl Checker {
             free.retain(|n| self.env.rpos(*n).is_none_or(|i| i < at));
         }
         let used: Vec<(usize, (Sym, TyId))> = vals.iter().copied().enumerate().filter(|(_, (n, _))| free.contains(n)).collect();
+        if let Some(shape) = self.arena.withs.opened.get(&e).cloned() {
+            let names: Vec<Sym> = used.iter().map(|(_, (n, _))| *n).collect();
+            let past = self.arena.withs.read_past.get(&e).cloned().unwrap_or_default();
+            self.shape_held(span, Some(m), mt, &shape, &names, &past)?;
+        }
         self.facts.with_vals.insert(e, used.iter().map(|(i, (n, _))| (*n, *i)).collect());
         let vals: Vec<(Sym, TyId)> = used.into_iter().map(|(_, v)| v).collect();
         let naming = self.naming_effect(m, mt);
@@ -887,9 +1026,9 @@ impl Checker {
                 // A name read in a `with` body that `m` does not give: what
                 // it is outside the `with` (`Parser::with_selected`).
                 // Applied, `(f d …)`: the application is what it is outside.
-                (None, None) if self.arena.with_applied.contains_key(&node) => {
-                    let app = self.arena.with_applied[&node];
-                    let Some(outer) = self.arena.with_fallback[&node] else {
+                (None, None) if self.arena.withs.with_applied.contains_key(&node) => {
+                    let app = self.arena.withs.with_applied[&node];
+                    let Some(outer) = self.arena.withs.with_fallback[&node] else {
                         let shown = self.interner.name(n);
                         return Err(FxError::at(span, format!("`{shown}` is not a description function, nor one a module opened by `with` gives")));
                     };
@@ -897,7 +1036,7 @@ impl Checker {
                     self.arena.set_link(app, to);
                     continue;
                 }
-                (None, None) if self.arena.with_fallback.contains_key(&node) => match self.arena.with_fallback[&node] {
+                (None, None) if self.arena.withs.with_fallback.contains_key(&node) => match self.arena.withs.with_fallback[&node] {
                     Some(outer) => self.resolve_selects(outer, span)?,
                     None => return Err(FxError::at(span, format!("`{}` is not a type, nor one a module opened by `with` gives", self.interner.name(n)))),
                 },

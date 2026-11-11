@@ -1314,7 +1314,7 @@ impl Checker {
         let [form] = &forms[..] else {
             return Err(FxError::at(fixpt_read::Span::new(fixpt_read::FileId(0), 0, 0), "one expression"));
         };
-        let e = self.parse_top_exp(form, &[])?;
+        let e = self.parse_exp(form)?;
         let (ty, effect) = self.synth(e)?;
         Ok(Checked { ty, effect, exp: e })
     }
@@ -2212,6 +2212,11 @@ impl Checker {
             Ok(eff) => eff,
             Err(err) => return Err(err.found_in(e)),
         };
+        if !self.arena.withs.shaped.is_empty()
+            && let Err(err) = self.shape_kept(e, t)
+        {
+            return Err(err.found_in(e));
+        }
         self.facts.effects.insert(e, eff.clone());
         self.kill_paths(&eff);
         let t = self.path_typed(e, t);
@@ -2220,6 +2225,19 @@ impl Checker {
             self.facts.types.insert(e, t);
         }
         Ok((t, eff))
+    }
+
+    /// Module expression `e`, of type `t`, held to the shape the expander
+    /// wrote for it, if it did (an `extend`'s first, an `include`'s).
+    #[inline(never)]
+    fn shape_kept(&self, e: ExpId, t: TyId) -> R<()> {
+        let Some(shape) = self.arena.withs.shaped.get(&e) else { return Ok(()) };
+        let m = match self.arena.exp_at(e) {
+            Exp::Var(m) => Some(*m),
+            _ => None,
+        };
+        let past = self.arena.withs.read_past.get(&e).cloned().unwrap_or_default();
+        self.shape_held(self.arena.span_of(e), m, t, shape, &[], &past)
     }
 
     /// A `letrec`: its group checked at the types declared, then its body,
@@ -2748,6 +2766,7 @@ impl Checker {
             Exp::Char(_) => Ok((self.char_, Effect::pure())),
             Exp::Float(_) => Ok((self.f64_, Effect::pure())),
             Exp::Symbol(_) => Ok((self.symbol, Effect::pure())),
+            Exp::Quote { ty, .. } => Ok((ty, Effect::pure())),
             Exp::Unit => Ok((self.unit, Effect::pure())),
             Exp::Lambda { .. } => self.synth_lambda(e, None),
             Exp::RLambda { region, lambda } => self.synth_rlambda(e, region, lambda, None),
@@ -2783,6 +2802,9 @@ impl Checker {
     fn synth_node_the(&mut self, e: ExpId) -> R<(TyId, Effect)> {
         let span = self.arena.span_of(e);
         let Exp::The { ty, exp } = self.arena.exp_at(e).clone() else { unreachable!("synth_node: not a The") };
+        if self.arena.withs.sealed.contains_key(&ty) && matches!(self.arena.get(ty), Ty::Link(None)) {
+            return self.the_sealed(ty, exp);
+        }
         let ty = self.resolve_selects(ty, span)?;
         let eff = self.check(exp, ty)?;
         // `(the (arrayof T R) (make-array n …))`: the region said,
@@ -3340,7 +3362,7 @@ impl Checker {
                     out.push(s);
                 }
             }
-            Exp::Int(_) | Exp::Bool(_) | Exp::Str(_) | Exp::Char(_) | Exp::Float(_) | Exp::Symbol(_) | Exp::Unit => {}
+            Exp::Int(_) | Exp::Bool(_) | Exp::Str(_) | Exp::Char(_) | Exp::Float(_) | Exp::Symbol(_) | Exp::Quote { .. } | Exp::Unit => {}
             Exp::Lambda { params, body } => {
                 let depth = bound.len();
                 bound.extend(params.iter().map(|(n, _)| *n));
@@ -3423,6 +3445,13 @@ impl Checker {
                 let depth = bound.len();
                 match self.facts.with_vals.get(&e) {
                     Some(vals) => bound.extend(vals.iter().map(|(n, _)| *n)),
+                    // Not checked yet: what the expander found the module
+                    // gives, of what its body names (`#:relied`), which its
+                    // type is held to.
+                    None if matches!(self.arena.withs.opened.get(&e), Some(Some(_))) => {
+                        let Some(Some(r)) = self.arena.withs.opened.get(&e) else { unreachable!("a record") };
+                        bound.extend(r.vals.iter().copied());
+                    }
                     None if unbound => {
                         bound.extend(self.hazard_modules.iter().filter(|(m, _)| *m == module).flat_map(|(_, ns)| ns.iter().copied()));
                         // A module in scope, not one of the items being

@@ -128,7 +128,6 @@
       ((6)
        (case n
          (("length") "length")
-         (("%quote") "%fx26-intern-datum")
          (("array?") "%fx26-array?")
          (("modulo") "modulo")
          (("%stage") "%fx26-stage")
@@ -341,6 +340,7 @@
          (("eqtable-ref") "%fx26-eqtable-ref")
          (("string-hash") "%string-hash")
          (("disassemble") "%disassemble")
+         (("wcell-datum") "%fx26-identity")
          (("make-global") "%fx26-make-global")
          (else "")))
       ((12)
@@ -409,6 +409,7 @@
          (("string-search") "%fx26-string-search")
          (("pair-identity") "%fx26-address-identity")
          (("eqtable-count") "%fx26-eqtable-count")
+         (("provenance-id") "%provenance-id")
          (("wcell-routine") "%fx26-identity")
          (("wcell-closure") "%fx26-closure-cell")
          (("wcell-product") "%fx26-product-cell")
