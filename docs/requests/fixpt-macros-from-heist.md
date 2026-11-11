@@ -1,6 +1,7 @@
 # Request to Fixpt: macros, as Heist found them
 
-Status: open; 1(a) done in Fixpt 5983942d (2026-11-11, below). Drafted
+Status: open; 1(a) done in Fixpt 5983942d (2026-11-11, below) for module
+files without module parameters. Drafted
 2026-11-09 by Heist, against Fixpt 07b0d743. While
 surveying where Heist's FX-26 code could use macros, we wrote macros for
 it and probed what the macro system can and cannot do. These are the
@@ -48,6 +49,17 @@ value besides. Until (b), a refusal would do. Separately, a program's
 `import-with-syntax` of a file that defines only macros is refused with
 `this module gives nothing to include`; with one value beside the macro,
 it works.
+
+**(a) in a file with module parameters** (`module-params/`). The
+commit says why it isn't there yet: a use with an `include` around it is
+refused for now (stage 5), and a file's module parameters are
+`include`d. But the refusal comes as a disagreement, not as one: ``the
+checkers disagree: the Rust checker takes `%shared:input:user.fx`'s
+definition, and the one written in FX-26 refuses it: … not an
+expression in the FX-26 kernel``. This is now what matters most to us.
+Heist rewrote its files without module parameters to use macros
+(`docs/macros.md`, 50,891 characters saved), and 43 of its 53 files with
+parameters would save 44,625 more.
 
 ## 2. `syntax-rules` lacks R7RS's ellipsis tails
 
@@ -123,6 +135,15 @@ What would help:
 - positions within the transformer in its refusals.
 
 ## 6. Smaller things
+
+- **A macro's use refuses a name that is an FX-26 keyword**, where the
+  code it stands for binds it (`keyword-names.fx`). `fields`, a keyword
+  for bloblets, names a loop in s7st and a variable in the CFA. As a
+  `loop`'s name it is refused with `` `fields` is not a name that may be
+  bound ``, though the `letrec` the macro writes accepts it; as a loop
+  variable's first value, ``is of none of the shapes this part may
+  have``. Heist's rewrite leaves such uses alone; the names `cond`,
+  `void`, `self` and `prompt` are used so as well.
 
 - **No `when` or `unless`.** Heist writes `(if c (begin …) #u)` about
   170 times. A standard `when` would be a three-line macro.
