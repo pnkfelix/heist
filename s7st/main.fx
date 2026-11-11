@@ -41,7 +41,7 @@
 ;;;   completions NAME …       a `complete`'s answer, sorted
 
 (define* s7-say (subr (io stdout) (string) unit)
-  (lambda (s) (if (string=? s "") #u (begin (write-out s) #u))))
+  (lambda (s) (unless (string=? s "") (write-out s) #u)))
 
 "What runs, run to its end, its output written as it comes. Whether it
 ended well."
@@ -130,9 +130,9 @@ first, if output did not end its line, so that what comes after starts one."
   (lambda ()
     (let* ((status (s7-continue! 20000))
            (out (s7-take-output!))
-           (fresh (lambda () (if (get s7-console-fresh) #u (begin (s7-answer "out" "\n") (set s7-console-fresh #t))))))
+           (fresh (lambda () (unless (get s7-console-fresh) (s7-answer "out" "\n") (set s7-console-fresh #t)))))
       (begin
-        (if (string=? out "") #u (s7-answer "out" out))
+        (unless (string=? out "") (s7-answer "out" out))
         (tagcase status
           (running u #u)
           (done v (begin (fresh) (s7-answer "value" (if (s7-shown? v) (s7-show v #t) ""))))
@@ -164,50 +164,44 @@ first, if output did not end its line, so that what comes after starts one."
                           (string-concatenate (go l))))))
            (s7-answer-fields "analysis"
                              (list (s7-field f 0)
-                                   (ints (letrec ((go (subr spin (s7-face-spans) (listof int acyclic))
-                                                        (lambda (l) (if (null? l) nil
-                                                                        (cons (extract (car l) start)
-                                                                              (cons (extract (car l) end)
-                                                                                    (cons (let ((fc (extract (car l) face)))
-                                                                                            (cond ((eq? fc 'keyword) 0) ((eq? fc 'function-name) 1)
-                                                                                                  ((eq? fc 'string) 2) ((eq? fc 'comment) 3) (else 4)))
-                                                                                          (go (cdr l)))))))))
-                                           (go (extract a faces))))
-                                   (string-concatenate (letrec ((go (subr spin ((listof s7-def acyclic)) (listof string acyclic))
-                                                             (lambda (l) (if (null? l) nil
-                                                                             (cons (string-append (extract (car l) name) " " (int->string (extract (car l) start))
-                                                                                                  " " (int->string (extract (car l) end)) (if (null? (cdr l)) "" " "))
-                                                                                   (go (cdr l)))))))
-                                                (go (extract a defs))))
-                                   (ints (letrec ((go (subr spin ((listof s7-aref acyclic)) (listof int acyclic))
-                                                        (lambda (l) (if (null? l) nil
-                                                                        (cons (extract (car l) start) (cons (extract (car l) end)
-                                                                              (cons (extract (car l) binder-start) (cons (extract (car l) binder-end) (go (cdr l))))))))))
-                                           (go (extract a refs))))
+                                   (ints (iterate go spin ((l s7-face-spans (extract a faces))) (listof int acyclic)
+                                           (if (null? l) nil
+                                               (cons (extract (car l) start)
+                                                     (cons (extract (car l) end)
+                                                           (cons (let ((fc (extract (car l) face)))
+                                                                   (cond ((eq? fc 'keyword) 0) ((eq? fc 'function-name) 1)
+                                                                         ((eq? fc 'string) 2) ((eq? fc 'comment) 3) (else 4)))
+                                                                 (go (cdr l))))))))
+                                   (string-concatenate (iterate go spin ((l (listof s7-def acyclic) (extract a defs))) (listof string acyclic)
+                                                         (if (null? l) nil
+                                                             (cons (string-append (extract (car l) name) " " (int->string (extract (car l) start))
+                                                                                  " " (int->string (extract (car l) end)) (if (null? (cdr l)) "" " "))
+                                                                   (go (cdr l))))))
+                                   (ints (iterate go spin ((l (listof s7-aref acyclic) (extract a refs))) (listof int acyclic)
+                                           (if (null? l) nil
+                                               (cons (extract (car l) start) (cons (extract (car l) end)
+                                                     (cons (extract (car l) binder-start) (cons (extract (car l) binder-end) (go (cdr l)))))))))
                                    (extract a problem)
                                    (int->string (extract a problem-at))))))
         ((string=? w "complete")
          (let* ((prefix (s7-field f 0))
                 (k (string-length prefix))
-                (names (letrec ((go (subr s7-drive-eff ((listof s7-ns-entry acyclic) s7-strings) s7-strings)
-                                  (lambda (l acc)
-                                    (if (null? l) acc
-                                        (let ((n (symbol->string (extract (car l) name))))
-                                          (go (cdr l)
-                                              (if (and (>= (string-length n) k) (string=? (substring n 0 k) prefix)
-                                                       (not (char=? (string-ref n 0) #\space)) (not (char=? (string-ref n 0) #\%))
-                                                       (tagcase (get (extract (extract (car l) cell) value)) (undef u (tagcase (get (extract (extract (car l) cell) syntax)) (none v #f) (else z #t))) (else y #t))
-                                                       (not (member? n acc string=?)))
-                                                  (cons n acc) acc)))))))
-                         (go (append (s7-ns-entries s7-toplevel) (s7-ns-entries s7-builtins)) nil))))
+                (names (iterate go s7-drive-eff ((l (listof s7-ns-entry acyclic) (append (s7-ns-entries s7-toplevel) (s7-ns-entries s7-builtins))) (acc s7-strings nil)) s7-strings
+                         (if (null? l) acc
+                             (let ((n (symbol->string (extract (car l) name))))
+                               (go (cdr l)
+                                   (if (and (>= (string-length n) k) (string=? (substring n 0 k) prefix)
+                                            (not (char=? (string-ref n 0) #\space)) (not (char=? (string-ref n 0) #\%))
+                                            (tagcase (get (extract (extract (car l) cell) value)) (undef u (tagcase (get (extract (extract (car l) cell) syntax)) (none v #f) (else z #t))) (else y #t))
+                                            (not (member? n acc string=?)))
+                                       (cons n acc) acc)))))))
            (s7-answer-fields "completions" (list-sort string<? names))))
         ((string=? w "interrupt")
-         (if (s7-busy?)
-             (begin (s7-interrupt!)
-               (let ((out (s7-take-output!))) (if (string=? out "") #u (s7-answer "out" out)))
-               (if (get s7-console-fresh) #u (s7-answer "out" "\n"))
-               (s7-answer "interrupted" ""))
-             #u))
+         (when (s7-busy?)
+           (s7-interrupt!)
+      (let ((out (s7-take-output!))) (unless (string=? out "") (s7-answer "out" out)))
+      (unless (get s7-console-fresh) (s7-answer "out" "\n"))
+      (s7-answer "interrupted" "")))
         (else #u)))))
 "The server: requests read, and what they run run, a slice at a time,
 requests read between slices. Its exit status, when its input ends."

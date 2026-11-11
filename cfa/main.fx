@@ -33,42 +33,34 @@ contexts see different things (`--contexts`)."
     (let ((t0 (clock)))
       (begin
         (cf-start! lang tops m)
-        (letrec ((run (subr (maxeff cf-eff (io stderr) (io clock)) () unit)
-                   (lambda () (let ((done (cf-step! 2000)))
-                                (begin
-                                  (if (get cf-progress)
-                                      (begin (write-err (string-append "cfa: " (int->string (i64->int (i64-quotient (i64- (clock) t0) (int->i64 1000000))))
-                                                                       " ms " (cf-status) "\n"))
-                                        #u)
-                                      #u)
-                                  (if done #u (run)))))))
-          (run))
-        (if (get cf-progress)
-            (begin (write-err (string-append "cfa: " (cf-escape-report 12) "\n"))
-              (write-err (string-append "cfa: defined nowhere: " (string-join (reverse (get sc-undefined)) " ") "\n"))
-              (write-err (string-append "cfa: unknown first in: " (string-join (get cf-unknown-firsts) "; ") "\n"))
-              #u)
-            #u)
-      (letrec ((files (subr (maxeff cf-eff (io stdout)) (strings) unit)
-                 (lambda (ps)
-                   (if (null? ps) #u
-                       (begin
-                         (letrec ((say (subr (maxeff cf-eff (io stdout)) (cf-notes) unit)
-                                    (lambda (ns) (if (null? ns) #u
-                                                     (begin (cf-say-line (string-append (car ps) ":" (int->string (extract (car ns) start)) "-"
-                                                                                         (int->string (extract (car ns) end)) ": " (extract (car ns) text)))
-                                                       (say (cdr ns)))))))
-                           (say (cf-file-notes (cf-file (car ps))))
-                           (if (get cf-contexts)
-                               (say (letrec ((mark (subr spin (cf-notes) cf-notes)
-                                                (lambda (l) (if (null? l) nil
-                                                                (cons (product (start (extract (car l) start)) (end (extract (car l) end))
-                                                                               (text (string-append "by context: " (extract (car l) text))))
-                                                                      (mark (cdr l)))))))
-                                      (mark (cf-file-context-notes (cf-file (car ps))))))
-                               #u))
-                         (files (cdr ps)))))))
-          (files paths))))))
+        (iterate run (maxeff cf-eff (io stderr) (io clock)) () unit
+          (let ((done (cf-step! 2000)))
+            (begin
+              (when (get cf-progress)
+                (write-err (string-append "cfa: " (int->string (i64->int (i64-quotient (i64- (clock) t0) (int->i64 1000000))))
+                                          " ms " (cf-status) "\n"))
+           #u)
+              (unless done (run)))))
+        (when (get cf-progress)
+          (write-err (string-append "cfa: " (cf-escape-report 12) "\n"))
+     (write-err (string-append "cfa: defined nowhere: " (string-join (reverse (get sc-undefined)) " ") "\n"))
+     (write-err (string-append "cfa: unknown first in: " (string-join (get cf-unknown-firsts) "; ") "\n"))
+     #u)
+      (iterate files (maxeff cf-eff (io stdout)) ((ps strings paths)) unit
+        (unless (null? ps)
+          (letrec ((say (subr (maxeff cf-eff (io stdout)) (cf-notes) unit)
+                     (lambda (ns) (unless (null? ns)
+                                    (cf-say-line (string-append (car ps) ":" (int->string (extract (car ns) start)) "-"
+                                                                 (int->string (extract (car ns) end)) ": " (extract (car ns) text)))
+                               (say (cdr ns))))))
+            (say (cf-file-notes (cf-file (car ps))))
+            (when (get cf-contexts)
+              (say (iterate mark spin ((l cf-notes (cf-file-context-notes (cf-file (car ps))))) cf-notes
+                     (if (null? l) nil
+                         (cons (product (start (extract (car l) start)) (end (extract (car l) end))
+                                        (text (string-append "by context: " (extract (car l) text))))
+                               (mark (cdr l))))))))
+          (files (cdr ps))))))))
 
 "s7st made ready as the program loads, so that a heap dump of it
 (bin/heist-dump) holds s7st's prelude staged (`s7-init!` is once)."
@@ -76,15 +68,14 @@ contexts see different things (`--contexts`)."
 
 (define* main (subr (maxeff fx-eff sc-eff s7-drive-eff (io fs-read) (io stdout) (io stderr) (io clock) (io stdin) (io args) (alloc @a) (read @a) spin) () int)
   (lambda ()
-    (let* ((as (letrec ((go (subr (maxeff (read @a) spin) ((listof string @a)) strings) (lambda (l) (if (null? l) nil (cons (car l) (go (cdr l)))))))
-                 (go (the (listof string @a) (args)))))
-           (dirs (letrec ((go (subr (maxeff s7-eff spin) (strings) strings)
-                                (lambda (l) (if (and (pair? l) (string=? (car l) "-L") (pair? (cdr l)))
-                                                (begin (s7-add-library-directory! (let ((d (car (cdr l))))
-                                                                                    (if (char=? (string-ref d (- (string-length d) 1)) #\/) d (string-append d "/"))))
-                                                  (go (cdr (cdr l))))
-                                                l))))
-                   (go as)))
+    (let* ((as (iterate go (maxeff (read @a) spin) ((l (listof string @a) (the (listof string @a) (args)))) strings
+                 (if (null? l) nil (cons (car l) (go (cdr l))))))
+           (dirs (iterate go (maxeff s7-eff spin) ((l strings as)) strings
+                   (if (and (pair? l) (string=? (car l) "-L") (pair? (cdr l)))
+                       (begin (s7-add-library-directory! (let ((d (car (cdr l))))
+                                                           (if (char=? (string-ref d (- (string-length d) 1)) #\/) d (string-append d "/"))))
+                         (go (cdr (cdr l))))
+                       l)))
            (as dirs)
            (contexts (and (pair? as) (string=? (car as) "--contexts")))
            (as (if contexts (cdr as) as))
@@ -100,19 +91,17 @@ contexts see different things (`--contexts`)."
       (if (and (pair? as) (string=? (car as) "--serve"))
           (let ((why (s7-init!))) (begin (cf-answer "ready" (list why)) (cf-serve)))
       (begin
-        (if (null? fx) #u (cf-run-world cf-fx26 (fx-world fx (map cf-text-of-file fx)) fx m))
-        (if (null? sc) #u
-            (let ((why (s7-init!)))
-              (if (string=? why "")
-                  ;; The libraries the files import are of their world, but only
-                  ;; the files' notes are said.
-                  (let* ((ws (sc-world-files sc (map cf-text-of-file sc)))
-                         (ps (letrec ((go (subr spin ((listof sc-world-file acyclic)) strings)
-                                            (lambda (l) (if (null? l) nil (cons (extract (car l) path) (go (cdr l)))))))
-                               (go ws)))
-                         (ts (letrec ((go (subr spin ((listof sc-world-file acyclic)) strings)
-                                            (lambda (l) (if (null? l) nil (cons (extract (car l) text) (go (cdr l)))))))
-                               (go ws))))
-                    (cf-run-world cf-scheme (sc-world ps ts) sc m))
-                  (cf-say-line (string-append "cfa: s7st: " why)))))
+        (unless (null? fx) (cf-run-world cf-fx26 (fx-world fx (map cf-text-of-file fx)) fx m))
+        (unless (null? sc)
+          (let ((why (s7-init!)))
+            (if (string=? why "")
+                ;; The libraries the files import are of their world, but only
+                ;; the files' notes are said.
+                (let* ((ws (sc-world-files sc (map cf-text-of-file sc)))
+                       (ps (iterate go spin ((l (listof sc-world-file acyclic) ws)) strings
+                             (if (null? l) nil (cons (extract (car l) path) (go (cdr l))))))
+                       (ts (iterate go spin ((l (listof sc-world-file acyclic) ws)) strings
+                             (if (null? l) nil (cons (extract (car l) text) (go (cdr l)))))))
+                  (cf-run-world cf-scheme (sc-world ps ts) sc m))
+                (cf-say-line (string-append "cfa: s7st: " why)))))
         0)))))

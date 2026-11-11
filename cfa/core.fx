@@ -186,16 +186,13 @@ past 8 in a cell."
   (lambda (name)
     (let* ((k (cf-kind (string-append "'" name))) (to (cf-kind "symbol")))
       (begin
-        (if (letrec ((has (subr spin ((listof (productof (kind int) (to int)) acyclic)) bool)
-                            (lambda (l) (and (pair? l) (or (= (extract (car l) kind) k) (has (cdr l)))))))
-              (has (get cf-widen)))
-            #u
-            (set cf-widen (cons (product (kind k) (to to)) (get cf-widen))))
+        (unless (iterate has spin ((l (listof (productof (kind int) (to int)) acyclic) (get cf-widen))) bool
+                  (and (pair? l) (or (= (extract (car l) kind) k) (has (cdr l)))))
+          (set cf-widen (cons (product (kind k) (to to)) (get cf-widen))))
         k))))
 (define* cf-kind-name (subr cf-eff (int) string)
-  (lambda (k) (letrec ((go (subr cf-eff (strings int) string)
-                         (lambda (l i) (cond ((null? l) "?") ((= i 0) (car l)) (else (go (cdr l) (- i 1)))))))
-                (go (get cf-kinds) (- (- (get cf-kind-count) 1) k)))))
+  (lambda (k) (iterate go cf-eff ((l strings (get cf-kinds)) (i int (- (- (get cf-kind-count) 1) k))) string
+                (cond ((null? l) "?") ((= i 0) (car l)) (else (go (cdr l) (- i 1)))))))
 
 (define* cf-new-var (subr cf-eff () int)
   (lambda () (let ((n (get cf-vars))) (begin (set cf-vars (+ n 1)) n))))
@@ -230,31 +227,28 @@ last holds the rest."
 (define* cf-spine-sites! (subr cf-eff (cf-span) int)
   (lambda (span)
     (let ((first (cf-add-site (product (span span) (kind "pair") (tag "")))))
-      (letrec ((go (subr cf-eff (int) unit) (lambda (i) (if (>= i cf-max-spine) #u (begin (cf-add-site (product (span span) (kind "pair") (tag ""))) (go (+ i 1)))))))
+      (letrec ((go (subr cf-eff (int) unit) (lambda (i) (unless (>= i cf-max-spine) (cf-add-site (product (span span) (kind "pair") (tag ""))) (go (+ i 1))))))
         (begin (go 1) first)))))
 (define* cf-add-lambda (subr cf-eff (lambda-info) int)
   (lambda (info)
     (let ((n (begin (set cf-lambdas (cons info (get cf-lambdas))) (cf-next-number 0))))
       (begin
-        (if (>= (extract info rest) 0)
-            (set cf-rest-sites (cons (product (lambda n) (site (cf-spine-sites! (extract info span)))) (get cf-rest-sites)))
-            #u)
+        (when (>= (extract info rest) 0)
+          (set cf-rest-sites (cons (product (lambda n) (site (cf-spine-sites! (extract info span)))) (get cf-rest-sites))))
         n))))
 "A list of elements `es`, at `span`: a pair site an element, up to
 `cf-max-spine`, the last the rest (its `cdr` itself too); the end of a
 list the kind `null`."
 (define* cf-list-core (subr cf-eff (cf-span (listof core acyclic) string) core)
   (lambda (span es null)
-    (letrec ((go (subr cf-eff (int (listof core acyclic)) core)
-               (lambda (i es)
-                 (cond ((null? es) (k-const (cf-kind null)))
-                       ((= i (- cf-max-spine 1))
-                        (let ((s (cf-add-site (product (span span) (kind "pair") (tag "")))))
-                          (k-alloc s (list (product (label "car") (value (k-alt es)))
-                                           (product (label "cdr") (value (k-alt (list (k-const (cf-kind null)) (k-alloc s nil)))))))))
-                       (else (let* ((s (cf-add-site (product (span span) (kind "pair") (tag "")))) (rest (go (+ i 1) (cdr es))))
-                               (k-alloc s (list (product (label "car") (value (car es))) (product (label "cdr") (value rest))))))))))
-      (go 0 es))))
+    (iterate go cf-eff ((i int 0) (es (listof core acyclic) es)) core
+      (cond ((null? es) (k-const (cf-kind null)))
+            ((= i (- cf-max-spine 1))
+             (let ((s (cf-add-site (product (span span) (kind "pair") (tag "")))))
+               (k-alloc s (list (product (label "car") (value (k-alt es)))
+                                (product (label "cdr") (value (k-alt (list (k-const (cf-kind null)) (k-alloc s nil)))))))))
+            (else (let* ((s (cf-add-site (product (span span) (kind "pair") (tag "")))) (rest (go (+ i 1) (cdr es))))
+                    (k-alloc s (list (product (label "car") (value (car es))) (product (label "cdr") (value rest))))))))))
 (define* cf-add-ref (subr cf-eff (ref-info) int)
   (lambda (info) (begin (set cf-refs (cons info (get cf-refs))) (cf-next-number 3))))
 "A use of variable `v`, named `name`, at `span`."
@@ -268,7 +262,7 @@ makes, if it makes one, so said."
     (tagcase x
       (k-lam (l) (set cf-poly-lambdas (cons (product (number l) (binders binders)) (get cf-poly-lambdas))))
       (k-alloc (s inits) (set cf-poly-sites (cons (product (number s) (binders binders)) (get cf-poly-sites))))
-      (k-seq (xs) (if (pair? xs) (cf-poly! (last xs) binders) #u))
+      (k-seq (xs) (when (pair? xs) (cf-poly! (last xs) binders)))
       (else y #u))))
 "The lambda core `x` makes, if it makes one (-1: none)."
 (define* cf-lambda-of (subr spin (core) int)
@@ -282,24 +276,21 @@ makes, if it makes one, so said."
 "File `path`'s number in the world, made on first use."
 (define* cf-file (subr cf-eff (string) int)
   (lambda (path)
-    (letrec ((go (subr cf-eff (strings int) int)
-               (lambda (l i) (cond ((null? l) (begin (set cf-files (append (get cf-files) (list path))) i))
-                                   ((string=? (car l) path) i)
-                                   (else (go (cdr l) (+ i 1)))))))
-      (go (get cf-files) 0))))
+    (iterate go cf-eff ((l strings (get cf-files)) (i int 0)) int
+      (cond ((null? l) (begin (set cf-files (append (get cf-files) (list path))) i))
+            ((string=? (car l) path) i)
+            (else (go (cdr l) (+ i 1)))))))
 (define* cf-file-name (subr cf-eff (int) string)
-  (lambda (i) (letrec ((go (subr cf-eff (strings int) string)
-                         (lambda (l i) (cond ((null? l) "") ((= i 0) (car l)) (else (go (cdr l) (- i 1)))))))
-                (go (get cf-files) i))))
+  (lambda (i) (iterate go cf-eff ((l strings (get cf-files)) (i int i)) string
+                (cond ((null? l) "") ((= i 0) (car l)) (else (go (cdr l) (- i 1)))))))
 
 "The line (from 1) of offset `at` in file `file`."
 (define* cf-line-of (subr cf-eff (int int) int)
   (lambda (file at)
-    (let ((t (letrec ((go (subr cf-eff (strings int) string) (lambda (l i) (cond ((null? l) "") ((= i 0) (car l)) (else (go (cdr l) (- i 1)))))))
-               (go (get cf-file-texts) file))))
-      (letrec ((count (subr spin (int int) int)
-                 (lambda (i n) (if (or (>= i at) (>= i (string-length t))) n (count (+ i 1) (if (char=? (string-ref t i) #\newline) (+ n 1) n))))))
-        (count 0 1)))))
+    (let ((t (iterate go cf-eff ((l strings (get cf-file-texts)) (i int file)) string
+               (cond ((null? l) "") ((= i 0) (car l)) (else (go (cdr l) (- i 1)))))))
+      (iterate count spin ((i int 0) (n int 1)) int
+        (if (or (>= i at) (>= i (string-length t))) n (count (+ i 1) (if (char=? (string-ref t i) #\newline) (+ n 1) n)))))))
 "A lambda's name where it has none of its own: of the definition it is in."
 (define* cf-anonymous (subr cf-eff () string)
   (lambda () (string-append (get cf-definition) "/λ")))

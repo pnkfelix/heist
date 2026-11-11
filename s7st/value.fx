@@ -23,6 +23,15 @@
 ;;; into a program before another's (the editor's) without either seeing
 ;;; the other's names. Its state is at region @sc.
 
+;; Macros, for all of s7st's and the CFA's files (docs/macros.md).
+(define-syntax iterate
+  (syntax-rules ()
+    ((_ go eff ((x t i) ...) r body) (letrec ((go (subr eff (t ...) r) (lambda (x ...) body))) (go i ...)))))
+(define-syntax when (syntax-rules () ((_ c e ...) (if c (begin e ...) #u))))
+(define-syntax unless (syntax-rules () ((_ c e ...) (if c #u (begin e ...)))))
+(define-syntax def-prim
+  (syntax-rules () ((_ n lo hi (a) body) (s7-prim! n lo hi (lambda ((a s7-values)) body)))))
+
 "What the reader does: reads, writes and allocates at @sc (its spans,
 what it makes), and loops."
 (define-effect s7-read-eff (maxeff spin (read @globals) (read @sc) (write @sc) (alloc @sc)))
@@ -241,12 +250,10 @@ list read at `list` (no span if it begins none)."
 fraction, so doubling it enough makes it whole."
 (define* s7-f64->exact (subr spin (f64) s7-value)
   (lambda (r)
-    (letrec ((go (subr spin (f64 int) s7-value)
-               (lambda (x k)
-                 (if (or (f64= x (f64-floor x)) (> k 1100))
-                     (s7-make-ratio (f64->int (f64-floor x)) (arithmetic-shift 1 k))
-                     (go (f64* x 2.0) (+ k 1))))))
-      (go r 0))))
+    (iterate go spin ((x f64 r) (k int 0)) s7-value
+      (if (or (f64= x (f64-floor x)) (> k 1100))
+          (s7-make-ratio (f64->int (f64-floor x)) (arithmetic-shift 1 k))
+          (go (f64* x 2.0) (+ k 1))))))
 
 "`l`'s items, last first, before `tail`: a loop, so that a long list takes
 no native stack (a frame an item, which every collection would walk)."
@@ -271,17 +278,15 @@ no native stack (a frame an item, which every collection would walk)."
 found (the tortoise and the hare), so this ends."
 (define* s7-list-items (subr (maxeff spin (read @sc)) (s7-value) (sumof (none unit) (some s7-values)))
   (lambda (v)
-    (letrec ((go (subr (maxeff spin (read @sc)) (s7-value s7-value bool s7-values) (sumof (none unit) (some s7-values)))
-               (lambda (fast slow step acc)
-                 (tagcase fast
-                   (null u (sum some (reverse acc)))
-                   (pair p (let ((next (get (extract p cdr)))
-                                 (slow2 (if step (tagcase slow (pair q (get (extract q cdr))) (else y slow)) slow)))
-                             (if (and step (s7-same-pair? next slow2))
-                                 (sum none #u)
-                                 (go next slow2 (not step) (cons (get (extract p car)) acc)))))
-                   (else y (sum none #u))))))
-      (go v v #f nil))))
+    (iterate go (maxeff spin (read @sc)) ((fast s7-value v) (slow s7-value v) (step bool #f) (acc s7-values nil)) (sumof (none unit) (some s7-values))
+      (tagcase fast
+        (null u (sum some (reverse acc)))
+        (pair p (let ((next (get (extract p cdr)))
+                      (slow2 (if step (tagcase slow (pair q (get (extract q cdr))) (else y slow)) slow)))
+                  (if (and step (s7-same-pair? next slow2))
+                      (sum none #u)
+                      (go next slow2 (not step) (cons (get (extract p car)) acc)))))
+        (else y (sum none #u))))))
 "An error object raised as a condition."
 (define* s7-error-value (subr (maxeff spin (alloc @sc)) (string s7-values) s7-value)
   (lambda (message irritants)
@@ -297,14 +302,12 @@ it is free it means what `name` means (expand.fx). Its name, unrenamed."
 (define* s7-unrename (subr spin (symbol) symbol)
   (lambda (s)
     (let* ((n (symbol->string s)) (len (string-length n)))
-      (letrec ((go (subr spin (int) symbol)
-                 (lambda (i)
-                   (cond ((< i 1) s)
-                         ((char=? (string-ref n i) #\space)
-                          (if (< (+ i 1) len) (string->symbol (substring n 0 i)) s))
-                         ((char-numeric? (string-ref n i)) (go (- i 1)))
-                         (else s)))))
-        (go (- len 1))))))
+      (iterate go spin ((i int (- len 1))) symbol
+        (cond ((< i 1) s)
+              ((char=? (string-ref n i) #\space)
+               (if (< (+ i 1) len) (string->symbol (substring n 0 i)) s))
+              ((char-numeric? (string-ref n i)) (go (- i 1)))
+              (else s))))))
 "Whether `s` is a renamed symbol."
 (define* s7-renamed? (subr spin (symbol) bool)
   (lambda (s) (not (eq? (s7-unrename s) s))))
@@ -349,10 +352,9 @@ name may be bound in more than one."
   (lambda (ns name)
     (tagcase (s7-ns-own ns name)
       (found c (sum found c))
-      (none u (letrec ((bases (subr (maxeff spin (read @sc)) ((listof s7-ns acyclic)) (sumof (none unit) (found s7-global)))
-                         (lambda (l) (if (null? l) (sum none #u)
-                                         (tagcase (s7-ns-find (car l) name) (found c (sum found c)) (none u (bases (cdr l))))))))
-                (bases (extract ns base)))))))
+      (none u (iterate bases (maxeff spin (read @sc)) ((l (listof s7-ns acyclic) (extract ns base))) (sumof (none unit) (found s7-global))
+                (if (null? l) (sum none #u)
+                    (tagcase (s7-ns-find (car l) name) (found c (sum found c)) (none u (bases (cdr l))))))))))
 "`name` bound to `cell` in `ns`, in place of what it was bound to there."
 (define* s7-ns-bind! (subr (maxeff spin (read @sc) (write @sc) (alloc @sc)) (s7-ns symbol s7-global) unit)
   (lambda (ns name cell)
@@ -379,13 +381,10 @@ there (a name defined later, or never)."
 (define* s7-ns-entries (subr (maxeff spin (read @sc)) (s7-ns) (listof s7-ns-entry acyclic))
   (lambda (ns)
     (let ((bs (extract ns buckets)))
-      (letrec ((go (subr (maxeff spin (read @sc)) (int (listof s7-ns-entry acyclic)) (listof s7-ns-entry acyclic))
-                 (lambda (i acc)
-                   (if (< i 0) acc
-                       (go (- i 1) (letrec ((add (subr spin ((listof s7-ns-entry acyclic) (listof s7-ns-entry acyclic)) (listof s7-ns-entry acyclic))
-                                                   (lambda (l acc) (if (null? l) acc (add (cdr l) (cons (car l) acc))))))
-                                     (add (array-ref bs i) acc)))))))
-        (go (- (array-length bs) 1) nil)))))
+      (iterate go (maxeff spin (read @sc)) ((i int (- (array-length bs) 1)) (acc (listof s7-ns-entry acyclic) nil)) (listof s7-ns-entry acyclic)
+        (if (< i 0) acc
+            (go (- i 1) (iterate add spin ((l (listof s7-ns-entry acyclic) (array-ref bs i)) (acc (listof s7-ns-entry acyclic) acc)) (listof s7-ns-entry acyclic)
+                          (if (null? l) acc (add (cdr l) (cons (car l) acc))))))))))
 
 "The built-in cell of `name`, made if there is none."
 (define* s7-global-cell (subr (maxeff spin (read @sc) (write @sc) (alloc @sc)) (symbol) s7-global)

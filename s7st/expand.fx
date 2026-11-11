@@ -35,7 +35,7 @@ brought in means what its name means."
       (if (< n (array-length a)) (array-set! a n (list h))
           (let ((b (the (arrayof (listof s7-home acyclic) @sc) (make-array (* 2 (+ n 1)) (the (listof s7-home acyclic) nil)))))
             (letrec ((copy (subr s7-eff (int) unit)
-                       (lambda (i) (if (>= i (array-length a)) #u (begin (array-set! b i (array-ref a i)) (copy (+ i 1)))))))
+                       (lambda (i) (unless (>= i (array-length a)) (array-set! b i (array-ref a i)) (copy (+ i 1))))))
               (begin (copy 0) (array-set! b n (list h)) (set s7-rename-homes b))))))))
 "How far renaming has gone: what `s7-rename-release!` goes back to."
 (define* s7-rename-mark (subr (read @sc) () int) (lambda () (get s7-rename-count)))
@@ -47,15 +47,15 @@ its namespace, and each name its symbol, for good."
   (lambda (mark)
     (let ((a (get s7-rename-homes)) (n (get s7-rename-count)))
       (letrec ((clear (subr s7-eff (int) unit)
-                 (lambda (i) (if (or (>= i n) (>= i (array-length a))) #u
-                                 (begin (array-set! a i (the (listof s7-home acyclic) nil)) (clear (+ i 1)))))))
+                 (lambda (i) (unless (or (>= i n) (>= i (array-length a)))
+                               (array-set! a i (the (listof s7-home acyclic) nil)) (clear (+ i 1))))))
         (begin (clear mark) (set s7-rename-count mark))))))
 "The home of renamed symbol `s`'s macro, if it is known."
 (define* s7-rename-home (subr s7-eff (symbol) (listof s7-home acyclic))
   (lambda (s)
     (let* ((n (symbol->string s))
-           (sp (letrec ((go (subr spin (int) int) (lambda (i) (cond ((< i 0) -1) ((char=? (string-ref n i) #\space) i) (else (go (- i 1)))))))
-                 (go (- (string-length n) 1))))
+           (sp (iterate go spin ((i int (- (string-length n) 1))) int
+                 (cond ((< i 0) -1) ((char=? (string-ref n i) #\space) i) (else (go (- i 1))))))
            (k (if (< sp 0) -1 (s7-parse-digits (substring n (+ sp 1) (string-length n)) 10)))
            (a (get s7-rename-homes)))
       (if (and (>= k 0) (< k (array-length a))) (array-ref a k) nil))))
@@ -109,20 +109,17 @@ at once, so a cyclic datum (a quoted `#0=(a . #0#)`) is no trouble."
   (lambda (v)
     (let ((pairs (the (eqtable (ref s7-value @sc) bool @sc @sc) (make-eqtable (ref-identity))))
           (vecs (the (eqtable (arrayof s7-value @sc) bool @sc @sc) (make-eqtable (array-identity)))))
-      (letrec ((go (subr (maxeff spin (read @sc) (write @sc) (alloc @sc)) (s7-value) bool)
-                 (lambda (v)
-                   (tagcase v
-                     (sym s (s7-renamed? s))
-                     (pair p (if (eqtable-has? pairs (extract p car)) #f
-                                 (begin (eqtable-set! pairs (extract p car) #t)
-                                   (or (go (get (extract p car))) (go (get (extract p cdr)))))))
-                     (vec a (if (eqtable-has? vecs a) #f
-                                (begin (eqtable-set! vecs a #t)
-                                  (letrec ((each (subr (maxeff spin (read @sc) (write @sc) (alloc @sc)) (s7-values) bool)
-                                             (lambda (l) (and (pair? l) (or (go (car l)) (each (cdr l)))))))
-                                    (each (array->list a))))))
-                     (else y #f)))))
-        (go v)))))
+      (iterate go (maxeff spin (read @sc) (write @sc) (alloc @sc)) ((v s7-value v)) bool
+        (tagcase v
+          (sym s (s7-renamed? s))
+          (pair p (if (eqtable-has? pairs (extract p car)) #f
+                      (begin (eqtable-set! pairs (extract p car) #t)
+                        (or (go (get (extract p car))) (go (get (extract p cdr)))))))
+          (vec a (if (eqtable-has? vecs a) #f
+                     (begin (eqtable-set! vecs a #t)
+                       (iterate each (maxeff spin (read @sc) (write @sc) (alloc @sc)) ((l s7-values (array->list a))) bool
+                         (and (pair? l) (or (go (car l)) (each (cdr l))))))))
+          (else y #f))))))
 "Data `v` with every renamed symbol unrenamed: what a quote in a template
 means. Copied only if it holds one; a cycle copied as a cycle."
 (define* s7-strip (subr (maxeff spin (read @sc) (write @sc) (alloc @sc)) (s7-value) s7-value)
@@ -130,29 +127,26 @@ means. Copied only if it holds one; a cycle copied as a cycle."
     (if (not (s7-has-renamed? v)) v
         (let ((pairs (the (eqtable (ref s7-value @sc) s7-value @sc @sc) (make-eqtable (ref-identity))))
               (vecs (the (eqtable (arrayof s7-value @sc) s7-value @sc @sc) (make-eqtable (array-identity)))))
-          (letrec ((go (subr (maxeff spin (read @sc) (write @sc) (alloc @sc)) (s7-value) s7-value)
-                     (lambda (v)
-                       (tagcase v
-                         (sym s (sum sym (string->symbol (s7-symbol-name s))))
-                         (pair p (if (eqtable-has? pairs (extract p car)) (eqtable-ref pairs (extract p car) v)
-                                     ;; The copy made first, and noted, so that a way back to it finds it.
-                                     (let ((c (s7-cons s7-nil s7-nil)))
-                                       (begin (eqtable-set! pairs (extract p car) c)
-                                         (tagcase c
-                                           (pair q (begin (set (extract q car) (go (get (extract p car))))
-                                                     (set (extract q cdr) (go (get (extract p cdr))))))
-                                           (else y #u))
-                                         c))))
-                         (vec a (if (eqtable-has? vecs a) (eqtable-ref vecs a v)
-                                    (let* ((b (the (arrayof s7-value @sc) (make-array (array-length a) s7-nil)))
-                                           (c (sum vec b)))
-                                      (begin (eqtable-set! vecs a c)
-                                        (letrec ((each (subr (maxeff spin (read @sc) (write @sc) (alloc @sc)) (int) unit)
-                                                   (lambda (i) (if (>= i (array-length a)) #u (begin (array-set! b i (go (array-ref a i))) (each (+ i 1)))))))
-                                          (each 0))
-                                        c))))
-                         (else y y)))))
-            (go v))))))
+          (iterate go (maxeff spin (read @sc) (write @sc) (alloc @sc)) ((v s7-value v)) s7-value
+            (tagcase v
+              (sym s (sum sym (string->symbol (s7-symbol-name s))))
+              (pair p (if (eqtable-has? pairs (extract p car)) (eqtable-ref pairs (extract p car) v)
+                          ;; The copy made first, and noted, so that a way back to it finds it.
+                          (let ((c (s7-cons s7-nil s7-nil)))
+                            (begin (eqtable-set! pairs (extract p car) c)
+                              (tagcase c
+                                (pair q (begin (set (extract q car) (go (get (extract p car))))
+                                          (set (extract q cdr) (go (get (extract p cdr))))))
+                                (else y #u))
+                              c))))
+              (vec a (if (eqtable-has? vecs a) (eqtable-ref vecs a v)
+                         (let* ((b (the (arrayof s7-value @sc) (make-array (array-length a) s7-nil)))
+                                (c (sum vec b)))
+                           (begin (eqtable-set! vecs a c)
+                             (iterate each (maxeff spin (read @sc) (write @sc) (alloc @sc)) ((i int 0)) unit
+                               (unless (>= i (array-length a)) (array-set! b i (go (array-ref a i))) (each (+ i 1))))
+                             c))))
+              (else y y)))))))
 
 ;;; ------------------------------------------------------------ scopes
 
@@ -171,18 +165,16 @@ means. Copied only if it holds one; a cycle copied as a cycle."
 "The index of `name` in scope `sc`, or -1: the last added, if twice."
 (define* s7-scope-index (subr (maxeff spin (read @sc)) (s7-scope symbol) int)
   (lambda (sc name)
-    (letrec ((go (subr spin (s7-symbols int) int)
-               (lambda (l i) (cond ((null? l) -1) ((eq? (car l) name) i) (else (go (cdr l) (- i 1)))))))
-      (go (get (extract sc names)) (- (get (extract sc count)) 1)))))
+    (iterate go spin ((l s7-symbols (get (extract sc names))) (i int (- (get (extract sc count)) 1))) int
+      (cond ((null? l) -1) ((eq? (car l) name) i) (else (go (cdr l) (- i 1)))))))
 (define* s7-scope-names (subr (read @sc) (s7-scope) s7-symbols)
   (lambda (sc) (reverse (get (extract sc names)))))
 (define* s7-scope-macro (subr (maxeff spin (read @sc)) (s7-scope symbol) (sumof (none unit) (some s7-macro)))
   (lambda (sc name)
-    (letrec ((go (subr spin ((listof (productof (name symbol) (macro s7-macro)) acyclic)) (sumof (none unit) (some s7-macro)))
-               (lambda (l) (cond ((null? l) (sum none #u))
-                                 ((eq? (extract (car l) name) name) (sum some (extract (car l) macro)))
-                                 (else (go (cdr l)))))))
-      (go (get (extract sc macros))))))
+    (iterate go spin ((l (listof (productof (name symbol) (macro s7-macro)) acyclic) (get (extract sc macros)))) (sumof (none unit) (some s7-macro))
+      (cond ((null? l) (sum none #u))
+            ((eq? (extract (car l) name) name) (sum some (extract (car l) macro)))
+            (else (go (cdr l)))))))
 
 
 "What a name means where it is: a frame slot, a macro, a special form,
@@ -253,13 +245,11 @@ may make `...` with `(... ...)`, for a macro it defines)."
 "A list's items and what ends it (() if it is proper)."
 (define* s7-items-and-tail (subr (maxeff spin (read @sc)) (s7-value) (productof (items s7-values) (tail s7-value)))
   (lambda (x)
-    (letrec ((go (subr (maxeff spin (read @sc)) (s7-value s7-values int) (productof (items s7-values) (tail s7-value)))
-               (lambda (x acc n)
-                 (tagcase x
-                   (pair p (if (> n 100000) (product (items (reverse acc)) (tail x))
-                               (go (get (extract p cdr)) (cons (get (extract p car)) acc) (+ n 1))))
-                   (else y (product (items (reverse acc)) (tail y)))))))
-      (go x nil 0))))
+    (iterate go (maxeff spin (read @sc)) ((x s7-value x) (acc s7-values nil) (n int 0)) (productof (items s7-values) (tail s7-value))
+      (tagcase x
+        (pair p (if (> n 100000) (product (items (reverse acc)) (tail x))
+                    (go (get (extract p cdr)) (cons (get (extract p car)) acc) (+ n 1))))
+        (else y (product (items (reverse acc)) (tail y)))))))
 
 "Whether atoms `a` and `b` are equal, as a pattern's datum matches."
 (define* s7-atom-equal? (subr (read @sc) (s7-value s7-value) bool)
@@ -286,9 +276,8 @@ may make `...` with `(... ...)`, for a macro it defines)."
                  nil
                  (list s)))
       (pair q (append (s7-pattern-vars (get (extract q car)) m) (s7-pattern-vars (get (extract q cdr)) m)))
-      (vec a (letrec ((go (subr (maxeff spin (read @sc)) (s7-values) s7-symbols)
-                            (lambda (l) (if (null? l) nil (append (s7-pattern-vars (car l) m) (go (cdr l)))))))
-               (go (array->list a))))
+      (vec a (iterate go (maxeff spin (read @sc)) ((l s7-values (array->list a))) s7-symbols
+               (if (null? l) nil (append (s7-pattern-vars (car l) m) (go (cdr l))))))
       (else y nil))))
 
 (define* s7-lookup-match (subr spin (symbol s7-matches) s7-match)
@@ -305,10 +294,9 @@ of `all`."
   (lambda (vars all)
     (if (null? vars) nil
         (cons (product (name (car vars))
-                       (value (sum many (letrec ((each (subr spin ((listof s7-matches acyclic)) (listof s7-match acyclic))
-                                                         (lambda (l) (if (null? l) nil
-                                                                         (cons (s7-lookup-match (car vars) (car l)) (each (cdr l)))))))
-                                          (each all)))))
+                       (value (sum many (iterate each spin ((l (listof s7-matches acyclic) all)) (listof s7-match acyclic)
+                                          (if (null? l) nil
+                                              (cons (s7-lookup-match (car vars) (car l)) (each (cdr l))))))))
               (s7-gather (cdr vars) all)))))
 "How many ellipses begin `l`."
 (define* s7-ellipses (subr spin (s7-values symbol) int)
@@ -326,9 +314,8 @@ of `all`."
     (tagcase t
       (sym s (if (s7-bound-match? s b) (list s) nil))
       (pair p (append (s7-template-vars (get (extract p car)) b) (s7-template-vars (get (extract p cdr)) b)))
-      (vec a (letrec ((go (subr (maxeff spin (read @sc)) (s7-values) s7-symbols)
-                            (lambda (l) (if (null? l) nil (append (s7-template-vars (car l) b) (go (cdr l)))))))
-               (go (array->list a))))
+      (vec a (iterate go (maxeff spin (read @sc)) ((l s7-values (array->list a))) s7-symbols
+               (if (null? l) nil (append (s7-template-vars (car l) b) (go (cdr l))))))
       (else y nil))))
 "Those of `vars` bound to sequences."
 (define* s7-seq-vars (subr spin (s7-symbols s7-matches) s7-symbols)
@@ -531,9 +518,8 @@ client sets it (the editor: the buffer's directory)."
 "A file name's directory, with its `/`; \"\" if it has none."
 (define* s7-directory-of (subr spin (string) string)
   (lambda (file)
-    (letrec ((go (subr spin (int) string)
-               (lambda (i) (cond ((< i 0) "") ((char=? (string-ref file i) #\/) (substring file 0 (+ i 1))) (else (go (- i 1)))))))
-      (go (- (string-length file) 1)))))
+    (iterate go spin ((i int (- (string-length file) 1))) string
+      (cond ((< i 0) "") ((char=? (string-ref file i) #\/) (substring file 0 (+ i 1))) (else (go (- i 1)))))))
 "File name `file`, relative to `s7-directory` if it is relative."
 (define* s7-path (subr (read @sc) (string) string)
   (lambda (file)
@@ -555,11 +541,10 @@ client sets it (the editor: the buffer's directory)."
   (lambda (v) (s7-show v #t)))
 (define* s7-find-library (subr s7-eff (string) (sumof (none unit) (found s7-library)))
   (lambda (name)
-    (letrec ((go (subr s7-eff ((listof s7-library acyclic)) (sumof (none unit) (found s7-library)))
-               (lambda (l) (cond ((null? l) (sum none #u))
-                                 ((string=? (extract (car l) name) name) (sum found (car l)))
-                                 (else (go (cdr l)))))))
-      (go (get s7-libraries)))))
+    (iterate go s7-eff ((l (listof s7-library acyclic) (get s7-libraries))) (sumof (none unit) (found s7-library))
+      (cond ((null? l) (sum none #u))
+            ((string=? (extract (car l) name) name) (sum found (car l)))
+            (else (go (cdr l)))))))
 "The standard libraries s7st has: R7RS-small's, and some SRFIs'."
 (define s7-provided-libraries s7-strings
   (list "(scheme base)" "(scheme case-lambda)" "(scheme char)" "(scheme cxr)" "(scheme eval)" "(scheme file)"
@@ -575,17 +560,17 @@ client sets it (the editor: the buffer's directory)."
              (or (string=? n "r7rs") (string=? n "s7st") (string=? n "exact-closed")
                  (string=? n "full-unicode") (string=? n "else"))))
           ((s7-sym-named? (s7-car r) "and")
-           (letrec ((all (subr s7-eff (s7-values) bool) (lambda (l) (or (null? l) (and (s7-feature? (car l)) (all (cdr l)))))))
-             (all (s7-value->values (s7-cdr r)))))
+           (iterate all s7-eff ((l s7-values (s7-value->values (s7-cdr r)))) bool
+             (or (null? l) (and (s7-feature? (car l)) (all (cdr l))))))
           ((s7-sym-named? (s7-car r) "or")
-           (letrec ((any (subr s7-eff (s7-values) bool) (lambda (l) (and (pair? l) (or (s7-feature? (car l)) (any (cdr l)))))))
-             (any (s7-value->values (s7-cdr r)))))
+           (iterate any s7-eff ((l s7-values (s7-value->values (s7-cdr r)))) bool
+             (and (pair? l) (or (s7-feature? (car l)) (any (cdr l))))))
           ((s7-sym-named? (s7-car r) "not") (not (s7-feature? (s7-cadr r))))
           ;; A library s7st has, or one defined.
           ((s7-sym-named? (s7-car r) "library")
            (let ((name (s7-library-name (s7-cadr r))))
-             (or (letrec ((has (subr spin (s7-strings) bool) (lambda (l) (and (pair? l) (or (string=? (car l) name) (has (cdr l)))))))
-                   (has s7-provided-libraries))
+             (or (iterate has spin ((l s7-strings s7-provided-libraries)) bool
+                   (and (pair? l) (or (string=? (car l) name) (has (cdr l)))))
                  (tagcase (s7-find-library name) (found l #t) (none u #f)))))
           (else #f))))
 
@@ -613,26 +598,23 @@ none)."
            (ctor (s7-cadr args))
            (pred (s7-car (s7-cddr args)))
            (specs (s7-value->values (s7-cdr (s7-cddr args))))
-           (fields (s7-list (letrec ((go (subr (maxeff spin (read @sc)) (s7-values) s7-values)
-                                           (lambda (l) (if (null? l) nil (cons (s7-car (car l)) (go (cdr l)))))))
-                              (go specs))))
+           (fields (s7-list (iterate go (maxeff spin (read @sc)) ((l s7-values specs)) s7-values
+                              (if (null? l) nil (cons (s7-car (car l)) (go (cdr l)))))))
            (def (lambda ((n s7-value) (e s7-value)) (s7-l (list (s7-kw "define") n e))))
-           (accessors (letrec ((go (subr (maxeff spin (read @sc) (alloc @sc)) (s7-values) s7-values)
-                                 (lambda (l)
-                                   (if (null? l) nil
-                                       (let* ((f (s7-car (car l)))
-                                              (acc (s7-cadr (car l)))
-                                              (mod (s7-cddr (car l)))
-                                              (rest (go (cdr l)))
-                                              (with-acc (the s7-values
-                                                         (if (s7-symbol? acc)
-                                                             (cons (def acc (s7-l (list (s7-kw "record-accessor") name (s7-quoted f)))) rest)
-                                                             rest))))
-                                         (the s7-values
-                                              (if (s7-pair? mod)
-                                                  (cons (def (s7-car mod) (s7-l (list (s7-kw "record-modifier") name (s7-quoted f)))) with-acc)
-                                                  with-acc)))))))
-                         (go specs)))
+           (accessors (iterate go (maxeff spin (read @sc) (alloc @sc)) ((l s7-values specs)) s7-values
+                        (if (null? l) nil
+                            (let* ((f (s7-car (car l)))
+                                   (acc (s7-cadr (car l)))
+                                   (mod (s7-cddr (car l)))
+                                   (rest (go (cdr l)))
+                                   (with-acc (the s7-values
+                                              (if (s7-symbol? acc)
+                                                  (cons (def acc (s7-l (list (s7-kw "record-accessor") name (s7-quoted f)))) rest)
+                                                  rest))))
+                              (the s7-values
+                                   (if (s7-pair? mod)
+                                       (cons (def (s7-car mod) (s7-l (list (s7-kw "record-modifier") name (s7-quoted f)))) with-acc)
+                                       with-acc))))))
            (ctor-def (the s7-values (cond ((s7-pair? ctor)
                             (list (def (s7-car ctor) (s7-l (list (s7-kw "record-constructor") name (s7-quoted (s7-cdr ctor)))))))
                            ((s7-symbol? ctor)
@@ -748,17 +730,15 @@ none)."
         ((eq? name 'cond-expand)
          (tagcase (s7-items args)
            (none u (sum bad "cond-expand: its clauses are no list"))
-           (some cs (letrec ((first (subr s7-eff (s7-values) s7-derived)
-                               (lambda (cs) (cond ((null? cs) (ok (begin-of s7-nil)))
-                                                  ((s7-feature? (s7-car (car cs))) (ok (begin-of (s7-cdr (car cs)))))
-                                                  (else (first (cdr cs)))))))
-                      (first cs)))))
+           (some cs (iterate first s7-eff ((cs s7-values cs)) s7-derived
+                      (cond ((null? cs) (ok (begin-of s7-nil)))
+                            ((s7-feature? (s7-car (car cs))) (ok (begin-of (s7-cdr (car cs)))))
+                            (else (first (cdr cs))))))))
         ((eq? name 'import) (ok (begin-of s7-nil)))
         ((eq? name 'syntax-error)
          (sum bad (string-append (tagcase (s7-car args) (str m (get m)) (else y "syntax error"))
-                                 (string-concatenate (letrec ((go (subr s7-eff (s7-values) (listof string acyclic))
-                                                           (lambda (l) (if (null? l) nil (cons (string-append " " (s7-show (car l) #t)) (go (cdr l)))))))
-                                              (go (s7-value->values (s7-cdr args))))))))
+                                 (string-concatenate (iterate go s7-eff ((l s7-values (s7-value->values (s7-cdr args)))) (listof string acyclic)
+                                                       (if (null? l) nil (cons (string-append " " (s7-show (car l) #t)) (go (cdr l)))))))))
         ((eq? name 'define-library)
          ;; Its `begin`s' forms, at top level; exports and imports dropped.
          (tagcase (s7-items (s7-cdr args))
@@ -773,25 +753,23 @@ none)."
         ((or (eq? name 'include) (eq? name 'include-ci))
          (tagcase (s7-items args)
            (none u (sum bad "include: its files are no list"))
-           (some fs (letrec ((go (subr s7-eff (s7-values s7-values) s7-derived)
-                               (lambda (fs acc)
-                                 (if (null? fs) (ok (begin-of (s7-list (reverse acc))))
-                                     (tagcase (car fs)
-                                       ;; Relative to the file the `include` is in, if it is in one.
-                                       ;; Else as it is (relative to `s7-directory`).
-                                       (str s (tagcase (let* ((from (extract (s7-span-of x) file)) (f (get s))
-                                                              (near (if (or (string=? from "") (and (> (string-length f) 0) (char=? (string-ref f 0) #\/)))
-                                                                        f
-                                                                        (string-append (s7-directory-of from) f))))
-                                                         (tagcase (s7-file-text near)
-                                                           (text t (sum text t))
-                                                           (failed m (s7-file-text f))))
-                                                (text t (tagcase (s7-read-all-folding t (get s) (eq? name 'include-ci))
-                                                          (data ds (go (cdr fs) (append (reverse ds) acc)))
-                                                          (stop r (sum bad (string-append "include: cannot read " (get s))))))
-                                                (failed m (sum bad (string-append "include: " m)))))
-                                       (else y (sum bad "include: a file name is a string")))))))
-                      (go fs nil)))))
+           (some fs (iterate go s7-eff ((fs s7-values fs) (acc s7-values nil)) s7-derived
+                      (if (null? fs) (ok (begin-of (s7-list (reverse acc))))
+                          (tagcase (car fs)
+                            ;; Relative to the file the `include` is in, if it is in one.
+                            ;; Else as it is (relative to `s7-directory`).
+                            (str s (tagcase (let* ((from (extract (s7-span-of x) file)) (f (get s))
+                                                   (near (if (or (string=? from "") (and (> (string-length f) 0) (char=? (string-ref f 0) #\/)))
+                                                             f
+                                                             (string-append (s7-directory-of from) f))))
+                                              (tagcase (s7-file-text near)
+                                                (text t (sum text t))
+                                                (failed m (s7-file-text f))))
+                                     (text t (tagcase (s7-read-all-folding t (get s) (eq? name 'include-ci))
+                                               (data ds (go (cdr fs) (append (reverse ds) acc)))
+                                               (stop r (sum bad (string-append "include: cannot read " (get s))))))
+                                     (failed m (sum bad (string-append "include: " m)))))
+                            (else y (sum bad "include: a file name is a string"))))))))
         (else (sum none #u))))))
 
 ;;; ------------------------------------------------------------ the expander
@@ -859,16 +837,13 @@ else the span its pair keeps; `span` if neither is known."
   (lambda (bs)
     (tagcase (s7-items bs)
       (none u (sum bad "its bindings are no list"))
-      (some l (letrec ((go (subr (maxeff spin (read @sc) (alloc @sc)) (s7-values s7-symbols s7-values (listof s7-span acyclic))
-                                 (sumof (ok s7-bindings) (bad string)))
-                         (lambda (l names inits spans)
-                           (cond ((null? l) (sum ok (product (names (reverse names)) (inits (reverse inits)) (spans (reverse spans)))))
-                                 ((and (s7-pair? (car l)) (s7-symbol? (s7-car (car l))))
-                                  (go (cdr l) (cons (s7-sym (s7-car (car l))) names)
-                                      (cons (if (s7-pair? (s7-cdr (car l))) (s7-cadr (car l)) (s7-l (list (s7-kw "begin")))) inits)
-                                      (cons (s7-span-at (car l) 1 s7-no-span) spans)))
-                                 (else (sum bad "a binding is (name value)"))))))
-                (go l nil nil nil))))))
+      (some l (iterate go (maxeff spin (read @sc) (alloc @sc)) ((l s7-values l) (names s7-symbols nil) (inits s7-values nil) (spans (listof s7-span acyclic) nil)) (sumof (ok s7-bindings) (bad string))
+                (cond ((null? l) (sum ok (product (names (reverse names)) (inits (reverse inits)) (spans (reverse spans)))))
+                      ((and (s7-pair? (car l)) (s7-symbol? (s7-car (car l))))
+                       (go (cdr l) (cons (s7-sym (s7-car (car l))) names)
+                           (cons (if (s7-pair? (s7-cdr (car l))) (s7-cadr (car l)) (s7-l (list (s7-kw "begin")))) inits)
+                           (cons (s7-span-at (car l) 1 s7-no-span) spans)))
+                      (else (sum bad "a binding is (name value)"))))))))
 
 "Each of `names`, given `inits`, a definition in scope `sc`."
 (define* s7-letrec-items (subr (maxeff spin (read @sc) (write @sc)) (s7-scope s7-symbols s7-values s7-span) s7-item-list)
@@ -1194,9 +1169,9 @@ defined in `scopes`: \"\", or an error."
         "syntax-error"))
 (define* s7-define-specials! (subr s7-eff (s7-strings) unit)
   (lambda (names)
-    (if (null? names) #u
-        (let ((k (sum special (string->symbol (car names)))))
-          (begin
-            (set (extract (s7-global-cell (string->symbol (car names))) syntax) k)
-            (set (extract (s7-global-cell (string->symbol (string-append " " (car names)))) syntax) k)
-            (s7-define-specials! (cdr names)))))))
+    (unless (null? names)
+      (let ((k (sum special (string->symbol (car names)))))
+        (begin
+          (set (extract (s7-global-cell (string->symbol (car names))) syntax) k)
+          (set (extract (s7-global-cell (string->symbol (string-append " " (car names)))) syntax) k)
+          (s7-define-specials! (cdr names)))))))

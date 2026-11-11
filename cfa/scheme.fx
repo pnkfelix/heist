@@ -54,8 +54,8 @@
     (let* ((k (string-length n))
            (ends (lambda ((x string)) (and (>= k (string-length x)) (string=? (substring n (- k (string-length x)) k) x))))
            (starts (lambda ((x string)) (and (>= k (string-length x)) (string=? (substring n 0 (string-length x)) x))))
-           (is (lambda ((l s7-strings)) (letrec ((go (subr spin (s7-strings) bool) (lambda (l) (and (pair? l) (or (string=? (car l) n) (go (cdr l)))))))
-                                          (go l)))))
+           (is (lambda ((l s7-strings)) (iterate go spin ((l s7-strings l)) bool
+                                          (and (pair? l) (or (string=? (car l) n) (go (cdr l))))))))
       (cond ((ends "?") (list s7-fv-boolean))
             ((ends "!") (list s7-fv-unspec))
             ((is (list "+" "-" "*" "/" "abs" "max" "min" "quotient" "remainder" "modulo" "expt" "sqrt" "exact" "inexact"
@@ -88,12 +88,10 @@
 "The data of `text`, as far as they read: those before an error."
 (define* s7-read-lenient (subr s7-eff (string string) s7-values)
   (lambda (text file)
-    (letrec ((go (subr s7-eff (int s7-values) s7-values)
-               (lambda (i acc)
-                 (tagcase (s7-read-at text i file)
-                   (datum d (go (extract d end) (cons (extract d value) acc)))
-                   (else y (reverse acc))))))
-      (go 0 nil))))
+    (iterate go s7-eff ((i int 0) (acc s7-values nil)) s7-values
+      (tagcase (s7-read-at text i file)
+        (datum d (go (extract d end) (cons (extract d value) acc)))
+        (else y (reverse acc))))))
 
 ;;; ------------------------------------------------------------ the language
 
@@ -166,8 +164,8 @@ result is data of the kinds `s7-builtin-result` says."
 
 (define* sc-kind-names (subr spin (s7-fset) strings)
   (lambda (s) (if (null? s) nil
-                  (cons (letrec ((nth (subr spin (s7-strings int) string) (lambda (l k) (cond ((null? l) "unknown") ((= k 0) (car l)) (else (nth (cdr l) (- k 1)))))))
-                          (nth s7-fv-kinds (car s)))
+                  (cons (iterate nth spin ((l s7-strings s7-fv-kinds) (k int (car s))) string
+                          (cond ((null? l) "unknown") ((= k 0) (car l)) (else (nth (cdr l) (- k 1)))))
                         (sc-kind-names (cdr s))))))
 
 "The names the world uses but neither defines nor has built in: each is
@@ -269,9 +267,8 @@ numbers). (none) if it is no predicate known."
 name, and the type each is of."
 (define sc-record-preds (ref (listof (productof (name string) (type string)) acyclic) @cf) (new nil))
 (define* sc-record-pred (subr (maxeff spin (read @cf)) (string) string)
-  (lambda (n) (letrec ((go (subr spin ((listof (productof (name string) (type string)) acyclic)) string)
-                         (lambda (l) (cond ((null? l) "") ((string=? (extract (car l) name) n) (extract (car l) type)) (else (go (cdr l)))))))
-                (go (get sc-record-preds)))))
+  (lambda (n) (iterate go spin ((l (listof (productof (name string) (type string)) acyclic) (get sc-record-preds))) string
+                (cond ((null? l) "") ((string=? (extract (car l) name) n) (extract (car l) type)) (else (go (cdr l)))))))
 
 "The globals that are records' accessors and modifiers, by name: the
 field each is of; and the program's own procedures of one parameter, which
@@ -280,11 +277,10 @@ a test may call as a predicate (read as a formula of its body)."
 (define sc-record-fields (ref (listof sc-field-proc acyclic) @cf) (new nil))
 (define* sc-record-field (subr (maxeff spin (read @cf)) (string bool) string)
   (lambda (n modifier)
-    (letrec ((go (subr spin ((listof sc-field-proc acyclic)) string)
-               (lambda (l) (cond ((null? l) "")
-                                 ((and (string=? (extract (car l) name) n) (eq? (extract (car l) modifier) modifier)) (extract (car l) field))
-                                 (else (go (cdr l)))))))
-      (go (get sc-record-fields)))))
+    (iterate go spin ((l (listof sc-field-proc acyclic) (get sc-record-fields))) string
+      (cond ((null? l) "")
+            ((and (string=? (extract (car l) name) n) (eq? (extract (car l) modifier) modifier)) (extract (car l) field))
+            (else (go (cdr l)))))))
 (define sc-user-preds (ref (listof (productof (name string) (lambda s7-lambda)) acyclic) @cf) (new nil))
 (define* sc-user-pred (subr (maxeff spin (read @cf)) (string) (listof s7-lambda acyclic))
   (lambda (n) (letrec ((go (subr spin ((listof (productof (name string) (lambda s7-lambda)) acyclic)) (listof s7-lambda acyclic))
@@ -301,8 +297,8 @@ boolean, ()), not only its kind."
   (lambda (v) (tagcase v
                 (bool b (if b "#t" "#f"))
                 (sym s (string-append "'" (s7-symbol-name s)))
-                (else y (letrec ((nth (subr spin (s7-strings int) string) (lambda (l k) (cond ((null? l) "other") ((= k 0) (car l)) (else (nth (cdr l) (- k 1)))))))
-                          (nth s7-fv-kinds (s7-fv-kind v)))))))
+                (else y (iterate nth spin ((l s7-strings s7-fv-kinds) (k int (s7-fv-kind v))) string
+                          (cond ((null? l) "other") ((= k 0) (car l)) (else (nth (cdr l) (- k 1)))))))))
 (define* sc-exact-const? (subr spin (s7-value) bool)
   (lambda (v) (tagcase v (bool b #t) (sym s #t) (null u #t) (else y #f))))
 (define* sc-all-exact? (subr spin (s7-values) bool)
@@ -351,9 +347,8 @@ the subjects a lambda about to be read is applied to (`let`'s)."
   (lambda (ns)
     (if (null? ns) nil
         (let* ((n (car ns))
-               (src (letrec ((go (subr spin ((listof (productof (var int) (source cf-path)) acyclic)) (listof cf-path acyclic))
-                                   (lambda (l) (cond ((null? l) nil) ((= (extract (car l) var) (extract n var)) (list (extract (car l) source))) (else (go (cdr l)))))))
-                      (go (get sc-aliases))))
+               (src (iterate go spin ((l (listof (productof (var int) (source cf-path)) acyclic) (get sc-aliases))) (listof cf-path acyclic)
+                      (cond ((null? l) nil) ((= (extract (car l) var) (extract n var)) (list (extract (car l) source))) (else (go (cdr l))))))
                (rest (sc-with-aliases (cdr ns))))
           (cons n (if (null? src) rest
                       (cons (product (var (extract (car src) var)) (path (append (extract (car src) path) (extract n path)))
@@ -374,11 +369,11 @@ the subjects a lambda about to be read is applied to (`let`'s)."
           (else -1))))
 (define* sc-new-frame (subr cf-eff (int) (arrayof int @cf))
   (lambda (n) (let ((a (the (arrayof int @cf) (make-array n 0))))
-                (letrec ((go (subr cf-eff (int) (arrayof int @cf)) (lambda (i) (if (>= i n) a (begin (array-set! a i (cf-new-var)) (go (+ i 1)))))))
-                  (go 0)))))
+                (iterate go cf-eff ((i int 0)) (arrayof int @cf)
+                  (if (>= i n) a (begin (array-set! a i (cf-new-var)) (go (+ i 1))))))))
 (define* sc-kind-of (subr cf-eff (s7-value) int)
-  (lambda (v) (tagcase v (sym s (cf-symbol-kind (s7-symbol-name s))) (else z (cf-kind (tagcase v (bool b (if b "#t" "#f")) (else y (letrec ((nth (subr spin (s7-strings int) string) (lambda (l k) (cond ((null? l) "other") ((= k 0) (car l)) (else (nth (cdr l) (- k 1)))))))
-                         (nth s7-fv-kinds (s7-fv-kind v))))))))))
+  (lambda (v) (tagcase v (sym s (cf-symbol-kind (s7-symbol-name s))) (else z (cf-kind (tagcase v (bool b (if b "#t" "#f")) (else y (iterate nth spin ((l s7-strings s7-fv-kinds) (k int (s7-fv-kind v))) string
+                                                                                                                                     (cond ((null? l) "other") ((= k 0) (car l)) (else (nth (cdr l) (- k 1))))))))))))
 
 "The name of a global the world does not define, if it is a built-in."
 "Procedures of libraries s7st does not have but programs use, modelled as
@@ -394,8 +389,8 @@ letters between c and r, each a field, the last first."
 (define* sc-cxr? (subr spin (string) bool)
   (lambda (n) (let ((k (string-length n)))
                 (and (>= k 4) (<= k 6) (char=? (string-ref n 0) #\c) (char=? (string-ref n (- k 1)) #\r)
-                     (letrec ((go (subr spin (int) bool) (lambda (i) (or (>= i (- k 1)) (and (or (char=? (string-ref n i) #\a) (char=? (string-ref n i) #\d)) (go (+ i 1)))))))
-                       (go 1))))))
+                     (iterate go spin ((i int 1)) bool
+                       (or (>= i (- k 1)) (and (or (char=? (string-ref n i) #\a) (char=? (string-ref n i) #\d)) (go (+ i 1)))))))))
 (define* sc-builtin? (subr s7-eff (s7-global) bool)
   (lambda (g) (or (tagcase (get (extract g value)) (prim p #t) (proc p #t) (else y #f))
                   (member? (s7-symbol-name (extract g name)) sc-library-procs string=?)
@@ -406,10 +401,9 @@ letters between c and r, each a field, the last first."
   (lambda (n) (tagcase (extract n form) (n-const v (tagcase v (sym s (s7-symbol-name s)) (else y ""))) (else y ""))))
 (define* sc-const-symbols (subr s7-eff (s7-node) strings)
   (lambda (n) (tagcase (extract n form)
-                (n-const v (letrec ((go (subr s7-eff (s7-values) strings)
-                                          (lambda (l) (if (null? l) nil
-                                                          (cons (tagcase (car l) (sym s (s7-symbol-name s)) (else y "")) (go (cdr l)))))))
-                             (go (s7-value->values v))))
+                (n-const v (iterate go s7-eff ((l s7-values (s7-value->values v))) strings
+                             (if (null? l) nil
+                                 (cons (tagcase (car l) (sym s (s7-symbol-name s)) (else y "")) (go (cdr l))))))
                 (else y nil))))
 "What `define-record-type` defines (expand.fx's `s7-derive-record`), as
 lambdas: `(record-constructor T '(f …))` one making a record site of those
@@ -491,7 +485,7 @@ cdr then car, through built-in `car` and `cdr` and records' accessors (var
                                (begin (set cf-assigned (cons v (get cf-assigned))) (k-bind v (sc-core (extract x value) fs))))))
           (n-set-global x (k-bind (cf-global-var (s7-symbol-name (extract (extract x cell) name))) (sc-core (extract x value) fs)))
           (n-define x (let ((name (s7-symbol-name (extract (extract x cell) name))))
-                        (begin (if (null? fs) (set cf-definition name) #u)
+                        (begin (when (null? fs) (set cf-definition name))
                           (k-bind (cf-global-var name)
                                   (if (sc-param-global? name)
                                       (sc-make-parameter name (extract x value) fs)
@@ -538,20 +532,18 @@ cdr then car, through built-in `car` and `cdr` and records' accessors (var
              (ps (sc-list-items (car args)))
              (vs (sc-list-items (car (cdr args))))
              (thunk (sc-core (car (cdr (cdr args))) fs))
-             (sets (letrec ((go (subr sc-eff (s7-nodes s7-nodes) cores)
-                              (lambda (ps vs)
-                                (if (or (null? ps) (null? vs)) nil
-                                    (let* ((v (sc-core (car vs) fs))
-                                           (name (tagcase (extract (car ps) form) (n-global g (s7-symbol-name (extract g name))) (else y "")))
-                                           (c (if (and (not (string=? name "")) (sc-param-global? name))
-                                                  (let ((cell (k-var (cf-global-var (string-append "%param:" name)) -1)))
-                                                    (k-seq (list (sc-core (car ps) fs)
-                                                                 (k-store cell "value"
-                                                                          (k-alt (list v (k-app (cf-add-call (product (span sp) (operator sp)))
-                                                                                                (k-field cell "convert") (list v))))))))
-                                                  (k-escape (list (sc-core (car ps) fs) v)))))
-                                      (cons c (go (cdr ps) (cdr vs))))))))
-                     (go ps vs))))
+             (sets (iterate go sc-eff ((ps s7-nodes ps) (vs s7-nodes vs)) cores
+                     (if (or (null? ps) (null? vs)) nil
+                         (let* ((v (sc-core (car vs) fs))
+                                (name (tagcase (extract (car ps) form) (n-global g (s7-symbol-name (extract g name))) (else y "")))
+                                (c (if (and (not (string=? name "")) (sc-param-global? name))
+                                       (let ((cell (k-var (cf-global-var (string-append "%param:" name)) -1)))
+                                         (k-seq (list (sc-core (car ps) fs)
+                                                      (k-store cell "value"
+                                                               (k-alt (list v (k-app (cf-add-call (product (span sp) (operator sp)))
+                                                                                     (k-field cell "convert") (list v))))))))
+                                       (k-escape (list (sc-core (car ps) fs) v)))))
+                           (cons c (go (cdr ps) (cdr vs))))))))
         (k-seq (append sets (list (k-app (cf-add-call (product (span sp) (operator sp))) thunk nil)))))))
   ;; What test `t` tells each branch (yank's occurrence typing): of a local
   ;; variable, or a field of one (`sc-subject`), its truth; a predicate of
@@ -649,7 +641,7 @@ cdr then car, through built-in `car` and `cdr` and records' accessors (var
         (cond ((cf-global-defined? name) (cf-ref (cf-global-var name) name sp))
               ((sc-builtin? g) (k-prim name))
               ;; Defined nowhere known: whatever it will be.
-              (else (begin (if (member? name (get sc-undefined) string=?) #u (set sc-undefined (cons name (get sc-undefined))))
+              (else (begin (unless (member? name (get sc-undefined) string=?) (set sc-undefined (cons name (get sc-undefined))))
                       (k-escape nil)))))))
   ;; Each clause a lambda, its frame its parameters then its definitions.
   (sc-lambdas (subr sc-eff ((listof s7-lambda acyclic) sc-frames) cores)
@@ -659,15 +651,13 @@ cdr then car, through built-in `car` and `cdr` and records' accessors (var
                  (frame (sc-new-frame (max (extract l size) (+ (extract l required) (if (extract l rest) 1 0)))))
                  (aliased (let ((pending (get sc-pending-args)))
                             (begin (set sc-pending-args nil)
-                              (letrec ((go (subr cf-eff ((listof cf-path acyclic) int) unit)
-                                             (lambda (ps i) (if (or (null? ps) (>= i (extract l required))) #u
-                                                                (begin (if (>= (extract (car ps) var) 0)
-                                                                           (set sc-aliases (cons (product (var (array-ref frame i)) (source (car ps))) (get sc-aliases)))
-                                                                           #u)
-                                                                  (go (cdr ps) (+ i 1)))))))
-                                (go pending 0)))))
-                 (params (letrec ((go (subr cf-eff (int) ints) (lambda (i) (if (>= i (extract l required)) nil (cons (array-ref frame i) (go (+ i 1)))))))
-                           (go 0)))
+                              (iterate go cf-eff ((ps (listof cf-path acyclic) pending) (i int 0)) unit
+                                (unless (or (null? ps) (>= i (extract l required)))
+                                  (when (>= (extract (car ps) var) 0)
+                                    (set sc-aliases (cons (product (var (array-ref frame i)) (source (car ps))) (get sc-aliases))))
+                             (go (cdr ps) (+ i 1)))))))
+                 (params (iterate go cf-eff ((i int 0)) ints
+                           (if (>= i (extract l required)) nil (cons (array-ref frame i) (go (+ i 1))))))
                  (body (sc-core (extract l body) (cons frame fs)))
                  (c (k-lam (cf-add-lambda (product (span (sc-span (extract l span)))
                                                    (name (if (string=? (extract l name) "") (cf-anonymous) (extract l name)))
@@ -704,9 +694,8 @@ cdr then car, through built-in `car` and `cdr` and records' accessors (var
              (k-alt (list (k-app (cf-add-call (product (span sp) (operator (sc-span (extract op span))))) (car as) (list k))
                           (k-field (k-alloc s nil) "value")))))
           ((and (sc-cxr? prim) (= nargs 1))
-           (letrec ((go (subr cf-eff (int core) core)
-                          (lambda (i x) (if (< i 1) x (go (- i 1) (k-field x (if (char=? (string-ref prim i) #\a) "car" "cdr")))))))
-             (go (- (string-length prim) 2) (car as))))
+           (iterate go cf-eff ((i int (- (string-length prim) 2)) (x core (car as))) core
+             (if (< i 1) x (go (- i 1) (k-field x (if (char=? (string-ref prim i) #\a) "car" "cdr"))))))
           ((and (string=? prim "cdr") (= nargs 1)) (k-field (car as) "cdr"))
           ((and (string=? prim "set-car!") (= nargs 2))
            (begin (set cf-stored (cons "car" (get cf-stored))) (k-seq (list (k-store (car as) "car" (car (cdr as))) (k-const (cf-kind "unspecified"))))))
@@ -797,8 +786,8 @@ cdr then car, through built-in `car` and `cdr` and records' accessors (var
           ((and (string=? prim "vector-copy") (>= nargs 1))
            (k-seq (list (k-none (cdr as)) (k-alloc (site "vector") (list (product (label "elt") (value (k-field (car as) "elt"))))))))
           ((and (string=? prim "vector-append"))
-           (k-alloc (site "vector") (list (product (label "elt") (value (k-alt (letrec ((go (subr spin (cores) cores) (lambda (l) (if (null? l) nil (cons (k-field (car l) "elt") (go (cdr l)))))))
-                                                                                 (go as))))))))
+           (k-alloc (site "vector") (list (product (label "elt") (value (k-alt (iterate go spin ((l cores as)) cores
+                                                                                 (if (null? l) nil (cons (k-field (car l) "elt") (go (cdr l)))))))))))
           ((and (string=? prim "vector-copy!") (>= nargs 3))
            (k-seq (list (k-none (cons (car (cdr as)) (cdr (cdr (cdr as))))) (k-store (car as) "elt" (k-field (car (cdr (cdr as))) "elt"))
                         (k-const (cf-kind "unspecified")))))
@@ -823,11 +812,9 @@ cdr then car, through built-in `car` and `cdr` and records' accessors (var
            ;; A `let` (a lambda applied where it is made): its variables bound to
            ;; others alias them.
            (let ((opc (begin (tagcase (extract op form)
-                               (n-lambda ls (if (and (pair? ls) (null? (cdr ls)))
-                                                (set sc-pending-args (letrec ((go (subr cf-eff (s7-nodes) (listof cf-path acyclic))
-                                                                                    (lambda (l) (if (null? l) nil (cons (sc-subject (car l) fs) (go (cdr l)))))))
-                                                                       (go args)))
-                                                #u))
+                               (n-lambda ls (when (and (pair? ls) (null? (cdr ls)))
+                                              (set sc-pending-args (iterate go cf-eff ((l s7-nodes args)) (listof cf-path acyclic)
+                                                                     (if (null? l) nil (cons (sc-subject (car l) fs) (go (cdr l))))))))
                                (else y #u))
                              (sc-core op fs))))
              (k-app (cf-add-call (product (span sp) (operator (sc-span (extract op span))))) opc as))))))))
@@ -835,59 +822,54 @@ cdr then car, through built-in `car` and `cdr` and records' accessors (var
 "The names a world's top level defines, each a global."
 (define* sc-declare! (subr sc-eff (s7-nodes) unit)
   (lambda (ns)
-    (if (null? ns) #u
-        (begin
-          (tagcase (extract (car ns) form)
-            (n-define x (let ((name (s7-symbol-name (extract (extract x cell) name))))
-                          (begin
-                            (cf-global-var name)
-                            ;; A record's predicate, accessor or modifier; a parameter; a procedure of one parameter.
-                            (tagcase (extract (extract x value) form)
-                              (n-call c (let ((op (tagcase (extract (extract c op) form) (n-global g (s7-symbol-name (extract g name))) (else y "")))
-                                              (args (extract c args)))
-                                          (cond
-                                            ((and (string=? op "make-parameter") (not (cf-global-defined? op)))
-                                             (begin (set sc-params (cons name (get sc-params)))
-                                               (cf-global-var (string-append "%param:" name)) #u))
-                                            ((and (string=? op " record-predicate") (pair? args))
-                                             (tagcase (extract (car args) form)
-                                               (n-global g (set sc-record-preds (cons (product (name name) (type (s7-symbol-name (extract g name))))
-                                                                                      (get sc-record-preds))))
-                                               (else y #u)))
-                                            ((and (or (string=? op " record-accessor") (string=? op " record-modifier")) (pair? args) (pair? (cdr args)))
-                                             (let ((field (sc-const-symbol (car (cdr args)))) (modifier (string=? op " record-modifier")))
-                                               (begin
-                                                 (set sc-record-fields (cons (product (name name) (field field) (modifier modifier)) (get sc-record-fields)))
-                                                 (if modifier (set cf-stored (cons field (get cf-stored))) #u))))
-                                            (else #u))))
-                              (n-lambda ls (if (and (pair? ls) (null? (cdr ls)) (= (extract (car ls) required) 1) (not (extract (car ls) rest)))
-                                               (set sc-user-preds (cons (product (name name) (lambda (car ls))) (get sc-user-preds)))
-                                               #u))
-                              (else y #u))
-                            #u)))
-            (n-seq l (sc-declare! l))
-            (else y #u))
-          (sc-declare! (cdr ns))))))
+    (unless (null? ns)
+      (tagcase (extract (car ns) form)
+        (n-define x (let ((name (s7-symbol-name (extract (extract x cell) name))))
+                      (begin
+                        (cf-global-var name)
+                        ;; A record's predicate, accessor or modifier; a parameter; a procedure of one parameter.
+                        (tagcase (extract (extract x value) form)
+                          (n-call c (let ((op (tagcase (extract (extract c op) form) (n-global g (s7-symbol-name (extract g name))) (else y "")))
+                                          (args (extract c args)))
+                                      (cond
+                                        ((and (string=? op "make-parameter") (not (cf-global-defined? op)))
+                                         (begin (set sc-params (cons name (get sc-params)))
+                                           (cf-global-var (string-append "%param:" name)) #u))
+                                        ((and (string=? op " record-predicate") (pair? args))
+                                         (tagcase (extract (car args) form)
+                                           (n-global g (set sc-record-preds (cons (product (name name) (type (s7-symbol-name (extract g name))))
+                                                                                  (get sc-record-preds))))
+                                           (else y #u)))
+                                        ((and (or (string=? op " record-accessor") (string=? op " record-modifier")) (pair? args) (pair? (cdr args)))
+                                         (let ((field (sc-const-symbol (car (cdr args)))) (modifier (string=? op " record-modifier")))
+                                           (begin
+                                             (set sc-record-fields (cons (product (name name) (field field) (modifier modifier)) (get sc-record-fields)))
+                                             (when modifier (set cf-stored (cons field (get cf-stored)))))))
+                                        (else #u))))
+                          (n-lambda ls (when (and (pair? ls) (null? (cdr ls)) (= (extract (car ls) required) 1) (not (extract (car ls) rest)))
+                                         (set sc-user-preds (cons (product (name name) (lambda (car ls))) (get sc-user-preds)))))
+                          (else y #u))
+                        #u)))
+        (n-seq l (sc-declare! l))
+        (else y #u))
+      (sc-declare! (cdr ns)))))
 
 "Text `text` of `file`, its forms expanded in the current namespace, as
 far as they read: libraries' bodies spliced, imports passed over."
 (define* sc-expand (subr s7-eff (string string) s7-nodes)
   (lambda (text file)
-    (letrec ((go (subr s7-eff (s7-values) s7-nodes)
-               (lambda (fs)
-                 (if (null? fs) nil
-                     (let ((f (car fs)))
-                       (cond ((s7-sym-named? (s7-car f) "import") (go (cdr fs)))
-                             ((s7-sym-named? (s7-car f) "define-library")
-                              (append (go (s7-library-body (s7-library-decls (s7-value->values (s7-cddr f))))) (go (cdr fs))))
-                             (else (begin (set s7-syntax-errors nil) (let ((n (s7-expand-top f))) (cons n (go (cdr fs))))))))))))
-      (go (s7-read-lenient text file)))))
+    (iterate go s7-eff ((fs s7-values (s7-read-lenient text file))) s7-nodes
+      (if (null? fs) nil
+          (let ((f (car fs)))
+            (cond ((s7-sym-named? (s7-car f) "import") (go (cdr fs)))
+                  ((s7-sym-named? (s7-car f) "define-library")
+                   (append (go (s7-library-body (s7-library-decls (s7-value->values (s7-cddr f))))) (go (cdr fs))))
+                  (else (begin (set s7-syntax-errors nil) (let ((n (s7-expand-top f))) (cons n (go (cdr fs))))))))))))
 
 "The directory of `p`, with its `/` (\"\" if none)."
 (define* cf-directory-of (subr spin (string) string)
-  (lambda (p) (letrec ((go (subr spin (int) string)
-                         (lambda (i) (cond ((< i 0) "") ((char=? (string-ref p i) #\/) (substring p 0 (+ i 1))) (else (go (- i 1)))))))
-                (go (- (string-length p) 1)))))
+  (lambda (p) (iterate go spin ((i int (- (string-length p) 1))) string
+                (cond ((< i 0) "") ((char=? (string-ref p i) #\/) (substring p 0 (+ i 1))) (else (go (- i 1)))))))
 "The library an import set names: `(only (a b) …)`'s, `(prefix …)`'s, …
 inside, the name itself."
 (define* sc-import-name (subr s7-eff (s7-value) s7-value)
@@ -901,17 +883,15 @@ inside, the name itself."
 (define-type sc-text-libs (productof (imports s7-values) (defines s7-values)))
 (define* sc-text-libraries (subr s7-eff (string string) sc-text-libs)
   (lambda (text file)
-    (letrec ((go (subr s7-eff (s7-values) sc-text-libs)
-               (lambda (fs)
-                 (if (null? fs) (product (imports nil) (defines nil))
-                     (let ((f (car fs)) (rest (go (cdr fs))))
-                       (cond ((s7-sym-named? (s7-car f) "import")
-                              (product (imports (append (s7-value->values (s7-cdr f)) (extract rest imports))) (defines (extract rest defines))))
-                             ((s7-sym-named? (s7-car f) "define-library")
-                              (product (imports (append (s7-decl-items (s7-library-decls (s7-value->values (s7-cddr f))) "import") (extract rest imports)))
-                                       (defines (cons (s7-cadr f) (extract rest defines)))))
-                             (else rest)))))))
-      (go (s7-read-lenient text file)))))
+    (iterate go s7-eff ((fs s7-values (s7-read-lenient text file))) sc-text-libs
+      (if (null? fs) (product (imports nil) (defines nil))
+          (let ((f (car fs)) (rest (go (cdr fs))))
+            (cond ((s7-sym-named? (s7-car f) "import")
+                   (product (imports (append (s7-value->values (s7-cdr f)) (extract rest imports))) (defines (extract rest defines))))
+                  ((s7-sym-named? (s7-car f) "define-library")
+                   (product (imports (append (s7-decl-items (s7-library-decls (s7-value->values (s7-cddr f))) "import") (extract rest imports)))
+                            (defines (cons (s7-cadr f) (extract rest defines)))))
+                  (else rest)))))))
 "Where a file defining library `name` puts the library directories it is
 under: `…/src/yank/analysis/cfa.sld` defining (yank analysis cfa), `…/src/`."
 (define* sc-library-root (subr s7-eff (string s7-value) string)
@@ -933,40 +913,39 @@ s7st's built-ins, or not known."
           (seen (the (ref s7-strings @sc) (new nil))))
       (letrec ((roots! (subr s7-eff (string s7-values) unit)
                  (lambda (path names)
-                   (if (null? names) #u
-                       (let ((root (sc-library-root path (car names))))
-                         (begin (if (string=? root "") #u (s7-add-library-directory! root))
-                           (roots! path (cdr names)))))))
+                   (unless (null? names)
+                     (let ((root (sc-library-root path (car names))))
+                       (begin (unless (string=? root "") (s7-add-library-directory! root))
+                         (roots! path (cdr names)))))))
                (imports! (subr s7-eff (s7-values) unit)
                  (lambda (specs)
-                   (if (null? specs) #u
-                       (let ((name (sc-import-name (car specs))))
-                         (begin
-                           (if (s7-standard-library? name) #u
-                               (tagcase (s7-library-file name)
-                                 (found f (if (member? (extract f path) (get seen) string=?) #u
-                                              (begin (set seen (cons (extract f path) (get seen)))
-                                                (let ((ls (sc-text-libraries (extract f text) (extract f path))))
-                                                  (begin (imports! (extract ls imports))
-                                                    (set acc (append (get acc) (list (product (path (extract f path)) (text (extract f text)))))))))))
-                                 (else y #u)))
-                           (imports! (cdr specs)))))))
+                   (unless (null? specs)
+                     (let ((name (sc-import-name (car specs))))
+                       (begin
+                         (unless (s7-standard-library? name)
+                           (tagcase (s7-library-file name)
+                             (found f (unless (member? (extract f path) (get seen) string=?)
+                                        (set seen (cons (extract f path) (get seen)))
+                                   (let ((ls (sc-text-libraries (extract f text) (extract f path))))
+                                     (begin (imports! (extract ls imports))
+                                       (set acc (append (get acc) (list (product (path (extract f path)) (text (extract f text))))))))))
+                             (else y #u)))
+                         (imports! (cdr specs)))))))
                (files! (subr s7-eff (strings strings) unit)
                  (lambda (ps ts)
-                   (if (null? ps) #u
-                       (let ((ls (sc-text-libraries (car ts) (car ps))))
-                         (begin (set seen (cons (car ps) (get seen)))
-                           ;; A program's own directory: where its libraries may be.
-                           (s7-add-library-directory! (cf-directory-of (car ps)))
-                           (roots! (car ps) (extract ls defines))
-                           (imports! (extract ls imports))
-                           (files! (cdr ps) (cdr ts))))))))
+                   (unless (null? ps)
+                     (let ((ls (sc-text-libraries (car ts) (car ps))))
+                       (begin (set seen (cons (car ps) (get seen)))
+                         ;; A program's own directory: where its libraries may be.
+                         (s7-add-library-directory! (cf-directory-of (car ps)))
+                         (roots! (car ps) (extract ls defines))
+                         (imports! (extract ls imports))
+                         (files! (cdr ps) (cdr ts))))))))
         (begin
           (files! paths texts)
           (append (get acc)
-                  (letrec ((go (subr spin (strings strings) (listof sc-world-file acyclic))
-                             (lambda (ps ts) (if (null? ps) nil (cons (product (path (car ps)) (text (car ts))) (go (cdr ps) (cdr ts)))))))
-                    (go paths texts))))))))
+                  (iterate go spin ((ps strings paths) (ts strings texts)) (listof sc-world-file acyclic)
+                    (if (null? ps) nil (cons (product (path (car ps)) (text (car ts))) (go (cdr ps) (cdr ts)))))))))))
 
 "A world of Scheme files (`paths` and their `texts`), read as core: its
 top levels, a core each, in order. They are expanded in a namespace of
@@ -977,9 +956,8 @@ their own, thrown away after, with what its renaming made."
            (ns (s7-make-ns "cfa" 256 (list s7-builtins)))
            (saved (get s7-current-ns))
            (nodes (begin (set s7-current-ns ns)
-                    (letrec ((go (subr s7-eff (strings strings) (listof s7-nodes acyclic))
-                               (lambda (ps ts) (if (null? ps) nil (let ((n (sc-expand (car ts) (car ps)))) (cons n (go (cdr ps) (cdr ts))))))))
-                      (go paths texts)))))
+                    (iterate go s7-eff ((ps strings paths) (ts strings texts)) (listof s7-nodes acyclic)
+                      (if (null? ps) nil (let ((n (sc-expand (car ts) (car ps)))) (cons n (go (cdr ps) (cdr ts)))))))))
       (begin
         (set s7-current-ns saved)
         (cf-reset!)
@@ -987,12 +965,11 @@ their own, thrown away after, with what its renaming made."
         (set cf-null-kind "()")
         (set sc-record-preds nil) (set sc-record-fields nil) (set sc-user-preds nil) (set sc-aliases nil) (set sc-pending-args nil)
         (set sc-params nil) (set sc-undefined nil)
-        (letrec ((go (subr sc-eff (strings) unit) (lambda (ps) (if (null? ps) #u (begin (cf-file (car ps)) (go (cdr ps)))))))
-          (go paths))
-        (letrec ((go (subr sc-eff ((listof s7-nodes acyclic)) unit) (lambda (l) (if (null? l) #u (begin (sc-declare! (car l)) (go (cdr l)))))))
-          (go nodes))
+        (iterate go sc-eff ((ps strings paths)) unit
+          (unless (null? ps) (cf-file (car ps)) (go (cdr ps))))
+        (iterate go sc-eff ((l (listof s7-nodes acyclic) nodes)) unit
+          (unless (null? l) (sc-declare! (car l)) (go (cdr l))))
         (cf-globals-declared!)
-        (let ((tops (letrec ((go (subr sc-eff ((listof s7-nodes acyclic)) cores)
-                               (lambda (l) (if (null? l) nil (let ((c (k-seq (sc-all (car l) nil)))) (cons c (go (cdr l))))))))
-                      (go nodes))))
+        (let ((tops (iterate go sc-eff ((l (listof s7-nodes acyclic) nodes)) cores
+                      (if (null? l) nil (let ((c (k-seq (sc-all (car l) nil)))) (cons c (go (cdr l))))))))
           (begin (s7-rename-release! mark) tops))))))

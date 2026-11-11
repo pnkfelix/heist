@@ -103,14 +103,14 @@ the worklist; values in all cells together (facts); cells."
 (define cf-cell-count (ref int @cf) (new 0))
 (define* cf-enqueue! (subr cf-eff (int) unit)
   (lambda (t)
-    (if (= (table-ref (get cf-queued) t 0) 1) #u
-        (begin (table-set! (get cf-queued) t 1) (set cf-back (cons t (get cf-back)))
-          (set cf-queue-length (+ (get cf-queue-length) 1))))))
+    (unless (= (table-ref (get cf-queued) t 0) 1)
+      (table-set! (get cf-queued) t 1) (set cf-back (cons t (get cf-back)))
+ (set cf-queue-length (+ (get cf-queue-length) 1)))))
 "Task `t` made: on the worklist, the first time."
 (define* cf-ensure-task! (subr cf-eff (int) unit)
   (lambda (t)
-    (if (= (table-ref (get cf-made) t 0) 1) #u
-        (begin (table-set! (get cf-made) t 1) (cf-enqueue! t)))))
+    (unless (= (table-ref (get cf-made) t 0) 1)
+      (table-set! (get cf-made) t 1) (cf-enqueue! t))))
 
 ;;; ------------------------------------------------------------ cells
 
@@ -124,36 +124,32 @@ the worklist; values in all cells together (facts); cells."
   (lambda (k)
     (let ((rs (table-ref (get cf-readers) k nil)) (t (get cf-current)))
       (begin
-        (if (and (pair? rs) (= (car rs) t)) #u
-            (if (letrec ((has (subr spin (ints) bool) (lambda (l) (and (pair? l) (or (= (car l) t) (has (cdr l)))))))
-                  (has rs))
-                #u
-                (table-set! (get cf-readers) k (cons t rs))))
+        (unless (and (pair? rs) (= (car rs) t))
+          (unless (iterate has spin ((l ints rs)) bool
+                    (and (pair? l) (or (= (car l) t) (has (cdr l)))))
+            (table-set! (get cf-readers) k (cons t rs))))
         (table-ref (get cf-cells) k nil)))))
 "Cell `k` given `s` too: its readers to run again, if it grew."
 (define* widen-to (subr (maxeff spin (read @cf)) (int) int)
-  (lambda (k) (letrec ((go (subr spin ((listof (productof (kind int) (to int)) acyclic)) int)
-                         (lambda (l) (cond ((null? l) -1) ((= (extract (car l) kind) k) (extract (car l) to)) (else (go (cdr l)))))))
-                (go (get cf-widen)))))
+  (lambda (k) (iterate go spin ((l (listof (productof (kind int) (to int)) acyclic) (get cf-widen))) int
+                (cond ((null? l) -1) ((= (extract (car l) kind) k) (extract (car l) to)) (else (go (cdr l)))))))
 "`s`, its kinds widened where too many of one widening are in it; and,
 so that a cell only grows, a kind its widening is in already absorbed by
 it (once a cell holds `symbol`, `'x` joining it changes nothing)."
 (define* widen (subr cf-eff (vals) vals)
   (lambda (s)
     (if (null? (get cf-widen)) s
-        (let ((wide (letrec ((go (subr cf-eff (vals int) int)
-                               (lambda (l n) (cond ((null? l) n)
-                                                   ((and (kind-val? (car l)) (>= (widen-to (quotient (car l) 4)) 0))
-                                                    (go (cdr l) (if (vals-has? s (+ 2 (* 4 (widen-to (quotient (car l) 4))))) 9 (+ n 1))))
-                                                   (else (go (cdr l) n))))))
-                      (go s 0))))
+        (let ((wide (iterate go cf-eff ((l vals s) (n int 0)) int
+                      (cond ((null? l) n)
+                            ((and (kind-val? (car l)) (>= (widen-to (quotient (car l) 4)) 0))
+                             (go (cdr l) (if (vals-has? s (+ 2 (* 4 (widen-to (quotient (car l) 4))))) 9 (+ n 1))))
+                            (else (go (cdr l) n))))))
           (if (<= wide 8) s
-              (letrec ((go (subr cf-eff (vals) vals)
-                         (lambda (s) (cond ((null? s) nil)
-                                           ((and (kind-val? (car s)) (>= (widen-to (quotient (car s) 4)) 0))
-                                            (vals-union (list (+ 2 (* 4 (widen-to (quotient (car s) 4))))) (go (cdr s))))
-                                           (else (vals-union (list (car s)) (go (cdr s))))))))
-                (go s)))))))
+              (iterate go cf-eff ((s vals s)) vals
+                (cond ((null? s) nil)
+                      ((and (kind-val? (car s)) (>= (widen-to (quotient (car s) 4)) 0))
+                       (vals-union (list (+ 2 (* 4 (widen-to (quotient (car s) 4))))) (go (cdr s))))
+                      (else (vals-union (list (car s)) (go (cdr s)))))))))))
 "Sites dropped from a cell that holds unknown, to escape once the task
 that dropped them is done (`collapse`)."
 (define cf-to-escape (ref vals @cf) (new nil))
@@ -168,11 +164,10 @@ yank needed it on worlds that did not finish without it."
 (define* collapse (subr cf-eff (vals) vals)
   (lambda (s)
     (if (or (not (get cf-collapse)) (not (vals-has? s cf-unknown))) s
-        (letrec ((go (subr cf-eff (vals) vals)
-                   (lambda (l) (cond ((null? l) nil)
-                                     ((site-val? (car l)) (begin (set cf-to-escape (cons (car l) (get cf-to-escape))) (go (cdr l))))
-                                     (else (cons (car l) (go (cdr l))))))))
-          (go s)))))
+        (iterate go cf-eff ((l vals s)) vals
+          (cond ((null? l) nil)
+                ((site-val? (car l)) (begin (set cf-to-escape (cons (car l) (get cf-to-escape))) (go (cdr l))))
+                (else (cons (car l) (go (cdr l)))))))))
 "The first cells to come to hold unknown, said: where unknown came from."
 (define cf-unknown-firsts (ref strings @cf) (new nil))
 (define* cf-unknown-event (subr cf-eff (int) string)
@@ -191,17 +186,16 @@ yank needed it on worlds that did not finish without it."
                      " in " where))))
 (define* cf-join! (subr cf-eff (int vals) unit)
   (lambda (k s)
-    (if (null? s) #u
-        (let* ((old (table-ref (get cf-cells) k nil)) (new (collapse (widen (vals-union old s)))))
-          (if (= (length new) (length old)) #u
-              (begin
-                (if (and (vals-has? new cf-unknown) (not (vals-has? old cf-unknown)) (< (length (get cf-unknown-firsts)) 12))
-                    (set cf-unknown-firsts (append (get cf-unknown-firsts) (list (cf-unknown-event k)))) #u)
-                (set cf-facts (+ (get cf-facts) (- (length new) (length old))))
-                (if (null? old) (set cf-cell-count (+ (get cf-cell-count) 1)) #u)
-                (table-set! (get cf-cells) k new)
-                (letrec ((go (subr cf-eff (ints) unit) (lambda (l) (if (null? l) #u (begin (cf-enqueue! (car l)) (go (cdr l)))))))
-                  (go (table-ref (get cf-readers) k nil)))))))))
+    (unless (null? s)
+      (let* ((old (table-ref (get cf-cells) k nil)) (new (collapse (widen (vals-union old s)))))
+        (unless (= (length new) (length old))
+          (when (and (vals-has? new cf-unknown) (not (vals-has? old cf-unknown)) (< (length (get cf-unknown-firsts)) 12))
+            (set cf-unknown-firsts (append (get cf-unknown-firsts) (list (cf-unknown-event k)))))
+          (set cf-facts (+ (get cf-facts) (- (length new) (length old))))
+          (when (null? old) (set cf-cell-count (+ (get cf-cell-count) 1)))
+          (table-set! (get cf-cells) k new)
+          (iterate go cf-eff ((l ints (table-ref (get cf-readers) k nil))) unit
+            (unless (null? l) (cf-enqueue! (car l)) (go (cdr l)))))))))
 "What each reference and call is in each contour: the values, by
 (number, contour); and the contours each was evaluated in."
 (define cf-ref-ctx (ref vals-table @cf) (new (new-vals-table)))
@@ -210,17 +204,16 @@ yank needed it on worlds that did not finish without it."
 (define cf-call-contours (ref ints-table @cf) (new (new-ints-table)))
 (define* cf-note-ctx! (subr cf-eff (vals-table int int vals) unit)
   (lambda (tbl n c s)
-    (if (null? s) #u
-        (let ((cs-table (if (eq? tbl (get cf-ref-ctx)) (get cf-ref-contours) (get cf-call-contours))))
-          (begin
-            (if (letrec ((has (subr spin (ints) bool) (lambda (l) (and (pair? l) (or (= (car l) c) (has (cdr l)))))))
-                  (has (table-ref cs-table n nil)))
-                #u
-                (table-set! cs-table n (cons c (table-ref cs-table n nil))))
-            (table-set! tbl (+ (* n 16777216) c) (vals-union (table-ref tbl (+ (* n 16777216) c) nil) s)))))))
+    (unless (null? s)
+      (let ((cs-table (if (eq? tbl (get cf-ref-ctx)) (get cf-ref-contours) (get cf-call-contours))))
+        (begin
+          (unless (iterate has spin ((l ints (table-ref cs-table n nil))) bool
+                    (and (pair? l) (or (= (car l) c) (has (cdr l)))))
+            (table-set! cs-table n (cons c (table-ref cs-table n nil))))
+          (table-set! tbl (+ (* n 16777216) c) (vals-union (table-ref tbl (+ (* n 16777216) c) nil) s)))))))
 "A table of sets, `k`'s given `s` too (no readers: for the notes)."
 (define* cf-note! (subr cf-eff (vals-table int vals) unit)
-  (lambda (tbl k s) (if (null? s) #u (table-set! tbl k (vals-union (table-ref tbl k nil) s)))))
+  (lambda (tbl k s) (unless (null? s) (table-set! tbl k (vals-union (table-ref tbl k nil) s)))))
 
 ;;; ------------------------------------------------------------ interning
 
@@ -260,9 +253,8 @@ and lambdas bound to variables (`k-bind v (k-lam l)`), each with v."
   (sites-in (subr cf-eff (core ints) ints)
     (lambda (x acc)
       (tagcase x
-        (k-alloc (site inits) (sites-in-all (letrec ((vs (subr spin ((listof field-init acyclic)) cores)
-                                                       (lambda (is) (if (null? is) nil (cons (extract (car is) value) (vs (cdr is)))))))
-                                              (vs inits))
+        (k-alloc (site inits) (sites-in-all (iterate vs spin ((is (listof field-init acyclic) inits)) cores
+                                              (if (null? is) nil (cons (extract (car is) value) (vs (cdr is)))))
                                             (cons site acc)))
         (k-none (xs) (sites-in-all xs acc)) (k-seq (xs) (sites-in-all xs acc)) (k-alt (xs) (sites-in-all xs acc))
         (k-escape (xs) (sites-in-all xs acc))
@@ -273,9 +265,8 @@ and lambdas bound to variables (`k-bind v (k-lam l)`), each with v."
         (k-inst (e args) (sites-in-all (cons e args) acc))
         (k-if (t yes a no b) (sites-in-all (list t a b) acc))
         (k-narrow (ns body) (sites-in body acc))
-        (k-case (e arms) (sites-in-all (cons e (letrec ((bs (subr spin ((listof arm acyclic)) cores)
-                                                          (lambda (as) (if (null? as) nil (cons (extract (car as) body) (bs (cdr as)))))))
-                                                 (bs arms)))
+        (k-case (e arms) (sites-in-all (cons e (iterate bs spin ((as (listof arm acyclic) arms)) cores
+                                                 (if (null? as) nil (cons (extract (car as) body) (bs (cdr as))))))
                                        acc))
         (else y acc))))
   (sites-in-all (subr cf-eff (cores ints) ints)
@@ -290,18 +281,16 @@ and lambdas bound to variables (`k-bind v (k-lam l)`), each with v."
         (k-none (xs) (bound-all xs acc)) (k-seq (xs) (bound-all xs acc)) (k-alt (xs) (bound-all xs acc))
         (k-escape (xs) (bound-all xs acc))
         (k-app (call f args) (bound-all (cons f args) acc))
-        (k-alloc (site inits) (bound-all (letrec ((vs (subr spin ((listof field-init acyclic)) cores)
-                                                    (lambda (is) (if (null? is) nil (cons (extract (car is) value) (vs (cdr is)))))))
-                                           (vs inits))
+        (k-alloc (site inits) (bound-all (iterate vs spin ((is (listof field-init acyclic) inits)) cores
+                                           (if (null? is) nil (cons (extract (car is) value) (vs (cdr is)))))
                                          acc))
         (k-field (e label) (bound-lambdas e acc))
         (k-store (e label v) (bound-all (list e v) acc))
         (k-inst (e args) (bound-all (cons e args) acc))
         (k-if (t yes a no b) (bound-all (list t a b) acc))
         (k-narrow (ns body) (bound-lambdas body acc))
-        (k-case (e arms) (bound-all (cons e (letrec ((bs (subr spin ((listof arm acyclic)) cores)
-                                                       (lambda (as) (if (null? as) nil (cons (extract (car as) body) (bs (cdr as)))))))
-                                              (bs arms)))
+        (k-case (e arms) (bound-all (cons e (iterate bs spin ((as (listof arm acyclic) arms)) cores
+                                              (if (null? as) nil (cons (extract (car as) body) (bs (cdr as))))))
                                     acc))
         (else y acc))))
   (bound-all (subr cf-eff (cores (listof cf-bound acyclic)) (listof cf-bound acyclic))
@@ -330,10 +319,9 @@ and lambdas bound to variables (`k-bind v (k-lam l)`), each with v."
 "Whether kind `k` is what a kind named in `classes` widens to."
 (define* widened-in? (subr cf-eff (int strings) bool)
   (lambda (k classes)
-    (letrec ((go (subr cf-eff ((listof (productof (kind int) (to int)) acyclic)) bool)
-               (lambda (l) (and (pair? l) (or (and (= (extract (car l) to) k) (member? (cf-kind-name (extract (car l) kind)) classes string=?))
-                                              (go (cdr l)))))))
-      (go (get cf-widen)))))
+    (iterate go cf-eff ((l (listof (productof (kind int) (to int)) acyclic) (get cf-widen))) bool
+      (and (pair? l) (or (and (= (extract (car l) to) k) (member? (cf-kind-name (extract (car l) kind)) classes string=?))
+                         (go (cdr l)))))))
 (define* narrow (subr cf-eff (int strings vals) vals)
   (lambda (v path s)
     (letrec ((apply-one (subr cf-eff (cf-narrowing vals) vals)
@@ -417,9 +405,8 @@ that call's (a loop, a helper), and one made at the top level in none."
                     (let ((n (get cf-prim-count)))
                       (begin (set cf-prims (cons name (get cf-prims))) (set cf-prim-count (+ n 1)) n))))))))
 (define* prim-name (subr cf-eff (int) string)
-  (lambda (v) (letrec ((go (subr cf-eff (strings int) string)
-                         (lambda (l i) (cond ((null? l) "?") ((= i 0) (car l)) (else (go (cdr l) (- i 1)))))))
-                (go (get cf-prims) (- (- (get cf-prim-count) 1) (quotient v 4))))))
+  (lambda (v) (iterate go cf-eff ((l strings (get cf-prims)) (i int (- (- (get cf-prim-count) 1) (quotient v 4)))) string
+                (cond ((null? l) "?") ((= i 0) (car l)) (else (go (cdr l) (- i 1)))))))
 (define* label-id (subr cf-eff (string) int)
   (lambda (label)
     (let ((i (table-ref (get cf-labels) label -1)))
@@ -438,10 +425,9 @@ that call's (a loop, a helper), and one made at the top level in none."
   (lambda (site label)
     (let* ((l (label-id label)) (ls (table-ref (get cf-site-labels) site nil)))
       (begin
-        (if (letrec ((has (subr spin (ints) bool) (lambda (x) (and (pair? x) (or (= (car x) l) (has (cdr x)))))))
-              (has ls))
-            #u
-            (table-set! (get cf-site-labels) site (cons l ls)))
+        (unless (iterate has spin ((x ints ls)) bool
+                  (and (pair? x) (or (= (car x) l) (has (cdr x)))))
+          (table-set! (get cf-site-labels) site (cons l ls)))
         (vals-union (cf-read (field-key site l))
                     (if (= (table-ref (get cf-site-escaped) site 0) 1) (list cf-unknown) nil))))))
 
@@ -469,7 +455,7 @@ that call's (a loop, a helper), and one made at the top level in none."
 `rest`, if not -1)."
 (define* pass-args (subr cf-eff (ints int (listof vals acyclic) int) unit)
   (lambda (ps rest as c)
-    (cond ((null? ps) (if (>= rest 0) (cf-join! (var-key rest c) (union-all as)) #u))
+    (cond ((null? ps) (when (>= rest 0) (cf-join! (var-key rest c) (union-all as))))
           ((null? as) #u)
           (else (begin (cf-join! (var-key (car ps) c) (car as)) (pass-args (cdr ps) rest (cdr as) c))))))
 "Where what escaped escaped: each primitive (or `unknown`, a call of code
@@ -478,15 +464,13 @@ given a closure or site, for finding where unknown comes from."
 (define cf-escape-sources (ref (listof (productof (name string) (count int)) acyclic) @cf) (new nil))
 (define* cf-count-escape! (subr cf-eff (string vals) unit)
   (lambda (name s)
-    (if (not (letrec ((any (subr spin (vals) bool) (lambda (l) (and (pair? l) (or (closure-val? (car l)) (site-val? (car l)) (= (car l) cf-unknown) (any (cdr l)))))))
-               (any s)))
-        #u
-        (set cf-escape-sources
-             (letrec ((go (subr spin ((listof (productof (name string) (count int)) acyclic)) (listof (productof (name string) (count int)) acyclic))
-                            (lambda (l) (cond ((null? l) (list (product (name name) (count 1))))
-                                              ((string=? (extract (car l) name) name) (cons (product (name name) (count (+ 1 (extract (car l) count)))) (cdr l)))
-                                              (else (cons (car l) (go (cdr l))))))))
-               (go (get cf-escape-sources)))))))
+    (unless (not (iterate any spin ((l vals s)) bool
+                   (and (pair? l) (or (closure-val? (car l)) (site-val? (car l)) (= (car l) cf-unknown) (any (cdr l))))))
+      (set cf-escape-sources
+           (iterate go spin ((l (listof (productof (name string) (count int)) acyclic) (get cf-escape-sources))) (listof (productof (name string) (count int)) acyclic)
+             (cond ((null? l) (list (product (name name) (count 1))))
+                   ((string=? (extract (car l) name) name) (cons (product (name name) (count (+ 1 (extract (car l) count)))) (cdr l)))
+                   (else (cons (car l) (go (cdr l))))))))))
 "The escapes' sources, most first, at most `n`, said."
 (define* cf-escape-report (subr cf-eff (int) string)
   (lambda (n)
@@ -511,8 +495,8 @@ list may end before (one of `s` shorter than another, ending there)."
              ;; Everything reachable from `s` by `cdr`: all its elements.
              (all (subr cf-eff (vals vals vals) vals)
                (lambda (s seen acc)
-                 (let ((new (letrec ((go (subr spin (vals) vals) (lambda (l) (cond ((null? l) nil) ((member? (car l) seen =) (go (cdr l))) (else (cons (car l) (go (cdr l))))))))
-                              (go (sites s)))))
+                 (let ((new (iterate go spin ((l vals (sites s))) vals
+                              (cond ((null? l) nil) ((member? (car l) seen =) (go (cdr l))) (else (cons (car l) (go (cdr l))))))))
                    (if (null? new) (vals-union acc (if (vals-has? s cf-unknown) (list cf-unknown) nil))
                        (all (fields-of new "cdr") (append new seen)
                             (vals-union acc (vals-union (fields-of new "car") (vals-union (fields-of new "elt") (if (vals-has? s cf-unknown) (list cf-unknown) nil)))))))))
@@ -521,14 +505,14 @@ list may end before (one of `s` shorter than another, ending there)."
                  (let ((ss (sites s)))
                    (cond ((and (null? ss) (not (vals-has? s cf-unknown))) (the cf-positions (product (elems nil) (open #f) (ends (list i)))))
                          ((or (vals-has? s cf-unknown) (>= i (- cf-max-spine 1))
-                              (letrec ((any (subr spin (vals) bool) (lambda (l) (and (pair? l) (or (member? (car l) seen =) (any (cdr l)))))))
-                                (any ss))
+                              (iterate any spin ((l vals ss)) bool
+                                (and (pair? l) (or (member? (car l) seen =) (any (cdr l)))))
                               (pair? (fields-of ss "elt")))
                           (product (elems (list (all s seen nil))) (open #t) (ends (list i))))
                          (else (let ((rest (go (fields-of ss "cdr") (+ i 1) (append ss seen)))
                                      ;; Something here that is no pair: a list may end here.
-                                     (ends-here (letrec ((other (subr spin (vals) bool) (lambda (l) (and (pair? l) (or (not (site-val? (car l))) (other (cdr l)))))))
-                                                  (other s))))
+                                     (ends-here (iterate other spin ((l vals s)) bool
+                                                  (and (pair? l) (or (not (site-val? (car l))) (other (cdr l)))))))
                                  (product (elems (cons (fields-of ss "car") (extract rest elems))) (open (extract rest open))
                                           (ends (if ends-here (cons i (extract rest ends)) (extract rest ends)))))))))))
       (go s 0 nil))))
@@ -557,25 +541,22 @@ list may end before (one of `s` shorter than another, ending there)."
                     (info (array-ref (get cf-lambda-array) l)))
                (begin
                  (table-set! (get cf-escaped) l 1)
-                 (letrec ((params (subr cf-eff (ints) unit)
-                            (lambda (ps) (if (null? ps) #u (begin (cf-join! (var-key (car ps) c) (list cf-unknown)) (params (cdr ps)))))))
-                   (params (extract info params)))
-                 (if (>= (extract info rest) 0) (cf-join! (var-key (extract info rest) c) (list cf-unknown)) #u)
+                 (iterate params cf-eff ((ps ints (extract info params))) unit
+                   (unless (null? ps) (cf-join! (var-key (car ps) c) (list cf-unknown)) (params (cdr ps))))
+                 (when (>= (extract info rest) 0) (cf-join! (var-key (extract info rest) c) (list cf-unknown)))
                  (cf-ensure-task! cl)
                  (escape! (cdr s)))))
             ((site-val? (car s))
              (let ((site (quotient (car s) 4)))
                (begin
-                 (if (= (table-ref (get cf-site-escaped) site 0) 1) #u
-                     (begin
-                       (table-set! (get cf-site-escaped) site 1)
-                       (letrec ((each (subr cf-eff (ints) unit)
-                                  (lambda (ls) (if (null? ls) #u
-                                                   (let ((k (field-key site (car ls))))
-                                                     (begin (escape! (table-ref (get cf-cells) k nil))
-                                                       (cf-join! k (list cf-unknown))
-                                                       (each (cdr ls))))))))
-                         (each (table-ref (get cf-site-labels) site nil)))))
+                 (unless (= (table-ref (get cf-site-escaped) site 0) 1)
+                   (table-set! (get cf-site-escaped) site 1)
+                   (iterate each cf-eff ((ls ints (table-ref (get cf-site-labels) site nil))) unit
+                     (unless (null? ls)
+                       (let ((k (field-key site (car ls))))
+                         (begin (escape! (table-ref (get cf-cells) k nil))
+                           (cf-join! k (list cf-unknown))
+                           (each (cdr ls)))))))
                  (escape! (cdr s)))))
             (else (escape! (cdr s))))))
   ;; What `vs` holds that a `plambda` made, instantiated with `as`: its
@@ -604,17 +585,15 @@ list may end before (one of `s` shorter than another, ending there)."
   ;; one a site, those past the last into it, its `cdr` itself too.
   (spine! (subr cf-eff (int int (listof vals acyclic)) unit)
     (lambda (site c es)
-      (letrec ((go (subr cf-eff (int (listof vals acyclic)) unit)
-                 (lambda (i es)
-                   (if (null? es) #u
-                       (let ((s (the vals (list (+ 1 (* 4 (site-inst (+ site i) c))))))
-                             (null (kind-vals (list (get cf-null-kind)))))
-                         (if (= i (- cf-max-spine 1))
-                             (begin (store! s "car" (union-all es)) (store! s "cdr" (vals-union s null)))
-                             (begin (store! s "car" (car es))
-                               (store! s "cdr" (if (null? (cdr es)) null (list (+ 1 (* 4 (site-inst (+ site (+ i 1)) c))))))
-                               (go (+ i 1) (cdr es)))))))))
-        (go 0 es))))
+      (iterate go cf-eff ((i int 0) (es (listof vals acyclic) es)) unit
+        (unless (null? es)
+          (let ((s (the vals (list (+ 1 (* 4 (site-inst (+ site i) c))))))
+                (null (kind-vals (list (get cf-null-kind)))))
+            (if (= i (- cf-max-spine 1))
+                (begin (store! s "car" (union-all es)) (store! s "cdr" (vals-union s null)))
+                (begin (store! s "car" (car es))
+                  (store! s "cdr" (if (null? (cdr es)) null (list (+ 1 (* 4 (site-inst (+ site (+ i 1)) c))))))
+                  (go (+ i 1) (cdr es)))))))))
   ;; Field `label` of the sites in `targets` given `s`.
   (store! (subr cf-eff (vals string vals) unit)
     (lambda (targets label s)
@@ -624,7 +603,7 @@ list may end before (one of `s` shorter than another, ending there)."
                (begin
                  (site-field site label)
                  (cf-join! (field-key site (label-id label)) s)
-                 (if (= (table-ref (get cf-site-escaped) site 0) 1) (escape! s) #u)
+                 (when (= (table-ref (get cf-site-escaped) site 0) 1) (escape! s))
                  (store! (cdr targets) label s))))
             ((= (car targets) cf-unknown) (begin (cf-count-escape! "store" s) (escape! s) (store! (cdr targets) label s)))
             (else (store! (cdr targets) label s))))))
@@ -637,11 +616,10 @@ list may end before (one of `s` shorter than another, ending there)."
   (lambda (vars fields payload c)
     (cond ((null? vars) #u)
           ((not fields) (cf-join! (var-key (car vars) c) payload))
-          (else (letrec ((go (subr cf-eff (ints int) unit)
-                           (lambda (vs i) (if (null? vs) #u
-                                              (begin (cf-join! (var-key (car vs) c) (fields-of payload (int->string i)))
-                                                (go (cdr vs) (+ i 1)))))))
-                  (go vars 1))))))
+          (else (iterate go cf-eff ((vs ints vars) (i int 1)) unit
+                  (unless (null? vs)
+                    (cf-join! (var-key (car vs) c) (fields-of payload (int->string i)))
+               (go (cdr vs) (+ i 1))))))))
 
 (define-rec
   ;; The value of `x` in contour `c`, in the store as it is, joining what it
@@ -651,7 +629,7 @@ list may end before (one of `s` shorter than another, ending there)."
       (tagcase x
         (k-none (xs) (begin (eval-all xs c) nil))
         (k-const (k) (list (+ 2 (* 4 k))))
-        (k-var (v r) (let ((s (narrow v nil (cf-read (var-key v c))))) (begin (if (>= r 0) (begin (cf-note! (get cf-ref-vals) r s) (cf-note-ctx! (get cf-ref-ctx) r c s)) #u) s)))
+        (k-var (v r) (let ((s (narrow v nil (cf-read (var-key v c))))) (begin (when (>= r 0) (cf-note! (get cf-ref-vals) r s) (cf-note-ctx! (get cf-ref-ctx) r c s)) s)))
         (k-narrow (ns body)
           (let ((outer (get cf-refine)))
             (begin (set cf-refine (append ns outer))
@@ -671,11 +649,10 @@ list may end before (one of `s` shorter than another, ending there)."
         (k-bind (v e) (begin (cf-join! (var-key v c) (eval-core e c)) nil))
         (k-alloc (site inits)
           (begin
-            (letrec ((go (subr cf-eff ((listof field-init acyclic)) unit)
-                       (lambda (is) (if (null? is) #u
-                                        (begin (store! (list (+ 1 (* 4 (site-inst site c)))) (extract (car is) label) (eval-core (extract (car is) value) c))
-                                          (go (cdr is)))))))
-              (go inits))
+            (iterate go cf-eff ((is (listof field-init acyclic) inits)) unit
+              (unless (null? is)
+                (store! (list (+ 1 (* 4 (site-inst site c)))) (extract (car is) label) (eval-core (extract (car is) value) c))
+           (go (cdr is))))
             (list (+ 1 (* 4 (site-inst site c))))))
         (k-field (e label)
           (let ((s (fields-of (eval-core e c) label)) (p (path-of x)))
@@ -718,14 +695,13 @@ list may end before (one of `s` shorter than another, ending there)."
                     (task (closure-of l c1)))
                (begin
                  ;; Its free variables, copied from where it was made.
-                 (if (= c1 made) #u
-                     (letrec ((copy (subr cf-eff (ints) unit)
-                                (lambda (vs) (if (null? vs) #u
-                                                 (begin (cf-join! (var-key (car vs) c1) (cf-read (var-key (car vs) made)))
-                                                   (copy (cdr vs)))))))
-                       (copy (array-ref (get cf-free) l))))
+                 (unless (= c1 made)
+                   (iterate copy cf-eff ((vs ints (array-ref (get cf-free) l))) unit
+                     (unless (null? vs)
+                       (cf-join! (var-key (car vs) c1) (cf-read (var-key (car vs) made)))
+                  (copy (cdr vs)))))
                  (pass-args (extract info params) -1 as c1)
-                 (if (>= (extract info rest) 0) (pass-rest! l (extract info rest) (drop-vals (length (extract info params)) as) c1) #u)
+                 (when (>= (extract info rest) 0) (pass-rest! l (extract info rest) (drop-vals (length (extract info params)) as) c1))
                  (cf-ensure-task! task)
                  (vals-union (cf-read (result-key task)) (call-all call c (cdr ops) as)))))
             ((prim-val? (car ops))
@@ -738,8 +714,8 @@ list may end before (one of `s` shorter than another, ending there)."
     (lambda (call c name as)
       (tagcase ((extract (get cf-language) model) name)
         (m-data (escapes kinds) (let ((r (kind-vals kinds)))
-                                  (begin (if escapes (begin (cf-count-escape! name (union-all as)) (escape! (union-all as))) #u)
-                                    (if (vals-has? r cf-unknown) (cf-count-escape! (string-append "gives ? " name) r) #u)
+                                  (begin (when escapes (cf-count-escape! name (union-all as)) (escape! (union-all as)))
+                                    (when (vals-has? r cf-unknown) (cf-count-escape! (string-append "gives ? " name) r))
                                     r)))
         (m-pass () (union-all as))
         (m-apply ()
@@ -750,18 +726,17 @@ list may end before (one of `s` shorter than another, ending there)."
               (let* ((r (reverse as))
                      (middle (the (listof vals acyclic) (reverse (cdr (reverse (cdr as))))))
                      (ps (if (null? (cdr as)) (the cf-positions (product (elems nil) (open #f) (ends (list 0)))) (positions (car r))))
-                     (ended (letrec ((go (subr cf-eff (ints) vals)
-                                           (lambda (es) (if (null? es) nil
-                                                            (vals-union (call-all call c (car as) (append middle (take-vals (car es) (extract ps elems))))
-                                                                        (go (cdr es)))))))
-                              (go (extract ps ends)))))
+                     (ended (iterate go cf-eff ((es ints (extract ps ends))) vals
+                              (if (null? es) nil
+                                  (vals-union (call-all call c (car as) (append middle (take-vals (car es) (extract ps elems))))
+                                              (go (cdr es)))))))
                 (if (and (extract ps open) (pair? (extract ps elems)))
                     (vals-union ended
                                 (call-all call c (car as)
                                           (append middle
                                                   (append (extract ps elems)
-                                                          (letrec ((rep (subr spin (int) (listof vals acyclic)) (lambda (k) (if (<= k 0) nil (cons (last-vals (extract ps elems)) (rep (- k 1)))))))
-                                                            (rep 16))))))
+                                                          (iterate rep spin ((k int 16)) (listof vals acyclic)
+                                                            (if (<= k 0) nil (cons (last-vals (extract ps elems)) (rep (- k 1)))))))))
                     ended))))
         (m-calls (specs result escapes)
           (letrec ((nth (subr spin ((listof vals acyclic) int) vals)
@@ -784,8 +759,8 @@ list may end before (one of `s` shorter than another, ending there)."
                        (cond ((null? l) nil)
                              ((tagcase (car l) (a-many (x) #t) (else y #f))
                               (let ((v (arg (car l) rs)))
-                                (letrec ((rep (subr spin (int) (listof vals acyclic)) (lambda (k) (if (<= k 0) nil (cons v (rep (- k 1)))))))
-                                  (rep 16))))
+                                (iterate rep spin ((k int 16)) (listof vals acyclic)
+                                  (if (<= k 0) nil (cons v (rep (- k 1)))))))
                              (else (cons (arg (car l) rs) (call-args (cdr l) rs))))))
                    (run (subr cf-eff ((listof cf-callspec acyclic) (listof vals acyclic)) (listof vals acyclic))
                      (lambda (ss rs)
@@ -799,26 +774,22 @@ list may end before (one of `s` shorter than another, ending there)."
               (let ((base (cf-call-result (get cf-call-results) call)))
                 (if (< base 0)
                     ;; No list of its own: the elements, all at once; what it returns escapes.
-                    (let ((elements (letrec ((go (subr cf-eff ((listof vals acyclic)) (listof vals acyclic))
-                                                   (lambda (l) (if (null? l) nil (cons (all-elements (car l)) (go (cdr l)))))))
-                                      (go (cdr as)))))
+                    (let ((elements (iterate go cf-eff ((l (listof vals acyclic) (cdr as))) (listof vals acyclic)
+                                      (if (null? l) nil (cons (all-elements (car l)) (go (cdr l)))))))
                       (begin (escape! (call-all call c (car as) elements)) (kind-vals kinds)))
                     ;; By position: the function called on each position's elements,
                     ;; what it returns there the list's, in this call's sites.
-                    (let* ((ps (letrec ((go (subr cf-eff ((listof vals acyclic)) (listof cf-positions acyclic))
-                                              (lambda (l) (if (null? l) nil (cons (positions (car l)) (go (cdr l)))))))
-                                 (go (cdr as))))
-                           (n (letrec ((go (subr spin ((listof cf-positions acyclic) int) int)
-                                             (lambda (l m) (if (null? l) m (go (cdr l) (max m (length (extract (car l) elems))))))))
-                                (go ps 0)))
+                    (let* ((ps (iterate go cf-eff ((l (listof vals acyclic) (cdr as))) (listof cf-positions acyclic)
+                                 (if (null? l) nil (cons (positions (car l)) (go (cdr l))))))
+                           (n (iterate go spin ((l (listof cf-positions acyclic) ps) (m int 0)) int
+                                (if (null? l) m (go (cdr l) (max m (length (extract (car l) elems)))))))
                            (results (letrec ((nth (subr spin ((listof vals acyclic) int) vals)
                                                     (lambda (l k) (cond ((null? l) nil) ((= k 0) (car l)) (else (nth (cdr l) (- k 1))))))
                                              (go (subr cf-eff (int) (listof vals acyclic))
                                                (lambda (i) (if (>= i n) nil
                                                                (let ((r (call-all call c (car as)
-                                                                                  (letrec ((args (subr spin ((listof cf-positions acyclic)) (listof vals acyclic))
-                                                                                                   (lambda (l) (if (null? l) nil (cons (nth (extract (car l) elems) i) (args (cdr l)))))))
-                                                                                    (args ps)))))
+                                                                                  (iterate args spin ((l (listof cf-positions acyclic) ps)) (listof vals acyclic)
+                                                                                    (if (null? l) nil (cons (nth (extract (car l) elems) i) (args (cdr l))))))))
                                                                  (cons r (go (+ i 1))))))))
                                       (go 0))))
                       (begin (spine! base c results)
@@ -856,9 +827,8 @@ parameters included), onto `refs` and `binds`."
           (k-alt (xs) (refs-binds-all xs acc))
           (k-bind (v e) (refs-binds-of e (bind (list v) acc)))
           (k-alloc (site inits)
-            (letrec ((go (subr cf-eff ((listof field-init acyclic) refs-binds) refs-binds)
-                       (lambda (is acc) (if (null? is) acc (go (cdr is) (refs-binds-of (extract (car is) value) acc))))))
-              (go inits acc)))
+            (iterate go cf-eff ((is (listof field-init acyclic) inits) (acc refs-binds acc)) refs-binds
+              (if (null? is) acc (go (cdr is) (refs-binds-of (extract (car is) value) acc)))))
           (k-field (e label) (refs-binds-of e acc))
           (k-store (e label v) (refs-binds-of v (refs-binds-of e acc)))
           (k-escape (xs) (refs-binds-all xs acc))
@@ -866,11 +836,9 @@ parameters included), onto `refs` and `binds`."
           (k-if (test yes then no else) (refs-binds-all (list test then else) acc))
           (k-narrow (ns body) (refs-binds-of body acc))
           (k-case (e arms)
-            (letrec ((go (subr cf-eff ((listof arm acyclic) refs-binds) refs-binds)
-                       (lambda (as acc)
-                         (if (null? as) acc
-                             (go (cdr as) (refs-binds-of (extract (car as) body) (bind (extract (car as) vars) acc)))))))
-              (go arms (refs-binds-of e acc))))
+            (iterate go cf-eff ((as (listof arm acyclic) arms) (acc refs-binds (refs-binds-of e acc))) refs-binds
+              (if (null? as) acc
+                  (go (cdr as) (refs-binds-of (extract (car as) body) (bind (extract (car as) vars) acc))))))
           (else y acc)))))
   (refs-binds-all (subr cf-eff (cores refs-binds) refs-binds)
     (lambda (xs acc) (if (null? xs) acc (refs-binds-all (cdr xs) (refs-binds-of (car xs) acc))))))
@@ -884,13 +852,11 @@ not global."
                               (product (refs nil) (binds (if (>= (extract info rest) 0) (cons (extract info rest) (extract info params))
                                                              (extract info params))))))
            (bound (extract rb binds)))
-      (letrec ((go (subr cf-eff (ints ints) ints)
-                 (lambda (rs acc)
-                   (cond ((null? rs) acc)
-                         ((or (< (car rs) (get cf-global-count)) (member? (car rs) bound =) (member? (car rs) acc =))
-                          (go (cdr rs) acc))
-                         (else (go (cdr rs) (cons (car rs) acc)))))))
-        (go (extract rb refs) nil)))))
+      (iterate go cf-eff ((rs ints (extract rb refs)) (acc ints nil)) ints
+        (cond ((null? rs) acc)
+              ((or (< (car rs) (get cf-global-count)) (member? (car rs) bound =) (member? (car rs) acc =))
+               (go (cdr rs) acc))
+              (else (go (cdr rs) (cons (car rs) acc))))))))
 
 "The nodes of `x`, counted no further than `limit` (a lambda's body not
 counted: it is a procedure of its own)."
@@ -904,9 +870,8 @@ counted: it is a procedure of its own)."
                  (k-seq (xs) (node-count-all xs (- limit 1)))
                  (k-alt (xs) (node-count-all xs (- limit 1)))
                  (k-bind (v e) (node-count e (- limit 1)))
-                 (k-alloc (site inits) (node-count-all (letrec ((vs (subr spin ((listof field-init acyclic)) cores)
-                                                                      (lambda (is) (if (null? is) nil (cons (extract (car is) value) (vs (cdr is)))))))
-                                                             (vs inits))
+                 (k-alloc (site inits) (node-count-all (iterate vs spin ((is (listof field-init acyclic) inits)) cores
+                                                         (if (null? is) nil (cons (extract (car is) value) (vs (cdr is)))))
                                                            (- limit 1)))
                  (k-field (e label) (node-count e (- limit 1)))
                  (k-store (e label v) (node-count-all (list e v) (- limit 1)))
@@ -914,9 +879,8 @@ counted: it is a procedure of its own)."
                  (k-inst (e args) (node-count-all (cons e args) (- limit 1)))
                  (k-if (t yes a no b) (node-count-all (list t a b) (- limit 1)))
                  (k-narrow (ns body) (node-count body (- limit 1)))
-                 (k-case (e arms) (node-count-all (cons e (letrec ((bs (subr spin ((listof arm acyclic)) cores)
-                                                                         (lambda (as) (if (null? as) nil (cons (extract (car as) body) (bs (cdr as)))))))
-                                                                (bs arms)))
+                 (k-case (e arms) (node-count-all (cons e (iterate bs spin ((as (listof arm acyclic) arms)) cores
+                                                            (if (null? as) nil (cons (extract (car as) body) (bs (cdr as))))))
                                                   (- limit 1)))
                  (else y 0))))))
   (node-count-all (subr cf-eff (cores int) int)
@@ -936,10 +900,9 @@ by that name, its body of `cf-small-size` nodes or fewer."
 variable its body refers to (by its global name, or a loop's)."
 (define* mark-split! (subr cf-eff () unit)
   (lambda ()
-    (let* ((bodies (letrec ((go (subr cf-eff (int cores) cores)
-                                  (lambda (l acc) (if (>= l (array-length (get cf-lambda-array))) acc
-                                                      (go (+ l 1) (cons (extract (array-ref (get cf-lambda-array) l) body) acc))))))
-                     (go 0 (get cf-tops))))
+    (let* ((bodies (iterate go cf-eff ((l int 0) (acc cores (get cf-tops))) cores
+                     (if (>= l (array-length (get cf-lambda-array))) acc
+                         (go (+ l 1) (cons (extract (array-ref (get cf-lambda-array) l) body) acc)))))
            (bound (bound-all bodies nil)))
       (begin
         (set cf-split-sites (make-array (array-length (get cf-site-array)) #f))
@@ -948,11 +911,9 @@ variable its body refers to (by its global name, or a loop's)."
                      (if (null? bs) #u
                          (let* ((l (extract (car bs) lambda)) (body (extract (array-ref (get cf-lambda-array) l) body)))
                            (begin
-                             (if (member? (extract (car bs) var) (extract (refs-binds-of body (product (refs nil) (binds nil))) refs) =)
-                                 (letrec ((mark (subr cf-eff (ints) unit)
-                                            (lambda (ss) (if (null? ss) #u (begin (array-set! (get cf-split-sites) (car ss) #t) (mark (cdr ss)))))))
-                                   (mark (sites-in body nil)))
-                                 #u)
+                             (when (member? (extract (car bs) var) (extract (refs-binds-of body (product (refs nil) (binds nil))) refs) =)
+                               (iterate mark cf-eff ((ss ints (sites-in body nil))) unit
+                                 (unless (null? ss) (array-set! (get cf-split-sites) (car ss) #t) (mark (cdr ss)))))
                              (go (cdr bs))))))))
           (go bound))))))
 
@@ -963,13 +924,13 @@ variable its body refers to (by its global name, or a loop's)."
   (lambda (l)
     (let ((a (the (arrayof lambda-info @cf) (make-array (length l) (product (span cf-no-span) (name "") (params nil) (rest -1) (body (k-none nil)))))))
       (letrec ((go (subr cf-eff ((listof lambda-info acyclic) int) unit)
-                 (lambda (l i) (if (null? l) #u (begin (array-set! a i (car l)) (go (cdr l) (- i 1)))))))
+                 (lambda (l i) (unless (null? l) (array-set! a i (car l)) (go (cdr l) (- i 1))))))
         (begin (go l (- (length l) 1)) a)))))
 (define* sites->array (subr cf-eff ((listof site-info acyclic)) (arrayof site-info @cf))
   (lambda (l)
     (let ((a (the (arrayof site-info @cf) (make-array (length l) (product (span cf-no-span) (kind "") (tag ""))))))
       (letrec ((go (subr cf-eff ((listof site-info acyclic) int) unit)
-                 (lambda (l i) (if (null? l) #u (begin (array-set! a i (car l)) (go (cdr l) (- i 1)))))))
+                 (lambda (l i) (unless (null? l) (array-set! a i (car l)) (go (cdr l) (- i 1))))))
         (begin (go l (- (length l) 1)) a)))))
 
 "The world read (core.fx's numbering, and its top levels `tops`), of
@@ -981,20 +942,18 @@ language `lang`, to be analysed at depth `m` from the start: nothing run yet."
       (set cf-lambda-array (lambdas->array (get cf-lambdas)))
       (set cf-site-array (sites->array (get cf-sites)))
       (set cf-free (make-array (array-length (get cf-lambda-array)) nil))
-      (letrec ((frees (subr cf-eff (int) unit)
-                 (lambda (l) (if (>= l (array-length (get cf-lambda-array))) #u
-                                 (begin (array-set! (get cf-free) l (free-of l)) (frees (+ l 1)))))))
-        (frees 0))
+      (iterate frees cf-eff ((l int 0)) unit
+        (unless (>= l (array-length (get cf-lambda-array)))
+          (array-set! (get cf-free) l (free-of l)) (frees (+ l 1))))
       (set cf-contour-ids (new-int-table)) (set cf-contour-calls (new-ints-table)) (set cf-contour-count 1)
       (set cf-closure-ids (new-int-table)) (set cf-closure-lambda (new-int-table)) (set cf-closure-contour (new-int-table))
       (set cf-closure-count 0)
       (set cf-inst-ids (new-int-table)) (set cf-inst-site (new-int-table)) (set cf-inst-contour (new-int-table))
       (set cf-site-contours (new-int-table)) (set cf-inst-count 0)
       (set cf-small (make-array (array-length (get cf-lambda-array)) #f))
-      (letrec ((mark (subr cf-eff (int) unit)
-                 (lambda (l) (if (>= l (array-length (get cf-lambda-array))) #u
-                                 (begin (array-set! (get cf-small) l (small-lambda? l)) (mark (+ l 1)))))))
-        (mark 0))
+      (iterate mark cf-eff ((l int 0)) unit
+        (unless (>= l (array-length (get cf-lambda-array)))
+          (array-set! (get cf-small) l (small-lambda? l)) (mark (+ l 1))))
       (mark-split!)
       (set cf-prims nil) (set cf-prim-count 0)
       (set cf-labels (the (table string int @cf) (make-table string-hash string=?))) (set cf-label-count 0)

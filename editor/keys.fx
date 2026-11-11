@@ -10,6 +10,11 @@
 ;;; `(kbd "C-x C-f")` turns Emacs's notation into a list of keys, and
 ;;; `key->string` turns one back.
 
+;; Macros: each file defines its own, for now (docs/macros.md).
+(define-syntax loop
+  (syntax-rules ()
+    ((_ go eff ((x t i) ...) r body) (letrec ((go (subr eff (t ...) r) (lambda (x ...) body))) (go i ...)))))
+
 (define-type key (oneof char symbol))
 (define-type keys (listof key acyclic))
 "A source of bytes: the next byte, or #f if none comes within the
@@ -23,14 +28,12 @@ milliseconds given. A terminal's, or a test's list."
   ;; The length of the modifiers (C-, M-, S-) a key's name starts with.
   (define modifiers-length (subr spin (string) int)
     (lambda (name)
-      (letrec ((go (subr spin (int) int)
-                 (lambda (i)
-                   (if (and (< (+ i 2) (string-length name))
-                            (char-in? (string-ref name i) "CMS")
-                            (char=? #\- (string-ref name (+ i 1))))
-                       (go (+ i 2))
-                       i))))
-        (go 0))))
+      (loop go spin ((i int 0)) int
+        (if (and (< (+ i 2) (string-length name))
+                 (char-in? (string-ref name i) "CMS")
+                 (char=? #\- (string-ref name (+ i 1))))
+            (go (+ i 2))
+            i))))
 
   (define bracketed? (subr pure (string) bool)
     (lambda (s)
@@ -49,14 +52,12 @@ milliseconds given. A terminal's, or a test's list."
 
   (define split-on-spaces (subr spin (string) (listof string acyclic))
     (lambda (s)
-      (letrec ((go (subr spin (int int (listof string acyclic)) (listof string acyclic))
-                 (lambda (i start acc)
-                   (cond ((= i (string-length s))
-                          (reverse (if (> i start) (the (listof string acyclic) (cons (substring s start i) acc)) acc)))
-                         ((char=? #\space (string-ref s i))
-                          (go (+ i 1) (+ i 1) (if (> i start) (the (listof string acyclic) (cons (substring s start i) acc)) acc)))
-                         (else (go (+ i 1) start acc))))))
-        (go 0 0 nil))))
+      (loop go spin ((i int 0) (start int 0) (acc (listof string acyclic) nil)) (listof string acyclic)
+        (cond ((= i (string-length s))
+               (reverse (if (> i start) (the (listof string acyclic) (cons (substring s start i) acc)) acc)))
+              ((char=? #\space (string-ref s i))
+               (go (+ i 1) (+ i 1) (if (> i start) (the (listof string acyclic) (cons (substring s start i) acc)) acc)))
+              (else (go (+ i 1) start acc))))))
 
   ;; How long to wait for the rest of an escape sequence.
   (define escape-timeout int 25)
@@ -111,9 +112,8 @@ milliseconds given. A terminal's, or a test's list."
 \"<up>\" => (up); \"C-<left>\" => (C-left)."
 (define kbd (subr spin (string) keys)
   (lambda (s)
-    (letrec ((go (subr spin ((listof string acyclic)) keys)
-               (lambda (ns) (if (null? ns) nil (cons (name->key (car ns)) (go (cdr ns)))))))
-      (go (split-on-spaces s)))))
+    (loop go spin ((ns (listof string acyclic) (split-on-spaces s))) keys
+      (if (null? ns) nil (cons (name->key (car ns)) (go (cdr ns)))))))
 
 "As Emacs writes a key: a function key's name in brackets, after its
 modifiers (<f5>, C-<left>)."
@@ -164,17 +164,15 @@ milliseconds."
                  (lambda (b)
                    (let ((count (cond ((>= b 240) 3) ((>= b 224) 2) (else 1)))
                          (first (cond ((>= b 240) (remainder b 8)) ((>= b 224) (remainder b 16)) (else (remainder b 32)))))
-                     (letrec ((go (subr (maxeff e spin) (int int) key)
-                                (lambda (i cp)
-                                  (if (= i count)
-                                      (if (and (> cp 0) (< cp 1114112) (not (and (>= cp 55296) (< cp 57344))))
-                                          (integer->char cp)
-                                          'unknown)
-                                      (let ((nb (next-byte escape-timeout)))
-                                        (typecase nb
-                                          (int v (go (+ i 1) (+ (* cp 64) (remainder v 64))))
-                                          (else z 'unknown)))))))
-                       (go 0 first)))))
+                     (loop go (maxeff e spin) ((i int 0) (cp int first)) key
+                       (if (= i count)
+                           (if (and (> cp 0) (< cp 1114112) (not (and (>= cp 55296) (< cp 57344))))
+                               (integer->char cp)
+                               'unknown)
+                           (let ((nb (next-byte escape-timeout)))
+                             (typecase nb
+                               (int v (go (+ i 1) (+ (* cp 64) (remainder v 64))))
+                               (else z 'unknown))))))))
                (escape (subr (maxeff e spin) () key)
                  (lambda ()
                    (let ((b (next-byte escape-timeout)))

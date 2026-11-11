@@ -18,15 +18,19 @@
 ;;;
 ;;; A module file of no state: (define lists (load-module "kit/lists.fx")).
 
+;; Macros: each file defines its own, for now (docs/macros.md).
+(define-syntax loop
+  (syntax-rules ()
+    ((_ go eff ((x t i) ...) r body) (letrec ((go (subr eff (t ...) r) (lambda (x ...) body))) (go i ...)))))
+
 "(f x) of each element, in order."
 (define map
   (poly ((p place) (a type) (b type) (e effect) (r region))
     (subr (maxeff e (read (acyclic p)) (alloc r)) ((subr e (a) b) (listof a (acyclic p))) (listof b r)))
   (plambda ((p place) (a type) (b type) (e effect) (r region))
     (lambda (f l)
-      (letrec ((go (subr (maxeff e (read (acyclic p)) (alloc r)) ((listof a (acyclic p))) (listof b r))
-                 (lambda (l) (if (null? l) nil (let ((y (f (car l)))) (cons y (go (cdr l))))))))
-        (go l)))))
+      (loop go (maxeff e (read (acyclic p)) (alloc r)) ((l (listof a (acyclic p)) l)) (listof b r)
+        (if (null? l) nil (let ((y (f (car l)))) (cons y (go (cdr l)))))))))
 
 "(f x y) of the elements of two lists, pairwise, in order, as long as the
 shorter."
@@ -36,9 +40,8 @@ shorter."
           ((subr e (a b) c) (listof a (acyclic p)) (listof b (acyclic q))) (listof c r)))
   (plambda ((p place) (q place) (a type) (b type) (c type) (e effect) (r region))
     (lambda (f l m)
-      (letrec ((go (subr (maxeff e (read (acyclic p)) (read (acyclic q)) (alloc r)) ((listof a (acyclic p)) (listof b (acyclic q))) (listof c r))
-                 (lambda (l m) (if (or (null? l) (null? m)) nil (let ((z (f (car l) (car m)))) (cons z (go (cdr l) (cdr m))))))))
-        (go l m)))))
+      (loop go (maxeff e (read (acyclic p)) (read (acyclic q)) (alloc r)) ((l (listof a (acyclic p)) l) (m (listof b (acyclic q)) m)) (listof c r)
+        (if (or (null? l) (null? m)) nil (let ((z (f (car l) (car m)))) (cons z (go (cdr l) (cdr m)))))))))
 
 "(f x) of each element, in order, for its effect."
 (define for-each
@@ -46,9 +49,8 @@ shorter."
     (subr (maxeff e (read (acyclic p))) ((subr e (a) unit) (listof a (acyclic p))) unit))
   (plambda ((p place) (a type) (e effect))
     (lambda (f l)
-      (letrec ((go (subr (maxeff e (read (acyclic p))) ((listof a (acyclic p))) unit)
-                 (lambda (l) (if (null? l) #u (begin (f (car l)) (go (cdr l)))))))
-        (go l)))))
+      (loop go (maxeff e (read (acyclic p))) ((l (listof a (acyclic p)) l)) unit
+        (if (null? l) #u (begin (f (car l)) (go (cdr l))))))))
 
 "(f x y) of the elements of two lists, pairwise, in order, as long as the
 shorter."
@@ -57,9 +59,8 @@ shorter."
     (subr (maxeff e (read (acyclic p)) (read (acyclic q))) ((subr e (a b) unit) (listof a (acyclic p)) (listof b (acyclic q))) unit))
   (plambda ((p place) (q place) (a type) (b type) (e effect))
     (lambda (f l m)
-      (letrec ((go (subr (maxeff e (read (acyclic p)) (read (acyclic q))) ((listof a (acyclic p)) (listof b (acyclic q))) unit)
-                 (lambda (l m) (if (or (null? l) (null? m)) #u (begin (f (car l) (car m)) (go (cdr l) (cdr m)))))))
-        (go l m)))))
+      (loop go (maxeff e (read (acyclic p)) (read (acyclic q))) ((l (listof a (acyclic p)) l) (m (listof b (acyclic q)) m)) unit
+        (if (or (null? l) (null? m)) #u (begin (f (car l) (car m)) (go (cdr l) (cdr m))))))))
 
 "The elements `keep?` is true of, in order."
 (define filter
@@ -67,11 +68,10 @@ shorter."
     (subr (maxeff e (read (acyclic p)) (alloc r)) ((subr e (a) bool) (listof a (acyclic p))) (listof a r)))
   (plambda ((p place) (a type) (e effect) (r region))
     (lambda (keep? l)
-      (letrec ((go (subr (maxeff e (read (acyclic p)) (alloc r)) ((listof a (acyclic p))) (listof a r))
-                 (lambda (l) (cond ((null? l) nil)
-                                   ((keep? (car l)) (cons (car l) (go (cdr l))))
-                                   (else (go (cdr l)))))))
-        (go l)))))
+      (loop go (maxeff e (read (acyclic p)) (alloc r)) ((l (listof a (acyclic p)) l)) (listof a r)
+        (cond ((null? l) nil)
+              ((keep? (car l)) (cons (car l) (go (cdr l))))
+              (else (go (cdr l))))))))
 
 "The elements `drop?` is false of, in order."
 (define remove
@@ -79,11 +79,10 @@ shorter."
     (subr (maxeff e (read (acyclic p)) (alloc r)) ((subr e (a) bool) (listof a (acyclic p))) (listof a r)))
   (plambda ((p place) (a type) (e effect) (r region))
     (lambda (drop? l)
-      (letrec ((go (subr (maxeff e (read (acyclic p)) (alloc r)) ((listof a (acyclic p))) (listof a r))
-                 (lambda (l) (cond ((null? l) nil)
-                                   ((drop? (car l)) (go (cdr l)))
-                                   (else (cons (car l) (go (cdr l))))))))
-        (go l)))))
+      (loop go (maxeff e (read (acyclic p)) (alloc r)) ((l (listof a (acyclic p)) l)) (listof a r)
+        (cond ((null? l) nil)
+              ((drop? (car l)) (go (cdr l)))
+              (else (cons (car l) (go (cdr l)))))))))
 
 "SRFI 1's fold: (kons x acc) of each element in order, from `knil`."
 (define fold
@@ -91,9 +90,8 @@ shorter."
     (subr (maxeff e (read (acyclic p))) ((subr e (a s) s) s (listof a (acyclic p))) s))
   (plambda ((p place) (a type) (s type) (e effect))
     (lambda (kons knil l)
-      (letrec ((go (subr (maxeff e (read (acyclic p))) ((listof a (acyclic p)) s) s)
-                 (lambda (l acc) (if (null? l) acc (go (cdr l) (kons (car l) acc))))))
-        (go l knil)))))
+      (loop go (maxeff e (read (acyclic p))) ((l (listof a (acyclic p)) l) (acc s knil)) s
+        (if (null? l) acc (go (cdr l) (kons (car l) acc)))))))
 
 "SRFI 1's fold-right: (kons x (fold-right kons knil rest)), so the last
 element's first."
@@ -102,9 +100,8 @@ element's first."
     (subr (maxeff e (read (acyclic p))) ((subr e (a s) s) s (listof a (acyclic p))) s))
   (plambda ((p place) (a type) (s type) (e effect))
     (lambda (kons knil l)
-      (letrec ((go (subr (maxeff e (read (acyclic p))) ((listof a (acyclic p))) s)
-                 (lambda (l) (if (null? l) knil (let ((rest (go (cdr l)))) (kons (car l) rest))))))
-        (go l)))))
+      (loop go (maxeff e (read (acyclic p))) ((l (listof a (acyclic p)) l)) s
+        (if (null? l) knil (let ((rest (go (cdr l)))) (kons (car l) rest)))))))
 
 "SRFI 1's reduce: `ridentity` for the empty list, else the fold of `f`
 from the first element over the rest."
@@ -120,9 +117,8 @@ from the first element over the rest."
     (subr (maxeff e (read (acyclic p))) ((subr e (a) bool) (listof a (acyclic p))) bool))
   (plambda ((p place) (a type) (e effect))
     (lambda (pred l)
-      (letrec ((go (subr (maxeff e (read (acyclic p))) ((listof a (acyclic p))) bool)
-                 (lambda (l) (if (null? l) #f (if (pred (car l)) #t (go (cdr l)))))))
-        (go l)))))
+      (loop go (maxeff e (read (acyclic p))) ((l (listof a (acyclic p)) l)) bool
+        (if (null? l) #f (if (pred (car l)) #t (go (cdr l))))))))
 
 "Whether `pred` is true of every element, trying them in order."
 (define every
@@ -130,9 +126,8 @@ from the first element over the rest."
     (subr (maxeff e (read (acyclic p))) ((subr e (a) bool) (listof a (acyclic p))) bool))
   (plambda ((p place) (a type) (e effect))
     (lambda (pred l)
-      (letrec ((go (subr (maxeff e (read (acyclic p))) ((listof a (acyclic p))) bool)
-                 (lambda (l) (if (null? l) #t (if (pred (car l)) (go (cdr l)) #f)))))
-        (go l)))))
+      (loop go (maxeff e (read (acyclic p))) ((l (listof a (acyclic p)) l)) bool
+        (if (null? l) #t (if (pred (car l)) (go (cdr l)) #f))))))
 
 "The first element `pred` is true of, if one is."
 (define find
@@ -140,11 +135,10 @@ from the first element over the rest."
     (subr (maxeff e (read (acyclic p))) ((subr e (a) bool) (listof a (acyclic p))) (sumof (none unit) (some a))))
   (plambda ((p place) (a type) (e effect))
     (lambda (pred l)
-      (letrec ((go (subr (maxeff e (read (acyclic p))) ((listof a (acyclic p))) (sumof (none unit) (some a)))
-                 (lambda (l) (cond ((null? l) (sum none #u))
-                                   ((pred (car l)) (sum some (car l)))
-                                   (else (go (cdr l)))))))
-        (go l)))))
+      (loop go (maxeff e (read (acyclic p))) ((l (listof a (acyclic p)) l)) (sumof (none unit) (some a))
+        (cond ((null? l) (sum none #u))
+              ((pred (car l)) (sum some (car l)))
+              (else (go (cdr l))))))))
 
 "SRFI 1's filter-map: of each element in order, `f`'s value where it is
 `(some y)`; none where it is `none`."
@@ -153,12 +147,11 @@ from the first element over the rest."
     (subr (maxeff e (read (acyclic p)) (alloc r)) ((subr e (a) (sumof (none unit) (some b))) (listof a (acyclic p))) (listof b r)))
   (plambda ((p place) (a type) (b type) (e effect) (r region))
     (lambda (f l)
-      (letrec ((go (subr (maxeff e (read (acyclic p)) (alloc r)) ((listof a (acyclic p))) (listof b r))
-                 (lambda (l) (if (null? l) nil
-                                 (tagcase (f (car l))
-                                   (some y (cons y (go (cdr l))))
-                                   (none u (go (cdr l))))))))
-        (go l)))))
+      (loop go (maxeff e (read (acyclic p)) (alloc r)) ((l (listof a (acyclic p)) l)) (listof b r)
+        (if (null? l) nil
+            (tagcase (f (car l))
+              (some y (cons y (go (cdr l))))
+              (none u (go (cdr l)))))))))
 
 "The index of the first element `pred` is true of, or #f."
 (define list-index
@@ -166,9 +159,8 @@ from the first element over the rest."
     (subr (maxeff e (read (acyclic p))) ((subr e (a) bool) (listof a (acyclic p))) (oneof false nat)))
   (plambda ((p place) (a type) (e effect))
     (lambda (pred l)
-      (letrec ((go (subr (maxeff e (read (acyclic p))) ((listof a (acyclic p)) nat) (oneof false nat))
-                 (lambda (l i) (cond ((null? l) #f) ((pred (car l)) i) (else (go (cdr l) (+ i 1)))))))
-        (go l 0)))))
+      (loop go (maxeff e (read (acyclic p))) ((l (listof a (acyclic p)) l) (i nat 0)) (oneof false nat)
+        (cond ((null? l) #f) ((pred (car l)) i) (else (go (cdr l) (+ i 1))))))))
 
 "The tail of `l` from the first element `same?` to `x`, or nil (R7RS's
 member, whose #f is nil: a tail found is never empty)."
@@ -177,9 +169,8 @@ member, whose #f is nil: a tail found is never empty)."
     (subr (maxeff e (read (acyclic p))) (a (listof a (acyclic p)) (subr e (a a) bool)) (listof a (acyclic p))))
   (plambda ((p place) (a type) (e effect))
     (lambda (x l same?)
-      (letrec ((go (subr (maxeff e (read (acyclic p))) ((listof a (acyclic p))) (listof a (acyclic p)))
-                 (lambda (l) (cond ((null? l) nil) ((same? x (car l)) l) (else (go (cdr l)))))))
-        (go l)))))
+      (loop go (maxeff e (read (acyclic p))) ((l (listof a (acyclic p)) l)) (listof a (acyclic p))
+        (cond ((null? l) nil) ((same? x (car l)) l) (else (go (cdr l))))))))
 
 "Whether an element of `l` is `same?` to `x`."
 (define member?
@@ -214,11 +205,10 @@ list-tail)."
     (subr (read (acyclic p)) ((listof a (acyclic p)) int) (listof a (acyclic p))))
   (plambda ((p place) (a type))
     (lambda (l k)
-      (letrec ((go (subr (read (acyclic p)) ((listof a (acyclic p)) int) (listof a (acyclic p)))
-                 (lambda (l k) (cond ((<= k 0) l)
-                                     ((null? l) (error "list-tail: list too short"))
-                                     (else (go (cdr l) (- k 1)))))))
-        (go l k)))))
+      (loop go (read (acyclic p)) ((l (listof a (acyclic p)) l) (k int k)) (listof a (acyclic p))
+        (cond ((<= k 0) l)
+              ((null? l) (error "list-tail: list too short"))
+              (else (go (cdr l) (- k 1))))))))
 
 "The first `k` elements of `l`; an error if it has fewer (SRFI 1's take)."
 (define take
@@ -226,11 +216,10 @@ list-tail)."
     (subr (maxeff (read (acyclic p)) (alloc r)) ((listof a (acyclic p)) int) (listof a r)))
   (plambda ((p place) (a type) (r region))
     (lambda (l k)
-      (letrec ((go (subr (maxeff (read (acyclic p)) (alloc r)) ((listof a (acyclic p)) int) (listof a r))
-                 (lambda (l k) (cond ((<= k 0) nil)
-                                     ((null? l) (error "take: list too short"))
-                                     (else (cons (car l) (go (cdr l) (- k 1))))))))
-        (go l k)))))
+      (loop go (maxeff (read (acyclic p)) (alloc r)) ((l (listof a (acyclic p)) l) (k int k)) (listof a r)
+        (cond ((<= k 0) nil)
+              ((null? l) (error "take: list too short"))
+              (else (cons (car l) (go (cdr l) (- k 1)))))))))
 
 "The last element of `l`; an error if it is empty (SRFI 1's last)."
 (define last
@@ -290,12 +279,11 @@ its length."
     (subr (maxeff e (read (acyclic p)) (read (acyclic q))) ((subr e (a a) bool) (listof a (acyclic p)) (listof a (acyclic q))) bool))
   (plambda ((p place) (q place) (a type) (e effect))
     (lambda (same? l m)
-      (letrec ((go (subr (maxeff e (read (acyclic p)) (read (acyclic q))) ((listof a (acyclic p)) (listof a (acyclic q))) bool)
-                 (lambda (l m) (cond ((null? l) (null? m))
-                                     ((null? m) #f)
-                                     ((same? (car l) (car m)) (go (cdr l) (cdr m)))
-                                     (else #f)))))
-        (go l m)))))
+      (loop go (maxeff e (read (acyclic p)) (read (acyclic q))) ((l (listof a (acyclic p)) l) (m (listof a (acyclic q)) m)) bool
+        (cond ((null? l) (null? m))
+              ((null? m) #f)
+              ((same? (car l) (car m)) (go (cdr l) (cdr m)))
+              (else #f))))))
 
 "`l` sorted by `less?`, stably (SRFI 132's list-sort): a merge sort. Its
 runs are made at `acyclic`, so that merging them is a walk that ends; its

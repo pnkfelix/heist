@@ -32,8 +32,8 @@
 (define* insert-note (subr spin (cf-note cf-notes) cf-notes)
   (lambda (n l) (if (or (null? l) (note< n (car l))) (cons n l) (cons (car l) (insert-note n (cdr l))))))
 (define* sort-notes (subr spin (cf-notes) cf-notes)
-  (lambda (l) (letrec ((go (subr spin (cf-notes cf-notes) cf-notes) (lambda (l acc) (if (null? l) acc (go (cdr l) (insert-note (car l) acc))))))
-                (go l nil))))
+  (lambda (l) (iterate go spin ((l cf-notes l) (acc cf-notes nil)) cf-notes
+                (if (null? l) acc (go (cdr l) (insert-note (car l) acc))))))
 
 "Variable `v`'s values (in the empty contour), said for an effect: its
 name if none reach it."
@@ -74,8 +74,8 @@ another file's `file:N`); the empty one, `top`."
                                                          (sp (extract info span))
                                                          (where (string-append (if (= (extract sp file) file) "line "
                                                                                    (string-append (let ((p (cf-file-name (extract sp file))))
-                                                                                                    (letrec ((b (subr spin (int) string) (lambda (i) (cond ((< i 0) p) ((char=? (string-ref p i) #\/) (substring p (+ i 1) (string-length p))) (else (b (- i 1)))))))
-                                                                                                      (b (- (string-length p) 1))))
+                                                                                                    (iterate b spin ((i int (- (string-length p) 1))) string
+                                                                                                      (cond ((< i 0) p) ((char=? (string-ref p i) #\/) (substring p (+ i 1) (string-length p))) (else (b (- i 1))))))
                                                                                                   ":"))
                                                                                (int->string (cf-line-of (extract sp file) (extract sp start))))))
                                                     (cons where (go (cdr l))))))))
@@ -89,37 +89,30 @@ joined by ` ; `."
       (letrec ((one (subr cf-eff (vals-table ints-table int cf-span string) unit)
                  (lambda (tbl ctab i sp prefix)
                    (let* ((cs (the ints (reverse (table-ref ctab i nil))))
-                          (says (letrec ((go (subr cf-eff (ints) strings)
-                                               (lambda (l) (if (null? l) nil
-                                                               (cons (cf-say (table-ref tbl (+ (* i 16777216) (car l)) nil)) (go (cdr l)))))))
-                                  (go cs))))
-                     (if (or (null? cs) (null? (cdr cs))
-                             (letrec ((same (subr spin (strings) bool) (lambda (l) (or (null? (cdr l)) (and (string=? (car l) (car (cdr l))) (same (cdr l)))))))
-                               (same says)))
-                         #u
-                         (set acc (cons (product (start (extract sp start)) (end (extract sp end))
-                                                 (text (string-append prefix
-                                                                      (string-join (letrec ((go (subr cf-eff (ints strings) strings)
-                                                                                                (lambda (l ss) (if (null? l) nil
-                                                                                                                   (cons (string-append "in " (cf-say-contour file (car l)) ": " (car ss))
-                                                                                                                         (go (cdr l) (cdr ss)))))))
-                                                                                   (go cs says)) " ; "))))
-                                        (get acc))))))))
+                          (says (iterate go cf-eff ((l ints cs)) strings
+                                  (if (null? l) nil
+                                      (cons (cf-say (table-ref tbl (+ (* i 16777216) (car l)) nil)) (go (cdr l)))))))
+                     (unless (or (null? cs) (null? (cdr cs))
+                                 (iterate same spin ((l strings says)) bool
+                                   (or (null? (cdr l)) (and (string=? (car l) (car (cdr l))) (same (cdr l))))))
+                       (set acc (cons (product (start (extract sp start)) (end (extract sp end))
+                                               (text (string-append prefix
+                                                                    (string-join (iterate go cf-eff ((l ints cs) (ss strings says)) strings
+                                                                                   (if (null? l) nil
+                                                                                       (cons (string-append "in " (cf-say-contour file (car l)) ": " (car ss))
+                                                                                             (go (cdr l) (cdr ss))))) " ; "))))
+                                      (get acc))))))))
         (begin
-          (letrec ((go (subr cf-eff ((listof ref-info acyclic) int) unit)
-                     (lambda (rs i) (if (null? rs) #u
-                                        (begin (if (= (extract (extract (car rs) span) file) file)
-                                                   (one (get cf-ref-ctx) (get cf-ref-contours) i (extract (car rs) span) (string-append (extract (car rs) name) ": "))
-                                                   #u)
-                                          (go (cdr rs) (- i 1)))))))
-            (go (get cf-refs) (- (length (get cf-refs)) 1)))
-          (letrec ((go (subr cf-eff ((listof call-info acyclic) int) unit)
-                     (lambda (cs i) (if (null? cs) #u
-                                        (begin (if (= (extract (extract (car cs) operator) file) file)
-                                                   (one (get cf-call-ctx) (get cf-call-contours) i (extract (car cs) operator) "calls: ")
-                                                   #u)
-                                          (go (cdr cs) (- i 1)))))))
-            (go (get cf-calls) (- (length (get cf-calls)) 1)))
+          (iterate go cf-eff ((rs (listof ref-info acyclic) (get cf-refs)) (i int (- (length (get cf-refs)) 1))) unit
+            (unless (null? rs)
+              (when (= (extract (extract (car rs) span) file) file)
+                (one (get cf-ref-ctx) (get cf-ref-contours) i (extract (car rs) span) (string-append (extract (car rs) name) ": ")))
+         (go (cdr rs) (- i 1))))
+          (iterate go cf-eff ((cs (listof call-info acyclic) (get cf-calls)) (i int (- (length (get cf-calls)) 1))) unit
+            (unless (null? cs)
+              (when (= (extract (extract (car cs) operator) file) file)
+                (one (get cf-call-ctx) (get cf-call-contours) i (extract (car cs) operator) "calls: "))
+         (go (cdr cs) (- i 1))))
           ;; A variable's at a call's operator is said by the call's.
           (sort-notes (let ((all (get acc)))
                         (letrec ((call-at? (subr spin (cf-notes int int) bool)
@@ -143,42 +136,33 @@ them now."
           (operators (the (ref (listof cf-span acyclic) @cf) (new nil))))
       (begin
         ;; Calls' operators: a reference there is said by its call's note.
-        (letrec ((go (subr cf-eff ((listof call-info acyclic) int) unit)
-                   (lambda (cs i)
-                     (if (null? cs) #u
-                         (begin (if (cf-calls-worth? (table-ref (get cf-callees) i nil))
-                                    (set operators (cons (extract (car cs) operator) (get operators))) #u)
-                           (go (cdr cs) (- i 1)))))))
-          (go (get cf-calls) (- (length (get cf-calls)) 1)))
+        (iterate go cf-eff ((cs (listof call-info acyclic) (get cf-calls)) (i int (- (length (get cf-calls)) 1))) unit
+          (unless (null? cs)
+            (when (cf-calls-worth? (table-ref (get cf-callees) i nil))
+              (set operators (cons (extract (car cs) operator) (get operators))))
+       (go (cdr cs) (- i 1))))
         ;; References, numbered newest first in `cf-refs`.
-        (letrec ((go (subr cf-eff ((listof ref-info acyclic) int) unit)
-                   (lambda (rs i)
-                     (if (null? rs) #u
-                         (let ((sp (extract (car rs) span)) (s (table-ref (get cf-ref-vals) i nil)))
-                           (begin
-                             (if (and (= (extract sp file) file) (pair? s)
-                                      (not (letrec ((at (subr spin ((listof cf-span acyclic)) bool)
-                                                          (lambda (l) (and (pair? l) (or (and (= (extract (car l) file) file) (= (extract (car l) start) (extract sp start))
-                                                                                                (= (extract (car l) end) (extract sp end)))
-                                                                                           (at (cdr l)))))))
-                                             (at (get operators)))))
-                                 (set acc (cons (product (start (extract sp start)) (end (extract sp end))
-                                                         (text (string-append (extract (car rs) name) ": " (cf-say s))))
-                                                (get acc)))
-                                 #u)
-                             (go (cdr rs) (- i 1))))))))
-          (go (get cf-refs) (- (length (get cf-refs)) 1)))
-        (letrec ((go (subr cf-eff ((listof call-info acyclic) int) unit)
-                   (lambda (cs i)
-                     (if (null? cs) #u
-                         (let ((sp (extract (car cs) operator)) (s (table-ref (get cf-callees) i nil)))
-                           (begin
-                             (if (and (= (extract sp file) file) (cf-calls-worth? s))
-                                 (set acc (cons (product (start (extract sp start)) (end (extract sp end))
-                                                         (text (let ((e (cf-say-effects s)))
-                                                                 (string-append "calls " (cf-say s) (if (string=? e "") "" (string-append "; effect " e))))))
-                                                (get acc)))
-                                 #u)
-                             (go (cdr cs) (- i 1))))))))
-          (go (get cf-calls) (- (length (get cf-calls)) 1)))
+        (iterate go cf-eff ((rs (listof ref-info acyclic) (get cf-refs)) (i int (- (length (get cf-refs)) 1))) unit
+          (unless (null? rs)
+            (let ((sp (extract (car rs) span)) (s (table-ref (get cf-ref-vals) i nil)))
+              (begin
+                (when (and (= (extract sp file) file) (pair? s)
+                           (not (iterate at spin ((l (listof cf-span acyclic) (get operators))) bool
+                                  (and (pair? l) (or (and (= (extract (car l) file) file) (= (extract (car l) start) (extract sp start))
+                                                            (= (extract (car l) end) (extract sp end)))
+                                                       (at (cdr l)))))))
+                  (set acc (cons (product (start (extract sp start)) (end (extract sp end))
+                                          (text (string-append (extract (car rs) name) ": " (cf-say s))))
+                                 (get acc))))
+                (go (cdr rs) (- i 1))))))
+        (iterate go cf-eff ((cs (listof call-info acyclic) (get cf-calls)) (i int (- (length (get cf-calls)) 1))) unit
+          (unless (null? cs)
+            (let ((sp (extract (car cs) operator)) (s (table-ref (get cf-callees) i nil)))
+              (begin
+                (when (and (= (extract sp file) file) (cf-calls-worth? s))
+                  (set acc (cons (product (start (extract sp start)) (end (extract sp end))
+                                          (text (let ((e (cf-say-effects s)))
+                                                  (string-append "calls " (cf-say s) (if (string=? e "") "" (string-append "; effect " e))))))
+                                 (get acc))))
+                (go (cdr cs) (- i 1))))))
         (sort-notes (get acc))))))

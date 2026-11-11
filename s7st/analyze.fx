@@ -37,13 +37,13 @@
 
 (define* s7-an-face! (subr s7-eff (s7-span symbol) unit)
   (lambda (sp f)
-    (if (< (extract sp start) 0) #u
-        (set s7-an-faces (cons (product (start (extract sp start)) (end (extract sp end)) (face f)) (get s7-an-faces))))))
+    (unless (< (extract sp start) 0)
+      (set s7-an-faces (cons (product (start (extract sp start)) (end (extract sp end)) (face f)) (get s7-an-faces))))))
 (define* s7-an-def! (subr s7-eff (symbol s7-span) unit)
   (lambda (name sp)
-    (if (< (extract sp start) 0) #u
-        (begin (set s7-an-defs (cons (product (name (s7-symbol-name name)) (start (extract sp start)) (end (extract sp end))) (get s7-an-defs)))
-          (s7-an-face! sp 'function-name)))))
+    (unless (< (extract sp start) 0)
+      (set s7-an-defs (cons (product (name (s7-symbol-name name)) (start (extract sp start)) (end (extract sp end))) (get s7-an-defs)))
+ (s7-an-face! sp 'function-name))))
 
 "List `x`'s items, each with where it was read (`span`, if not known)."
 (define* s7-an-items (subr s7-eff (s7-value s7-span) s7-itemized)
@@ -89,10 +89,10 @@ a macro the top level knows (the prelude's, a program's)."
     (lambda (x span env top)
       (tagcase x
         (sym s (tagcase (s7-an-lookup s env)
-                 (found b (if (or (< (extract span start) 0) (< (extract b start) 0)) #u
-                              (set s7-an-refs (cons (product (start (extract span start)) (end (extract span end))
-                                                             (binder-start (extract b start)) (binder-end (extract b end)))
-                                                    (get s7-an-refs)))))
+                 (found b (unless (or (< (extract span start) 0) (< (extract b start) 0))
+                            (set s7-an-refs (cons (product (start (extract span start)) (end (extract span end))
+                                                           (binder-start (extract b start)) (binder-end (extract b end)))
+                                                  (get s7-an-refs)))))
                  (none u #u)))
         (pair p
           (let* ((items (s7-an-items x span))
@@ -110,14 +110,14 @@ a macro the top level knows (the prelude's, a program's)."
         (else y #u))))
   (s7-an-all (->* (s7-itemized s7-binders) unit)
     (lambda (items env)
-      (if (null? items) #u
-          (begin (s7-an-form (extract (car items) value) (extract (car items) span) env #f) (s7-an-all (cdr items) env)))))
+      (unless (null? items)
+        (s7-an-form (extract (car items) value) (extract (car items) span) env #f) (s7-an-all (cdr items) env))))
   ;; A body: the names its definitions bind found first, then each form walked.
   (s7-an-body (->* (s7-itemized s7-binders bool) unit)
     (lambda (forms env top)
       (let ((inner (if top env (s7-an-append (s7-an-defined forms) env))))
         (letrec ((go (->* (s7-itemized) unit)
-                   (lambda (l) (if (null? l) #u (begin (s7-an-form (extract (car l) value) (extract (car l) span) inner top) (go (cdr l)))))))
+                   (lambda (l) (unless (null? l) (s7-an-form (extract (car l) value) (extract (car l) span) inner top) (go (cdr l))))))
           (go forms)))))
   ;; The binders the definitions among `forms` make (in a body).
   (s7-an-defined (->* (s7-itemized) s7-binders)
@@ -181,12 +181,11 @@ a macro the top level knows (the prelude's, a program's)."
            (s7-an-body rest (s7-an-append (s7-an-formals (extract (first) value) (extract (first) span)) env) #f))
           ((string=? name "case-lambda")
            (letrec ((go (->* (s7-itemized) unit)
-                      (lambda (cs) (if (null? cs) #u
-                                       (let ((c (s7-an-items (extract (car cs) value) (extract (car cs) span))))
-                                         (begin (if (pair? c)
-                                                    (s7-an-body (cdr c) (s7-an-append (s7-an-formals (extract (car c) value) (extract (car c) span)) env) #f)
-                                                    #u)
-                                           (go (cdr cs))))))))
+                      (lambda (cs) (unless (null? cs)
+                                     (let ((c (s7-an-items (extract (car cs) value) (extract (car cs) span))))
+                                       (begin (when (pair? c)
+                                                (s7-an-body (cdr c) (s7-an-append (s7-an-formals (extract (car c) value) (extract (car c) span)) env) #f))
+                                         (go (cdr cs))))))))
              (go args)))
           ((string=? name "define")
            (let* ((t (first)) (tv (extract t value)))
@@ -204,15 +203,15 @@ a macro the top level knows (the prelude's, a program's)."
                (if (string=? name "define-syntax")
                    (s7-an-name-def (extract t value) (extract t span) env top)
                    (letrec ((each (->* (s7-binders) unit)
-                              (lambda (bs) (if (null? bs) #u (begin (if top (s7-an-def! (extract (car bs) name) (extract (car bs) span)) #u) (each (cdr bs)))))))
+                              (lambda (bs) (unless (null? bs) (when top (s7-an-def! (extract (car bs) name) (extract (car bs) span))) (each (cdr bs))))))
                      (each (s7-an-formals (extract t value) (extract t span)))))
-               (if (string=? name "define-values") (s7-an-all rest env) #u))))
+               (when (string=? name "define-values") (s7-an-all rest env)))))
           ((string=? name "define-record-type")
            (letrec ((each (->* (s7-binders) unit)
-                      (lambda (bs) (if (null? bs) #u
-                                       (begin (if top (s7-an-def! (extract (car bs) name) (extract (car bs) span))
-                                                  (s7-an-face! (extract (car bs) span) 'function-name))
-                                         (each (cdr bs)))))))
+                      (lambda (bs) (unless (null? bs)
+                                     (if top (s7-an-def! (extract (car bs) name) (extract (car bs) span))
+                                         (s7-an-face! (extract (car bs) span) 'function-name))
+                                (each (cdr bs))))))
              (each (s7-an-record-binders args))))
           ((or (string=? name "let") (string=? name "let*") (string=? name "letrec") (string=? name "letrec*"))
            (if (s7-symbol? (extract (first) value))
@@ -246,14 +245,14 @@ a macro the top level knows (the prelude's, a program's)."
                (s7-an-inits bs env)
                ;; Steps, the test and its results, and the body: inside.
                (letrec ((steps (->* (s7-itemized) unit)
-                          (lambda (l) (if (null? l) #u
-                                          (let ((b (s7-an-items (extract (car l) value) (extract (car l) span))))
-                                            (begin (if (and (pair? b) (pair? (cdr b))) (s7-an-all (cdr (cdr b)) inner) #u)
-                                              (steps (cdr l))))))))
+                          (lambda (l) (unless (null? l)
+                                        (let ((b (s7-an-items (extract (car l) value) (extract (car l) span))))
+                                          (begin (when (and (pair? b) (pair? (cdr b))) (s7-an-all (cdr (cdr b)) inner))
+                                            (steps (cdr l))))))))
                  (steps bs))
                (s7-an-all rest inner))))
           ((string=? name "receive")
-           (begin (if (pair? rest) (s7-an-form (extract (car rest) value) (extract (car rest) span) env #f) #u)
+           (begin (when (pair? rest) (s7-an-form (extract (car rest) value) (extract (car rest) span) env #f))
              (s7-an-body (if (pair? rest) (cdr rest) nil) (s7-an-append (s7-an-formals (extract (first) value) (extract (first) span)) env) #f)))
           ((string=? name "guard")
            (let* ((spec (s7-an-items (extract (first) value) (extract (first) span)))
@@ -261,20 +260,19 @@ a macro the top level knows (the prelude's, a program's)."
                             (if (and (pair? spec) (s7-symbol? (extract (car spec) value)))
                                 (list (product (name (s7-sym (extract (car spec) value))) (span (extract (car spec) span))))
                                 nil))))
-             (begin (if (pair? spec) (s7-an-all (cdr spec) (s7-an-append var env)) #u)
+             (begin (when (pair? spec) (s7-an-all (cdr spec) (s7-an-append var env)))
                     (s7-an-body rest env #f))))
           ((or (string=? name "let-syntax") (string=? name "letrec-syntax")) (s7-an-body rest env #f))
           ((string=? name "begin") (s7-an-body args env top))
           ((string=? name "define-library")
            ;; Its `begin`s' forms are its top level.
            (letrec ((decls (->* (s7-itemized) unit)
-                      (lambda (l) (if (null? l) #u
-                                      (let ((d (s7-an-items (extract (car l) value) (extract (car l) span))))
-                                        (begin
-                                          (if (and (pair? d) (s7-sym-named? (extract (car d) value) "begin"))
-                                              (begin (s7-an-face! (extract (car d) span) 'keyword) (s7-an-body (cdr d) env #t))
-                                              #u)
-                                          (decls (cdr l))))))))
+                      (lambda (l) (unless (null? l)
+                                    (let ((d (s7-an-items (extract (car l) value) (extract (car l) span))))
+                                      (begin
+                                        (when (and (pair? d) (s7-sym-named? (extract (car d) value) "begin"))
+                                          (s7-an-face! (extract (car d) span) 'keyword) (s7-an-body (cdr d) env #t))
+                                        (decls (cdr l))))))))
              (decls rest)))
           (else (s7-an-all args env))))))
   ;; Name `v`, defined at `span`: a definition at top level; else a binder, marked.
@@ -288,17 +286,17 @@ a macro the top level knows (the prelude's, a program's)."
   ;; Bindings `((v init) …)`'s initial values, in `env`.
   (s7-an-inits (->* (s7-itemized s7-binders) unit)
     (lambda (bs env)
-      (if (null? bs) #u
-          (let ((b (s7-an-items (extract (car bs) value) (extract (car bs) span))))
-            (begin (if (and (pair? b) (pair? (cdr b))) (s7-an-form (extract (car (cdr b)) value) (extract (car (cdr b)) span) env #f) #u)
-              (s7-an-inits (cdr bs) env))))))
+      (unless (null? bs)
+        (let ((b (s7-an-items (extract (car bs) value) (extract (car bs) span))))
+          (begin (when (and (pair? b) (pair? (cdr b))) (s7-an-form (extract (car (cdr b)) value) (extract (car (cdr b)) span) env #f))
+            (s7-an-inits (cdr bs) env))))))
   ;; As `let*` sees them: each in the bindings before it.
   (s7-an-inits-sequential (->* (s7-itemized s7-binders) unit)
     (lambda (bs env)
-      (if (null? bs) #u
-          (let ((b (s7-an-items (extract (car bs) value) (extract (car bs) span))))
-            (begin (if (and (pair? b) (pair? (cdr b))) (s7-an-form (extract (car (cdr b)) value) (extract (car (cdr b)) span) env #f) #u)
-              (s7-an-inits-sequential (cdr bs) (s7-an-append (s7-an-binding-names (list (car bs))) env)))))))
+      (unless (null? bs)
+        (let ((b (s7-an-items (extract (car bs) value) (extract (car bs) span))))
+          (begin (when (and (pair? b) (pair? (cdr b))) (s7-an-form (extract (car (cdr b)) value) (extract (car (cdr b)) span) env #f))
+            (s7-an-inits-sequential (cdr bs) (s7-an-append (s7-an-binding-names (list (car bs))) env)))))))
   (s7-an-binding-names (->* (s7-itemized) s7-binders)
     (lambda (bs)
       (if (null? bs) nil
@@ -315,7 +313,7 @@ a macro the top level knows (the prelude's, a program's)."
                                              (s7-sym-named? (extract (car items) value) "unquote-splicing")))
                       (s7-an-all (cdr items) env)
                       (letrec ((go (->* (s7-itemized) unit)
-                                 (lambda (l) (if (null? l) #u (begin (s7-an-qq (extract (car l) value) (extract (car l) span) env) (go (cdr l)))))))
+                                 (lambda (l) (unless (null? l) (s7-an-qq (extract (car l) value) (extract (car l) span) env) (go (cdr l))))))
                         (go items)))))
         (else y #u)))))
 

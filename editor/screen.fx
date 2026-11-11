@@ -10,6 +10,11 @@
 ;;; Faces are symbols. `face-sgr` gives the SGR parameters that draw one
 ;;; ("1" bold, "7" reverse, "38;5;n" a color).
 
+;; Macros: each file defines its own, for now (docs/macros.md).
+(define-syntax loop
+  (syntax-rules ()
+    ((_ go eff ((x t i) ...) r body) (letrec ((go (subr eff (t ...) r) (lambda (x ...) body))) (go i ...)))))
+
 (define-type face symbol)
 "Columns `start` to `end` of a row, drawn in `face`."
 (define-type span (productof (start int) (end int) (face face)))
@@ -111,18 +116,15 @@ characters shown as spaces; and its spans, cut to the width."
     (let* ((n (string-length text))
            (fitted (if (>= n width) (substring text 0 width) (string-append text (spaces (- width n)))))
            (clean (list->string
-                   (letrec ((go (subr spin (int (listof char acyclic)) (listof char acyclic))
-                              (lambda (i acc) (if (< i 0) acc (go (- i 1) (cons (shown (string-ref fitted i)) acc))))))
-                     (go (- (string-length fitted) 1) nil))))
-           (cut (letrec ((go (subr spin (spans) spans)
-                           (lambda (ss)
-                             (cond ((null? ss) nil)
-                                   ((>= (extract (car ss) start) width) nil)
-                                   (else (cons (product (start (extract (car ss) start))
-                                                        (end (min width (extract (car ss) end)))
-                                                        (face (extract (car ss) face)))
-                                               (go (cdr ss))))))))
-                  (go ss))))
+                   (loop go spin ((i int (- (string-length fitted) 1)) (acc (listof char acyclic) nil)) (listof char acyclic)
+                     (if (< i 0) acc (go (- i 1) (cons (shown (string-ref fitted i)) acc))))))
+           (cut (loop go spin ((ss spans ss)) spans
+                  (cond ((null? ss) nil)
+                        ((>= (extract (car ss) start) width) nil)
+                        (else (cons (product (start (extract (car ss) start))
+                                             (end (min width (extract (car ss) end)))
+                                             (face (extract (car ss) face)))
+                                    (go (cdr ss))))))))
       (product (text clean) (spans cut)))))
 
 "A row of `text` in one face."
@@ -146,14 +148,12 @@ changed."
     (let* ((same-size (and (= (extract old height) (extract new height))
                            (= (extract old width) (extract new width))))
            (changed
-            (letrec ((go (subr spin (int rows rows strings) strings)
-                       (lambda (r news olds acc)
-                         (if (null? news)
-                             acc
-                             (let ((same (and same-size (pair? olds) (row=? (car news) (car olds)))))
-                               (go (+ r 1) (cdr news) (if (pair? olds) (cdr olds) olds)
-                                   (if same acc (row-pieces r (car news) acc))))))))
-              (go 0 (extract new rows) (extract old rows) nil)))
+            (loop go spin ((r int 0) (news rows (extract new rows)) (olds rows (extract old rows)) (acc strings nil)) strings
+              (if (null? news)
+                  acc
+                  (let ((same (and same-size (pair? olds) (row=? (car news) (car olds)))))
+                    (go (+ r 1) (cdr news) (if (pair? olds) (cdr olds) olds)
+                        (if same acc (row-pieces r (car news) acc)))))))
            (cursor-same (and (= (extract old cursor-row) (extract new cursor-row))
                              (= (extract old cursor-column) (extract new cursor-column)))))
       (if (and same-size (null? changed) cursor-same)

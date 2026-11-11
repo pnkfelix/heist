@@ -106,7 +106,7 @@ least one digit, then perhaps an exponent."
            (after (if (>= pt 0) (substring mant (+ pt 1) (string-length mant)) ""))
            (m (s7-parse-digits (string-append (if (string=? before "") "0" before) after) 10))
            (scale (- expo (string-length after)))
-           (ten (lambda ((k int)) (letrec ((go (subr spin (int int) int) (lambda (k acc) (if (<= k 0) acc (go (- k 1) (* acc 10)))))) (go k 1)))))
+           (ten (lambda ((k int)) (iterate go spin ((k int k) (acc int 1)) int (if (<= k 0) acc (go (- k 1) (* acc 10)))))))
       (if (>= scale 0) (sum int (* m (ten scale))) (s7-make-ratio m (ten (- 0 scale)))))))
 
 "Number `s`, in `radix`, or #f: an integer, a ratio, a decimal, or an
@@ -186,16 +186,15 @@ each visited once (it may have cycles already)."
                    (if (s7-same-pair? x old) new
                        (begin
                          (tagcase x
-                           (pair p (if (eqtable-has? pairs (extract p car)) #u
-                                       (begin (eqtable-set! pairs (extract p car) #t)
-                                         (set (extract p car) (fix (get (extract p car))))
-                                         (set (extract p cdr) (fix (get (extract p cdr)))))))
-                           (vec a (if (eqtable-has? vecs a) #u
-                                      (begin (eqtable-set! vecs a #t)
-                                        (letrec ((each (subr (maxeff spin (read @sc) (write @sc) (alloc @sc)) (int) unit)
-                                                   (lambda (i) (if (>= i (array-length a)) #u
-                                                                   (begin (array-set! a i (fix (array-ref a i))) (each (+ i 1)))))))
-                                          (each 0)))))
+                           (pair p (unless (eqtable-has? pairs (extract p car))
+                                     (eqtable-set! pairs (extract p car) #t)
+                                (set (extract p car) (fix (get (extract p car))))
+                                (set (extract p cdr) (fix (get (extract p cdr))))))
+                           (vec a (unless (eqtable-has? vecs a)
+                                    (eqtable-set! vecs a #t)
+                               (iterate each (maxeff spin (read @sc) (write @sc) (alloc @sc)) ((i int 0)) unit
+                                 (unless (>= i (array-length a))
+                                   (array-set! a i (fix (array-ref a i))) (each (+ i 1))))))
                            (else y #u))
                          x)))))
         (begin (fix v) #u)))))
@@ -282,13 +281,11 @@ each visited once (it may have cycles already)."
                ;; made: the first beginning a list read from `a` to `e`.
                (build (subr s7-read-eff (s7-values (listof s7-span acyclic) s7-value int int) s7-value)
                  (lambda (vs spans tail a e)
-                   (letrec ((go (subr s7-read-eff (s7-values (listof s7-span acyclic) bool) s7-value)
-                              (lambda (vs spans first)
-                                (if (null? vs) tail
-                                    (s7-cons-read (car vs) (go (cdr vs) (if (pair? spans) (cdr spans) nil) #f)
-                                                  (if first (product (file file) (start a) (end e)) s7-no-span)
-                                                  (if (pair? spans) (car spans) s7-no-span))))))
-                     (go vs spans #t))))
+                   (iterate go s7-read-eff ((vs s7-values vs) (spans (listof s7-span acyclic) spans) (first bool #t)) s7-value
+                     (if (null? vs) tail
+                         (s7-cons-read (car vs) (go (cdr vs) (if (pair? spans) (cdr spans) nil) #f)
+                                       (if first (product (file file) (start a) (end e)) s7-no-span)
+                                       (if (pair? spans) (car spans) s7-no-span))))))
                ;; A list's items from `i`, its open at `open`, closed by `close`; read so far, last first.
                (items (subr s7-read-eff (int int char s7-values (listof s7-span acyclic)) s7-read)
                  ;; `spans`: where each of `acc` was read, last first.
@@ -423,11 +420,10 @@ each visited once (it may have cycles already)."
                                     (none u (sum incomplete #u))
                                     (else y y)))))
                              ((char=? (string-ref text e) #\#)
-                              (letrec ((find (subr s7-read-eff ((listof s7-label acyclic)) s7-read)
-                                         (lambda (l) (cond ((null? l) (bad (string-append "no datum labelled #" (int->string k) "=") a))
-                                                           ((= (extract (car l) n) k) (done (get (extract (car l) value)) a (+ e 1)))
-                                                           (else (find (cdr l)))))))
-                                (find (get labels))))
+                              (iterate find s7-read-eff ((l (listof s7-label acyclic) (get labels))) s7-read
+                                (cond ((null? l) (bad (string-append "no datum labelled #" (int->string k) "=") a))
+                                      ((= (extract (car l) n) k) (done (get (extract (car l) value)) a (+ e 1)))
+                                      (else (find (cdr l))))))
                              (else (bad "a datum label is #n= or #n#" a)))))))
                (atom (subr s7-read-eff (int) s7-read)
                  (lambda (a)

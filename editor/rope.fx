@@ -9,6 +9,11 @@
 ;;; a position, is one walk down the tree. Lines are numbered from 0.
 ;;; An AVL tree by height; leaves hold up to `leaf-size` characters.
 
+;; Macros: each file defines its own, for now (docs/macros.md).
+(define-syntax loop
+  (syntax-rules ()
+    ((_ go eff ((x t i) ...) r body) (letrec ((go (subr eff (t ...) r) (lambda (x ...) body))) (go i ...)))))
+
 "The tree. A rope is immutable data, so it is transmissible: an
 analysis in another process can be sent one."
 (define-datatype rope
@@ -20,10 +25,8 @@ analysis in another process can be sent one."
 
   (define count-newlines (subr spin (string int int) int)
     (lambda (s start end)
-      (letrec ((go (subr spin (int int) int)
-                 (lambda (i n)
-                   (if (>= i end) n (go (+ i 1) (if (char=? (string-ref s i) #\newline) (+ n 1) n))))))
-        (go start 0))))
+      (loop go spin ((i int start) (n int 0)) int
+        (if (>= i end) n (go (+ i 1) (if (char=? (string-ref s i) #\newline) (+ n 1) n))))))
 
   (define make-leaf (subr spin (string) rope)
     (lambda (s) (leaf s (count-newlines s 0 (string-length s)))))
@@ -74,64 +77,58 @@ analysis in another process can be sent one."
 "A rope of string `s`, balanced."
 (define string->rope (subr spin (string) rope)
   (lambda (s)
-    (letrec ((build (subr spin (int int) rope)
-               (lambda (start end)
-                 (if (<= (- end start) leaf-size)
-                     (make-leaf (substring s start end))
-                     (let ((mid (quotient (+ start end) 2)))
-                       (node (build start mid) (build mid end)))))))
-      (build 0 (string-length s)))))
+    (loop build spin ((start int 0) (end int (string-length s))) rope
+      (if (<= (- end start) leaf-size)
+          (make-leaf (substring s start end))
+          (let ((mid (quotient (+ start end) 2)))
+            (node (build start mid) (build mid end)))))))
 
 "`l` then `r`, their heights at most one apart on the way up: AVL's join."
 (define rope-append (subr spin (rope rope) rope)
   (lambda (l r)
-    (letrec ((join (subr spin (rope rope) rope)
-               (lambda (l r)
-                 (cond ((is-empty? l) r)
-                       ((is-empty? r) l)
-                       (else
-                        (tagcase l
-                          (leaf (ls lnl)
-                            (tagcase r
-                              (leaf (rs rnl)
-                                (if (<= (+ (string-length ls) (string-length rs)) leaf-size)
-                                    (leaf (string-append ls rs) (+ lnl rnl))
-                                    (node l r)))
-                              (branch (rl rr n nl h)
-                                (if (> h 1) (balance (join l rl) rr) (node l r)))))
-                          (branch (ll lr ln lnl lh)
-                            (cond ((> lh (+ (rope-height r) 1)) (balance ll (join lr r)))
-                                  ((> (rope-height r) (+ lh 1))
-                                   (tagcase r
-                                     (branch (rl rr n nl h) (balance (join l rl) rr))
-                                     (else y (node l r))))
-                                  (else (node l r))))))))))
-      (join l r))))
+    (loop join spin ((l rope l) (r rope r)) rope
+      (cond ((is-empty? l) r)
+            ((is-empty? r) l)
+            (else
+             (tagcase l
+               (leaf (ls lnl)
+                 (tagcase r
+                   (leaf (rs rnl)
+                     (if (<= (+ (string-length ls) (string-length rs)) leaf-size)
+                         (leaf (string-append ls rs) (+ lnl rnl))
+                         (node l r)))
+                   (branch (rl rr n nl h)
+                     (if (> h 1) (balance (join l rl) rr) (node l r)))))
+               (branch (ll lr ln lnl lh)
+                 (cond ((> lh (+ (rope-height r) 1)) (balance ll (join lr r)))
+                       ((> (rope-height r) (+ lh 1))
+                        (tagcase r
+                          (branch (rl rr n nl h) (balance (join l rl) rr))
+                          (else y (node l r))))
+                       (else (node l r))))))))))
 
 "The text before `pos` and after it."
 (define rope-split (subr spin (rope int) (productof (before rope) (after rope)))
   (lambda (r pos)
-    (letrec ((split (subr spin (rope int) (productof (before rope) (after rope)))
-               (lambda (r pos)
-                 (cond ((<= pos 0) (product (before empty-rope) (after r)))
-                       ((>= pos (rope-length r)) (product (before r) (after empty-rope)))
-                       (else
-                        (tagcase r
-                          (leaf (s nl)
-                            (product (before (make-leaf (substring s 0 pos)))
-                                     (after (make-leaf (substring s pos (string-length s))))))
-                          (branch (l rt n nl h)
-                            (let ((ln (rope-length l)))
-                              (cond ((< pos ln)
-                                     (let ((p (split l pos)))
-                                       (product (before (extract p before))
-                                                (after (rope-append (extract p after) rt)))))
-                                    ((= pos ln) (product (before l) (after rt)))
-                                    (else
-                                     (let ((p (split rt (- pos ln))))
-                                       (product (before (rope-append l (extract p before)))
-                                                (after (extract p after))))))))))))))
-      (split r pos))))
+    (loop split spin ((r rope r) (pos int pos)) (productof (before rope) (after rope))
+      (cond ((<= pos 0) (product (before empty-rope) (after r)))
+            ((>= pos (rope-length r)) (product (before r) (after empty-rope)))
+            (else
+             (tagcase r
+               (leaf (s nl)
+                 (product (before (make-leaf (substring s 0 pos)))
+                          (after (make-leaf (substring s pos (string-length s))))))
+               (branch (l rt n nl h)
+                 (let ((ln (rope-length l)))
+                   (cond ((< pos ln)
+                          (let ((p (split l pos)))
+                            (product (before (extract p before))
+                                     (after (rope-append (extract p after) rt)))))
+                         ((= pos ln) (product (before l) (after rt)))
+                         (else
+                          (let ((p (split rt (- pos ln))))
+                            (product (before (rope-append l (extract p before)))
+                                     (after (extract p after))))))))))))))
 
 (define rope-insert (subr spin (rope int string) rope)
   (lambda (r pos s)
@@ -147,14 +144,12 @@ analysis in another process can be sent one."
 "The character at `i`, which must be within the text."
 (define rope-ref (subr pure (rope int) char)
   (lambda (r i)
-    (letrec ((go (subr pure (rope int) char)
-               (lambda (r i)
-                 (tagcase r
-                   (leaf (s nl) (string-ref s i))
-                   (branch (l rt n nl h)
-                     (let ((ln (rope-length l)))
-                       (if (< i ln) (go l i) (go rt (- i ln)))))))))
-      (go r i))))
+    (loop go pure ((r rope r) (i int i)) char
+      (tagcase r
+        (leaf (s nl) (string-ref s i))
+        (branch (l rt n nl h)
+          (let ((ln (rope-length l)))
+            (if (< i ln) (go l i) (go rt (- i ln)))))))))
 
 "The text from `start` to `end`, as a string: its leaves' pieces, joined once."
 (define rope-substring (subr spin (rope int int) string)
@@ -181,24 +176,20 @@ analysis in another process can be sent one."
 not so many."
 (define rope-line-start (subr spin (rope int) int)
   (lambda (r n)
-    (letrec ((go (subr spin (rope int) int)
-               (lambda (r n)
-                 (cond ((<= n 0) 0)
-                       ((> n (rope-newlines r)) (rope-length r))
-                       (else
-                        (tagcase r
-                          (leaf (s nl)
-                            (letrec ((scan (subr spin (int int) int)
-                                       (lambda (i n)
-                                         (if (char=? (string-ref s i) #\newline)
-                                             (if (= n 1) (+ i 1) (scan (+ i 1) (- n 1)))
-                                             (scan (+ i 1) n)))))
-                              (scan 0 n)))
-                          (branch (l rt ln lnl h)
-                            (if (<= n (rope-newlines l))
-                                (go l n)
-                                (+ (rope-length l) (go rt (- n (rope-newlines l))))))))))))
-      (go r n))))
+    (loop go spin ((r rope r) (n int n)) int
+      (cond ((<= n 0) 0)
+            ((> n (rope-newlines r)) (rope-length r))
+            (else
+             (tagcase r
+               (leaf (s nl)
+                 (loop scan spin ((i int 0) (n int n)) int
+                   (if (char=? (string-ref s i) #\newline)
+                       (if (= n 1) (+ i 1) (scan (+ i 1) (- n 1)))
+                       (scan (+ i 1) n))))
+               (branch (l rt ln lnl h)
+                 (if (<= n (rope-newlines l))
+                     (go l n)
+                     (+ (rope-length l) (go rt (- n (rope-newlines l))))))))))))
 
 "Where line `n` ends: before its newline, or at the end."
 (define rope-line-end (subr spin (rope int) int)
@@ -210,15 +201,13 @@ not so many."
 "The line `pos` is on: the newlines before it."
 (define rope-line-of (subr spin (rope int) int)
   (lambda (r pos)
-    (letrec ((go (subr spin (rope int) int)
-               (lambda (r pos)
-                 (if (<= pos 0)
-                     0
-                     (tagcase r
-                       (leaf (s nl) (count-newlines s 0 (min pos (string-length s))))
-                       (branch (l rt n nl h)
-                         (let ((ln (rope-length l)))
-                           (if (<= pos ln)
-                               (go l pos)
-                               (+ (rope-newlines l) (go rt (- pos ln)))))))))))
-      (go r pos))))
+    (loop go spin ((r rope r) (pos int pos)) int
+      (if (<= pos 0)
+          0
+          (tagcase r
+            (leaf (s nl) (count-newlines s 0 (min pos (string-length s))))
+            (branch (l rt n nl h)
+              (let ((ln (rope-length l)))
+                (if (<= pos ln)
+                    (go l pos)
+                    (+ (rope-newlines l) (go rt (- pos ln)))))))))))

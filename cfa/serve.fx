@@ -48,18 +48,16 @@
   (lambda (f) (tagcase (read-file f) (data d (tagcase (utf8->string d) (text s s) (else y ""))) (else y ""))))
 "The number `s` writes in decimal (0 if none)."
 (define* cf-decimal (subr spin (string) int)
-  (lambda (s) (letrec ((go (subr spin (int int) int)
-                         (lambda (i acc) (if (>= i (string-length s)) acc
-                                             (let ((d (- (char->integer (string-ref s i)) 48)))
-                                               (if (and (>= d 0) (<= d 9)) (go (+ i 1) (+ (* acc 10) d)) acc))))))
-                (go 0 0))))
+  (lambda (s) (iterate go spin ((i int 0) (acc int 0)) int
+                (if (>= i (string-length s)) acc
+                    (let ((d (- (char->integer (string-ref s i)) 48)))
+                      (if (and (>= d 0) (<= d 9)) (go (+ i 1) (+ (* acc 10) d)) acc))))))
 "Whether `path` names a Scheme file, by its name."
 (define* cf-scheme-file? (subr spin (string) bool)
   (lambda (p) (let ((n (string-length p)))
-                (letrec ((ends (subr spin (strings) bool)
-                           (lambda (l) (and (pair? l) (or (and (>= n (string-length (car l))) (string=? (substring p (- n (string-length (car l))) n) (car l)))
-                                                          (ends (cdr l)))))))
-                  (ends (list ".scm" ".sld" ".ss" ".sps" ".sch"))))))
+                (iterate ends spin ((l strings (list ".scm" ".sld" ".ss" ".sps" ".sch"))) bool
+                  (and (pair? l) (or (and (>= n (string-length (car l))) (string=? (substring p (- n (string-length (car l))) n) (car l)))
+                                     (ends (cdr l))))))))
 
 (define-effect cf-serve-eff (maxeff fx-eff sc-eff (io fs-read) (io stdout) (io stdin) spin))
 
@@ -138,33 +136,30 @@ call, and whether it may call code not known."
                         (list-sort string<? (go ns nil))))
             (else y nil))))))
 (define* cf-dataset-text (subr (maxeff (io fs-read) spin (read @cf)) (string) string)
-  (lambda (p) (letrec ((go (subr (maxeff (io fs-read) spin (read @cf)) ((listof cf-text acyclic)) string)
-                         (lambda (l) (cond ((null? l) (cf-text-of-file p))
-                                           ((string=? (extract (car l) path) p) (extract (car l) text))
-                                           (else (go (cdr l)))))))
-                (go (get cf-dataset)))))
+  (lambda (p) (iterate go (maxeff (io fs-read) spin (read @cf)) ((l (listof cf-text acyclic) (get cf-dataset))) string
+                (cond ((null? l) (cf-text-of-file p))
+                      ((string=? (extract (car l) path) p) (extract (car l) text))
+                      (else (go (cdr l)))))))
 
 "World `key` out of those analysed (its dataset changed), and its
 analysis, if it runs, stopped."
 (define* cf-invalidate! (subr cf-eff (string) unit)
   (lambda (key)
     (begin
-      (set cf-analysed (letrec ((go (subr spin ((listof cf-world-notes acyclic)) (listof cf-world-notes acyclic))
-                                  (lambda (l) (cond ((null? l) nil) ((string=? (extract (car l) key) key) (go (cdr l)))
-                                                    (else (cons (car l) (go (cdr l))))))))
-                         (go (get cf-analysed))))
+      (set cf-analysed (iterate go spin ((l (listof cf-world-notes acyclic) (get cf-analysed))) (listof cf-world-notes acyclic)
+                         (cond ((null? l) nil) ((string=? (extract (car l) key) key) (go (cdr l)))
+                               (else (cons (car l) (go (cdr l)))))))
       (tagcase (get cf-job-now)
-        (job j (if (string=? (extract j key) key) (set cf-job-now (sum none #u)) #u))
+        (job j (when (string=? (extract j key) key) (set cf-job-now (sum none #u))))
         (else y #u)))))
 
 "Notes `ns`, as an answer's field: a line each."
 (define* cf-notes-field (subr spin (cf-notes) string)
-  (lambda (ns) (string-join (letrec ((go (subr spin (cf-notes) strings)
-                                     (lambda (l) (if (null? l) nil
-                                                     (cons (string-append (int->string (extract (car l) start)) " " (int->string (extract (car l) end)) " "
-                                                                          (extract (car l) text))
-                                                           (go (cdr l)))))))
-                            (go ns)) "\n")))
+  (lambda (ns) (string-join (iterate go spin ((l cf-notes ns)) strings
+                              (if (null? l) nil
+                                  (cons (string-append (int->string (extract (car l) start)) " " (int->string (extract (car l) end)) " "
+                                                       (extract (car l) text))
+                                        (go (cdr l))))) "\n")))
 
 "Every world file `path` is of (its own, and those importing it, a
 library) out of those analysed, and the analysis that runs, if it is of
@@ -179,15 +174,14 @@ one, stopped: `path`'s text changed."
                                                     (else (cons (car l) (go (cdr l))))))))
                          (go (get cf-analysed))))
       (tagcase (get cf-job-now)
-        (job j (if (member? path (extract j paths) string=?) (set cf-job-now (sum none #u)) #u))
+        (job j (when (member? path (extract j paths) string=?) (set cf-job-now (sum none #u))))
         (else y #u))
       (cf-invalidate! (cf-world-key path)))))
 (define* cf-world-notes-of (subr (maxeff spin (read @cf)) (string) (sumof (none unit) (some cf-world-notes)))
-  (lambda (key) (letrec ((go (subr (maxeff (read @cf) spin) ((listof cf-world-notes acyclic)) (sumof (none unit) (some cf-world-notes)))
-                           (lambda (l) (cond ((null? l) (sum none #u))
-                                             ((string=? (extract (car l) key) key) (sum some (car l)))
-                                             (else (go (cdr l)))))))
-                  (go (get cf-analysed)))))
+  (lambda (key) (iterate go (maxeff (read @cf) spin) ((l (listof cf-world-notes acyclic) (get cf-analysed))) (sumof (none unit) (some cf-world-notes))
+                  (cond ((null? l) (sum none #u))
+                        ((string=? (extract (car l) key) key) (sum some (car l)))
+                        (else (go (cdr l)))))))
 
 (define* cf-place-fields (subr spin (cf-place) strings)
   (lambda (p) (list (extract p path) (int->string (extract p start)) (int->string (extract p end)) (extract p name))))
@@ -224,59 +218,51 @@ one, stopped: `path`'s text changed."
                             (best (find (extract w contexts)) "" -1)))))
         ((string=? kind "callees")
          ;; The innermost call around `pos`.
-         (let ((best (letrec ((go (subr spin ((listof cf-call-found acyclic) (sumof (none unit) (call cf-call-found))) (sumof (none unit) (call cf-call-found)))
-                                (lambda (l best)
-                                  (cond ((null? l) best)
-                                        ((and (cf-place-holds? (extract (car l) place) path pos)
-                                              (tagcase best (call b (< (cf-place-size (extract (car l) place)) (cf-place-size (extract b place)))) (else y #t)))
-                                         (go (cdr l) (sum call (car l))))
-                                        (else (go (cdr l) best))))))
-                       (go (extract w calls) (sum none #u)))))
+         (let ((best (iterate go spin ((l (listof cf-call-found acyclic) (extract w calls)) (best (sumof (none unit) (call cf-call-found)) (sum none #u))) (sumof (none unit) (call cf-call-found))
+                       (cond ((null? l) best)
+                             ((and (cf-place-holds? (extract (car l) place) path pos)
+                                   (tagcase best (call b (< (cf-place-size (extract (car l) place)) (cf-place-size (extract b place)))) (else y #t)))
+                              (go (cdr l) (sum call (car l))))
+                             (else (go (cdr l) best))))))
            (tagcase best
              (call c (cf-answer "callees"
                                 (append (list (extract r key) path "1" (cf-flag (extract c unknown)))
-                                        (letrec ((go (subr (maxeff spin (read @cf)) (ints) strings)
-                                                   (lambda (l) (if (null? l) nil
-                                                                   (append (cf-place-fields (extract (array-ref (extract w lambdas) (car l)) place)) (go (cdr l)))))))
-                                          (go (extract c callees))))))
+                                        (iterate go (maxeff spin (read @cf)) ((l ints (extract c callees))) strings
+                                          (if (null? l) nil
+                                              (append (cf-place-fields (extract (array-ref (extract w lambdas) (car l)) place)) (go (cdr l))))))))
              (else y (cf-answer "callees" (list (extract r key) path "0" "0"))))))
         ((string=? kind "callers")
          ;; The innermost lambda around `pos`.
          (let* ((ls (extract w lambdas))
-                (best (letrec ((go (subr (maxeff spin (read @cf)) (int int) int)
-                                 (lambda (i best)
-                                   (if (>= i (array-length ls)) best
-                                       (let ((p (extract (array-ref ls i) place)))
-                                         (go (+ i 1)
-                                             (if (and (cf-place-holds? p path pos)
-                                                      (or (< best 0) (< (cf-place-size p) (cf-place-size (extract (array-ref ls best) place)))))
-                                                 i best)))))))
-                        (go 0 -1))))
+                (best (iterate go (maxeff spin (read @cf)) ((i int 0) (best int -1)) int
+                        (if (>= i (array-length ls)) best
+                            (let ((p (extract (array-ref ls i) place)))
+                              (go (+ i 1)
+                                  (if (and (cf-place-holds? p path pos)
+                                           (or (< best 0) (< (cf-place-size p) (cf-place-size (extract (array-ref ls best) place)))))
+                                      i best)))))))
            (if (< best 0)
                (cf-answer "callers" (list (extract r key) path "0" "" "0"))
                (cf-answer "callers"
                           (append (list (extract r key) path "1" (extract (extract (array-ref ls best) place) name)
                                         (cf-flag (extract (array-ref ls best) escaped)))
-                                  (letrec ((go (subr spin ((listof cf-call-found acyclic)) strings)
-                                             (lambda (l) (cond ((null? l) nil)
-                                                               ((member? best (extract (car l) callees) =)
-                                                                (append (cf-place-fields (extract (car l) place)) (go (cdr l))))
-                                                               (else (go (cdr l)))))))
-                                    (go (extract w calls))))))))
+                                  (iterate go spin ((l (listof cf-call-found acyclic) (extract w calls))) strings
+                                    (cond ((null? l) nil)
+                                          ((member? best (extract (car l) callees) =)
+                                           (append (cf-place-fields (extract (car l) place)) (go (cdr l))))
+                                          (else (go (cdr l))))))))))
         (else #u)))))
 
 "The requests whose worlds are analysed, answered; the others kept."
 (define* cf-answer-pending! (subr (maxeff cf-eff (io stdout)) () unit)
   (lambda ()
     (set cf-pending
-         (letrec ((go (subr (maxeff cf-eff (io stdout)) ((listof cf-request-of acyclic)) (listof cf-request-of acyclic))
-                    (lambda (l)
-                      (if (null? l) nil
-                          (let ((r (car l)))
-                            (tagcase (cf-world-notes-of (cf-world-key (extract r path)))
-                              (some w (begin (cf-answer-request! r w) (go (cdr l))))
-                              (else y (cons r (go (cdr l))))))))))
-           (go (get cf-pending))))))
+         (iterate go (maxeff cf-eff (io stdout)) ((l (listof cf-request-of acyclic) (get cf-pending))) (listof cf-request-of acyclic)
+           (if (null? l) nil
+               (let ((r (car l)))
+                 (tagcase (cf-world-notes-of (cf-world-key (extract r path)))
+                   (some w (begin (cf-answer-request! r w) (go (cdr l))))
+                   (else y (cons r (go (cdr l)))))))))))
 
 "An analysis started, if none runs and a request waits for one."
 (define* cf-schedule! (subr cf-serve-eff () unit)
@@ -284,26 +270,24 @@ one, stopped: `path`'s text changed."
     (tagcase (get cf-job-now)
       (job j #u)
       (else y
-        (if (null? (get cf-pending)) #u
-            (let* ((key (cf-world-key (extract (car (get cf-pending)) path)))
-                   (scheme (and (>= (string-length key) 7) (string=? (substring key 0 7) "scheme:")))
-                   (texts-of (lambda ((ps strings))
-                               (letrec ((go (subr (maxeff (io fs-read) spin (read @cf)) (strings) strings)
-                                              (lambda (l) (if (null? l) nil (cons (cf-dataset-text (car l)) (go (cdr l)))))))
-                                 (go ps))))
-                   (own (cf-world-files key))
-                   ;; A Scheme file's world: the libraries it imports too (scheme.fx).
-                   (paths (if scheme
-                              (letrec ((go (subr spin ((listof sc-world-file acyclic)) strings)
-                                             (lambda (l) (if (null? l) nil (cons (extract (car l) path) (go (cdr l)))))))
-                                (go (sc-world-files own (texts-of own))))
-                              own))
-                   (texts (texts-of paths)))
-              (begin
-                (if scheme
-                    (cf-start! cf-scheme (sc-world paths texts) (get cf-serve-depth))
-                    (cf-start! cf-fx26 (fx-world paths texts) (get cf-serve-depth)))
-                (set cf-job-now (sum job (product (key key) (paths paths)))))))))))
+        (unless (null? (get cf-pending))
+          (let* ((key (cf-world-key (extract (car (get cf-pending)) path)))
+                 (scheme (and (>= (string-length key) 7) (string=? (substring key 0 7) "scheme:")))
+                 (texts-of (lambda ((ps strings))
+                             (iterate go (maxeff (io fs-read) spin (read @cf)) ((l strings ps)) strings
+                               (if (null? l) nil (cons (cf-dataset-text (car l)) (go (cdr l)))))))
+                 (own (cf-world-files key))
+                 ;; A Scheme file's world: the libraries it imports too (scheme.fx).
+                 (paths (if scheme
+                            (iterate go spin ((l (listof sc-world-file acyclic) (sc-world-files own (texts-of own)))) strings
+                              (if (null? l) nil (cons (extract (car l) path) (go (cdr l)))))
+                            own))
+                 (texts (texts-of paths)))
+            (begin
+              (if scheme
+                  (cf-start! cf-scheme (sc-world paths texts) (get cf-serve-depth))
+                  (cf-start! cf-fx26 (fx-world paths texts) (get cf-serve-depth)))
+              (set cf-job-now (sum job (product (key key) (paths paths)))))))))))
 
 "Where span `sp` is, as a place named `name`."
 (define* cf-span-place (subr cf-eff (cf-span string) cf-place)
@@ -313,61 +297,54 @@ one, stopped: `path`'s text changed."
   (lambda ()
     (let* ((ls (get cf-lambda-array))
            (a (the (arrayof cf-lambda-found @cf) (make-array (array-length ls) (product (place (product (path "") (start 0) (end 0) (name ""))) (escaped #f))))))
-      (letrec ((go (subr cf-eff (int) (arrayof cf-lambda-found @cf))
-                 (lambda (i) (if (>= i (array-length ls)) a
-                                 (let ((info (array-ref ls i)))
-                                   (begin (array-set! a i (product (place (cf-span-place (extract info span) (extract info name)))
-                                                                   (escaped (= (table-ref (get cf-escaped) i 0) 1))))
-                                     (go (+ i 1))))))))
-        (go 0)))))
+      (iterate go cf-eff ((i int 0)) (arrayof cf-lambda-found @cf)
+        (if (>= i (array-length ls)) a
+            (let ((info (array-ref ls i)))
+              (begin (array-set! a i (product (place (cf-span-place (extract info span) (extract info name)))
+                                              (escaped (= (table-ref (get cf-escaped) i 0) 1))))
+                (go (+ i 1)))))))))
 "The world just analysed's calls: each its place, the lambdas it can call
 (each once), and whether it may call code not known."
 (define* cf-calls-found (subr cf-eff () (listof cf-call-found acyclic))
   (lambda ()
-    (letrec ((go (subr cf-eff ((listof call-info acyclic) int (listof cf-call-found acyclic)) (listof cf-call-found acyclic))
-               (lambda (cs i acc)
-                 (if (null? cs) acc
-                     (let* ((ops (table-ref (get cf-callees) i nil))
-                            (ls (delete-duplicates (map (lambda ((v int)) (closure-lambda (quotient v 4))) (filter closure-val? ops)) =)))
-                       (go (cdr cs) (- i 1)
-                           (cons (product (place (cf-span-place (extract (car cs) span) "")) (callees ls) (unknown (vals-has? ops cf-unknown)))
-                                 acc)))))))
-      (go (get cf-calls) (- (length (get cf-calls)) 1) nil))))
+    (iterate go cf-eff ((cs (listof call-info acyclic) (get cf-calls)) (i int (- (length (get cf-calls)) 1)) (acc (listof cf-call-found acyclic) nil)) (listof cf-call-found acyclic)
+      (if (null? cs) acc
+          (let* ((ops (table-ref (get cf-callees) i nil))
+                 (ls (delete-duplicates (map (lambda ((v int)) (closure-lambda (quotient v 4))) (filter closure-val? ops)) =)))
+            (go (cdr cs) (- i 1)
+                (cons (product (place (cf-span-place (extract (car cs) span) "")) (callees ls) (unknown (vals-has? ops cf-unknown)))
+                      acc)))))))
 
 "A slice of the analysis that runs; if it is done, its world's notes kept,
 and the requests waiting on them answered."
 (define* cf-slice! (subr (maxeff cf-eff (io stdout)) () unit)
   (lambda ()
     (tagcase (get cf-job-now)
-      (job j (if (cf-step! 2000)
-                 (begin
-                   (set cf-analysed (cons (product (key (extract j key))
-                                                   (files (letrec ((go (subr cf-eff (strings) (listof cf-file-notes-of acyclic))
-                                                                         (lambda (ps) (if (null? ps) nil
-                                                                                          (let ((n (cf-file-notes (cf-file (car ps)))))
-                                                                                            (cons (product (path (car ps)) (notes n)) (go (cdr ps))))))))
-                                                            (go (extract j paths))))
-                                                   (contexts (letrec ((go (subr cf-eff (strings) (listof cf-file-notes-of acyclic))
-                                                                            (lambda (ps) (if (null? ps) nil
-                                                                                             (let ((n (cf-file-context-notes (cf-file (car ps)))))
-                                                                                               (cons (product (path (car ps)) (notes n)) (go (cdr ps))))))))
-                                                               (go (extract j paths))))
-                                                   (lambdas (cf-lambdas-found))
-                                                   (calls (cf-calls-found)))
-                                          (get cf-analysed)))
-                   (set cf-job-now (sum none #u))
-                   (cf-answer-pending!))
-                 #u))
+      (job j (when (cf-step! 2000)
+               (set cf-analysed (cons (product (key (extract j key))
+                                               (files (iterate go cf-eff ((ps strings (extract j paths))) (listof cf-file-notes-of acyclic)
+                                                        (if (null? ps) nil
+                                                            (let ((n (cf-file-notes (cf-file (car ps)))))
+                                                              (cons (product (path (car ps)) (notes n)) (go (cdr ps)))))))
+                                               (contexts (iterate go cf-eff ((ps strings (extract j paths))) (listof cf-file-notes-of acyclic)
+                                                           (if (null? ps) nil
+                                                               (let ((n (cf-file-context-notes (cf-file (car ps)))))
+                                                                 (cons (product (path (car ps)) (notes n)) (go (cdr ps)))))))
+                                               (lambdas (cf-lambdas-found))
+                                               (calls (cf-calls-found)))
+                                      (get cf-analysed)))
+               (set cf-job-now (sum none #u))
+               (cf-answer-pending!)))
       (else y #u))))
 
 (define* cf-serve-request! (subr cf-serve-eff (string) unit)
   (lambda (line)
-    (let* ((sp (letrec ((go (subr spin (int) int) (lambda (i) (cond ((>= i (string-length line)) i) ((char=? (string-ref line i) #\space) i) (else (go (+ i 1)))))))
-                 (go 0)))
+    (let* ((sp (iterate go spin ((i int 0)) int
+                 (cond ((>= i (string-length line)) i) ((char=? (string-ref line i) #\space) i) (else (go (+ i 1))))))
            (word (substring line 0 sp))
            (fields (if (>= sp (string-length line)) nil
-                       (letrec ((go (subr spin (strings) strings) (lambda (l) (if (null? l) nil (cons (cf-unescape (car l)) (go (cdr l)))))))
-                         (go (string-split (substring line (+ sp 1) (string-length line)) #\tab)))))
+                       (iterate go spin ((l strings (string-split (substring line (+ sp 1) (string-length line)) #\tab))) strings
+                         (if (null? l) nil (cons (cf-unescape (car l)) (go (cdr l)))))))
            (field (lambda ((i int)) (letrec ((nth (subr spin (strings int) string) (lambda (l k) (cond ((null? l) "") ((= k 0) (car l)) (else (nth (cdr l) (- k 1)))))))
                                       (nth fields i)))))
       (cond
@@ -375,16 +352,14 @@ and the requests waiting on them answered."
          (let ((p (field 0)))
            (begin
              (set cf-dataset (cons (product (path p) (text (field 1)))
-                                   (letrec ((go (subr spin ((listof cf-text acyclic)) (listof cf-text acyclic))
-                                              (lambda (l) (cond ((null? l) nil) ((string=? (extract (car l) path) p) (go (cdr l))) (else (cons (car l) (go (cdr l))))))))
-                                     (go (get cf-dataset)))))
+                                   (iterate go spin ((l (listof cf-text acyclic) (get cf-dataset))) (listof cf-text acyclic)
+                                     (cond ((null? l) nil) ((string=? (extract (car l) path) p) (go (cdr l))) (else (cons (car l) (go (cdr l))))))))
              (cf-invalidate-path! p))))
         ((string=? word "forget")
          (let ((p (field 0)))
            (begin
-             (set cf-dataset (letrec ((go (subr spin ((listof cf-text acyclic)) (listof cf-text acyclic))
-                                        (lambda (l) (cond ((null? l) nil) ((string=? (extract (car l) path) p) (go (cdr l))) (else (cons (car l) (go (cdr l))))))))
-                               (go (get cf-dataset))))
+             (set cf-dataset (iterate go spin ((l (listof cf-text acyclic) (get cf-dataset))) (listof cf-text acyclic)
+                               (cond ((null? l) nil) ((string=? (extract (car l) path) p) (go (cdr l))) (else (cons (car l) (go (cdr l)))))))
              (cf-invalidate-path! p))))
         ((or (string=? word "notes") (string=? word "callees") (string=? word "callers") (string=? word "contexts"))
          (begin (set cf-pending (append (get cf-pending) (list (product (kind word) (key (field 0)) (path (field 1)) (pos (cf-decimal (field 2)))))))

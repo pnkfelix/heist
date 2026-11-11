@@ -49,9 +49,8 @@ elements."
 "Each module file's type binders' names, in order, by the file's number."
 (define fx-binder-names (ref (listof (productof (file int) (names strings)) acyclic) @cf) (new nil))
 (define* get-file-binders (subr (maxeff spin (read @cf)) (int) strings)
-  (lambda (file) (letrec ((go (subr spin ((listof (productof (file int) (names strings)) acyclic)) strings)
-                            (lambda (l) (cond ((null? l) nil) ((= (extract (car l) file) file) (extract (car l) names)) (else (go (cdr l)))))))
-                   (go (get fx-binder-names)))))
+  (lambda (file) (iterate go spin ((l (listof (productof (file int) (names strings)) acyclic) (get fx-binder-names))) strings
+                   (cond ((null? l) nil) ((= (extract (car l) file) file) (extract (car l) names)) (else (go (cdr l)))))))
 "A module file's type binder `n`'s global, by the file's number."
 (define* fx-file-binder-key (subr pure (int string) string)
   (lambda (file n) (string-append "%binder:" (int->string file) ":" n)))
@@ -97,9 +96,8 @@ elements."
     (tagcase x
       (atom (d a b xpn) (let* ((n (fx-sym x)) (v (if (string=? n "") -1 (fx-type-var file n env))))
                       (if (< v 0) nil (list (cf-ref v n (fx-span file x))))))
-      (lst (items d a b xpn) (letrec ((go (subr fx-eff ((listof syn acyclic)) cores)
-                                        (lambda (l) (if (null? l) nil (append (fx-type-refs file (car l) env) (go (cdr l)))))))
-                           (go items)))
+      (lst (items d a b xpn) (iterate go fx-eff ((l (listof syn acyclic) items)) cores
+                               (if (null? l) nil (append (fx-type-refs file (car l) env) (go (cdr l))))))
       (else y nil))))
 (define* fx-type-parts (subr fx-eff (int syn scope) cores)
   (lambda (file x env)
@@ -109,9 +107,8 @@ elements."
                             ((>= (fx-type-var file n env) 0) (list (cf-ref (fx-type-var file n env) n (fx-span file x))))
                             ((char=? (string-ref n 0) #\@) (list (k-const (cf-kind n))))
                             (else nil))))
-      (lst (items d a b xpn) (letrec ((go (subr fx-eff ((listof syn acyclic)) cores)
-                                        (lambda (l) (if (null? l) nil (append (fx-type-parts file (car l) env) (go (cdr l)))))))
-                           (go items)))
+      (lst (items d a b xpn) (iterate go fx-eff ((l (listof syn acyclic) items)) cores
+                               (if (null? l) nil (append (fx-type-parts file (car l) env) (go (cdr l))))))
       (else y nil))))
 "A type given to an instantiation, as a value: a region (`@r`), a type's
 name, or a variable's; of a type made of others, the variables and regions
@@ -126,11 +123,10 @@ it is made of."
 (define* fx-world-file (subr fx-eff (int string) int)
   (lambda (from f)
     (let ((dir (let ((p (cf-file-name from)))
-                 (letrec ((go (subr spin (int) string) (lambda (i) (cond ((< i 0) "") ((char=? (string-ref p i) #\/) (substring p 0 (+ i 1))) (else (go (- i 1)))))))
-                   (go (- (string-length p) 1))))))
-      (letrec ((go (subr fx-eff (strings int) int)
-                 (lambda (l i) (cond ((null? l) -1) ((string=? (car l) (string-append dir f)) i) (else (go (cdr l) (+ i 1)))))))
-        (go (get cf-files) 0)))))
+                 (iterate go spin ((i int (- (string-length p) 1))) string
+                   (cond ((< i 0) "") ((char=? (string-ref p i) #\/) (substring p 0 (+ i 1))) (else (go (- i 1))))))))
+      (iterate go fx-eff ((l strings (get cf-files)) (i int 0)) int
+        (cond ((null? l) -1) ((string=? (car l) (string-append dir f)) i) (else (go (cdr l) (+ i 1))))))))
 "A `(module-parameters …)`'s type binders (those of a kind, not of a
 module type): each its name and syntax."
 (define* fx-kind-binders (subr spin ((listof syn acyclic)) (listof syn acyclic))
@@ -150,19 +146,17 @@ whose variables are `vars`, or one in scope -- that binder's variable."
         (let* ((n (fx-sym x))
                (i (if (string=? n "") -1 (cf-index n names)))
                (v (cond ((string=? n "") -1)
-                        ((>= i 0) (letrec ((nth (subr spin (ints int) int) (lambda (l k) (cond ((null? l) -1) ((= k 0) (car l)) (else (nth (cdr l) (- k 1)))))))
-                                    (nth vars i)))
+                        ((>= i 0) (iterate nth spin ((l ints vars) (k int i)) int
+                                    (cond ((null? l) -1) ((= k 0) (car l)) (else (nth (cdr l) (- k 1))))))
                         (else (fx-type-var file n env)))))
           (if (>= v 0) (list (t-var v n)) (list (t-text (if (string=? n "") "?" n))))))
       (lst (items d a b xpn)
         (fx-append-tokens (list (t-text "("))
-                          (fx-append-tokens (letrec ((go (subr fx-eff ((listof syn acyclic) bool) (listof cf-token acyclic))
-                                                           (lambda (l first)
-                                                             (if (null? l) nil
-                                                                 (fx-append-tokens (if first nil (list (t-text " ")))
-                                                                                   (fx-append-tokens (fx-effect-tokens file (car l) env names vars)
-                                                                                                     (go (cdr l) #f)))))))
-                                              (go items #t))
+                          (fx-append-tokens (iterate go fx-eff ((l (listof syn acyclic) items) (first bool #t)) (listof cf-token acyclic)
+                                              (if (null? l) nil
+                                                  (fx-append-tokens (if first nil (list (t-text " ")))
+                                                                    (fx-append-tokens (fx-effect-tokens file (car l) env names vars)
+                                                                                      (go (cdr l) #f)))))
                                             (list (t-text ")")))))
       (else y (list (t-text "?"))))))
 "A definition's type `t` and value's core `value`: the effect the type
@@ -172,29 +166,26 @@ position, its `plambda`'s)."
   (lambda (file t value env)
     (let* ((ts (fx-items t))
            (poly (and (pair? ts) (string=? (fx-sym (car ts)) "poly") (pair? (cdr ts)) (pair? (cdr (cdr ts)))))
-           (names (if poly (letrec ((go (subr spin ((listof syn acyclic)) strings)
-                                          (lambda (l) (if (null? l) nil (let ((is (fx-items (car l)))) (cons (fx-sym (if (pair? is) (car is) (car l))) (go (cdr l))))))))
-                             (go (fx-items (car (cdr ts)))))
+           (names (if poly (iterate go spin ((l (listof syn acyclic) (fx-items (car (cdr ts))))) strings
+                             (if (null? l) nil (let ((is (fx-items (car l)))) (cons (fx-sym (if (pair? is) (car is) (car l))) (go (cdr l))))))
                       nil))
            (sub (fx-items (if poly (car (cdr (cdr ts))) t)))
            (l (cf-lambda-of value)))
-      (if (and (>= l 0) (pair? sub) (string=? (fx-sym (car sub)) "subr") (pair? (cdr sub)))
-          (set cf-effects (cons (product (lambda l)
-                                         (tokens (fx-effect-tokens file (car (cdr sub)) env names (cf-poly-binders (get cf-poly-lambdas) l))))
-                                (get cf-effects)))
-          #u))))
+      (when (and (>= l 0) (pair? sub) (string=? (fx-sym (car sub)) "subr") (pair? (cdr sub)))
+        (set cf-effects (cons (product (lambda l)
+                                       (tokens (fx-effect-tokens file (car (cdr sub)) env names (cf-poly-binders (get cf-poly-lambdas) l))))
+                              (get cf-effects)))))))
 
 "Constructor `tag` of `n` fields, of variant syntax `x`: the global bound
 to a lambda making `(sum tag (product (1 p1) … (n pn)))`."
 (define* fx-constructor (subr fx-eff (int syn string int) core)
   (lambda (file x tag n)
-    (let* ((params (letrec ((go (subr fx-eff (int) ints) (lambda (i) (if (>= i n) nil (cons (cf-new-var) (go (+ i 1)))))))
-                     (go 0)))
-           (fields (letrec ((go (subr fx-eff (ints int) (listof field-init acyclic))
-                              (lambda (ps i) (if (null? ps) nil
-                                                 (cons (product (label (int->string i)) (value (k-var (car ps) -1)))
-                                                       (go (cdr ps) (+ i 1)))))))
-                     (go params 1)))
+    (let* ((params (iterate go fx-eff ((i int 0)) ints
+                     (if (>= i n) nil (cons (cf-new-var) (go (+ i 1))))))
+           (fields (iterate go fx-eff ((ps ints params) (i int 1)) (listof field-init acyclic)
+                     (if (null? ps) nil
+                         (cons (product (label (int->string i)) (value (k-var (car ps) -1)))
+                               (go (cdr ps) (+ i 1))))))
            (body (k-alloc (cf-add-site (product (span (fx-span file x)) (kind "sum") (tag tag)))
                           (list (product (label "payload")
                                          (value (k-alloc (cf-add-site (product (span (fx-span file x)) (kind "product") (tag "")))
@@ -243,9 +234,8 @@ to a lambda making `(sum tag (product (1 p1) … (n pn)))`."
            (if (pair? rest)
                (let* ((e (car rest))
                       (es (fx-items e))
-                      (args (letrec ((go (subr fx-eff ((listof syn acyclic)) cores)
-                                           (lambda (l) (if (null? l) nil (let ((a (fx-type-arg file (car l) env))) (cons a (go (cdr l))))))))
-                              (go (cdr rest))))
+                      (args (iterate go fx-eff ((l (listof syn acyclic) (cdr rest))) cores
+                              (if (null? l) nil (let ((a (fx-type-arg file (car l) env))) (cons a (go (cdr l)))))))
                       ;; `(proj (load-module "f") …)` of a world file: its binders.
                       (target (if (and (pair? es) (string=? (fx-sym (car es)) "load-module") (pair? (cdr es)))
                                   (tagcase (car (cdr es)) (atom (d a b xpn) (typecase d (string s (fx-world-file file s)) (else y -1))) (else y -1))
@@ -267,23 +257,21 @@ to a lambda making `(sum tag (product (1 p1) … (n pn)))`."
           ((or (string=? head "and") (string=? head "or")) (k-alt (fx-all file rest env)))
           ((string=? head "begin") (fx-body file rest env))
           ((string=? head "cond")
-           (k-alt (letrec ((clauses (subr fx-eff ((listof syn acyclic)) cores)
-                             (lambda (cs) (if (null? cs) nil
-                                              (let ((is (fx-items (car cs))))
-                                                (cons (if (and (pair? is) (string=? (fx-sym (car is)) "else"))
-                                                          (fx-body file (cdr is) env)
-                                                          (fx-body file is env))
-                                                      (clauses (cdr cs))))))))
-                    (clauses rest))))
+           (k-alt (iterate clauses fx-eff ((cs (listof syn acyclic) rest)) cores
+                    (if (null? cs) nil
+                        (let ((is (fx-items (car cs))))
+                          (cons (if (and (pair? is) (string=? (fx-sym (car is)) "else"))
+                                    (fx-body file (cdr is) env)
+                                    (fx-body file is env))
+                                (clauses (cdr cs))))))))
           ((string=? head "case")
            (if (pair? rest)
                (k-seq (list (fx-core file (car rest) env)
-                            (k-alt (letrec ((clauses (subr fx-eff ((listof syn acyclic)) cores)
-                                              (lambda (cs) (if (null? cs) nil
-                                                               (let ((is (fx-items (car cs))))
-                                                                 (cons (fx-body file (if (pair? is) (cdr is) nil) env)
-                                                                       (clauses (cdr cs))))))))
-                                     (clauses (cdr rest))))))
+                            (k-alt (iterate clauses fx-eff ((cs (listof syn acyclic) (cdr rest))) cores
+                                     (if (null? cs) nil
+                                         (let ((is (fx-items (car cs))))
+                                           (cons (fx-body file (if (pair? is) (cdr is) nil) env)
+                                                 (clauses (cdr cs)))))))))
                (k-none nil)))
           ((or (string=? head "let") (string=? head "let*") (string=? head "letrec"))
            (if (pair? rest) (fx-let file head (fx-items (car rest)) (cdr rest) env) (k-none nil)))
@@ -321,15 +309,14 @@ to a lambda making `(sum tag (product (1 p1) … (n pn)))`."
            (if (pair? rest)
                (let ((subject (fx-core file (car rest) env)) (v (cf-new-var)))
                  (k-seq (list (k-bind v subject)
-                              (k-alt (letrec ((arms (subr fx-eff ((listof syn acyclic)) cores)
-                                                (lambda (as) (if (null? as) nil
-                                                                 (let ((is (fx-items (car as))))
-                                                                   (cons (if (and (pair? is) (pair? (cdr is)))
-                                                                             (fx-body file (cdr (cdr is))
-                                                                                      (cons (product (name (fx-sym (car (cdr is)))) (var v)) env))
-                                                                             (k-none nil))
-                                                                         (arms (cdr as))))))))
-                                       (arms (cdr rest)))))))
+                              (k-alt (iterate arms fx-eff ((as (listof syn acyclic) (cdr rest))) cores
+                                       (if (null? as) nil
+                                           (let ((is (fx-items (car as))))
+                                             (cons (if (and (pair? is) (pair? (cdr is)))
+                                                       (fx-body file (cdr (cdr is))
+                                                                (cons (product (name (fx-sym (car (cdr is)))) (var v)) env))
+                                                       (k-none nil))
+                                                   (arms (cdr as))))))))))
                (k-none nil)))
           ;; Definitions: a global's variable given the value.
           ((or (string=? head "define") (string=? head "define*"))
@@ -338,40 +325,37 @@ to a lambda making `(sum tag (product (1 p1) … (n pn)))`."
                       (typed (pair? (cdr (cdr rest))))
                       (value-syn (car (if typed (cdr (cdr rest)) (cdr rest))))
                       (refs (if typed (fx-type-refs file (car (cdr rest)) env) nil))
-                      (value (begin (if (null? env) (set cf-definition name) #u) (fx-named file value-syn name env)))
-                      (kept (if typed (fx-keep-effect! file (car (cdr rest)) value env) #u)))
+                      (value (begin (when (null? env) (set cf-definition name)) (fx-named file value-syn name env)))
+                      (kept (when typed (fx-keep-effect! file (car (cdr rest)) value env))))
                  (if (null? refs) (k-bind (cf-global-var name) value)
                      (k-seq (list (k-none refs) (k-bind (cf-global-var name) value)))))
                (k-none nil)))
           ((string=? head "define-rec")
-           (k-seq (letrec ((go (subr fx-eff ((listof syn acyclic)) cores)
-                             (lambda (bs) (if (null? bs) nil
-                                              (let ((is (fx-items (car bs))))
-                                                (if (and (pair? is) (pair? (cdr is)) (pair? (cdr (cdr is))))
-                                                    (let ((b (k-bind (cf-global-var (fx-sym (car is)))
-                                                                     (begin (if (null? env) (set cf-definition (fx-sym (car is))) #u)
-                                                                       (fx-named file (car (cdr (cdr is))) (fx-sym (car is)) env)))))
-                                                      (cons b (go (cdr bs))))
-                                                    (go (cdr bs))))))))
-                    (go rest))))
+           (k-seq (iterate go fx-eff ((bs (listof syn acyclic) rest)) cores
+                    (if (null? bs) nil
+                        (let ((is (fx-items (car bs))))
+                          (if (and (pair? is) (pair? (cdr is)) (pair? (cdr (cdr is))))
+                              (let ((b (k-bind (cf-global-var (fx-sym (car is)))
+                                               (begin (when (null? env) (set cf-definition (fx-sym (car is))))
+                                                 (fx-named file (car (cdr (cdr is))) (fx-sym (car is)) env)))))
+                                (cons b (go (cdr bs))))
+                              (go (cdr bs))))))))
           ;; `(define-datatype t (tag T …) …)`: each tag a global constructor.
           ((string=? head "define-datatype")
-           (k-seq (letrec ((variants (subr fx-eff ((listof syn acyclic)) cores)
-                             (lambda (vs) (if (null? vs) nil
-                                              (let ((is (fx-items (car vs))))
-                                                (if (pair? is)
-                                                    (let ((c (fx-constructor file (car vs) (fx-sym (car is)) (length (cdr is)))))
-                                                      (cons c (variants (cdr vs))))
-                                                    (variants (cdr vs))))))))
-                    (variants (if (pair? rest) (cdr rest) nil)))))
+           (k-seq (iterate variants fx-eff ((vs (listof syn acyclic) (if (pair? rest) (cdr rest) nil))) cores
+                    (if (null? vs) nil
+                        (let ((is (fx-items (car vs))))
+                          (if (pair? is)
+                              (let ((c (fx-constructor file (car vs) (fx-sym (car is)) (length (cdr is)))))
+                                (cons c (variants (cdr vs))))
+                              (variants (cdr vs))))))))
           ;; A module file's type binders: each a reference where it binds.
           ((string=? head "module-parameters")
            (k-none (if (pair? rest)
-                       (letrec ((go (subr fx-eff ((listof syn acyclic)) cores)
-                                  (lambda (bs) (if (null? bs) nil
-                                                   (let* ((b (car (fx-items (car bs)))) (n (fx-sym b)))
-                                                     (cons (cf-ref (cf-global-var (fx-file-binder-key file n)) n (fx-span file b)) (go (cdr bs))))))))
-                         (go (fx-kind-binders (fx-items (car rest)))))
+                       (iterate go fx-eff ((bs (listof syn acyclic) (fx-kind-binders (fx-items (car rest))))) cores
+                         (if (null? bs) nil
+                             (let* ((b (car (fx-items (car bs)))) (n (fx-sym b)))
+                               (cons (cf-ref (cf-global-var (fx-file-binder-key file n)) n (fx-span file b)) (go (cdr bs))))))
                        nil)))
           ((or (string=? head "define-type") (string=? head "define-effect")
                (string=? head "define-generative") (string=? head "import"))
@@ -396,49 +380,41 @@ to a lambda making `(sum tag (product (1 p1) … (n pn)))`."
   ;; it binds; the body's lambda (or site), named `name`, bound by them.
   (fx-plambda (subr fx-eff (int string (listof syn acyclic) (listof syn acyclic) scope) core)
     (lambda (file name binders body env)
-      (let* ((names (letrec ((go (subr spin ((listof syn acyclic)) (listof syn acyclic))
-                               (lambda (l) (if (null? l) nil (let ((is (fx-items (car l)))) (cons (if (pair? is) (car is) (car l)) (go (cdr l)))))))) 
-                      (go binders)))
-             (vars (letrec ((go (subr fx-eff ((listof syn acyclic)) ints) (lambda (l) (if (null? l) nil (cons (cf-new-var) (go (cdr l)))))))
-                     (go names)))
-             (inner (letrec ((go (subr spin ((listof syn acyclic) ints scope) scope)
-                               (lambda (ns vs env) (if (null? ns) env (go (cdr ns) (cdr vs) (cons (product (name (fx-sym (car ns))) (var (car vs))) env))))))
-                      (go names vars env)))
-             (refs (letrec ((go (subr fx-eff ((listof syn acyclic) ints) cores)
-                              (lambda (ns vs) (if (null? ns) nil (cons (cf-ref (car vs) (fx-sym (car ns)) (fx-span file (car ns))) (go (cdr ns) (cdr vs)))))))
-                     (go names vars)))
+      (let* ((names (iterate go spin ((l (listof syn acyclic) binders)) (listof syn acyclic)
+                      (if (null? l) nil (let ((is (fx-items (car l)))) (cons (if (pair? is) (car is) (car l)) (go (cdr l)))))))
+             (vars (iterate go fx-eff ((l (listof syn acyclic) names)) ints
+                     (if (null? l) nil (cons (cf-new-var) (go (cdr l))))))
+             (inner (iterate go spin ((ns (listof syn acyclic) names) (vs ints vars) (env scope env)) scope
+                      (if (null? ns) env (go (cdr ns) (cdr vs) (cons (product (name (fx-sym (car ns))) (var (car vs))) env)))))
+             (refs (iterate go fx-eff ((ns (listof syn acyclic) names) (vs ints vars)) cores
+                     (if (null? ns) nil (cons (cf-ref (car vs) (fx-sym (car ns)) (fx-span file (car ns))) (go (cdr ns) (cdr vs))))))
              (b (if (and (pair? body) (null? (cdr body))) (fx-named file (car body) name inner) (fx-body file body inner))))
         (begin (cf-poly! b vars)
           (k-seq (list (k-none refs) b))))))
   (fx-lambda (subr fx-eff (int syn string (listof syn acyclic) (listof syn acyclic) scope) core)
     (lambda (file x name params body env)
-      (letrec ((bind (subr fx-eff ((listof syn acyclic) scope ints) core)
-                 (lambda (ps env vs)
-                   (if (null? ps)
-                       (let* ((types (letrec ((go (subr fx-eff ((listof syn acyclic)) cores)
-                                                (lambda (l) (if (null? l) nil
-                                                                (let ((is (fx-items (car l))))
-                                                                  (append (if (and (pair? is) (pair? (cdr is))) (fx-type-refs file (car (cdr is)) env) nil) (go (cdr l))))))))
-                                       (go params)))
-                              (b (fx-body file body env)))
-                         (k-lam (cf-add-lambda (product (span (fx-span file x)) (name (if (string=? name "") (cf-anonymous) name))
-                                                        (params (reverse vs)) (rest -1)
-                                                        (body (if (null? types) b (k-seq (list (k-none types) b))))))))
-                       (let ((v (cf-new-var)))
-                         (bind (cdr ps) (cons (product (name (fx-param-name (car ps))) (var v)) env) (cons v vs)))))))
-        (bind params env nil))))
+      (iterate bind fx-eff ((ps (listof syn acyclic) params) (env scope env) (vs ints nil)) core
+        (if (null? ps)
+            (let* ((types (iterate go fx-eff ((l (listof syn acyclic) params)) cores
+                            (if (null? l) nil
+                                (let ((is (fx-items (car l))))
+                                  (append (if (and (pair? is) (pair? (cdr is))) (fx-type-refs file (car (cdr is)) env) nil) (go (cdr l)))))))
+                   (b (fx-body file body env)))
+              (k-lam (cf-add-lambda (product (span (fx-span file x)) (name (if (string=? name "") (cf-anonymous) name))
+                                             (params (reverse vs)) (rest -1)
+                                             (body (if (null? types) b (k-seq (list (k-none types) b))))))))
+            (let ((v (cf-new-var)))
+              (bind (cdr ps) (cons (product (name (fx-param-name (car ps))) (var v)) env) (cons v vs)))))))
   ;; `let`: values outside; `let*`: each sees those before; `letrec`: all see all.
   (fx-let (subr fx-eff (int string (listof syn acyclic) (listof syn acyclic) scope) core)
     (lambda (file kind bs body env)
-      (let* ((names (letrec ((go (subr spin ((listof syn acyclic)) strings)
-                               (lambda (bs) (if (null? bs) nil (cons (fx-param-name (car bs)) (go (cdr bs)))))))
-                      (go bs)))
-             (vars (letrec ((go (subr fx-eff (strings) ints) (lambda (ns) (if (null? ns) nil (cons (cf-new-var) (go (cdr ns)))))))
-                     (go names)))
-             (inner (letrec ((go (subr spin (strings ints scope) scope)
-                               (lambda (ns vs env) (if (null? ns) env
-                                                       (go (cdr ns) (cdr vs) (cons (product (name (car ns)) (var (car vs))) env))))))
-                      (go names vars env))))
+      (let* ((names (iterate go spin ((bs (listof syn acyclic) bs)) strings
+                      (if (null? bs) nil (cons (fx-param-name (car bs)) (go (cdr bs))))))
+             (vars (iterate go fx-eff ((ns strings names)) ints
+                     (if (null? ns) nil (cons (cf-new-var) (go (cdr ns))))))
+             (inner (iterate go spin ((ns strings names) (vs ints vars) (env scope env)) scope
+                      (if (null? ns) env
+                          (go (cdr ns) (cdr vs) (cons (product (name (car ns)) (var (car vs))) env))))))
         (letrec ((binds (subr fx-eff ((listof syn acyclic) strings ints scope) cores)
                    (lambda (bs ns vs scope)
                      (if (null? bs) nil
@@ -455,88 +431,75 @@ to a lambda making `(sum tag (product (1 p1) … (n pn)))`."
     (lambda (file subject arms env)
       (let ((s (fx-core file subject env)))
         (k-case s
-                (letrec ((go (subr fx-eff ((listof syn acyclic)) (listof arm acyclic))
-                           (lambda (as)
-                             (if (null? as) nil
-                                 (let ((is (fx-items (car as))))
-                                   (if (and (pair? is) (pair? (cdr is)))
-                                       (let* ((tag (fx-sym (car is)))
-                                              (names (tagcase (car (cdr is))
-                                                       (lst (ns d a b xpn) (letrec ((g (subr spin ((listof syn acyclic)) strings)
-                                                                                  (lambda (l) (if (null? l) nil (cons (fx-sym (car l)) (g (cdr l)))))))
-                                                                         (g ns)))
-                                                       (else y (the strings (list (fx-sym (car (cdr is))))))))
-                                              (vars (letrec ((g (subr fx-eff (strings) ints)
-                                                                (lambda (ns) (if (null? ns) nil (cons (cf-new-var) (g (cdr ns)))))))
-                                                      (g names)))
-                                              (inner (letrec ((g (subr spin (strings ints scope) scope)
-                                                                (lambda (ns vs env) (if (null? ns) env
-                                                                                        (g (cdr ns) (cdr vs) (cons (product (name (car ns)) (var (car vs))) env))))))
-                                                       (g names vars env)))
-                                              (a (product (tag (if (string=? tag "else") "" tag)) (vars vars)
-                                                          (fields (tagcase (car (cdr is)) (lst (ns d a b xpn) #t) (else y #f)))
-                                                          (body (fx-body file (cdr (cdr is)) inner)))))
-                                         (cons a (go (cdr as))))
-                                       (go (cdr as))))))))
-                  (go arms)))))))
+                (iterate go fx-eff ((as (listof syn acyclic) arms)) (listof arm acyclic)
+                  (if (null? as) nil
+                      (let ((is (fx-items (car as))))
+                        (if (and (pair? is) (pair? (cdr is)))
+                            (let* ((tag (fx-sym (car is)))
+                                   (names (tagcase (car (cdr is))
+                                            (lst (ns d a b xpn) (iterate g spin ((l (listof syn acyclic) ns)) strings
+                                                                  (if (null? l) nil (cons (fx-sym (car l)) (g (cdr l))))))
+                                            (else y (the strings (list (fx-sym (car (cdr is))))))))
+                                   (vars (iterate g fx-eff ((ns strings names)) ints
+                                           (if (null? ns) nil (cons (cf-new-var) (g (cdr ns))))))
+                                   (inner (iterate g spin ((ns strings names) (vs ints vars) (env scope env)) scope
+                                            (if (null? ns) env
+                                                (g (cdr ns) (cdr vs) (cons (product (name (car ns)) (var (car vs))) env)))))
+                                   (a (product (tag (if (string=? tag "else") "" tag)) (vars vars)
+                                               (fields (tagcase (car (cdr is)) (lst (ns d a b xpn) #t) (else y #f)))
+                                               (body (fx-body file (cdr (cdr is)) inner)))))
+                              (cons a (go (cdr as))))
+                            (go (cdr as)))))))))))
 
 "The names forms `xs` define at their top level (in `module` and `hide`
 too): each a global."
 (define* fx-declare! (subr fx-eff (int (listof syn acyclic)) unit)
   (lambda (file xs)
-    (if (null? xs) #u
-        (let* ((is (fx-items (car xs))) (head (if (pair? is) (fx-sym (car is)) "")))
-          (begin
-            (cond ((and (or (string=? head "define") (string=? head "define*")) (pair? (cdr is)))
-                   (begin (cf-global-var (fx-sym (car (cdr is)))) #u))
-                  ((string=? head "define-rec")
-                   (letrec ((go (subr fx-eff ((listof syn acyclic)) unit)
-                              (lambda (bs) (if (null? bs) #u
-                                               (let ((b (fx-items (car bs))))
-                                                 (begin (if (pair? b) (begin (cf-global-var (fx-sym (car b))) #u) #u) (go (cdr bs))))))))
-                     (go (cdr is))))
-                  ((and (string=? head "define-datatype") (pair? (cdr is)))
-                   (letrec ((go (subr fx-eff ((listof syn acyclic)) unit)
-                              (lambda (vs) (if (null? vs) #u
-                                               (let ((v (fx-items (car vs))))
-                                                 (begin (if (pair? v) (begin (cf-global-var (fx-sym (car v))) #u) #u) (go (cdr vs))))))))
-                     (go (cdr (cdr is)))))
-                  ((or (string=? head "module") (string=? head "hide")) (fx-declare! file (cdr is)))
-                  ((and (string=? head "module-parameters") (pair? (cdr is)))
-                   (let ((names (letrec ((go (subr spin ((listof syn acyclic)) strings)
-                                           (lambda (bs) (if (null? bs) nil (cons (fx-sym (car (fx-items (car bs)))) (go (cdr bs)))))))
-                                  (go (fx-kind-binders (fx-items (car (cdr is))))))))
-                     (begin
-                       (set fx-binder-names (cons (product (file file) (names names)) (get fx-binder-names)))
-                       (letrec ((go (subr fx-eff (strings) unit)
-                                  (lambda (ns) (if (null? ns) #u (begin (cf-global-var (fx-file-binder-key file (car ns))) (go (cdr ns)))))))
-                         (go names)))))
-                  ((and (string=? head "import") (pair? (cdr is)))
-                   (letrec ((go (subr fx-eff ((listof syn acyclic)) unit)
-                              (lambda (ns) (if (null? ns) #u
-                                               (begin (if (string=? (fx-sym (car ns)) "") #u (begin (cf-global-var (fx-sym (car ns))) #u))
-                                                 (go (cdr ns)))))))
-                     (go (cdr (cdr is)))))
-                  (else #u))
-            (fx-declare! file (cdr xs)))))))
+    (unless (null? xs)
+      (let* ((is (fx-items (car xs))) (head (if (pair? is) (fx-sym (car is)) "")))
+        (begin
+          (cond ((and (or (string=? head "define") (string=? head "define*")) (pair? (cdr is)))
+                 (begin (cf-global-var (fx-sym (car (cdr is)))) #u))
+                ((string=? head "define-rec")
+                 (iterate go fx-eff ((bs (listof syn acyclic) (cdr is))) unit
+                   (unless (null? bs)
+                     (let ((b (fx-items (car bs))))
+                       (begin (when (pair? b) (cf-global-var (fx-sym (car b))) #u) (go (cdr bs)))))))
+                ((and (string=? head "define-datatype") (pair? (cdr is)))
+                 (iterate go fx-eff ((vs (listof syn acyclic) (cdr (cdr is)))) unit
+                   (unless (null? vs)
+                     (let ((v (fx-items (car vs))))
+                       (begin (when (pair? v) (cf-global-var (fx-sym (car v))) #u) (go (cdr vs)))))))
+                ((or (string=? head "module") (string=? head "hide")) (fx-declare! file (cdr is)))
+                ((and (string=? head "module-parameters") (pair? (cdr is)))
+                 (let ((names (iterate go spin ((bs (listof syn acyclic) (fx-kind-binders (fx-items (car (cdr is)))))) strings
+                                (if (null? bs) nil (cons (fx-sym (car (fx-items (car bs)))) (go (cdr bs)))))))
+                   (begin
+                     (set fx-binder-names (cons (product (file file) (names names)) (get fx-binder-names)))
+                     (iterate go fx-eff ((ns strings names)) unit
+                       (unless (null? ns) (cf-global-var (fx-file-binder-key file (car ns))) (go (cdr ns)))))))
+                ((and (string=? head "import") (pair? (cdr is)))
+                 (iterate go fx-eff ((ns (listof syn acyclic) (cdr (cdr is)))) unit
+                   (unless (null? ns)
+                     (unless (string=? (fx-sym (car ns)) "") (cf-global-var (fx-sym (car ns))) #u)
+                (go (cdr ns)))))
+                (else #u))
+          (fx-declare! file (cdr xs)))))))
 
 "A world of FX-26 files (`paths` and their `texts`), read as core: its
 top levels, a core each, in order."
 (define* fx-world (subr (maxeff fx-eff spin) (strings strings) cores)
   (lambda (paths texts)
-    (let ((forms (letrec ((go (subr (maxeff fx-eff spin) (strings) (listof (listof syn acyclic) acyclic))
-                            (lambda (ts) (if (null? ts) nil (let ((f (fx-read (car ts)))) (cons f (go (cdr ts))))))))
-                   (go texts))))
+    (let ((forms (iterate go (maxeff fx-eff spin) ((ts strings texts)) (listof (listof syn acyclic) acyclic)
+                   (if (null? ts) nil (let ((f (fx-read (car ts)))) (cons f (go (cdr ts))))))))
       (begin
         (cf-reset!)
         (set cf-file-texts texts)
         (set cf-null-kind "null")
         (set fx-binder-names nil)
-        (letrec ((declare (subr fx-eff (strings (listof (listof syn acyclic) acyclic)) unit)
-                   (lambda (ps l) (if (null? l) #u (begin (fx-declare! (cf-file (car ps)) (car l)) (declare (cdr ps) (cdr l)))))))
-          (declare paths forms))
+        (iterate declare fx-eff ((ps strings paths) (l (listof (listof syn acyclic) acyclic) forms)) unit
+          (unless (null? l) (fx-declare! (cf-file (car ps)) (car l)) (declare (cdr ps) (cdr l))))
         (cf-globals-declared!)
-        (letrec ((go (subr fx-eff (strings (listof (listof syn acyclic) acyclic)) cores)
-                   (lambda (ps fs) (if (null? ps) nil
-                                       (let ((c (fx-body (cf-file (car ps)) (car fs) nil))) (cons c (go (cdr ps) (cdr fs))))))))
-          (go paths forms))))))
+        (iterate go fx-eff ((ps strings paths) (fs (listof (listof syn acyclic) acyclic) forms)) cores
+          (if (null? ps) nil
+              (let ((c (fx-body (cf-file (car ps)) (car fs) nil))) (cons c (go (cdr ps) (cdr fs))))))))))

@@ -134,10 +134,10 @@ raised there. With no handler, the run aborted."
           (append (afters from shared) (befores to shared nil)))))))
 (define* s7-run-steps! (subr s7-eff ((listof s7-step acyclic)) unit)
   (lambda (steps)
-    (if (null? steps) #u
-        (begin (set s7-dyn-now (extract (car steps) dyn))
-          (s7-call-late (extract (car steps) thunk) nil)
-          (s7-run-steps! (cdr steps))))))
+    (unless (null? steps)
+      (set s7-dyn-now (extract (car steps) dyn))
+ (s7-call-late (extract (car steps) thunk) nil)
+ (s7-run-steps! (cdr steps)))))
 "`v` given to continuation `c`: the run aborted to its prompt, which runs
 the `dynamic-wind` thunks on the way, then the continuation."
 (define* s7-throw (subr s7-eff (s7-cont s7-value) s7-value)
@@ -460,30 +460,27 @@ space."
     (tagcase (s7-promise-fields p)
       (none u p)
       (some fs
-        (letrec ((loop (subr s7-eff () s7-value)
-                   (lambda ()
-                     (tagcase (array-ref fs 0)
-                       (pair b
-                         (if (s7-true? (get (extract b car)))
-                             (get (extract b cdr))
-                             (let* ((v (s7-call0 (get (extract b cdr))))
-                                    (fs2 (tagcase (s7-promise-fields v)
-                                           (some f f)
-                                           (none u (the (arrayof s7-value @sc) (make-array 1 (s7-cons s7-true v)))))))
-                               ;; Read again: forcing the thunk may have forced this.
-                               (begin
-                                 (tagcase (array-ref fs 0)
-                                   (pair b1 (if (s7-true? (get (extract b1 car)))
-                                                #u
-                                                (tagcase (array-ref fs2 0)
-                                                  (pair b2 (begin (set (extract b1 car) (get (extract b2 car)))
-                                                             (set (extract b1 cdr) (get (extract b2 cdr)))
-                                                             (array-set! fs2 0 (array-ref fs 0))))
-                                                  (else y #u))))
-                                   (else y #u))
-                                 (loop)))))
-                       (else y (s7-error "force: not a promise's box" (list p)))))))
-          (loop))))))
+        (iterate loop s7-eff () s7-value
+          (tagcase (array-ref fs 0)
+            (pair b
+              (if (s7-true? (get (extract b car)))
+                  (get (extract b cdr))
+                  (let* ((v (s7-call0 (get (extract b cdr))))
+                         (fs2 (tagcase (s7-promise-fields v)
+                                (some f f)
+                                (none u (the (arrayof s7-value @sc) (make-array 1 (s7-cons s7-true v)))))))
+                    ;; Read again: forcing the thunk may have forced this.
+                    (begin
+                      (tagcase (array-ref fs 0)
+                        (pair b1 (unless (s7-true? (get (extract b1 car)))
+                                   (tagcase (array-ref fs2 0)
+                                     (pair b2 (begin (set (extract b1 car) (get (extract b2 car)))
+                                                (set (extract b1 cdr) (get (extract b2 cdr)))
+                                                (array-set! fs2 0 (array-ref fs 0))))
+                                     (else y #u))))
+                        (else y #u))
+                      (loop)))))
+            (else y (s7-error "force: not a promise's box" (list p)))))))))
 
 "Whether the REPL shows value `v`: not if it is unspecified, or no values,
 or a definition's name."
@@ -510,33 +507,29 @@ or a definition's name."
 (define* s7-init-control! (subr s7-eff () unit)
   (lambda ()
     (begin
-      (s7-prim! "apply" 1 -1
-        (lambda ((a s7-values))
-          (letrec ((spread (subr s7-eff (s7-values) (sumof (ok s7-values) (bad unit)))
-                     ;; The arguments but the last, then the last's items.
-                     (lambda (l)
-                       (cond ((null? l) (sum ok nil))
-                             ((null? (cdr l)) (tagcase (s7-list-items (car l)) (some items (sum ok items)) (none u (sum bad #u))))
-                             (else (tagcase (spread (cdr l)) (ok rest (sum ok (cons (car l) rest))) (bad u (sum bad #u))))))))
-            (tagcase (spread (cdr a))
-              (ok l (sum ok (s7-calln (car a) l)))
-              (bad u (s7-fail "apply: its last argument is no list" (list (s7-list a))))))))
-      (s7-prim! "call-with-current-continuation" 1 1 (lambda ((a s7-values)) (sum ok (s7-call/cc (car a)))))
+      (def-prim "apply" 1 -1 (a)
+        (letrec ((spread (subr s7-eff (s7-values) (sumof (ok s7-values) (bad unit)))
+                   ;; The arguments but the last, then the last's items.
+                   (lambda (l)
+                     (cond ((null? l) (sum ok nil))
+                           ((null? (cdr l)) (tagcase (s7-list-items (car l)) (some items (sum ok items)) (none u (sum bad #u))))
+                           (else (tagcase (spread (cdr l)) (ok rest (sum ok (cons (car l) rest))) (bad u (sum bad #u))))))))
+          (tagcase (spread (cdr a))
+            (ok l (sum ok (s7-calln (car a) l)))
+            (bad u (s7-fail "apply: its last argument is no list" (list (s7-list a)))))))
+      (def-prim "call-with-current-continuation" 1 1 (a) (sum ok (s7-call/cc (car a))))
       (s7-alias! "call/cc" "call-with-current-continuation")
-      (s7-prim! "values" 0 -1 (lambda ((a s7-values)) (sum ok (s7-values-of a))))
-      (s7-prim! "call-with-values" 2 2
-        (lambda ((a s7-values)) (sum ok (s7-calln (s7-arg2 a) (s7-values-in (s7-call0 (car a)))))))
-      (s7-prim! "dynamic-wind" 3 3 (lambda ((a s7-values)) (sum ok (s7-dynamic-wind (car a) (s7-arg2 a) (s7-arg3 a)))))
-      (s7-prim! "with-exception-handler" 2 2 (lambda ((a s7-values)) (sum ok (s7-with-handler (car a) (s7-arg2 a)))))
-      (s7-prim! "raise" 1 1 (lambda ((a s7-values)) (sum ok (s7-raise (car a) #f))))
-      (s7-prim! "raise-continuable" 1 1 (lambda ((a s7-values)) (sum ok (s7-raise (car a) #t))))
-      (s7-prim! "exit" 0 1
-        (lambda ((a s7-values)) (sum ok (abort-current-continuation s7-tag (sum exit (if (pair? a) (car a) s7-unspecified))))))
+      (def-prim "values" 0 -1 (a) (sum ok (s7-values-of a)))
+      (def-prim "call-with-values" 2 2 (a) (sum ok (s7-calln (s7-arg2 a) (s7-values-in (s7-call0 (car a))))))
+      (def-prim "dynamic-wind" 3 3 (a) (sum ok (s7-dynamic-wind (car a) (s7-arg2 a) (s7-arg3 a))))
+      (def-prim "with-exception-handler" 2 2 (a) (sum ok (s7-with-handler (car a) (s7-arg2 a))))
+      (def-prim "raise" 1 1 (a) (sum ok (s7-raise (car a) #f)))
+      (def-prim "raise-continuable" 1 1 (a) (sum ok (s7-raise (car a) #t)))
+      (def-prim "exit" 0 1 (a) (sum ok (abort-current-continuation s7-tag (sum exit (if (pair? a) (car a) s7-unspecified)))))
       (s7-alias! "emergency-exit" "exit")
       (s7-alias! " call-with-values" "call-with-values")
-      (s7-prim! "force" 1 1 (lambda ((a s7-values)) (sum ok (s7-force (car a)))))
-      (s7-prim! "%promise-type!" 1 1
-        (lambda ((a s7-values))
-          (tagcase (car a)
-            (rtd t (begin (set s7-promise-rtd (list t)) (sum ok s7-unspecified)))
-            (else y (s7-wrong "%promise-type!" "a record type" y))))))))
+      (def-prim "force" 1 1 (a) (sum ok (s7-force (car a))))
+      (def-prim "%promise-type!" 1 1 (a)
+        (tagcase (car a)
+          (rtd t (begin (set s7-promise-rtd (list t)) (sum ok s7-unspecified)))
+          (else y (s7-wrong "%promise-type!" "a record type" y)))))))

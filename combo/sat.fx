@@ -18,6 +18,13 @@
 ;;;
 ;;; State: what a solver is, in region @cb. No state of the module's own.
 
+;; Macros: each file defines its own, for now (docs/macros.md).
+(define-syntax loop
+  (syntax-rules ()
+    ((_ go eff ((x t i) ...) r body) (letrec ((go (subr eff (t ...) r) (lambda (x ...) body))) (go i ...)))))
+(define-syntax when (syntax-rules () ((_ c e ...) (if c (begin e ...) #u))))
+(define-syntax unless (syntax-rules () ((_ c e ...) (if c #u (begin e ...)))))
+
 (hide (define kit-strings (load-module "../kit/strings.fx"))
       (import kit-strings string-concatenate))
 
@@ -50,33 +57,29 @@ reading the clock for deadlines."
 (define* ivec-grow (subr cb-eff (ivec int int) ivec)
   (lambda (v n fill)
     (let ((w (the ivec (make-array n fill))) (m (array-length v)))
-      (letrec ((go (subr cb-eff (int) ivec)
-                 (lambda (i) (if (>= i m) w (begin (array-set! w i (array-ref v i)) (go (+ i 1)))))))
-        (go 0)))))
+      (loop go cb-eff ((i int 0)) ivec
+        (if (>= i m) w (begin (array-set! w i (array-ref v i)) (go (+ i 1))))))))
 (define* ivec-copy (subr cb-eff (ivec int) ivec)
   (lambda (v n) (ivec-grow (ivec-take v n) n 0)))
 "The first `n` of `v`, as an array of its own."
 (define* ivec-take (subr cb-eff (ivec int) ivec)
   (lambda (v n)
     (let ((w (the ivec (make-array n 0))))
-      (letrec ((go (subr cb-eff (int) ivec)
-                 (lambda (i) (if (>= i n) w (begin (array-set! w i (array-ref v i)) (go (+ i 1)))))))
-        (go 0)))))
+      (loop go cb-eff ((i int 0)) ivec
+        (if (>= i n) w (begin (array-set! w i (array-ref v i)) (go (+ i 1))))))))
 (define* ivec-fill! (subr cb-eff (ivec int int int) unit)
   (lambda (v from to x)
-    (if (>= from to) #u (begin (array-set! v from x) (ivec-fill! v (+ from 1) to x)))))
+    (unless (>= from to) (array-set! v from x) (ivec-fill! v (+ from 1) to x))))
 (define* list->ivec (subr cb-eff (ints) ivec)
   (lambda (l)
     (let ((v (the ivec (make-array (list-length l) 0))))
-      (letrec ((go (subr cb-eff (ints int) ivec)
-                 (lambda (l i) (if (null? l) v (begin (array-set! v i (car l)) (go (cdr l) (+ i 1)))))))
-        (go l 0)))))
+      (loop go cb-eff ((l ints l) (i int 0)) ivec
+        (if (null? l) v (begin (array-set! v i (car l)) (go (cdr l) (+ i 1))))))))
 "`v`'s elements from `from` to `to`, as a list."
 (define* ivec->list (subr cb-eff (ivec int int) ints)
   (lambda (v from to)
-    (letrec ((go (subr cb-eff (int ints) ints)
-               (lambda (i acc) (if (< i from) acc (go (- i 1) (cons (array-ref v i) acc))))))
-      (go (- to 1) nil))))
+    (loop go cb-eff ((i int (- to 1)) (acc ints nil)) ints
+      (if (< i from) acc (go (- i 1) (cons (array-ref v i) acc))))))
 (define* remv-once (subr spin (int ints) ints)
   (lambda (x l) (cond ((null? l) nil) ((= x (car l)) (cdr l)) (else (cons (car l) (remv-once x (cdr l)))))))
 (define* ints-max (subr spin (int ints) int)
@@ -88,14 +91,14 @@ reading the clock for deadlines."
   (lambda (v i fill)
     (if (< i (array-length v)) v
         (let ((w (the bools (make-array (* 2 (+ i 1)) fill))))
-          (letrec ((go (subr cb-eff (int) bools) (lambda (k) (if (>= k (array-length v)) w (begin (array-set! w k (array-ref v k)) (go (+ k 1)))))))
-            (go 0))))))
+          (loop go cb-eff ((k int 0)) bools
+            (if (>= k (array-length v)) w (begin (array-set! w k (array-ref v k)) (go (+ k 1)))))))))
 (define* grow-ivecs (subr cb-eff (ivecs int) ivecs)
   (lambda (v i)
     (if (< i (array-length v)) v
         (let ((w (the ivecs (make-array (* 2 (+ i 1)) (the ivec (make-array 0 0))))))
-          (letrec ((go (subr cb-eff (int) ivecs) (lambda (k) (if (>= k (array-length v)) w (begin (array-set! w k (array-ref v k)) (go (+ k 1)))))))
-            (go 0))))))
+          (loop go cb-eff ((k int 0)) ivecs
+            (if (>= k (array-length v)) w (begin (array-set! w k (array-ref v k)) (go (+ k 1)))))))))
 "`v` with room at i (as lockpick's `grow`)."
 (define* grow-ivec (subr cb-eff (ivec int int) ivec)
   (lambda (v i fill) (if (< i (array-length v)) v (ivec-grow v (* 2 (+ i 1)) fill))))
@@ -115,13 +118,13 @@ reading the clock for deadlines."
                                        (begin (array-set! tmp k (array-ref v i)) (go (+ i 1) j (+ k 1))))
                                       (else (begin (array-set! tmp k (array-ref v j)) (go i (+ j 1) (+ k 1)))))))
                             (back (subr cb-eff (int) unit)
-                              (lambda (k) (if (>= k hi) #u (begin (array-set! v k (array-ref tmp k)) (back (+ k 1)))))))
+                              (lambda (k) (unless (>= k hi) (array-set! v k (array-ref tmp k)) (back (+ k 1))))))
                      (begin (go lo mid lo) (back lo)))))
                (sort (subr cb-eff (int int) unit)
                  (lambda (lo hi)
-                   (if (< (- hi lo) 2) #u
-                       (let ((mid (quotient (+ lo hi) 2)))
-                         (begin (sort lo mid) (sort mid hi) (merge lo mid hi)))))))
+                   (unless (< (- hi lo) 2)
+                     (let ((mid (quotient (+ lo hi) 2)))
+                       (begin (sort lo mid) (sort mid hi) (merge lo mid hi)))))))
         (sort 0 n)))))
 
 ;;; ------------------------------------------------------------ theories
@@ -186,9 +189,8 @@ literal. Reasons are clause numbers, -1 for none."
 (define* empty-watches (subr cb-eff (int) (arrayof ivec @cb))
   (lambda (n)
     (let ((w (the (arrayof ivec @cb) (make-array n (the ivec (make-array 0 0))))))
-      (letrec ((go (subr cb-eff (int) (arrayof ivec @cb))
-                 (lambda (i) (if (>= i n) w (begin (array-set! w i (the ivec (make-array 4 0))) (go (+ i 1)))))))
-        (go 0)))))
+      (loop go cb-eff ((i int 0)) (arrayof ivec @cb)
+        (if (>= i n) w (begin (array-set! w i (the ivec (make-array 4 0))) (go (+ i 1))))))))
 
 (define* make-solver (subr cb-eff () sat-solver)
   (lambda ()
@@ -234,26 +236,26 @@ literal. Reasons are clause numbers, -1 for none."
 
 (define* ensure-capacity! (subr cb-eff (sat-solver int) unit)
   (lambda (s nvars)
-    (if (<= nvars (get (extract s cap))) #u
-        (let* ((cap (letrec ((go (subr spin (int) int) (lambda (c) (if (< c nvars) (go (* 2 c)) c))))
-                      (go (* 2 (get (extract s cap))))))
-               (nv (+ cap 1)) (nl (* 2 nv))
-               (grow! (lambda ((r (ref ivec @cb)) (n int) (fill int)) (set r (ivec-grow (get r) n fill))))
-               (old-nl (array-length (s-vals s))))
-          (begin
-            (grow! (extract s vals) nl U) (grow! (extract s levels) nv 0) (grow! (extract s reasons) nv -1)
-            (grow! (extract s activity) nv 0) (grow! (extract s polarity) nv 1) (grow! (extract s seen) nv 0)
-            (grow! (extract s tpos) nv 0) (grow! (extract s lmin) nv 0) (grow! (extract s lcount) nv 0)
-            (grow! (extract s heap-index) nv -1) (grow! (extract s heap) nv 0)
-            (let ((w (the (arrayof ivec @cb) (make-array nl (the ivec (make-array 0 0))))) (old (s-watches s)))
-              (letrec ((go (subr cb-eff (int) unit)
-                         (lambda (i) (if (>= i nl) #u
-                                         (begin (array-set! w i (if (< i old-nl) (array-ref old i) (the ivec (make-array 4 0))))
-                                                (go (+ i 1)))))))
-                (begin (go 0) (set (extract s watches) w))))
-            (grow! (extract s wcount) nl 0)
-            (grow! (extract s trail) nv 0) (grow! (extract s trail-lim) nv 0) (grow! (extract s level-stamp) nv 0)
-            (set (extract s cap) cap))))))
+    (unless (<= nvars (get (extract s cap)))
+      (let* ((cap (loop go spin ((c int (* 2 (get (extract s cap))))) int
+                    (if (< c nvars) (go (* 2 c)) c)))
+             (nv (+ cap 1)) (nl (* 2 nv))
+             (grow! (lambda ((r (ref ivec @cb)) (n int) (fill int)) (set r (ivec-grow (get r) n fill))))
+             (old-nl (array-length (s-vals s))))
+        (begin
+          (grow! (extract s vals) nl U) (grow! (extract s levels) nv 0) (grow! (extract s reasons) nv -1)
+          (grow! (extract s activity) nv 0) (grow! (extract s polarity) nv 1) (grow! (extract s seen) nv 0)
+          (grow! (extract s tpos) nv 0) (grow! (extract s lmin) nv 0) (grow! (extract s lcount) nv 0)
+          (grow! (extract s heap-index) nv -1) (grow! (extract s heap) nv 0)
+          (let ((w (the (arrayof ivec @cb) (make-array nl (the ivec (make-array 0 0))))) (old (s-watches s)))
+            (letrec ((go (subr cb-eff (int) unit)
+                       (lambda (i) (unless (>= i nl)
+                                     (array-set! w i (if (< i old-nl) (array-ref old i) (the ivec (make-array 4 0))))
+                                     (go (+ i 1))))))
+              (begin (go 0) (set (extract s watches) w))))
+          (grow! (extract s wcount) nl 0)
+          (grow! (extract s trail) nv 0) (grow! (extract s trail-lim) nv 0) (grow! (extract s level-stamp) nv 0)
+          (set (extract s cap) cap))))))
 
 ;;; ------------------------------------------------------------ the order heap
 ;;; Variables by activity, greatest first.
@@ -262,41 +264,37 @@ literal. Reasons are clause numbers, -1 for none."
   (lambda (s i)
     (let* ((heap (get (extract s heap))) (index (get (extract s heap-index))) (act (get (extract s activity)))
            (v (array-ref heap i)))
-      (letrec ((go (subr cb-eff (int) unit)
-                 (lambda (i)
-                   (let ((parent (arithmetic-shift (- i 1) -1)))
-                     (if (and (> i 0) (> (array-ref act v) (array-ref act (array-ref heap parent))))
-                         (let ((pv (array-ref heap parent)))
-                           (begin (array-set! heap i pv) (array-set! index pv i) (go parent)))
-                         (begin (array-set! heap i v) (array-set! index v i)))))))
-        (go i)))))
+      (loop go cb-eff ((i int i)) unit
+        (let ((parent (arithmetic-shift (- i 1) -1)))
+          (if (and (> i 0) (> (array-ref act v) (array-ref act (array-ref heap parent))))
+              (let ((pv (array-ref heap parent)))
+                (begin (array-set! heap i pv) (array-set! index pv i) (go parent)))
+              (begin (array-set! heap i v) (array-set! index v i))))))))
 
 (define* heap-down! (subr cb-eff (sat-solver int) unit)
   (lambda (s i)
     (let* ((heap (get (extract s heap))) (index (get (extract s heap-index))) (act (get (extract s activity)))
            (n (get (extract s heap-size))) (v (array-ref heap i)))
-      (letrec ((go (subr cb-eff (int) unit)
-                 (lambda (i)
-                   (let ((left (+ (* 2 i) 1)))
-                     (if (< left n)
-                         (let* ((right (+ left 1))
-                                (child (if (and (< right n) (> (array-ref act (array-ref heap right)) (array-ref act (array-ref heap left))))
-                                           right left))
-                                (cv (array-ref heap child)))
-                           (if (> (array-ref act cv) (array-ref act v))
-                               (begin (array-set! heap i cv) (array-set! index cv i) (go child))
-                               (begin (array-set! heap i v) (array-set! index v i))))
-                         (begin (array-set! heap i v) (array-set! index v i)))))))
-        (go i)))))
+      (loop go cb-eff ((i int i)) unit
+        (let ((left (+ (* 2 i) 1)))
+          (if (< left n)
+              (let* ((right (+ left 1))
+                     (child (if (and (< right n) (> (array-ref act (array-ref heap right)) (array-ref act (array-ref heap left))))
+                                right left))
+                     (cv (array-ref heap child)))
+                (if (> (array-ref act cv) (array-ref act v))
+                    (begin (array-set! heap i cv) (array-set! index cv i) (go child))
+                    (begin (array-set! heap i v) (array-set! index v i))))
+              (begin (array-set! heap i v) (array-set! index v i))))))))
 
 (define* heap-insert! (subr cb-eff (sat-solver int) unit)
   (lambda (s v)
-    (if (>= (array-ref (get (extract s heap-index)) v) 0) #u
-        (let ((n (get (extract s heap-size))))
-          (begin (array-set! (get (extract s heap)) n v)
-                 (array-set! (get (extract s heap-index)) v n)
-                 (set (extract s heap-size) (+ n 1))
-                 (heap-up! s n))))))
+    (unless (>= (array-ref (get (extract s heap-index)) v) 0)
+      (let ((n (get (extract s heap-size))))
+        (begin (array-set! (get (extract s heap)) n v)
+               (array-set! (get (extract s heap-index)) v n)
+               (set (extract s heap-size) (+ n 1))
+               (heap-up! s n))))))
 
 "Remove and return the greatest variable (the heap is not empty)."
 (define* heap-pop! (subr cb-eff (sat-solver) int)
@@ -304,22 +302,21 @@ literal. Reasons are clause numbers, -1 for none."
     (let* ((heap (get (extract s heap))) (v (array-ref heap 0)) (n (- (get (extract s heap-size)) 1)))
       (begin (array-set! (get (extract s heap-index)) v -1)
              (set (extract s heap-size) n)
-             (if (> n 0) (begin (array-set! heap 0 (array-ref heap n)) (heap-down! s 0)) #u)
+             (when (> n 0) (array-set! heap 0 (array-ref heap n)) (heap-down! s 0))
              v))))
 
 (define* heap-remove! (subr cb-eff (sat-solver int) unit)
   (lambda (s v)
     (let ((i (array-ref (get (extract s heap-index)) v)))
-      (if (< i 0) #u
-          (let* ((heap (get (extract s heap))) (n (- (get (extract s heap-size)) 1)) (last (array-ref heap n)))
-            (begin (array-set! (get (extract s heap-index)) v -1)
-                   (set (extract s heap-size) n)
-                   (if (< i n)
-                       (begin (array-set! heap i last)
-                              (array-set! (get (extract s heap-index)) last i)
-                              (heap-down! s i)
-                              (heap-up! s (array-ref (get (extract s heap-index)) last)))
-                       #u)))))))
+      (unless (< i 0)
+        (let* ((heap (get (extract s heap))) (n (- (get (extract s heap-size)) 1)) (last (array-ref heap n)))
+          (begin (array-set! (get (extract s heap-index)) v -1)
+                 (set (extract s heap-size) n)
+                 (when (< i n)
+                   (array-set! heap i last)
+                   (array-set! (get (extract s heap-index)) last i)
+                   (heap-down! s i)
+                   (heap-up! s (array-ref (get (extract s heap-index)) last)))))))))
 
 "A new variable, which is returned."
 (define* sat-new-var! (subr cb-eff (sat-solver) int)
@@ -327,7 +324,7 @@ literal. Reasons are clause numbers, -1 for none."
     (let ((v (+ (sat-nvars s) 1)))
       (begin (ensure-capacity! s v) (set (extract s nvars) v) (heap-insert! s v) v))))
 (define* ensure-vars! (subr cb-eff (sat-solver int) unit)
-  (lambda (s n) (if (< (sat-nvars s) n) (begin (sat-new-var! s) (ensure-vars! s n)) #u)))
+  (lambda (s n) (when (< (sat-nvars s) n) (sat-new-var! s) (ensure-vars! s n))))
 
 ;;; ------------------------------------------------------------ activity (VSIDS)
 ;;; Activities are ints: the increment grows by 1/19 a conflict (a decay of
@@ -339,16 +336,16 @@ literal. Reasons are clause numbers, -1 for none."
   (lambda (s)
     (let ((act (get (extract s activity))) (n (sat-nvars s)))
       (letrec ((go (subr cb-eff (int) unit)
-                 (lambda (v) (if (> v n) #u (begin (array-set! act v (arithmetic-shift (array-ref act v) -32)) (go (+ v 1)))))))
+                 (lambda (v) (unless (> v n) (array-set! act v (arithmetic-shift (array-ref act v) -32)) (go (+ v 1))))))
         (begin (go 1) (set (extract s var-inc) (max 128 (arithmetic-shift (get (extract s var-inc)) -32))))))))
 
 (define* bump-var! (subr cb-eff (sat-solver int) unit)
   (lambda (s v)
     (let* ((act (get (extract s activity))) (a (+ (array-ref act v) (get (extract s var-inc)))))
       (begin (array-set! act v a)
-             (if (> a activity-limit) (rescale-activity! s) #u)
+             (when (> a activity-limit) (rescale-activity! s))
              (let ((i (array-ref (get (extract s heap-index)) v)))
-               (if (>= i 0) (heap-up! s i) #u))))))
+               (when (>= i 0) (heap-up! s i)))))))
 
 (define* decay-var-activity! (subr cb-eff (sat-solver) unit)
   (lambda (s) (let ((inc (get (extract s var-inc)))) (set (extract s var-inc) (+ inc (quotient inc 19))))))
@@ -393,26 +390,26 @@ free to be used again."
     (let ((watches (s-watches s)) (wcount (s-wcount s)) (top (* 2 (+ (sat-nvars s) 1))))
       (letrec ((each (subr cb-eff (int) unit)
                  (lambda (l)
-                   (if (>= l top) #u
-                       (let ((ws (array-ref watches l)) (n (array-ref wcount l)))
-                         (letrec ((go (subr cb-eff (int int) unit)
-                                    (lambda (i j)
-                                      (if (< i n)
-                                          (let ((c (array-ref ws (+ i 1))))
-                                            (if (clause-deleted? s c) (go (+ i 2) j)
-                                                (begin (array-set! ws j (array-ref ws i)) (array-set! ws (+ j 1) c)
-                                                       (go (+ i 2) (+ j 2)))))
-                                          (array-set! wcount l j)))))
-                           (begin (go 0 0) (each (+ l 1)))))))))
+                   (unless (>= l top)
+                     (let ((ws (array-ref watches l)) (n (array-ref wcount l)))
+                       (letrec ((go (subr cb-eff (int int) unit)
+                                  (lambda (i j)
+                                    (if (< i n)
+                                        (let ((c (array-ref ws (+ i 1))))
+                                          (if (clause-deleted? s c) (go (+ i 2) j)
+                                              (begin (array-set! ws j (array-ref ws i)) (array-set! ws (+ j 1) c)
+                                                     (go (+ i 2) (+ j 2)))))
+                                        (array-set! wcount l j)))))
+                         (begin (go 0 0) (each (+ l 1)))))))))
         (begin
           (each 2)
           ;; Nothing refers to the deleted clauses now.
           (let ((cdb (get (extract s cdb))) (empty (the ivec (make-array 0 0))))
             (letrec ((free (subr cb-eff (ints) unit)
-                       (lambda (l) (if (null? l) #u
-                                       (begin (array-set! cdb (car l) empty)
-                                              (set (extract s cdb-free) (cons (car l) (get (extract s cdb-free))))
-                                              (free (cdr l)))))))
+                       (lambda (l) (unless (null? l)
+                                     (array-set! cdb (car l) empty)
+                                     (set (extract s cdb-free) (cons (car l) (get (extract s cdb-free))))
+                                     (free (cdr l))))))
               (begin (free (get (extract s cdb-dead))) (set (extract s cdb-dead) nil)))))))))
 
 ;;; ------------------------------------------------------------ clauses
@@ -423,9 +420,8 @@ free to be used again."
     (let ((k (the ivec (make-array (+ (list-length lits) 1) 0))))
       (begin
         (array-set! k 0 (+ (* lbd 8) (if learnt? 1 0)))
-        (letrec ((go (subr cb-eff (ints int) unit)
-                   (lambda (l i) (if (null? l) #u (begin (array-set! k i (car l)) (go (cdr l) (+ i 1)))))))
-          (go lits 1))
+        (loop go cb-eff ((l ints lits) (i int 1)) unit
+          (unless (null? l) (array-set! k i (car l)) (go (cdr l) (+ i 1))))
         (store-clause! s k)))))
 (define* store-clause! (subr cb-eff (sat-solver ivec) int)
   (lambda (s k)
@@ -436,7 +432,7 @@ free to be used again."
                  (cdb (if (< n (array-length cdb)) cdb
                           (let ((w (the (arrayof ivec @cb) (make-array (* 2 (array-length cdb)) (the ivec (make-array 0 0))))))
                             (letrec ((go (subr cb-eff (int) unit)
-                                       (lambda (i) (if (>= i n) #u (begin (array-set! w i (array-ref cdb i)) (go (+ i 1)))))))
+                                       (lambda (i) (unless (>= i n) (array-set! w i (array-ref cdb i)) (go (+ i 1))))))
                               (begin (go 0) (set (extract s cdb) w) w))))))
             (begin (array-set! cdb n k) (set (extract s cdb-top) (+ n 1)) n))))))
 
@@ -461,23 +457,23 @@ free to be used again."
 "Undo the assignments above `level`, saving their phases."
 (define* cancel-until! (subr cb-eff (sat-solver int) unit)
   (lambda (s level)
-    (if (<= (s-nlevels s) level) #u
-        (let ((lim (array-ref (get (extract s trail-lim)) level))
-              (trail (s-trail s)) (vals (s-vals s)) (reasons (s-reasons s)) (pol (get (extract s polarity))))
-          (letrec ((go (subr cb-eff (int) unit)
-                     (lambda (i)
-                       (if (< i lim) #u
-                           (let* ((l (array-ref trail i)) (v (lit-var l)))
-                             (begin (array-set! vals l U) (array-set! vals (lit-neg l) U)
-                                    (array-set! reasons v -1)
-                                    (array-set! pol v (bitwise-and l 1))
-                                    (heap-insert! s v)
-                                    (go (- i 1))))))))
-            (begin (go (- (s-trail-size s) 1))
-                   (set (extract s trail-size) lim)
-                   (set (extract s qhead) lim)
-                   (set (extract s nlevels) level)
-                   (if (get (extract s has-theory)) ((extract (get (extract s theory)) backtrack) lim) #u)))))))
+    (unless (<= (s-nlevels s) level)
+      (let ((lim (array-ref (get (extract s trail-lim)) level))
+            (trail (s-trail s)) (vals (s-vals s)) (reasons (s-reasons s)) (pol (get (extract s polarity))))
+        (letrec ((go (subr cb-eff (int) unit)
+                   (lambda (i)
+                     (unless (< i lim)
+                       (let* ((l (array-ref trail i)) (v (lit-var l)))
+                         (begin (array-set! vals l U) (array-set! vals (lit-neg l) U)
+                                (array-set! reasons v -1)
+                                (array-set! pol v (bitwise-and l 1))
+                                (heap-insert! s v)
+                                (go (- i 1))))))))
+          (begin (go (- (s-trail-size s) 1))
+                 (set (extract s trail-size) lim)
+                 (set (extract s qhead) lim)
+                 (set (extract s nlevels) level)
+                 (when (get (extract s has-theory)) ((extract (get (extract s theory)) backtrack) lim))))))))
 
 ;;; ------------------------------------------------------------ propagation
 ;;; Two watched literals, with blockers. Returns a conflicting clause, or -1.
@@ -486,9 +482,8 @@ free to be used again."
 (define* unfalse-pos (subr cb-eff (ivec ivec) int)
   (lambda (vals k)
     (let ((end (array-length k)))
-      (letrec ((go (subr cb-eff (int) int)
-                 (lambda (p) (cond ((= p end) 0) ((= (array-ref vals (array-ref k p)) F) (go (+ p 1))) (else p)))))
-        (go 3)))))
+      (loop go cb-eff ((p int 3)) int
+        (cond ((= p end) 0) ((= (array-ref vals (array-ref k p)) F) (go (+ p 1))) (else p))))))
 
 "`l` is implied by clause `c`, at trail position `tsize`."
 (define* imply! (subr cb-eff (sat-solver int int int) unit)
@@ -506,12 +501,10 @@ keep the rest of them."
 (define* propagate-conflict! (subr cb-eff (sat-solver int int int) unit)
   (lambda (s fl i j)
     (let* ((ws (array-ref (s-watches s) fl)) (n (array-ref (s-wcount s) fl)))
-      (letrec ((go (subr cb-eff (int int) unit)
-                 (lambda (i j)
-                   (if (< i n)
-                       (begin (array-set! ws j (array-ref ws i)) (array-set! ws (+ j 1) (array-ref ws (+ i 1))) (go (+ i 2) (+ j 2)))
-                       (array-set! (s-wcount s) fl j)))))
-        (go i j)))))
+      (loop go cb-eff ((i int i) (j int j)) unit
+        (if (< i n)
+            (begin (array-set! ws j (array-ref ws i)) (array-set! ws (+ j 1) (array-ref ws (+ i 1))) (go (+ i 2) (+ j 2)))
+            (array-set! (s-wcount s) fl j))))))
 
 (define* propagate-done! (subr cb-eff (sat-solver int int int int) int)
   (lambda (s qhead tsize nprops confl)
@@ -532,56 +525,54 @@ keep the rest of them."
                       (begin (array-set! vals l T) (array-set! vals (bitwise-xor l 1) F)
                              (array-set! levels v level) (array-set! reasons v c) (array-set! tpos v tsize)
                              (array-set! trail tsize l))))))
-      (letrec ((go (subr cb-eff (int int int int) int)
-                 (lambda (qhead tsize i j)
-                   (if (>= qhead tsize)
-                       (propagate-done! s qhead tsize (- qhead q0) -1)
-                       (let* ((fl (bitwise-xor (array-ref trail qhead) 1))
-                              (ws (array-ref watches fl))
-                              (n (array-ref wcount fl)))
-                         (if (= i n)
-                             (begin (array-set! wcount fl j) (go (+ qhead 1) tsize 0 0))
-                             (let ((blocker (array-ref ws i)) (c (array-ref ws (+ i 1))))
-                               (cond
-                                ((< blocker 0)
-                                 ;; A binary clause of fl and other: fl goes to slot 2
-                                 ;; when it is a reason or the conflict.
-                                 (let* ((other (- 0 blocker)) (val (array-ref vals other)))
-                                   (begin
-                                     (array-set! ws j blocker) (array-set! ws (+ j 1) c)
-                                     (if (= val T) (go qhead tsize (+ i 2) (+ j 2))
-                                         (let ((k (array-ref cdb c)))
-                                           (begin
-                                             (if (= (array-ref k 1) fl) (begin (array-set! k 1 other) (array-set! k 2 fl)) #u)
-                                             (if (= val F)
-                                                 (begin (propagate-conflict! s fl (+ i 2) (+ j 2))
-                                                        (propagate-done! s tsize tsize (+ 1 (- qhead q0)) c))
-                                                 (begin (imply other c tsize) (go qhead (+ tsize 1) (+ i 2) (+ j 2))))))))))
-                                ((= (array-ref vals blocker) T)
-                                 (begin (array-set! ws j blocker) (array-set! ws (+ j 1) c) (go qhead tsize (+ i 2) (+ j 2))))
-                                (else
-                                 (let ((k (array-ref cdb c)))
-                                   (begin
-                                     ;; Make fl the second literal.
-                                     (if (= (array-ref k 1) fl) (begin (array-set! k 1 (array-ref k 2)) (array-set! k 2 fl)) #u)
-                                     (let ((first (array-ref k 1)))
-                                       (if (and (not (= first blocker)) (= (array-ref vals first) T))
-                                           (begin (array-set! ws j first) (array-set! ws (+ j 1) c) (go qhead tsize (+ i 2) (+ j 2)))
-                                           ;; Look for a new literal to watch.
-                                           (let ((p (unfalse-pos vals k)))
-                                             (if (> p 0)
-                                                 (let ((l (array-ref k p)))
-                                                   (begin (array-set! k 2 l) (array-set! k p fl)
-                                                          (watch-push-in! watches wcount l first c)
-                                                          (go qhead tsize (+ i 2) j)))
-                                                 ;; The clause is unit or conflicting.
-                                                 (begin
-                                                   (array-set! ws j first) (array-set! ws (+ j 1) c)
-                                                   (if (= (array-ref vals first) F)
-                                                       (begin (propagate-conflict! s fl (+ i 2) (+ j 2))
-                                                              (propagate-done! s tsize tsize (+ 1 (- qhead q0)) c))
-                                                       (begin (imply first c tsize) (go qhead (+ tsize 1) (+ i 2) (+ j 2))))))))))))))))))))
-        (go q0 (s-trail-size s) 0 0)))))
+      (loop go cb-eff ((qhead int q0) (tsize int (s-trail-size s)) (i int 0) (j int 0)) int
+        (if (>= qhead tsize)
+            (propagate-done! s qhead tsize (- qhead q0) -1)
+            (let* ((fl (bitwise-xor (array-ref trail qhead) 1))
+                   (ws (array-ref watches fl))
+                   (n (array-ref wcount fl)))
+              (if (= i n)
+                  (begin (array-set! wcount fl j) (go (+ qhead 1) tsize 0 0))
+                  (let ((blocker (array-ref ws i)) (c (array-ref ws (+ i 1))))
+                    (cond
+                     ((< blocker 0)
+                      ;; A binary clause of fl and other: fl goes to slot 2
+                      ;; when it is a reason or the conflict.
+                      (let* ((other (- 0 blocker)) (val (array-ref vals other)))
+                        (begin
+                          (array-set! ws j blocker) (array-set! ws (+ j 1) c)
+                          (if (= val T) (go qhead tsize (+ i 2) (+ j 2))
+                              (let ((k (array-ref cdb c)))
+                                (begin
+                                  (when (= (array-ref k 1) fl) (array-set! k 1 other) (array-set! k 2 fl))
+                                  (if (= val F)
+                                      (begin (propagate-conflict! s fl (+ i 2) (+ j 2))
+                                             (propagate-done! s tsize tsize (+ 1 (- qhead q0)) c))
+                                      (begin (imply other c tsize) (go qhead (+ tsize 1) (+ i 2) (+ j 2))))))))))
+                     ((= (array-ref vals blocker) T)
+                      (begin (array-set! ws j blocker) (array-set! ws (+ j 1) c) (go qhead tsize (+ i 2) (+ j 2))))
+                     (else
+                      (let ((k (array-ref cdb c)))
+                        (begin
+                          ;; Make fl the second literal.
+                          (when (= (array-ref k 1) fl) (array-set! k 1 (array-ref k 2)) (array-set! k 2 fl))
+                          (let ((first (array-ref k 1)))
+                            (if (and (not (= first blocker)) (= (array-ref vals first) T))
+                                (begin (array-set! ws j first) (array-set! ws (+ j 1) c) (go qhead tsize (+ i 2) (+ j 2)))
+                                ;; Look for a new literal to watch.
+                                (let ((p (unfalse-pos vals k)))
+                                  (if (> p 0)
+                                      (let ((l (array-ref k p)))
+                                        (begin (array-set! k 2 l) (array-set! k p fl)
+                                               (watch-push-in! watches wcount l first c)
+                                               (go qhead tsize (+ i 2) j)))
+                                      ;; The clause is unit or conflicting.
+                                      (begin
+                                        (array-set! ws j first) (array-set! ws (+ j 1) c)
+                                        (if (= (array-ref vals first) F)
+                                            (begin (propagate-conflict! s fl (+ i 2) (+ j 2))
+                                                   (propagate-done! s tsize tsize (+ 1 (- qhead q0)) c))
+                                            (begin (imply first c tsize) (go qhead (+ tsize 1) (+ i 2) (+ j 2)))))))))))))))))))))
 
 ;;; ------------------------------------------------------------ conflict analysis
 ;;; First UIP, with recursive minimization.
@@ -592,22 +583,19 @@ keep the rest of them."
     (let ((stamp (+ (get (extract s stamp)) 1)) (ls (get (extract s level-stamp))) (levels (s-levels s)))
       (begin
         (set (extract s stamp) stamp)
-        (letrec ((go (subr cb-eff (ints int) int)
-                   (lambda (l n)
-                     (if (null? l) n
-                         (let ((lv (array-ref levels (lit-var (car l)))))
-                           (if (= (array-ref ls lv) stamp) (go (cdr l) n)
-                               (begin (array-set! ls lv stamp) (go (cdr l) (+ n 1)))))))))
-          (go lits 0))))))
+        (loop go cb-eff ((l ints lits) (n int 0)) int
+          (if (null? l) n
+              (let ((lv (array-ref levels (lit-var (car l)))))
+                (if (= (array-ref ls lv) stamp) (go (cdr l) n)
+                    (begin (array-set! ls lv stamp) (go (cdr l) (+ n 1)))))))))))
 
 "A learnt clause took part in a conflict."
 (define* touch-clause! (subr cb-eff (sat-solver int) unit)
   (lambda (s c)
     (begin (clause-set-used! s c #t)
-           (if (> (clause-lbd s c) 2)
-               (let ((lbd (compute-lbd s (clause-lits s c))))
-                 (if (< lbd (clause-lbd s c)) (clause-set-lbd! s c lbd) #u))
-               #u))))
+           (when (> (clause-lbd s c) 2)
+             (let ((lbd (compute-lbd s (clause-lits s c))))
+               (when (< lbd (clause-lbd s c)) (clause-set-lbd! s c lbd)))))))
 
 "The learnt clause of a conflict, as a list whose first literal is the
 asserting one and whose second (if any) has the greatest level of the
@@ -615,7 +603,7 @@ rest."
 (define* analyze (subr cb-eff (sat-solver int) ints)
   (lambda (s confl)
     (begin (set (extract s aout) nil)
-           (if (clause-learnt? s confl) (touch-clause! s confl) #u)
+           (when (clause-learnt? s confl) (touch-clause! s confl))
            (analyze-scan s confl 1 0 (- (s-trail-size s) 1)))))
 
 "Mark the literals of clause `c` from position `k`: those of the conflict
@@ -624,21 +612,19 @@ where to go on looking down the trail."
 (define analyze-scan (subr cb-eff (sat-solver int int int int) ints)
   (lambda (s c k pathc index)
     (let ((cls (cl s c)) (seen (s-seen s)) (levels (s-levels s)) (level (s-nlevels s)))
-      (letrec ((go (subr cb-eff (int int) ints)
-                 (lambda (k pathc)
-                   (if (< k (array-length cls))
-                       (let* ((q (array-ref cls k)) (v (arithmetic-shift q -1)))
-                         (if (and (= 0 (array-ref seen v)) (> (array-ref levels v) 0))
-                             (begin
-                               (array-set! seen v 1)
-                               (bump-var! s v)
-                               (if (>= (array-ref levels v) level)
-                                   (go (+ k 1) (+ pathc 1))
-                                   (begin (set (extract s aout) (cons q (get (extract s aout))))
-                                          (go (+ k 1) pathc))))
-                             (go (+ k 1) pathc)))
-                       (analyze-next s pathc index)))))
-        (go k pathc)))))
+      (loop go cb-eff ((k int k) (pathc int pathc)) ints
+        (if (< k (array-length cls))
+            (let* ((q (array-ref cls k)) (v (arithmetic-shift q -1)))
+              (if (and (= 0 (array-ref seen v)) (> (array-ref levels v) 0))
+                  (begin
+                    (array-set! seen v 1)
+                    (bump-var! s v)
+                    (if (>= (array-ref levels v) level)
+                        (go (+ k 1) (+ pathc 1))
+                        (begin (set (extract s aout) (cons q (get (extract s aout))))
+                               (go (+ k 1) pathc))))
+                  (go (+ k 1) pathc)))
+            (analyze-next s pathc index))))))
 
 "The next marked literal down the trail: the first UIP if it is the last
 of its level, else resolve with its reason."
@@ -652,16 +638,15 @@ of its level, else resolve with its reason."
             (if (= pathc 1)
                 (minimize s (lit-neg p) (get (extract s aout)))
                 (let ((c (array-ref (s-reasons s) v)))
-                  (begin (if (clause-learnt? s c) (touch-clause! s c) #u)
+                  (begin (when (clause-learnt? s c) (touch-clause! s c))
                          (analyze-scan s c 2 (- pathc 1) (- index 1))))))))))
 
 "Mark `p` (if it is not marked) and remember to clear it."
 (define* mark-seen! (subr cb-eff (sat-solver int int) unit)
   (lambda (s p mark)
     (let ((seen (s-seen s)))
-      (if (= 0 (array-ref seen (lit-var p)))
-          (begin (array-set! seen (lit-var p) mark) (set (extract s toclear) (cons p (get (extract s toclear)))))
-          #u))))
+      (when (= 0 (array-ref seen (lit-var p)))
+        (array-set! seen (lit-var p) mark) (set (extract s toclear) (cons p (get (extract s toclear))))))))
 
 (define-type frame (productof (lit int) (pos int)))
 (define-type frames (listof frame acyclic))
@@ -675,26 +660,23 @@ than all of those."
   (lambda (s p)
     (let ((reasons (s-reasons s)) (seen (s-seen s)) (levels (s-levels s))
           (lcount (get (extract s lcount))) (lmin (get (extract s lmin))) (tpos (get (extract s tpos))))
-      (letrec ((go (subr cb-eff (int int frames) bool)
-                 (lambda (p k stack)
-                   (let ((c (cl s (array-ref reasons (lit-var p)))))
-                     (if (< k (array-length c))
-                         (let* ((l (array-ref c k)) (v (lit-var l)) (mark (array-ref seen v)))
-                           (cond ((or (= mark 1) (= mark 3) (= 0 (array-ref levels v))) (go p (+ k 1) stack))
-                                 ((or (= mark 2) (< (array-ref reasons v) 0)
-                                      (let ((level (array-ref levels v)))
-                                        (or (= 0 (array-ref lcount level)) (< (array-ref tpos v) (array-ref lmin level)))))
-                                  ;; Nothing on the path to l is implied.
-                                  (begin (mark-seen! s p 2)
-                                         (letrec ((unwind (subr cb-eff (frames) unit)
-                                                    (lambda (st) (if (null? st) #u (begin (mark-seen! s (extract (car st) lit) 2) (unwind (cdr st)))))))
-                                           (unwind stack))
-                                         #f))
-                                 (else (go l 2 (cons (product (lit p) (pos (+ k 1))) stack)))))
-                         (begin (mark-seen! s p 3)
-                                (if (null? stack) #t
-                                    (go (extract (car stack) lit) (extract (car stack) pos) (cdr stack)))))))))
-        (go p 2 nil)))))
+      (loop go cb-eff ((p int p) (k int 2) (stack frames nil)) bool
+        (let ((c (cl s (array-ref reasons (lit-var p)))))
+          (if (< k (array-length c))
+              (let* ((l (array-ref c k)) (v (lit-var l)) (mark (array-ref seen v)))
+                (cond ((or (= mark 1) (= mark 3) (= 0 (array-ref levels v))) (go p (+ k 1) stack))
+                      ((or (= mark 2) (< (array-ref reasons v) 0)
+                           (let ((level (array-ref levels v)))
+                             (or (= 0 (array-ref lcount level)) (< (array-ref tpos v) (array-ref lmin level)))))
+                       ;; Nothing on the path to l is implied.
+                       (begin (mark-seen! s p 2)
+                              (loop unwind cb-eff ((st frames stack)) unit
+                                (unless (null? st) (mark-seen! s (extract (car st) lit) 2) (unwind (cdr st))))
+                              #f))
+                      (else (go l 2 (cons (product (lit p) (pos (+ k 1))) stack)))))
+              (begin (mark-seen! s p 3)
+                     (if (null? stack) #t
+                         (go (extract (car stack) lit) (extract (car stack) pos) (cdr stack))))))))))
 
 "Remove from the learnt clause (uip . rest) the literals implied by the
 others, and order it for watching. The literals of rest are marked seen;
@@ -706,40 +688,32 @@ they are unmarked here."
       (begin
         (set (extract s toclear) rest)
         ;; The levels of the clause's literals, for redundant?.
-        (letrec ((count (subr cb-eff (ints) unit)
-                   (lambda (l)
-                     (if (null? l) #u
-                         (let* ((v (lit-var (car l))) (level (array-ref levels v)) (n (array-ref lcount level)))
-                           (begin (array-set! lcount level (+ n 1))
-                                  (if (or (= n 0) (< (array-ref tpos v) (array-ref lmin level))) (array-set! lmin level (array-ref tpos v)) #u)
-                                  (count (cdr l))))))))
-          (count rest))
-        (let ((kept (letrec ((go (subr cb-eff (ints ints) ints)
-                               (lambda (l acc)
-                                 (cond ((null? l) acc)
-                                       ((and (>= (array-ref reasons (lit-var (car l))) 0)
-                                             ;; The only literal of its level is needed.
-                                             (> (array-ref lcount (array-ref levels (lit-var (car l)))) 1)
-                                             (redundant? s (car l)))
-                                        (go (cdr l) acc))
-                                       (else (go (cdr l) (cons (car l) acc)))))))
-                      (go rest nil))))
+        (loop count cb-eff ((l ints rest)) unit
+          (unless (null? l)
+            (let* ((v (lit-var (car l))) (level (array-ref levels v)) (n (array-ref lcount level)))
+              (begin (array-set! lcount level (+ n 1))
+                     (when (or (= n 0) (< (array-ref tpos v) (array-ref lmin level))) (array-set! lmin level (array-ref tpos v)))
+                     (count (cdr l))))))
+        (let ((kept (loop go cb-eff ((l ints rest) (acc ints nil)) ints
+                      (cond ((null? l) acc)
+                            ((and (>= (array-ref reasons (lit-var (car l))) 0)
+                                  ;; The only literal of its level is needed.
+                                  (> (array-ref lcount (array-ref levels (lit-var (car l)))) 1)
+                                  (redundant? s (car l)))
+                             (go (cdr l) acc))
+                            (else (go (cdr l) (cons (car l) acc)))))))
           (begin
-            (letrec ((clear (subr cb-eff (ints) unit)
-                       (lambda (l) (if (null? l) #u (begin (array-set! seen (lit-var (car l)) 0) (clear (cdr l)))))))
-              (clear (get (extract s toclear))))
+            (loop clear cb-eff ((l ints (get (extract s toclear)))) unit
+              (unless (null? l) (array-set! seen (lit-var (car l)) 0) (clear (cdr l))))
             (set (extract s toclear) nil)
-            (letrec ((uncount (subr cb-eff (ints) unit)
-                       (lambda (l) (if (null? l) #u (begin (array-set! lcount (array-ref levels (lit-var (car l))) 0) (uncount (cdr l)))))))
-              (uncount rest))
+            (loop uncount cb-eff ((l ints rest)) unit
+              (unless (null? l) (array-set! lcount (array-ref levels (lit-var (car l))) 0) (uncount (cdr l))))
             ;; The literal of the greatest level second.
             (if (null? kept) (list uip)
-                (let ((best (letrec ((go (subr cb-eff (ints int) int)
-                                       (lambda (l best)
-                                         (cond ((null? l) best)
-                                               ((> (array-ref levels (lit-var (car l))) (array-ref levels (lit-var best))) (go (cdr l) (car l)))
-                                               (else (go (cdr l) best))))))
-                              (go (cdr kept) (car kept)))))
+                (let ((best (loop go cb-eff ((l ints (cdr kept)) (best int (car kept))) int
+                              (cond ((null? l) best)
+                                    ((> (array-ref levels (lit-var (car l))) (array-ref levels (lit-var best))) (go (cdr l) (car l)))
+                                    (else (go (cdr l) best))))))
                   (cons uip (cons best (remv-once best kept)))))))))))
 
 "The assumptions that, with the clauses, make `p` false: `p` is an
@@ -751,42 +725,40 @@ assumption found false (MiniSat's analyzeFinal)."
           (begin
             (array-set! seen (lit-var p) 1)
             (let ((lim0 (array-ref (get (extract s trail-lim)) 0)))
-              (letrec ((go (subr cb-eff (int ints) ints)
-                         (lambda (i out)
-                           (if (< i lim0)
-                               (begin (array-set! seen (lit-var p) 0) out)
-                               (let* ((l (array-ref trail i)) (v (lit-var l)))
-                                 (if (= 0 (array-ref seen v)) (go (- i 1) out)
-                                     (let ((c (array-ref reasons v)))
-                                       (begin
-                                         (array-set! seen v 0)
-                                         (if (>= c 0)
-                                             (let ((k (cl s c)))
-                                               (letrec ((mark (subr cb-eff (int) unit)
-                                                          (lambda (j) (if (>= j (array-length k)) #u
-                                                                          (let ((u (lit-var (array-ref k j))))
-                                                                            (begin (if (> (array-ref levels u) 0) (array-set! seen u 1) #u)
-                                                                                   (mark (+ j 1))))))))
-                                                 (begin (mark 2) (go (- i 1) out))))
-                                             (go (- i 1) (cons l out)))))))))))
-                (go (- (s-trail-size s) 1) (list p)))))))))
+              (loop go cb-eff ((i int (- (s-trail-size s) 1)) (out ints (list p))) ints
+                (if (< i lim0)
+                    (begin (array-set! seen (lit-var p) 0) out)
+                    (let* ((l (array-ref trail i)) (v (lit-var l)))
+                      (if (= 0 (array-ref seen v)) (go (- i 1) out)
+                          (let ((c (array-ref reasons v)))
+                            (begin
+                              (array-set! seen v 0)
+                              (if (>= c 0)
+                                  (let ((k (cl s c)))
+                                    (letrec ((mark (subr cb-eff (int) unit)
+                                               (lambda (j) (unless (>= j (array-length k))
+                                                             (let ((u (lit-var (array-ref k j))))
+                                                               (begin (when (> (array-ref levels u) 0) (array-set! seen u 1))
+                                                                      (mark (+ j 1))))))))
+                                      (begin (mark 2) (go (- i 1) out))))
+                                  (go (- i 1) (cons l out)))))))))))))))
 
 ;;; ------------------------------------------------------------ proofs (DRAT, as lines)
 
 (define* proof-write! (subr cb-eff (sat-solver string ints) unit)
   (lambda (s prefix lits)
-    (if (not (get (extract s proof))) #u
-        (letrec ((go (subr cb-eff (ints (listof string acyclic)) (listof string acyclic))
-                   (lambda (l acc) (if (null? l) acc (go (cdr l) (cons " " (cons (int->string (lit->int (car l))) acc)))))))
-          (set (extract s proof-lines)
-               (cons (string-concatenate (reverse (cons "0\n" (go lits (list prefix))))) (get (extract s proof-lines))))))))
+    (unless (not (get (extract s proof)))
+      (letrec ((go (subr cb-eff (ints (listof string acyclic)) (listof string acyclic))
+                 (lambda (l acc) (if (null? l) acc (go (cdr l) (cons " " (cons (int->string (lit->int (car l))) acc)))))))
+        (set (extract s proof-lines)
+             (cons (string-concatenate (reverse (cons "0\n" (go lits (list prefix))))) (get (extract s proof-lines))))))))
 
 ;;; ------------------------------------------------------------ the clause database
 
 (define* push-clause! (subr cb-eff (sat-solver int) unit)
   (lambda (s c)
     (let ((push! (lambda ((v (ref ivec @cb)) (n (ref int @cb)))
-                   (begin (if (= (get n) (array-length (get v))) (set v (ivec-grow (get v) (* 2 (get n)) 0)) #u)
+                   (begin (when (= (get n) (array-length (get v))) (set v (ivec-grow (get v) (* 2 (get n)) 0)))
                           (array-set! (get v) (get n) c)
                           (set n (+ (get n) 1))))))
       (if (clause-learnt? s c) (push! (extract s learnts) (extract s nlearnts)) (push! (extract s clauses) (extract s nclauses))))))
@@ -796,7 +768,7 @@ assumption found false (MiniSat's analyzeFinal)."
     (let ((k (cl s c)))
       (begin (array-set! k 0 (bitwise-ior (array-ref k 0) 2))
              (set (extract s cdb-dead) (cons c (get (extract s cdb-dead))))
-             (if (get (extract s proof)) (proof-write! s "d " (clause-lits s c)) #u)))))
+             (when (get (extract s proof)) (proof-write! s "d " (clause-lits s c)))))))
 
 "Whether `c` is the reason for an assignment."
 (define* locked? (subr cb-eff (sat-solver int) bool)
@@ -810,30 +782,26 @@ tautology)."
 (define* clause-compact! (subr cb-eff (sat-solver ivec) int)
   (lambda (s v)
     (let ((vals (s-vals s)) (n (array-length v)))
-      (letrec ((go (subr cb-eff (int int) int)
-                 (lambda (k m)
-                   (if (= k n) m
-                       (let ((l (array-ref v k)))
-                         (cond ((and (> m 0) (= l (array-ref v (- m 1)))) (go (+ k 1) m))
-                               ((and (> k 0) (= l (lit-neg (array-ref v (- k 1))))) -1)
-                               ((= (array-ref vals l) T) -1)
-                               ((= (array-ref vals l) F) (go (+ k 1) m))
-                               (else (begin (array-set! v m l) (go (+ k 1) (+ m 1))))))))))
-        (go 0 0)))))
+      (loop go cb-eff ((k int 0) (m int 0)) int
+        (if (= k n) m
+            (let ((l (array-ref v k)))
+              (cond ((and (> m 0) (= l (array-ref v (- m 1)))) (go (+ k 1) m))
+                    ((and (> k 0) (= l (lit-neg (array-ref v (- k 1))))) -1)
+                    ((= (array-ref vals l) T) -1)
+                    ((= (array-ref vals l) F) (go (+ k 1) m))
+                    (else (begin (array-set! v m l) (go (+ k 1) (+ m 1)))))))))))
 
 (define* insertion-sort! (subr cb-eff (ivec) unit)
   (lambda (v)
-    (letrec ((outer (subr cb-eff (int) unit)
-               (lambda (i)
-                 (if (>= i (array-length v)) #u
-                     (let ((x (array-ref v i)))
-                       (letrec ((inner (subr cb-eff (int) unit)
-                                  (lambda (j)
-                                    (if (and (>= j 0) (> (array-ref v j) x))
-                                        (begin (array-set! v (+ j 1) (array-ref v j)) (inner (- j 1)))
-                                        (array-set! v (+ j 1) x)))))
-                         (begin (inner (- i 1)) (outer (+ i 1)))))))))
-      (outer 1))))
+    (loop outer cb-eff ((i int 1)) unit
+      (unless (>= i (array-length v))
+        (let ((x (array-ref v i)))
+          (letrec ((inner (subr cb-eff (int) unit)
+                     (lambda (j)
+                       (if (and (>= j 0) (> (array-ref v j) x))
+                           (begin (array-set! v (+ j 1) (array-ref v j)) (inner (- j 1)))
+                           (array-set! v (+ j 1) x)))))
+            (begin (inner (- i 1)) (outer (+ i 1)))))))))
 
 "Add a clause (its variables made if need be). Whether the clauses may
 still be satisfiable. The literals are sorted, so that duplicates and
@@ -845,38 +813,32 @@ without the duplicates and those false at level 0."
       (cancel-until! s 0)
       (let ((v (list->ivec lits)))
         (begin
-          (ensure-vars! s (letrec ((go (subr cb-eff (int int) int)
-                                     (lambda (k m) (if (= k (array-length v)) m (go (+ k 1) (max m (lit-var (array-ref v k))))))))
-                            (go 0 0)))
-          (if (not (sat-ok? s)) #u
-              (begin
-                (if (< (array-length v) 16) (insertion-sort! v) (ivec-sort! v (array-length v) (lambda ((a int) (b int)) (< a b))))
-                (let ((m (clause-compact! s v)))
-                  (if (< m 0) #u
-                      (begin
-                        (if (= m (array-length v)) #u (proof-write! s "" (ivec->list v 0 m)))
-                        (cond ((= m 0) (set (extract s ok) #f))
-                              ((= m 1) (begin (assign! s (array-ref v 0) -1)
-                                              (if (>= (propagate! s) 0) (begin (proof-write! s "" nil) (set (extract s ok) #f)) #u)))
-                              (else (let ((k (the ivec (make-array (+ m 1) 0))))
-                                      (begin (letrec ((go (subr cb-eff (int) unit)
-                                                        (lambda (i) (if (= i m) #u (begin (array-set! k (+ i 1) (array-ref v i)) (go (+ i 1)))))))
-                                               (go 0))
-                                             (let ((c (store-clause! s k)))
-                                               (begin (push-clause! s c) (attach-clause! s c))))))))))))))
+          (ensure-vars! s (loop go cb-eff ((k int 0) (m int 0)) int
+                            (if (= k (array-length v)) m (go (+ k 1) (max m (lit-var (array-ref v k)))))))
+          (unless (not (sat-ok? s))
+            (if (< (array-length v) 16) (insertion-sort! v) (ivec-sort! v (array-length v) (lambda ((a int) (b int)) (< a b))))
+            (let ((m (clause-compact! s v)))
+              (unless (< m 0)
+                (unless (= m (array-length v)) (proof-write! s "" (ivec->list v 0 m)))
+                (cond ((= m 0) (set (extract s ok) #f))
+                      ((= m 1) (begin (assign! s (array-ref v 0) -1)
+                                      (when (>= (propagate! s) 0) (proof-write! s "" nil) (set (extract s ok) #f))))
+                      (else (let ((k (the ivec (make-array (+ m 1) 0))))
+                              (begin (loop go cb-eff ((i int 0)) unit
+                                       (unless (= i m) (array-set! k (+ i 1) (array-ref v i)) (go (+ i 1))))
+                                     (let ((c (store-clause! s k)))
+                                       (begin (push-clause! s c) (attach-clause! s c))))))))))))
       (sat-ok? s))))
 
 "Drop the deleted clauses from a list of clauses (`v`, `n` of them)."
 (define* compact-list! (subr cb-eff (sat-solver (ref ivec @cb) (ref int @cb)) unit)
   (lambda (s vr nr)
     (let ((v (get vr)) (n (get nr)))
-      (letrec ((go (subr cb-eff (int int) unit)
-                 (lambda (i j)
-                   (if (< i n)
-                       (let ((c (array-ref v i)))
-                         (if (clause-deleted? s c) (go (+ i 1) j) (begin (array-set! v j c) (go (+ i 1) (+ j 1)))))
-                       (set nr j)))))
-        (go 0 0)))))
+      (loop go cb-eff ((i int 0) (j int 0)) unit
+        (if (< i n)
+            (let ((c (array-ref v i)))
+              (if (clause-deleted? s c) (go (+ i 1) j) (begin (array-set! v j c) (go (+ i 1) (+ j 1)))))
+            (set nr j))))))
 
 "Delete about half of the learnt clauses: those of the greatest LBD,
 keeping those of LBD 2 or less, those that are reasons, and (once) those
@@ -886,51 +848,44 @@ used since the last reduction."
     (let* ((n (get (extract s nlearnts))) (v (ivec-take (get (extract s learnts)) n)))
       (begin
         (ivec-sort! v n (lambda ((a int) (b int)) (> (clause-lbd s a) (clause-lbd s b))))
-        (letrec ((go (subr cb-eff (int) unit)
-                   (lambda (i)
-                     (if (= i n) #u
-                         (let ((c (array-ref v i)))
-                           (begin
-                             (cond ((or (>= i (quotient n 2)) (<= (clause-lbd s c) 2) (locked? s c)) #u)
-                                   ((clause-used? s c) (clause-set-used! s c #f))
-                                   (else (delete-clause! s c)))
-                             (go (+ i 1))))))))
-          (go 0))
+        (loop go cb-eff ((i int 0)) unit
+          (unless (= i n)
+            (let ((c (array-ref v i)))
+              (begin
+                (cond ((or (>= i (quotient n 2)) (<= (clause-lbd s c) 2) (locked? s c)) #u)
+                      ((clause-used? s c) (clause-set-used! s c #f))
+                      (else (delete-clause! s c)))
+                (go (+ i 1))))))
         (compact-list! s (extract s learnts) (extract s nlearnts))
         (sweep-watches! s)))))
 
 (define* satisfied? (subr cb-eff (sat-solver int) bool)
   (lambda (s c)
     (let ((vals (s-vals s)) (k (cl s c)))
-      (letrec ((go (subr cb-eff (int) bool)
-                 (lambda (p) (and (< p (array-length k)) (or (= (array-ref vals (array-ref k p)) T) (go (+ p 1)))))))
-        (go 1)))))
+      (loop go cb-eff ((p int 1)) bool
+        (and (< p (array-length k)) (or (= (array-ref vals (array-ref k p)) T) (go (+ p 1))))))))
 
 "At level 0, with new units since last time: delete the clauses they
 satisfy. The units go into the proof first, so that deleting their
 reasons loses nothing."
 (define* simplify! (subr cb-eff (sat-solver) unit)
   (lambda (s)
-    (if (<= (s-trail-size s) (get (extract s simp-trail-size))) #u
-        (begin
-          (letrec ((units (subr cb-eff (int) unit)
-                     (lambda (i)
-                       (if (= i (s-trail-size s)) #u
-                           (let ((l (array-ref (s-trail s) i)))
-                             (begin (array-set! (s-reasons s) (lit-var l) -1) (proof-write! s "" (list l)) (units (+ i 1))))))))
-            (units (get (extract s simp-trail-size))))
-          (let ((del! (lambda ((v ivec) (n int))
-                        (letrec ((go (subr cb-eff (int) unit)
-                                   (lambda (i) (if (= i n) #u
-                                                   (begin (if (satisfied? s (array-ref v i)) (delete-clause! s (array-ref v i)) #u)
-                                                          (go (+ i 1)))))))
-                          (go 0)))))
-            (begin (del! (get (extract s clauses)) (get (extract s nclauses)))
-                   (del! (get (extract s learnts)) (get (extract s nlearnts)))))
-          (compact-list! s (extract s clauses) (extract s nclauses))
-          (compact-list! s (extract s learnts) (extract s nlearnts))
-          (sweep-watches! s)
-          (set (extract s simp-trail-size) (s-trail-size s))))))
+    (unless (<= (s-trail-size s) (get (extract s simp-trail-size)))
+      (loop units cb-eff ((i int (get (extract s simp-trail-size)))) unit
+        (unless (= i (s-trail-size s))
+          (let ((l (array-ref (s-trail s) i)))
+            (begin (array-set! (s-reasons s) (lit-var l) -1) (proof-write! s "" (list l)) (units (+ i 1))))))
+      (let ((del! (lambda ((v ivec) (n int))
+                    (loop go cb-eff ((i int 0)) unit
+                      (unless (= i n)
+                        (when (satisfied? s (array-ref v i)) (delete-clause! s (array-ref v i)))
+                        (go (+ i 1)))))))
+        (begin (del! (get (extract s clauses)) (get (extract s nclauses)))
+               (del! (get (extract s learnts)) (get (extract s nlearnts)))))
+      (compact-list! s (extract s clauses) (extract s nclauses))
+      (compact-list! s (extract s learnts) (extract s nlearnts))
+      (sweep-watches! s)
+      (set (extract s simp-trail-size) (s-trail-size s)))))
 
 ;;; ------------------------------------------------------------ search
 
@@ -938,12 +893,10 @@ reasons loses nothing."
 (define* pick-branch (subr cb-eff (sat-solver) int)
   (lambda (s)
     (let ((vals (s-vals s)) (pol (get (extract s polarity))))
-      (letrec ((go (subr cb-eff () int)
-                 (lambda ()
-                   (if (= 0 (get (extract s heap-size))) 0
-                       (let ((v (heap-pop! s)))
-                         (if (= (array-ref vals (+ v v)) U) (+ (+ v v) (array-ref pol v)) (go)))))))
-        (go)))))
+      (loop go cb-eff () int
+        (if (= 0 (get (extract s heap-size))) 0
+            (let ((v (heap-pop! s)))
+              (if (= (array-ref vals (+ v v)) U) (+ (+ v v) (array-ref pol v)) (go))))))))
 
 "Restarts, as in Glucose (Audemard and Simon, 2012): when the recent learnt
 clauses are worse (greater LBD) than those of the whole search, by a
@@ -1000,12 +953,11 @@ literal assigned, if it is still unassigned."
     (if (null? clauses) check-continue
         (let ((lits (car clauses)))
           (begin
-            (if (= (array-ref (s-vals s) (car lits)) U)
-                (let* ((best (best-level s (car (cdr lits)) (cdr lits)))
-                       (lits (the ints (cons (car lits) (cons best (remv-once best (cdr lits))))))
-                       (c (make-clause s lits #t (max 3 (compute-lbd s lits)))))
-                  (begin (push-clause! s c) (attach-clause! s c) (assign! s (car lits) c)))
-                #u)
+            (when (= (array-ref (s-vals s) (car lits)) U)
+              (let* ((best (best-level s (car (cdr lits)) (cdr lits)))
+                     (lits (the ints (cons (car lits) (cons best (remv-once best (cdr lits))))))
+                     (c (make-clause s lits #t (max 3 (compute-lbd s lits)))))
+                (begin (push-clause! s c) (attach-clause! s c) (assign! s (car lits) c))))
             (theory-propagate! s (cdr clauses)))))))
 
 "A clause whose first literal is unassigned and the others false: added,
@@ -1030,21 +982,19 @@ clause with two literals of the current level), or what to do instead."
   (lambda (s lits)
     (begin
       (incr! (extract s conflicts) 1)
-      (let ((top (letrec ((go (subr cb-eff (int ints) int) (lambda (m l) (if (null? l) m (go (max m (level-of s (car l))) (cdr l))))))
-                   (go 0 lits))))
+      (let ((top (loop go cb-eff ((m int 0) (l ints lits)) int
+                   (if (null? l) m (go (max m (level-of s (car l))) (cdr l))))))
         (if (= top 0) (theory-unsat! s)
-            (let* ((at-top (letrec ((go (subr cb-eff (ints) ints)
-                                      (lambda (l) (cond ((null? l) nil) ((= (level-of s (car l)) top) (cons (car l) (go (cdr l)))) (else (go (cdr l)))))))
-                             (go lits)))
-                   (rest (letrec ((go (subr cb-eff (ints) ints)
-                                    (lambda (l) (cond ((null? l) nil) ((< (level-of s (car l)) top) (cons (car l) (go (cdr l)))) (else (go (cdr l)))))))
-                           (go lits))))
+            (let* ((at-top (loop go cb-eff ((l ints lits)) ints
+                             (cond ((null? l) nil) ((= (level-of s (car l)) top) (cons (car l) (go (cdr l)))) (else (go (cdr l))))))
+                   (rest (loop go cb-eff ((l ints lits)) ints
+                           (cond ((null? l) nil) ((< (level-of s (car l)) top) (cons (car l) (go (cdr l)))) (else (go (cdr l)))))))
               (begin
                 (cancel-until! s top)
                 (if (null? (cdr at-top))
                     ;; Unit below top: backjump and assert it.
-                    (let ((second (letrec ((go (subr cb-eff (int ints) int) (lambda (m l) (if (null? l) m (go (max m (level-of s (car l))) (cdr l))))))
-                                    (go 0 rest))))
+                    (let ((second (loop go cb-eff ((m int 0) (l ints rest)) int
+                                    (if (null? l) m (go (max m (level-of s (car l))) (cdr l))))))
                       (begin
                         (cancel-until! s second)
                         (if (null? rest)
@@ -1108,12 +1058,11 @@ clock is read only every 256 conflicts."
                     ((or (restart? s nconfl) (out-of-budget? s #f)) (begin (cancel-until! s 0) search-restart))
                     (else
                      (begin
-                       (if (= 0 (s-nlevels s)) (simplify! s) #u)
-                       (if (>= (get (extract s conflicts)) (get (extract s next-reduce)))
-                           (begin (incr! (extract s reduce-inc) 300)
-                                  (set (extract s next-reduce) (+ (get (extract s conflicts)) (+ 2000 (get (extract s reduce-inc)))))
-                                  (reduce-db! s))
-                           #u)
+                       (when (= 0 (s-nlevels s)) (simplify! s))
+                       (when (>= (get (extract s conflicts)) (get (extract s next-reduce)))
+                         (incr! (extract s reduce-inc) 300)
+                         (set (extract s next-reduce) (+ (get (extract s conflicts)) (+ 2000 (get (extract s reduce-inc)))))
+                         (reduce-db! s))
                        (decide nconfl)))))))
              (decide (subr cb-eff (int) int)
                (lambda (nconfl)
@@ -1146,28 +1095,25 @@ budget runs out."
     (begin
       (set (extract s model) (the (arrayof bool @cb) (make-array 0 #f)))
       (set (extract s final-conflict) nil)
-      (ensure-vars! s (letrec ((go (subr spin (int ints) int) (lambda (m l) (if (null? l) m (go (max m (lit-var (car l))) (cdr l))))))
-                        (go 0 assumptions)))
+      (ensure-vars! s (loop go spin ((m int 0) (l ints assumptions)) int
+                        (if (null? l) m (go (max m (lit-var (car l))) (cdr l)))))
       (if (not (sat-ok? s)) sat-unsat
           (let ((as (list->ivec assumptions)))
-            (letrec ((go (subr cb-eff () int)
-                       (lambda ()
-                         (let ((status (search s as)))
+            (loop go cb-eff () int
+              (let ((status (search s as)))
+                (begin
+                  (incr! (extract s restarts) 1)
+                  (cond ((= status search-sat)
+                         (let* ((n (sat-nvars s)) (m (the (arrayof bool @cb) (make-array (+ n 1) #f))) (vals (s-vals s)))
                            (begin
-                             (incr! (extract s restarts) 1)
-                             (cond ((= status search-sat)
-                                    (let* ((n (sat-nvars s)) (m (the (arrayof bool @cb) (make-array (+ n 1) #f))) (vals (s-vals s)))
-                                      (begin
-                                        (letrec ((fill (subr cb-eff (int) unit)
-                                                   (lambda (v) (if (> v n) #u (begin (array-set! m v (= (array-ref vals (+ v v)) T)) (fill (+ v 1)))))))
-                                          (fill 1))
-                                        (set (extract s model) m)
-                                        (cancel-until! s 0)
-                                        sat-sat)))
-                                   ((= status search-unsat) (begin (cancel-until! s 0) sat-unsat))
-                                   ((out-of-budget? s #t) sat-unknown)
-                                   (else (go))))))))
-              (go)))))))
+                             (loop fill cb-eff ((v int 1)) unit
+                               (unless (> v n) (array-set! m v (= (array-ref vals (+ v v)) T)) (fill (+ v 1))))
+                             (set (extract s model) m)
+                             (cancel-until! s 0)
+                             sat-sat)))
+                        ((= status search-unsat) (begin (cancel-until! s 0) sat-unsat))
+                        ((out-of-budget? s #t) sat-unknown)
+                        (else (go)))))))))))
 
 "The value of variable `v`, or literal `l`, in the last model."
 (define* sat-value (subr (read @cb) (sat-solver int) bool)

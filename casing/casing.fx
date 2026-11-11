@@ -8,6 +8,11 @@
 ;;;                   (20 if not said; 0, none) Its module files are
 ;;; made once, in order, from those before them (as combo/combo.fx makes
 ;;; combo).
+;; Macros: each file defines its own, for now (docs/macros.md).
+(define-syntax loop
+  (syntax-rules ()
+    ((_ go eff ((x t i) ...) r body) (letrec ((go (subr eff (t ...) r) (lambda (x ...) body))) (go i ...)))))
+
 (define m-sat (load-module "../combo/sat.fx"))
 (define m-circuit ((load-module "circuit.fx") m-sat))
 (define m-matrix ((load-module "matrix.fx") m-sat m-circuit))
@@ -39,9 +44,8 @@ leaves a form it cannot read by an escape."
             (let ((st (eager-feed (eager-feed-string (eager-start-fx26) t) #\newline)))
               (case (eager-status st)
                 ((complete)
-                 (sum forms (letrec ((go (subr spin ((listof datum acyclic)) datums)
-                                           (lambda (l) (if (null? l) nil (cons (car l) (go (cdr l)))))))
-                              (go (eager-state-data st)))))
+                 (sum forms (loop go spin ((l (listof datum acyclic) (eager-state-data st))) datums
+                              (if (null? l) nil (cons (car l) (go (cdr l)))))))
                 ((error) (sum failed (string-append file (string-append ": " (eager-state-message st)))))
                 (else (sum failed (string-append file ": a form is not closed")))))))))))
 
@@ -59,24 +63,22 @@ leaves a form it cannot read by an escape."
 (define-type invocation (productof (settings settings) (file string) (bad string)))
 (define* invoked (subr (maxeff spin (read @a) (read @globals)) ((listof string @a)) invocation)
   (lambda (as)
-    (letrec ((go (subr (maxeff spin (read @a) (read @globals)) ((listof string @a) settings string) invocation)
-               (lambda (l s file)
-                 (let ((bad (lambda ((why string)) (product (settings s) (file file) (bad why)))))
-                   (cond ((null? l) (if (string=? file "") (bad "no model named") (product (settings s) (file file) (bad ""))))
-                         ((string=? (car l) "--count") (go (cdr l) (with-count s) file))
-                         ((string=? (car l) "--check-symmetry") (go (cdr l) (with-check s) file))
-                         ((or (string=? (car l) "--instances") (string=? (car l) "--symmetry") (string=? (car l) "--limit"))
-                          (if (null? (cdr l)) (bad (string-append (car l) " needs a number"))
-                              (let ((n (whole (car (cdr l)))))
-                                (cond ((< n 0) (bad (string-append (car l) " needs a whole number")))
-                                      ((string=? (car l) "--instances") (go (cdr (cdr l)) (with-instances s n) file))
-                                      ((string=? (car l) "--limit") (go (cdr (cdr l)) (with-limit s n) file))
-                                      (else (go (cdr (cdr l)) (with-symmetry s n) file))))))
-                         ((and (> (string-length (car l)) 1) (char=? (string-ref (car l) 0) #\-))
-                          (bad (string-append "what option is this? " (car l))))
-                         ((not (string=? file "")) (bad "one model at a time"))
-                         (else (go (cdr l) s (car l))))))))
-      (go as default-settings ""))))
+    (loop go (maxeff spin (read @a) (read @globals)) ((l (listof string @a) as) (s settings default-settings) (file string "")) invocation
+      (let ((bad (lambda ((why string)) (product (settings s) (file file) (bad why)))))
+        (cond ((null? l) (if (string=? file "") (bad "no model named") (product (settings s) (file file) (bad ""))))
+              ((string=? (car l) "--count") (go (cdr l) (with-count s) file))
+              ((string=? (car l) "--check-symmetry") (go (cdr l) (with-check s) file))
+              ((or (string=? (car l) "--instances") (string=? (car l) "--symmetry") (string=? (car l) "--limit"))
+               (if (null? (cdr l)) (bad (string-append (car l) " needs a number"))
+                   (let ((n (whole (car (cdr l)))))
+                     (cond ((< n 0) (bad (string-append (car l) " needs a whole number")))
+                           ((string=? (car l) "--instances") (go (cdr (cdr l)) (with-instances s n) file))
+                           ((string=? (car l) "--limit") (go (cdr (cdr l)) (with-limit s n) file))
+                           (else (go (cdr (cdr l)) (with-symmetry s n) file))))))
+              ((and (> (string-length (car l)) 1) (char=? (string-ref (car l) 0) #\-))
+               (bad (string-append "what option is this? " (car l))))
+              ((not (string=? file "")) (bad "one model at a time"))
+              (else (go (cdr l) s (car l))))))))
 
 (define* main (subr main-eff () int)
   (lambda ()
@@ -88,7 +90,6 @@ leaves a form it cannot read by an escape."
             (failed why (begin (say-err (string-append why "\n")) 1))
             (forms ds
               (begin
-                (letrec ((go (subr main-eff (strings) unit)
-                           (lambda (l) (if (null? l) #u (begin (say (string-append (car l) "\n")) (go (cdr l)))))))
-                  (go (run-model-with (read-model ds) (extract inv settings))))
+                (loop go main-eff ((l strings (run-model-with (read-model ds) (extract inv settings)))) unit
+                  (if (null? l) #u (begin (say (string-append (car l) "\n")) (go (cdr l)))))
                 0)))))))

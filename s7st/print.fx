@@ -77,12 +77,11 @@ walked in a loop, not by recursion."
                (visit (subr (maxeff spin (read @sc) (write @sc) (alloc @sc)) (s7-value) unit)
                  (lambda (x)
                    (tagcase x
-                     (pair p (if (seen-pair (extract p car)) #u (chain x nil)))
+                     (pair p (unless (seen-pair (extract p car)) (chain x nil)))
                      (vec a (let ((st (eqtable-ref vstate a 0)))
                               (cond ((= st 0) (begin (eqtable-set! vstate a 1)
-                                                (letrec ((each (subr (maxeff spin (read @sc) (write @sc) (alloc @sc)) (s7-values) unit)
-                                                           (lambda (l) (if (null? l) #u (begin (visit (car l)) (each (cdr l)))))))
-                                                  (each (array->list a)))
+                                                (iterate each (maxeff spin (read @sc) (write @sc) (alloc @sc)) ((l s7-values (array->list a))) unit
+                                                  (unless (null? l) (visit (car l)) (each (cdr l))))
                                                 (eqtable-set! vstate a 2)))
                                     ((or (= st 1) shared) (eqtable-set! (extract need vecs) a -1))
                                     (else #u))))
@@ -97,7 +96,7 @@ walked in a loop, not by recursion."
                                    (chain (get (extract p cdr)) (cons (extract p car) walked)))))
                      (else y (begin (visit y) (done walked))))))
                (done (subr (maxeff spin (read @sc) (write @sc) (alloc @sc)) ((listof (ref s7-value @sc) acyclic)) unit)
-                 (lambda (l) (if (null? l) #u (begin (eqtable-set! pstate (car l) 2) (done (cdr l)))))))
+                 (lambda (l) (unless (null? l) (eqtable-set! pstate (car l) 2) (done (cdr l))))))
         (begin (visit v) need)))))
 
 "Value `v` shown, its datum labels as `labels` says: 0, none (`write-simple`:
@@ -186,13 +185,10 @@ back (`write`, `display`); 2, wherever a pair or vector is met twice
              (items (subr (maxeff spin (read @sc) (write @sc) (alloc @sc)) (s7-values (listof string acyclic) int bool)
                           (productof (out (listof string acyclic)) (left int)))
                (lambda (l acc left close)
-                 (letrec ((each (subr (maxeff spin (read @sc) (write @sc) (alloc @sc)) (s7-values (listof string acyclic) int bool)
-                                      (productof (out (listof string acyclic)) (left int)))
-                            (lambda (l acc left first)
-                              (if (null? l) (product (out (if close (s7-push ")" acc) acc)) (left left))
-                                  (let ((r (go (car l) (if first acc (cons " " acc)) left)))
-                                    (each (cdr l) (extract r out) (extract r left) #f))))))
-                   (each l acc left #t))))
+                 (iterate each (maxeff spin (read @sc) (write @sc) (alloc @sc)) ((l s7-values l) (acc (listof string acyclic) acc) (left int left) (first bool #t)) (productof (out (listof string acyclic)) (left int))
+                   (if (null? l) (product (out (if close (s7-push ")" acc) acc)) (left left))
+                       (let ((r (go (car l) (if first acc (cons " " acc)) left)))
+                         (each (cdr l) (extract r out) (extract r left) #f))))))
              ;; Irritants after a message, each after a space, then `end`.
              (items-then (subr (maxeff spin (read @sc) (write @sc) (alloc @sc)) (s7-values (listof string acyclic) int string)
                                (productof (out (listof string acyclic)) (left int)))
