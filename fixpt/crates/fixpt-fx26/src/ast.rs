@@ -772,6 +772,69 @@ pub enum D {
     Fun(TyId),
 }
 
+/// What `with`s and the forms that open a module read and are held to.
+#[derive(Clone, Debug, Default)]
+pub struct WithTables {
+    /// Each `select` node a type name in a `with` body was read as
+    /// (`(with m …)`'s, shadowing): what the name meant outside, if
+    /// anything, should `m` not give it.
+    pub with_fallback: crate::ast::TyMap<Option<TyId>>,
+    /// Of those, each that is applied, `(f d …)`: the application, which
+    /// is what falls back.
+    pub with_applied: crate::ast::TyMap<TyId>,
+    /// The shapes the expander wrote (`#:relied`, `binding-shapes.md`):
+    /// of each `with`'s module, by the `with`; of each module expression an
+    /// `extend` or `include` opens, by the expression. Each held to the
+    /// module's type where it is checked (`Checker::shape_held`).
+    /// `None` where the expander did not know the shape (`#:relied #f`).
+    pub opened: std::collections::HashMap<ExpId, Option<Relied>>,
+    pub shaped: std::collections::HashMap<ExpId, Option<Relied>>,
+    /// Of each `extend`, by the `(with %extend-0 …)` it makes, what the
+    /// expander relied on of its first module (that module's, `shaped`):
+    /// as the FX-26 parser keeps it, on the `with`, for writing the tree.
+    pub extended: std::collections::HashMap<ExpId, Option<Relied>>,
+    /// By each `with`, the descriptions its body reads that the module
+    /// was not taken to give (read past it, to what is outside): which its
+    /// type must not give (`Checker::shape_held`).
+    pub read_past: std::collections::HashMap<ExpId, Vec<Sym>>,
+    /// The `with`s being parsed whose records the expander wrote, innermost
+    /// last: each record, and what is read past it so far
+    /// (`Parser::withs_reading`).
+    pub frames: Vec<(Relied, Vec<Sym>)>,
+    /// Each `(the (modnames …) e)`'s type, a slot linked where it is checked
+    /// to the type of `e` sealed to the names (`Checker::sealed`), and the
+    /// names.
+    pub sealed: std::collections::HashMap<TyId, Vec<ShapeMember>>,
+    /// Of each module with `include`s being parsed, innermost last, the
+    /// frame of what they give, if each has its record (`None` if not):
+    /// one for each such module, so that one's is never an outer one's.
+    pub include_frames: Vec<Option<usize>>,
+}
+
+/// What the expander relied on of a module, before its type was known
+/// (`binding-shapes.md`): the names references it found reached the module
+/// by and found it gives, values' and descriptions' (types, effects,
+/// functions of descriptions). Written into a form (`#:relied`): `((x)
+/// (t))`. The module's type must give each; and each name it gives that a
+/// reference in the scope it opens names, the checkers see, must be one of
+/// them (what the expander took to be bound outside it, it may not give).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Relied {
+    pub vals: Vec<Sym>,
+    pub descs: Vec<Sym>,
+}
+
+/// A member a `(modnames …)` names (`binding-shapes.md`): a value, its
+/// own members named if it is a module (`(modnames m …)`); an abstract
+/// type, a transparent one, an effect. Each where it is written.
+#[derive(Clone, Debug)]
+pub enum ShapeMember {
+    Val(Sym, Span, Option<Vec<ShapeMember>>),
+    Abs(Sym, Span),
+    Desc(Sym, Span),
+    Eff(Sym, Span),
+}
+
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct ExpId(pub u32);
 
@@ -786,6 +849,11 @@ pub enum Exp {
     Float(f64),
     /// `'name`: a symbol.
     Symbol(Sym),
+    /// A quoted list or vector (`%datum`, which the quote rewrites make):
+    /// a constant, made once and interned, of type `ty`, `(listof datum
+    /// acyclic)` for a proper list and `datum` else (TODO §229). Its atoms
+    /// are literals, symbols and keywords, its integers fixnums.
+    Quote { datum: std::sync::Arc<fixpt_read::Syntax>, ty: TyId },
     Unit,
     /// A parameter's type may be left out when the `lambda` is checked
     /// against a type that supplies it.
@@ -962,13 +1030,9 @@ pub struct Arena {
     arrows: Vec<(Vec<Kind>, Kind)>,
     /// The effect applications, interned.
     pub effect_apps: EffectApps,
-    /// Each `select` node a type name in a `with` body was read as
-    /// (`(with m …)`'s, shadowing): what the name meant outside, if
-    /// anything, should `m` not give it.
-    pub with_fallback: crate::ast::TyMap<Option<TyId>>,
-    /// Of those, each that is applied, `(f d …)`: the application, which
-    /// is what falls back.
-    pub with_applied: crate::ast::TyMap<TyId>,
+    /// What `with`s and the forms that open a module read and are held to
+    /// (`WithTables`), out of line: the arena is moved whole.
+    pub withs: Box<WithTables>,
     /// `string`'s name, once known: `(stringof const)` (or `acyclic`, its
     /// finite subregion) is made as `string` itself, the one type
     /// (`check::STRINGOF`).
@@ -1169,8 +1233,13 @@ impl Arena {
     /// parse.
     pub fn reset(&mut self, mark: ArenaMark) {
         self.tys.truncate(mark.tys);
-        self.with_fallback.retain(|t, _| (t.0 as usize) < mark.tys);
-        self.with_applied.retain(|t, _| (t.0 as usize) < mark.tys);
+        self.withs.with_fallback.retain(|t, _| (t.0 as usize) < mark.tys);
+        self.withs.with_applied.retain(|t, _| (t.0 as usize) < mark.tys);
+        self.withs.opened.retain(|e, _| (e.0 as usize) < mark.exps);
+        self.withs.shaped.retain(|e, _| (e.0 as usize) < mark.exps);
+        self.withs.extended.retain(|e, _| (e.0 as usize) < mark.exps);
+        self.withs.sealed.retain(|t, _| (t.0 as usize) < mark.tys);
+        self.withs.read_past.retain(|e, _| (e.0 as usize) < mark.exps);
         self.exps.truncate(mark.exps);
         self.dvar_names.truncate(mark.dvars);
         self.dvar_places.truncate(mark.dvars);

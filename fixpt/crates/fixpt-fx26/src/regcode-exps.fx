@@ -593,7 +593,7 @@
               (let ((inner (r-loop-names e bs)))
                 (or (r-collects body inner this tail) (r-collects-joins bs inner this)))
               #t))
-        (e-sym (v a b abk abkr) #f) (e-unit (a b abk abkr) #f)
+        (e-sym (v a b abk abkr) #f) (e-quote (v a b abk abkr) #f) (e-unit (a b abk abkr) #f)
         ;; A closure made as the value: its call-out may collect, but nothing
         ;; is used after it (`r-lambda`); past `register-regs` free values,
         ;; though, they are a call-out's operands, made in a frame.
@@ -635,7 +635,7 @@
                 (not (or loop-call (or inline (or leaves (r-call-is-free? f n e tail))))))))
         ;; A `with` only loads fields (`r-with`): as its body. `(with #%fx n)`:
         ;; as the standard `n` as a value.
-        (e-with (m body a b abk abkr)
+        (e-with (m body a b abk abkr wrl)
           (let ((ns (c-with-at a b abk abkr)) (n (c-fx-name m body)))
             (if (string=? n "")
                 (r-collects body (if (null? ns) e (r-local-syms e (car ns))) this tail)

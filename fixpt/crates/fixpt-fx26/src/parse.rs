@@ -40,8 +40,10 @@ pub enum DScope {
     /// or a type family's parameter of an arrow kind given one.
     Fun(TyId),
     /// A `(with m …)` body's start, under the name `%with`: a type name
-    /// bound before it is `m`'s, if `m` gives it (`with_selected`).
-    With(Sym),
+    /// bound before it is `m`'s, if `m` gives it (`with_selected`); and,
+    /// where the expander wrote what it relied on of `m` (`#:relied`), the
+    /// frame that holds it and what is read past it (`withs_reading`).
+    With(Sym, Option<usize>),
 }
 
 /// A description given a type family, as a key for its knot.
@@ -68,12 +70,16 @@ const ARROW_STAR_ONLY: &str = "`(->* (param …) result)` is only the type a def
 /// description names, one qualified name each").
 pub const EFFECT_HEADS: &[&str] = &["read", "write", "alloc", "goto", "comefrom", "await", "init", "send", "receive", "io", "maxeff"];
 
+/// Where a `(modnames …)` may not be written: no value supplies its types.
+pub(crate) const MODNAMES_WHERE: &str = "`(modnames …)` names no types: it is written as a `define`'s or `the`'s type, whose value supplies them; here a `moduleof` is needed";
+
 /// The heads of the type forms `parse_type_node` reads, each read by its
 /// name alone in head position, `(listof T)`, never looked up: what binds a
 /// name of one does not change what the form is.
 pub const TYPE_FORMS: &[&str] = &[
     "arrayof", "narrayof", "bloblet", "composable", "dletrec", "icell", "listof", "mark-key", "moduleof", "mu", "nat", "nlist", "oneshot", "pairof", "place",
     "poly", "productof", "prompt-tag", "proves", "ref", "select", "subr", "sumof", "tupleof", "bool", "oneof", "union", "anyof", "allof", "->", "->*", "restrict",
+    "modnames",
 ];
 
 impl Checker {
@@ -184,11 +190,47 @@ impl Checker {
             }
             match &self.dscope[i] {
                 (n, _) if *n == s => break,
-                (_, DScope::With(m)) => out.push(*m),
+                (_, DScope::With(m, _)) => out.push(*m),
                 _ => {}
             }
         }
         out
+    }
+
+    /// The `with`s description name `s` is read through, innermost first,
+    /// as `withs_over`, up to the first whose module the expander found
+    /// gives it (`#:relied`), which it is that module's: the `with`s before
+    /// it of no such record, whose modules may give it (`with_selected`
+    /// falls back through them), and that module. Each `with` with a record
+    /// it is read past notes it there, its module's type held not to give
+    /// it (`Checker::shape_held`).
+    fn withs_reading(&mut self, s: Sym) -> (Vec<Sym>, Option<Sym>) {
+        let hidden = self.hidden.map(|(_, d)| d);
+        let mut out = Vec::new();
+        if self.with_depth == 0 {
+            return (out, None);
+        }
+        for i in (0..self.dscope.len()).rev() {
+            if hidden.is_some_and(|(a, b)| (a..b).contains(&i)) {
+                continue;
+            }
+            match &self.dscope[i] {
+                (n, _) if *n == s => break,
+                (_, DScope::With(m, None)) => out.push(*m),
+                (_, DScope::With(m, Some(f))) => {
+                    let (m, f) = (*m, *f);
+                    let frame = &mut self.arena.withs.frames[f];
+                    if frame.0.descs.contains(&s) {
+                        return (out, Some(m));
+                    }
+                    if !frame.1.contains(&s) {
+                        frame.1.push(s);
+                    }
+                }
+                _ => {}
+            }
+        }
+        (out, None)
     }
 
     /// Type name `sym`, read in the bodies of `with`s of modules `withs`
@@ -199,7 +241,7 @@ impl Checker {
         let mut t = outer;
         for m in withs.iter().rev() {
             let node = self.arena.ty(Ty::Select(*m, sym));
-            self.arena.with_fallback.insert(node, t);
+            self.arena.withs.with_fallback.insert(node, t);
             t = Some(node);
         }
         t.expect("a `with`")
@@ -216,8 +258,8 @@ impl Checker {
             let fun = self.arena.ty(Ty::Select(*m, f));
             let ds = args.iter().map(|a| self.parse_d(a)).collect::<R<Vec<_>>>()?;
             let app = self.arena.ty(Ty::App { fun, args: ds });
-            self.arena.with_fallback.insert(fun, t);
-            self.arena.with_applied.insert(fun, app);
+            self.arena.withs.with_fallback.insert(fun, t);
+            self.arena.withs.with_applied.insert(fun, app);
             t = Some(app);
         }
         Ok(t.expect("a `with`"))
@@ -226,18 +268,26 @@ impl Checker {
     /// What `read` reads, in the body of a `(with m …)`: `m`'s type names
     /// shadowing those before (`withs_over`); `#%fx`'s and `#%toplevel`'s
     /// body is one name, of no type.
-    fn with_types_of<T>(&mut self, m: Sym, read: impl FnOnce(&mut Self) -> R<T>) -> R<T> {
+    /// With what the expander relied on of `m`, `relied`, its names `m`'s
+    /// where it gives them and the rest outside; and the descriptions read
+    /// past it, given back.
+    fn with_types_of<T>(&mut self, m: Sym, relied: Option<crate::ast::Relied>, read: impl FnOnce(&mut Self) -> R<T>) -> R<(T, Vec<Sym>)> {
         if self.name(m) == "#%fx" || self.name(m) == "#%toplevel" {
-            return read(self);
+            return read(self).map(|t| (t, Vec::new()));
         }
         let depth = self.dscope.len();
         let mark = self.interner.intern("%with");
-        self.dscope.push((mark, DScope::With(m)));
+        let frame = relied.map(|r| {
+            self.arena.withs.frames.push((r, Vec::new()));
+            self.arena.withs.frames.len() - 1
+        });
+        self.dscope.push((mark, DScope::With(m, frame)));
         self.with_depth += 1;
         let r = read(self);
         self.with_depth -= 1;
         self.dscope.truncate(depth);
-        r
+        let past = frame.map(|f| self.arena.withs.frames.split_off(f).swap_remove(0).1).unwrap_or_default();
+        r.map(|t| (t, past))
     }
 
     pub(crate) fn lookup_desc(&self, s: Sym) -> Option<DScope> {
@@ -265,24 +315,10 @@ impl Checker {
     }
 
     pub(crate) fn read_qualified<T>(&mut self, s: &Syntax, read: impl FnOnce(&mut Self, &Syntax) -> R<T>) -> Option<R<T>> {
-        let m = s.as_symbol()?;
-        // A procedural macro's alias nothing here binds: its name, as the
-        // top level reads it (`macros::procedural`).
-        let n = match self.unbound_alias_desc(m) {
-            Some(n) => n,
-            None => self.toplevel_unqualified(m)?,
-        };
+        // (A procedural macro's alias is resolved as it is expanded:
+        // `Macros::aliases_resolved`.)
+        let n = self.toplevel_unqualified(s.as_symbol()?)?;
         Some(self.at_toplevel(|c| read(c, &Syntax::symbol(s.span, n))))
-    }
-
-    /// The name alias `m` stands for, if it is a procedural macro's alias
-    /// (`%~N:x`) and no description in scope here has it.
-    fn unbound_alias_desc(&mut self, m: Sym) -> Option<Sym> {
-        let base = crate::macros::procedural::alias_base(self.name(m))?.to_string();
-        if self.lookup_desc(m).is_some() {
-            return None;
-        }
-        Some(self.interner.intern(&base))
     }
 
     fn items<'s>(&self, s: &'s Syntax, what: &str) -> R<&'s [Syntax]> {
@@ -569,7 +605,11 @@ impl Checker {
             if self.name(sym) == "stage" {
                 return Ok(Effect::atom(Atom::Stage));
             }
-            let withs = self.withs_over(sym);
+            let (withs, given) = self.withs_reading(sym);
+            if let Some(m) = given {
+                let e = Effect::atom(Atom::Var(self.effect_select(m, sym)));
+                return Ok(if withs.is_empty() { e } else { self.with_effect_selected(&withs, sym, Some(e)) });
+            }
             if !withs.is_empty() {
                 let outer = if self.lookup_desc(sym).is_some() || self.include_scope > 0 { Some(self.effect_name_read(s, sym)?) } else { None };
                 return Ok(self.with_effect_selected(&withs, sym, outer));
@@ -765,6 +805,14 @@ impl Checker {
             if name == "nat" && self.lookup_desc(sym).is_none() {
                 return Ok(self.arena.ty(Ty::Nat(Size::Finite)));
             }
+            // A module a `with` opens gives it, as the expander found
+            // (`#:relied`): that module's, whatever is outside, a standard
+            // type too (`with` shadows, types as values).
+            let (withs, given) = self.withs_reading(sym);
+            if let Some(m) = given {
+                let t = self.arena.ty(Ty::Select(m, sym));
+                return Ok(if withs.is_empty() { t } else { self.with_selected(&withs, sym, Some(t)) });
+            }
             // A standard type, unless the program defines the name itself
             // (`TODO.md` §88), as it may `nil` and the rest above.
             if let Some(&t) = self.base.get(&sym)
@@ -772,7 +820,6 @@ impl Checker {
             {
                 return Ok(t);
             }
-            let withs = self.withs_over(sym);
             if !withs.is_empty() {
                 let outer = if self.lookup_desc(sym).is_some() || self.include_scope > 0 { Some(self.type_name_read(s, sym)?) } else { None };
                 return Ok(self.with_selected(&withs, sym, outer));
@@ -782,7 +829,14 @@ impl Checker {
         // `(f d …)` in `with` bodies: the modules' `f` first, as names alone.
         let head = s.as_proper_list().and_then(|l| l.first()).and_then(|h| h.as_symbol());
         if let Some(head) = head.filter(|h| !TYPE_FORMS.contains(&self.name(*h)) && !self.is_toplevel_qualified(*h)) {
-            let withs = self.withs_over(head);
+            let (withs, given) = self.withs_reading(head);
+            if let Some(m) = given {
+                let fun = self.arena.ty(Ty::Select(m, head));
+                let args = &self.items(s, "a type")?.to_vec()[1..];
+                let ds = args.iter().map(|a| self.parse_d(a)).collect::<R<Vec<_>>>()?;
+                let app = self.arena.ty(Ty::App { fun, args: ds });
+                return if withs.is_empty() { Ok(app) } else { self.with_applied(s, &withs, head, Some(app)) };
+            }
             if !withs.is_empty() {
                 let outer = if self.lookup_desc(head).is_some() { Some(self.parse_type_list(s)?) } else { None };
                 return self.with_applied(s, &withs, head, outer);
@@ -950,6 +1004,9 @@ impl Checker {
             // `(restrict T name …)`: module type `T` with only the names
             // given (`docs/research/derived-signatures.md`, narrowing).
             "restrict" => self.restricted(s, &items),
+            // `(modnames …)` names no types: only where a value supplies
+            // them (`parse_the_form`).
+            "modnames" => Err(FxError::at(s.span, MODNAMES_WHERE)),
             "mark-key" => self.parse_type_mark_key(s, &items),
             // A name applied that is no description function: unbound, a
             // typo, or a type. In a module with `include`s, an unbound one
@@ -1235,7 +1292,7 @@ impl Checker {
     fn parse_type_select_desc(&mut self, s: &Syntax, items: &[Syntax]) -> R<TyId> {
         let (m, t) = (items[1].as_symbol().expect("matched"), &items[2]);
         let outer = self.hidden.replace(self.toplevel_hidden(true));
-        let r = self.with_types_of(m, |c| c.parse_type(t)).and_then(|ty| self.resolve_selects(ty, s.span));
+        let r = self.with_types_of(m, None, |c| c.parse_type(t)).and_then(|(ty, _)| self.resolve_selects(ty, s.span));
         self.hidden = outer;
         r
     }
@@ -2025,23 +2082,9 @@ impl Checker {
             "extract" => self.parse_extract_form(span, items),
             "sum" => self.parse_sum_form(span, items),
             "tagcase" => self.parse_tagcase(span, &items[1..]),
-            "quote" => match &items[..] {
-                [_, x] if x.as_symbol().is_some() => Ok(self.arena.exp(span, Exp::Symbol(x.as_symbol().expect("a symbol")))),
-                [_, x] => {
-                    Self::no_bytevector(x)?;
-                    let built = self.quoted(x, None);
-                    self.parse_exp(&built)
-                }
-                _ => Err(FxError::at(span, "`(quote datum)`")),
-            },
-            "quasiquote" => match &items[..] {
-                [_, x] => {
-                    Self::no_bytevector(x)?;
-                    let built = self.quoted(x, Some(1));
-                    self.parse_exp(&built)
-                }
-                _ => Err(FxError::at(span, "`(quasiquote datum)`")),
-            },
+            "quote" => self.parse_quote_form(span, items, None),
+            "%datum" => self.parse_datum_form(span, items),
+            "quasiquote" => self.parse_quote_form(span, items, Some(1)),
             form @ ("letregion" | "letfreeze" | "letrena" | "letreap") => {
                 let form = form.to_string();
                 self.parse_letregion_form(span, items, &form)
@@ -2379,13 +2422,55 @@ impl Checker {
     }
 
     /// `(the …)`, of `parse_exp`.
+    /// `(the (modnames …) e)` (`binding-shapes.md`): its type a slot, linked
+    /// where it is checked to `e`'s type sealed to the names
+    /// (`Checker::sealed`).
     fn parse_the_form(&mut self, span: fixpt_read::Span, items: &[Syntax]) -> R<ExpId> {
         let [_, ty, exp] = &items[..] else {
             return Err(FxError::at(span, "`(the type expression)`"));
         };
-        let ty = self.parse_type(ty)?;
+        let ty = match self.modnames_read(ty)? {
+            Some(names) => {
+                let slot = self.arena.ty(Ty::Link(None));
+                self.arena.withs.sealed.insert(slot, names);
+                slot
+            }
+            None => self.parse_type(ty)?,
+        };
         let exp = self.parse_exp(exp)?;
         Ok(self.arena.exp(span, Exp::The { ty, exp }))
+    }
+
+    /// `(modnames member …)`'s members, if `s` is one: `x` or `(val x)`,
+    /// `(abs t)`, `(desc u)`, `(eff e)`, `(modnames m member …)`.
+    fn modnames_read(&self, s: &Syntax) -> R<Option<Vec<crate::ast::ShapeMember>>> {
+        match s.as_proper_list() {
+            Some([h, members @ ..]) if h.as_symbol().is_some_and(|h| self.name(h) == "modnames") => Ok(Some(self.named_each(members)?)),
+            _ => Ok(None),
+        }
+    }
+
+    fn named_each(&self, members: &[Syntax]) -> R<Vec<crate::ast::ShapeMember>> {
+        use crate::ast::ShapeMember as Named;
+        let usage = "a `modnames` member is `x`, `(val x)`, `(abs t)`, `(desc u)`, `(eff e)` or `(modnames m member …)`";
+        let mut out = Vec::new();
+        for m in members {
+            if let Some(n) = m.as_symbol() {
+                out.push(Named::Val(n, m.span, None));
+                continue;
+            }
+            let Some([w, n, rest @ ..]) = m.as_proper_list() else { return Err(FxError::at(m.span, usage)) };
+            let (Some(w), Some(n)) = (w.as_symbol(), n.as_symbol()) else { return Err(FxError::at(m.span, usage)) };
+            out.push(match (self.name(w), rest) {
+                ("val", []) => Named::Val(n, m.span, None),
+                ("abs", []) => Named::Abs(n, m.span),
+                ("desc", []) => Named::Desc(n, m.span),
+                ("eff", []) => Named::Eff(n, m.span),
+                ("modnames", rest) => Named::Val(n, m.span, Some(self.named_each(rest)?)),
+                _ => return Err(FxError::at(m.span, usage)),
+            });
+        }
+        Ok(out)
     }
 
     /// `(convention …)`, of `parse_exp`.
@@ -2400,14 +2485,22 @@ impl Checker {
 
     /// `(extend …)`, of `parse_exp`.
     fn parse_extend_form(&mut self, span: fixpt_read::Span, items: &[Syntax]) -> R<ExpId> {
-        let [_, e0, e1] = &items[..] else {
-            return Err(FxError::at(span, "`(extend module module)`"));
-        };
+        let usage = || FxError::at(span, "`(extend module module)`");
+        let [_, e0, rest @ ..] = &items[..] else { return Err(usage()) };
+        let (shape, rest) = self.written_shape(rest)?;
+        let [e1] = rest else { return Err(usage()) };
         let names = [self.interner.intern("%extend-0"), self.interner.intern("%extend-1")];
         let e0 = self.parse_exp(e0)?;
-        let e1 = self.with_types_of(names[0], |p| p.parse_exp(e1))?;
+        if let Some(s) = shape.clone() {
+            self.arena.withs.shaped.insert(e0, s);
+        }
+        let (e1, past) = self.with_types_of(names[0], shape.clone().flatten(), |p| p.parse_exp(e1))?;
         // Made at the form.
         let e1 = self.arena.exp(span, Exp::With { module: names[0], body: e1 });
+        self.arena.withs.read_past.insert(e1, past);
+        if let Some(s) = shape {
+            self.arena.withs.extended.insert(e1, s);
+        }
         let items = vec![
             ModItem::Val { name: names[0], ty: None, init: e0, infer: false },
             ModItem::Val { name: names[1], ty: None, init: e1, infer: false },
@@ -2444,8 +2537,60 @@ impl Checker {
             return Err(FxError::at(span, "`(with module body …)`"));
         };
         let module = m.as_symbol().ok_or_else(|| FxError::at(m.span, "`with` opens a module named by a variable"))?;
-        let body = self.with_types_of(module, |p| p.parse_body(span, body))?;
-        Ok(self.arena.exp(span, Exp::With { module, body }))
+        let (shape, body) = self.written_shape(body)?;
+        let (body, past) = self.with_types_of(module, shape.clone().flatten(), |p| p.parse_body(span, body))?;
+        let e = self.arena.exp(span, Exp::With { module, body });
+        if let Some(s) = shape {
+            self.arena.withs.opened.insert(e, s);
+        }
+        self.arena.withs.read_past.insert(e, past);
+        Ok(e)
+    }
+
+    /// Whether `f` is `(include m)`, its shape written or not.
+    fn include_item(&self, f: &Syntax) -> bool {
+        matches!(f.as_proper_list(), Some([_, _, rest @ ..]) if self.written_shape(rest).is_ok_and(|(_, r)| r.is_empty()))
+    }
+
+    /// `(include m #:relied S)`'s module, `m`, held to its shape where it is
+    /// checked.
+    fn parse_include_item(&mut self, f: &Syntax) -> R<ExpId> {
+        let [_, m, rest @ ..] = f.as_proper_list().expect("an include") else { unreachable!("an include") };
+        let (shape, _) = self.written_shape(rest)?;
+        let m = self.parse_exp(m)?;
+        if let Some(s) = shape {
+            self.arena.withs.shaped.insert(m, s);
+        }
+        Ok(m)
+    }
+
+    /// `#:relied S` at the start of `rest`, as the expander writes it into
+    /// a form that opens a module (`Macros::shaped`): the module's names,
+    /// `((value …) (description …))`, or `#f` where they are not known;
+    /// and what follows it.
+    pub(crate) fn written_shape<'s>(&self, rest: &'s [Syntax]) -> R<(Option<Option<crate::ast::Relied>>, &'s [Syntax])> {
+        let [k, s, after @ ..] = rest else { return Ok((None, rest)) };
+        if !matches!(&k.datum, Datum::Keyword(w) if self.name(*w) == "relied") {
+            return Ok((None, rest));
+        }
+        if s.as_symbol().is_some_and(|f| self.name(f) == "#f") {
+            return Ok((Some(None), after));
+        }
+        let shape = self.shape_read(s).ok_or_else(|| FxError::at(s.span, "a module's shape: `((value …) (description …))`, the names it gives that the program asked of it"))?;
+        Ok((Some(Some(shape)), after))
+    }
+
+    /// What a form relied on of a module, `s`, as `Asked::written`
+    /// writes it: `((value …) (description …))`.
+    fn shape_read(&self, s: &Syntax) -> Option<crate::ast::Relied> {
+        let names = |l: &Syntax| -> Option<Vec<Sym>> {
+            let l: &[Syntax] = if matches!(l.datum, Datum::Nil) { &[] } else { l.as_proper_list()? };
+            l.iter().map(|n| n.as_symbol()).collect()
+        };
+        match s.as_proper_list()? {
+            [v, d] => Some(crate::ast::Relied { vals: names(v)?, descs: names(d)? }),
+            _ => None,
+        }
     }
 
     /// `(product …)`, of `parse_exp`.
@@ -3491,7 +3636,7 @@ const CASE_TREE_SYMBOLS_INDEXED: usize = 64;
         #[cfg(debug_assertions)]
         fixpt_read::note_source(file, path, text.as_str().into());
         let at_file = |e: FxError, c: &Self| c.in_loaded(e, file);
-        let forms = match self.read_module_file(file, &text) {
+        let forms = match self.read_module_file_at(file, &text, Some((at, input))) {
             Ok(f) => f,
             Err(e) => return Err(at_file(e, self)),
         };
@@ -3685,6 +3830,56 @@ const CASE_TREE_SYMBOLS_INDEXED: usize = 64;
     /// scope before any is read, so that they may name each other, and
     /// themselves, in any order; each checked grounded once all are.
     fn parse_module_in(&mut self, forms: &[Syntax]) -> R<Vec<ModItem>> {
+        // What its `include`s give, as the expander found, in scope outside
+        // its own types (declared ahead, below) and inside what is outside
+        // it: `(with %include …)`'s, as its values are (`with_includes`).
+        let includes = forms.iter().any(|f| self.includes_in(f));
+        let frame = self.includes_relied(forms).map(|r| {
+            self.arena.withs.frames.push((r, Vec::new()));
+            let f = self.arena.withs.frames.len() - 1;
+            let (mark, inc) = (self.interner.intern("%with"), self.interner.intern("%include"));
+            self.dscope.push((mark, DScope::With(inc, Some(f))));
+            self.with_depth += 1;
+            f
+        });
+        if includes {
+            self.arena.withs.include_frames.push(frame);
+        }
+        let r = self.parse_module_in_scope(forms);
+        if includes {
+            self.arena.withs.include_frames.pop();
+        }
+        if let Some(f) = frame {
+            self.with_depth -= 1;
+            self.arena.withs.frames.truncate(f);
+        }
+        r
+    }
+
+    /// What a module's `include`s, `forms`' (in `hide`s too), give, as the
+    /// expander found (`#:relied`), together; none if one of them has no
+    /// record.
+    fn includes_relied(&self, forms: &[Syntax]) -> Option<crate::ast::Relied> {
+        let mut all = crate::ast::Relied { vals: Vec::new(), descs: Vec::new() };
+        let mut any = false;
+        let mut work: Vec<&Syntax> = forms.iter().collect();
+        while let Some(f) = work.pop() {
+            let items = f.as_proper_list().unwrap_or(&[]);
+            match self.head(items) {
+                Some("hide") => work.extend(&items[1..]),
+                Some("include") => {
+                    let (Some(Some(r)), _) = self.written_shape(&items[2..]).ok()? else { return None };
+                    all.vals.extend(r.vals);
+                    all.descs.extend(r.descs);
+                    any = true;
+                }
+                _ => {}
+            }
+        }
+        any.then_some(all)
+    }
+
+    fn parse_module_in_scope(&mut self, forms: &[Syntax]) -> R<Vec<ModItem>> {
         let outer = (std::mem::take(&mut self.ahead), std::mem::take(&mut self.ahead_filled));
         let mut names: Vec<Sym> = Vec::new();
         let mut twice: Vec<Sym> = Vec::new();
@@ -3888,8 +4083,8 @@ const CASE_TREE_SYMBOLS_INDEXED: usize = 64;
                     out.push(ModItem::Val { name, ty: Some(ty), init: self.parse_exp(init)?, infer });
                 }
                 // `(include m)` (`TODO.md` §69): `m`'s values the module's own.
-                (Some("include"), [_, m]) => {
-                    includes.push((f.span, self.parse_exp(m)?, hidden));
+                (Some("include"), [_, _, ..]) if self.include_item(f) => {
+                    includes.push((f.span, self.parse_include_item(f)?, hidden));
                     continue;
                 }
                 (Some("define-rec"), [_, bs @ ..]) => {
@@ -3952,6 +4147,7 @@ const CASE_TREE_SYMBOLS_INDEXED: usize = 64;
         let first = includes[0].0;
         // A hidden one's, `%hinclude-k`: its values in scope, not in the
         // module's type.
+        let included: Vec<ExpId> = includes.iter().map(|(_, m, _)| *m).collect();
         let bucket = includes
             .into_iter()
             .enumerate()
@@ -3961,6 +4157,7 @@ const CASE_TREE_SYMBOLS_INDEXED: usize = 64;
             })
             .collect();
         let bucket = self.arena.exp(first, Exp::Module(bucket));
+        let withs = self.arena.mark().exps();
         for (item, at) in out.iter_mut().zip(spans) {
             match item {
                 ModItem::Val { init, .. } => *init = self.in_includes(*init, at[0], inc),
@@ -3970,6 +4167,20 @@ const CASE_TREE_SYMBOLS_INDEXED: usize = 64;
                     }
                 }
                 ModItem::Abs { .. } | ModItem::Desc { .. } => {}
+            }
+        }
+        // What the expander relied on of the modules included, all of them:
+        // each `(with %include …)` held to it (the values its items name),
+        // and each module included to the descriptions read past them.
+        if let Some(&Some(f)) = self.arena.withs.include_frames.last() {
+            let (all, past) = self.arena.withs.frames[f].clone();
+            for x in withs..self.arena.mark().exps() {
+                if matches!(self.arena.exp_at(crate::ast::ExpId(x as u32)), Exp::With { module, .. } if *module == inc) {
+                    self.arena.withs.opened.insert(crate::ast::ExpId(x as u32), Some(all.clone()));
+                }
+            }
+            for m in &included {
+                self.arena.withs.read_past.insert(*m, past.clone());
             }
         }
         out.insert(0, ModItem::Val { name: inc, ty: None, init: bucket, infer: false });
@@ -4203,20 +4414,80 @@ impl Checker {
     pub(crate) fn quoted(&mut self, x: &Syntax, depth: Option<u32>) -> Syntax {
         let built = self.quoted_in(x, depth);
         match &x.datum {
-            Datum::List { .. } | Datum::Vector(_) | Datum::Bytevector(_) if !matches!(self.unquoted(x, depth), Some(_)) => {
+            Datum::List { .. } | Datum::Vector(_) | Datum::Bytevector(_) if self.unquoted(x, depth).is_none() => {
                 let the = self.named(x.span, "the");
                 let datum = self.named(x.span, "datum");
-                // A quote's, not a quasiquote's, marked (`%quote`):
-                // everything in it the rewrite's, made once where it is all
-                // literals.
-                let built = if depth.is_none() {
-                    self.call(x.span, "%quote", vec![built])
-                } else {
-                    built
-                };
                 Syntax::list(x.span, vec![the, datum, built])
             }
             _ => built,
+        }
+    }
+
+    /// `(quote x)`, `depth` none, or `(quasiquote x)`, `depth` 1, of
+    /// `parse_exp`: what builds `x` (`quoted`).
+    fn parse_quote_form(&mut self, span: fixpt_read::Span, items: &[Syntax], depth: Option<u32>) -> R<ExpId> {
+        match items {
+            [_, x] if depth.is_none() && x.as_symbol().is_some() => Ok(self.arena.exp(span, Exp::Symbol(x.as_symbol().expect("a symbol")))),
+            [_, x] => {
+                Self::no_bytevector(x)?;
+                let built = self.quoted(x, depth);
+                self.parse_exp(&built)
+            }
+            _ if depth.is_none() => Err(FxError::at(span, "`(quote datum)`")),
+            _ => Err(FxError::at(span, "`(quasiquote datum)`")),
+        }
+    }
+
+    /// `(%datum x)`: list or vector `x` as a constant (`parse_datum_form`).
+    fn datum_node(&mut self, x: &Syntax) -> Syntax {
+        let d = self.named(x.span, "%datum");
+        Syntax::list(x.span, vec![d, x.clone()])
+    }
+
+    /// `(%datum x)`, which the quote rewrites make of a list or vector
+    /// (`quoted_in`): one constant, made once and interned, not a `cons`
+    /// at each pair, so that no phase recurses as deep as the list is long
+    /// (TODO §229). Of the standard `(listof datum acyclic)` if `x` is a
+    /// proper list, else of the standard `datum`, whatever the program
+    /// binds those names to. As `datum-form` in `parser-forms.fx`.
+    fn parse_datum_form(&mut self, span: fixpt_read::Span, items: &[Syntax]) -> R<ExpId> {
+        let usage = "`(%datum list-or-vector)`";
+        let [_, x] = items else {
+            return Err(FxError::at(span, usage));
+        };
+        let proper = match &x.datum {
+            Datum::List { items, tail } if !items.is_empty() => tail.is_none(),
+            Datum::Vector(_) => false,
+            _ => return Err(FxError::at(x.span, usage)),
+        };
+        Self::no_bytevector(x)?;
+        Self::constant_atoms(x)?;
+        let ty = if proper {
+            let (l, d, a) = (self.named(span, "listof"), self.named(span, "datum"), self.named(span, "acyclic"));
+            Syntax::list(span, vec![l, d, a])
+        } else {
+            self.named(span, "datum")
+        };
+        let outer = self.hidden.replace(((self.standard_len, self.env.len()), (self.standard_dscope, self.dscope.len())));
+        let ty = self.parse_type(&ty);
+        self.hidden = outer;
+        Ok(self.arena.exp(span, Exp::Quote { datum: std::sync::Arc::new(x.clone()), ty: ty? }))
+    }
+
+    /// Whether each number in constant `x` is one every compiler makes: an
+    /// integer a fixnum, or a float; no ratio. As `constant-atoms` in
+    /// `parser-exps.fx`.
+    fn constant_atoms(x: &Syntax) -> R<()> {
+        match &x.datum {
+            Datum::Number(fixpt_read::Num::Int(n)) if (FIXNUM_MIN..=FIXNUM_MAX).contains(n) => Ok(()),
+            Datum::Number(fixpt_read::Num::Real(_)) => Ok(()),
+            Datum::Number(_) => Err(FxError::at(x.span, "an integer past a fixnum, or a ratio, cannot be quoted in a list or vector yet")),
+            Datum::List { items, tail } => {
+                items.iter().try_for_each(Self::constant_atoms)?;
+                tail.as_deref().map_or(Ok(()), Self::constant_atoms)
+            }
+            Datum::Vector(items) => items.iter().try_for_each(Self::constant_atoms),
+            _ => Ok(()),
         }
     }
 
@@ -4308,11 +4579,12 @@ impl Checker {
         if let Some(e) = self.unquoted(x, depth) {
             return e.clone();
         }
-        // Under a quasiquote, a list or vector no unquote reaches is a
-        // constant: a quote, made once (`%quote`).
-        if depth.is_some() && matches!(x.datum, Datum::List { .. } | Datum::Vector(_)) && self.unquote_free(x, depth) {
-            let built = self.quoted_in(x, None);
-            return self.call(span, "%quote", vec![built]);
+        // A list or vector a quote makes, or no unquote of a quasiquote
+        // reaches, is a constant (`%datum`).
+        if matches!(&x.datum, Datum::List { items, .. } if !items.is_empty()) || matches!(x.datum, Datum::Vector(_)) {
+            if depth.is_none() || self.unquote_free(x, depth) {
+                return self.datum_node(x);
+            }
         }
         match &x.datum {
             Datum::Symbol(s) => match self.name(*s) {
@@ -4337,11 +4609,10 @@ impl Checker {
                     }
                 }
                 // `nil` at the list, each `cons` from its item, a constant
-                // suffix's `%quote` from its first item to the end.
+                // suffix one `%datum` from its first item to the end.
                 let mut acc = if k < items.len() {
-                    let rest = Syntax::new(span, Datum::List { items: items[k..].to_vec(), tail: tail.clone() });
-                    let built = self.quoted_in(&rest, None);
-                    self.call(fixpt_read::Span { start: items[k].span.start, ..span }, "%quote", vec![built])
+                    let rest = Syntax::new(fixpt_read::Span { start: items[k].span.start, ..span }, Datum::List { items: items[k..].to_vec(), tail: tail.clone() });
+                    self.datum_node(&rest)
                 } else {
                     match tail {
                         Some(t) => self.quoted_in(t, depth),

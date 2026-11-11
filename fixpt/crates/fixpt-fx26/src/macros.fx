@@ -37,20 +37,22 @@
         len-ints addr-under? ints=? all-ints? ints-prefix (type binds))
 (import scopes-module walk placed evaluate levels-of binder-of)
 (import align-module defined macro-of macro? makes-defns? makes-top-defns? nodes-reset! align
-        node-at node-syn node-path node-core node-kids pvar-of pvar? nnodes act-rename act-toplevel
-        seq-depths
-        act-qualified act-standard act-module act-module-type act-standard-type desc-roots under
+        node-export node-imports node-syn node-path node-core node-kids pvar-of pvar? nnodes
+        act-rename act-alias
+        seq-depths def-env-top env-empty env-levels
+        act-module-type act-standard-type desc-roots under
         act-macro-head atm-lit lv-rib k-pvar k-binder k-ref k-form k-other
         node-hole s-typed
         (type action actions clause clauses macro macro-env scope scopes pinfo pvars
-              found levels
+              found levels env def-env def-envs
               atms kids contracts holes))
 (import exports-module exports-of exports=? shown-exports nested-binders unsaid-nested
         drivers-of renames-under with-uses with-uses-given note-projection note-uses
         (type exported nested))
 (import solve-module infer sig-text)
 (import procedural-module procedural-of procedural-form define-procedural expand-procedural
-        source-key source-of)
+        def-env-of-file def-env! def-envs-given file-scope-begin! file-scope-end!
+        source-key source-of sources-made alias)
 (import infer-module (type unsigned unsigneds))
 (import files-module written-of signature-of written-names literals-said binder-names names-any?
         said-fail signed-each syntax-names
@@ -85,9 +87,23 @@
                        (template (nth two 1)))
                   (tuple pattern template
                          (template-actions fail ps template defn (extract pv 2) file) ps
-                         (contracts-of ps (binder-names poly) file)))))))))
+                         (contracts-of ps (binder-names poly) file)
+                         (clause-def-env fail c ps poly file)))))))))
+;; Where clause `c`'s macro is defined (`def-env-of-file`): refused where a
+;; module file uses its own macro with a typed hole, whose contract is read
+;; by a qualifier, which names no file's own items.
+(define clause-def-env (->* (fails syn pvars syns-a scopes) def-env)
+  (lambda (fail c ps poly file)
+    (let ((e (def-env-of-file file)) (cs (contracts-of ps (binder-names poly) file)))
+      (begin
+        (if (and (= (extract e 1) 2) (not (null? cs)))
+            (fail-at fail (string-append "`" (symbol->string (extract (car cs) 1)) "`: a typed "
+                                         "hole in a macro a file uses itself, not yet")
+                     c)
+            #u)
+        e))))
 (define stub (->* (syn) clause)
-  (lambda (c) (tuple c c (the actions nil) (the pvars nil) (the contracts nil))))
+  (lambda (c) (tuple c c (the actions nil) (the pvars nil) (the contracts nil) (def-env-top))))
 ;; Each typed hole's contract, its type read as a use reads the template's
 ;; types; none where it names the macro's own binders, which no use can
 ;; write.
@@ -122,8 +138,8 @@
       (nodes-reset!)
       (let* ((root (align fail 0 (the pvars nil) sig pattern -1 nil))
              (said (literals-said fail lits 0))
-             (found (walk fail root nil #f 0))
-             (e (extract (node-at root) 5))
+             (found (walk fail root env-empty #f 0))
+             (e (node-export root))
              (declared (if (and (= defn 1) (not (null? e)))
                            (the (listof exported acyclic)
                                 (list (exports-of (evaluate fail (extract (car e) 1)
@@ -131,9 +147,9 @@
                            nil)))
         (tuple (pvars-of fail found nil defn) declared)))))
 ;; What pattern variable `at` is, as the walk found it (`f`).
-(define pinfo-at (->* (int (tupleof int levels bool int)) pinfo)
+(define pinfo-at (->* (int (tupleof int env bool int)) pinfo)
   (lambda (at f)
-    (tuple (node-core at) (extract f 2) (extract f 3) (node-hole at) (extract f 4))))
+    (tuple (node-core at) (env-levels (extract f 2)) (extract f 3) (node-hole at) (extract f 4))))
 (define pvars-of (->* (fails found pvars int) pvars)
   (lambda (fail fs ps defn)
     (if (null? fs)
@@ -177,7 +193,7 @@
       (nodes-reset!)
       (let* ((made (cond ((= defn 1) (s-defn)) ((= defn 2) (s-type)) (else (s-expr))))
              (root (align fail 1 ps made template -1 nil))
-             (found (walk fail root nil #f 0))
+             (found (walk fail root env-empty #f 0))
              (nested (nested-binders 0 (get nnodes) ps))
              (named (name-actions fail ps found file nil nil nested (binder-depths found))))
         (begin
@@ -239,7 +255,8 @@
   (lambda (fail ps fs file out uses nested bd)
     (if (null? fs)
         out
-        (let* ((at (extract (car fs) 1)) (env (extract (car fs) 2)) (many (extract (car fs) 3))
+        (let* ((at (extract (car fs) 1)) (env (env-levels (extract (car fs) 2)))
+               (many (extract (car fs) 3))
                (depth (extract (car fs) 4)) (s (node-syn at)) (path (node-path at)))
           (tagcase (node-kids at)
             (k-pvar (n)
@@ -312,17 +329,16 @@
              nil))
           ;; A file's macro's description is read through the file's module
           ;; whole (`type-actions`).
-          ((= free 1) (if (null? file) (list (act-qualified)) nil))
-          ((null? file) (list (act-toplevel)))
-          ((name-in? n (extract (car file) 2)) (list (act-module (extract (car file) 1))))
-          ((name-in? n (extract (car file) 5)) (list (act-standard)))
+          ((= free 1) (if (null? file) (list (act-alias)) nil))
+          ((or (null? file) (name-in? n (extract (car file) 2)) (name-in? n (extract (car file) 5)))
+           (list (act-alias)))
           (else
            (begin
              (fail-at fail (string-append "`" (symbol->string n) "` is neither a value the file's "
                                           "module shows nor a standard binding: a file's macro "
                                           "names only those, as they are where it is imported")
                       s)
-             (list (act-toplevel)))))))
+             (list (act-alias)))))))
 ;; A binder `b` (none or one) repeated, referred to under `depth`, fewer
 ;; ellipses than it is under: which repetition's is not said.
 (define repeated-ref (->* (fails symbol (listof int acyclic) int depths syn) unit)
@@ -399,7 +415,7 @@
                    (begin (set defined before) (fail m a b)))))
       (if (null? (procedural-form form))
           (define-written undo (written-of undo form) file before)
-          (define-procedural fail form)))))
+          (define-procedural fail form (def-env-of-file file))))))
 ;; Each signature, written, or inferred together for those not written,
 ;; each defined first; then each macro's clauses checked, and defined.
 (define define-written (->* (fails writtens scopes macro-env) names)
@@ -660,7 +676,9 @@
            (in-use (lambda ((msg string) (a int) (b int))
                      (fail (string-append "a use of `" shown "`: " msg) a b))))
       (if (not (null? (procedural-of name)))
-          (expand-procedural fail name s (record-expansion name s))
+          (let ((made (record-expansion name s)))
+            (begin (def-env! made (extract (car (procedural-of name)) 3))
+                   (expand-procedural fail name s made)))
           (begin
             (nodes-reset!)
             (align in-use 2 (the pvars nil) (extract m 1) operands -1 nil)
@@ -685,6 +703,7 @@
           (if (null? binds)
               (first-match fail name s operands (cdr cs))
               (let* ((made (record-expansion name s)) (shown (symbol->string name))
+                     (noted (def-env! made (extract (car cs) 6)))
                      (in-use (lambda ((msg string) (a int) (b int))
                                (fail (string-append "a use of `" shown "`: " msg)
                                      (syn-start s) (syn-end s)))))
@@ -886,17 +905,9 @@
               (atom n a b made)
               (tagcase (car act)
                 (act-rename (binder d) (atom (fresh-name n binder d) a b made))
-                (act-toplevel () (with-name "#%toplevel" n a b made))
-                (act-qualified ()
-                  (atom (string->symbol (string-append "#%toplevel:" (symbol->string n))) a b made))
-                (act-standard () (with-name "#%fx" n a b made))
-                (act-module (m) (with-name (symbol->string m) n a b made))
+                (act-alias ()
+                  (atom (string->symbol (alias (symbol->string n) made)) a b made))
                 (else y (atom n a b made))))))))
-(define with-name (->* (string symbol int int int) syn)
-  (lambda (m n a b made)
-    (list-at a b made (list (atom 'with a b made) (atom (string->symbol m) a b made)
-                            (atom n a b made))
-             nil)))
 ;; The fresh name of the binder at `binder`, under `d` ellipses, in the
 ;; repetitions it is in, made the first time.
 (define fresh-name (->* (symbol addr int) symbol)

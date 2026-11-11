@@ -5481,21 +5481,443 @@ program's own definitions (phases); contracts, checked at each expansion
 (the note's proposal); a transformer run each use is checked again each
 use, which a definition's compiled transformer kept would not need.
 
-## 229. A quoted list's length is how deep every phase recurses (found 2026-11-09)
+## 229. ~~A quoted list's length is how deep every phase recurses~~ (found and done 2026-11-09)
 
-Both parsers rewrite `'(a b c …)` as `(cons a (cons b (cons c … nil)))`
-(`Checker::quoted`, `quoted` in `parser.fx`), so a list of n elements is
-calls nested n deep: in the parsers, the checkers, the lowering, the
-evaluator and every compiler. `macros-kernel.fx`'s reserved words, 115
-long, were the deepest stack in checking the front end (`debug_stack`'s
-report, `docs/research/debugging.md`); a list of some thousands overflows a
-release build's stack. Not a frame to make smaller: a representation.
-Options: `(list a b c …)` (one call, flat, `list` being a `vsubr`; a dotted
-tail through `append`), or a constant node of its own, typed `datum` with no
-look inside (a quote that unquotes nothing is a constant, which the
-compilers intern already). Undecided: the user's.
+Both parsers rewrote `'(a b c …)` as `(cons a (cons b (cons c … nil)))`, so
+a list of n elements was calls nested n deep in every phase. A list of
+some thousands overflowed a release build's stack. The user's decision: a
+constant node of its own. A quoted list, dotted list or vector, and each
+part of a quasiquote no unquote reaches, is now one leaf, `(%datum x)`
+(`Exp::Quote`, `e-quote`). It is typed the standard `(listof datum
+acyclic)` for a proper list and the standard `datum` otherwise, whatever
+the program binds those names to, and each compiler makes it once,
+interned. `%quote` is gone. The heap's `intern_datum` and the walks the
+FX-26 code makes over a constant loop down a list's spine. A bignum or
+ratio in a quoted list or vector is refused, as a bytevector was. Test:
+`datum/quote-constant.fx`, a list of 3000.
+
+The evaluator written in FX-26 interned into a list it searched, so a
+long quote cost it quadratic time (80 s for 50 000). It now interns into
+a table hashed by a datum's interned parts, as the heap does (0.4 s).
+
+Left: the datum boundary for procedural transformers (§228) can hand these
+constants over as they are.
 
 Left from the stack work: the methods `frame-debt.txt` lists, the recursive
 first (`sub_rules`, `show_ty_body`, `unify`, `module_items_from`,
 `synth_module_items`); and the checker written in FX-26, whose depth is each
 machine's.
+
+## 230. Debugging a procedural macro: what channels to give (the user's, 2026-11-09)
+
+To discuss, not decided. A transformer is a pure subroutine from datum to
+datum (§228): no I/O, no global state it may write, and its input a
+datum, so there is no 3-D syntax either. Every way a Schemer would see a
+transformer's intermediate steps, or just print while debugging one, is
+refused by the types and effects. That is coherent, which is good, but it
+is frustrating to use. The options are open: something outside the
+transformer that the expander does (a trace of each call's input and
+output datum, say, behind a flag), an effect that only a debugging build
+grants, a transformer returning its notes beside its output, or something
+else. No shape is chosen yet.
+
+## 231. Catching obvious macro mistakes, a transformer that never ends (the user's, 2026-11-09)
+
+To discuss, not decided. An `sc-macro-transformer` can easily return its
+input `expr` as it is. The expander then expands the same form again,
+forever. Ruling out "the output contains the input" is too strong:
+`` `(quote ,expr) `` puts `expr` in the output legitimately, since it is
+quoted there and not expanded again. Whether `expr` appears is not the
+question; the question is whether it appears again *in a position that
+gets expanded*, unchanged, under the same macro. Ideas to weigh: noticing,
+at expansion time, a use whose expansion is the use itself (or comes back
+to it) and saying so where the macro is used and defined; a depth or fuel
+limit with a message that names the macro; or something static over the
+transformer's body. Either way, the message should name the mistake, not
+just an exhausted stack.
+
+## 232. Binding shapes: a module's names known before its types (the user's, 2026-11-10)
+
+Design: `docs/research/binding-shapes.md`, from Heist's request that module
+files use macros (`heist/docs/requests/fixpt-macros-from-heist.md`, item
+1). `with` and `include` bind by a module's type, known only after
+expansion, so the expander cannot see every binder, and a file's own
+macros were refused. A module's *shape*, its names by namespace, is read
+from the syntax (or written, `(modnames …)`, named by `define-syntax`),
+and the checker confirms each module's type has exactly its shape's names.
+Answered: refusing `with` of a module of no known shape; macros not in
+shapes yet (the 2026-11-08 leaning stands); `import-with-syntax` stays;
+leaving names out of a `modnames` seals; a shape named by `define-syntax`
+(2026-11-10).
+
+Stages: (1) every form's binding structure, and a walk held to the
+checkers': **built 2026-11-10** (`scope-forms`, `Mode::Program`,
+`tests/scopes.rs`), Rust alone. (2) The walk in the FX-26 expander too;
+shapes for module values, `with`'s type names by shape, the checker's
+check, `modnames`. **Begun 2026-11-10**: in Rust, every module's shape read
+and written into the forms that open it (`#:shape`), held to its type by
+the checker (`macros/shapes.rs`); the walk made linear and of no stack.
+A module of no known shape refused (none in the suite's programs that
+check, nor in Heist's). What a form opening a module carries is the names
+references in its scope found it gives, `#:relied` (subsumption); what
+they took to be outside, the checkers find themselves (2026-11-10, with
+`include` and `with` read innermost first, type names as values); the
+walk's shapes are environments of environments, functions' parameters
+included; about 4.5 s of a 56 s cold check of the front end's sources.
+To investigate (the user's, 2026-11-10): shapes written up front
+(`modnames`, `moduleof`) and confirmed lazily, as asked. They would save
+computing a module's shape (some 12% of the 4.5 s), not the walk of each
+file, which its own records (and step 3's renaming) need; more where a
+file is loaded for its shape alone, through a type, and not parsed. **The
+FX-26 front end, 2026-11-10**: the same records written (all 110 test
+programs with one), read and held by its checker alike; a global's shape
+from the FX-26 checker's types (the user's choice); the walk made linear;
+`with`'s fallback for a name defined nowhere retired in both front ends.
+`(modnames …)`, 2026-11-10: named by `define-syntax` (the user's), sealing
+as `moduleof` does; not yet a module inside to fewer names (neither seals
+one: a reshape inside a value). **Step 2 done.** (3) Renaming hygiene with `with` and `include` as
+visible binders; a file's own macros (Heist's (a)); `import-with-syntax`
+in module files and of files with parameters ((b), (c)). (4) Later:
+top-level `include` without the driver; macros in shapes, if revisited.
+
+Also from Heist (2026-11-10), not yet done: quotes checked against their
+expected type (the user's yes); `,@` of a `datum`; `datum-proper-list?`
+narrowing; a standard `map`; `when`/`unless`; the message fixes (macro
+refusals called read errors, `product`'s labels, `(define sum …)`);
+`syntax-rules` ellipsis tails, literals telling clauses apart, a
+recursion's signature suggested, tagcase clauses in signatures; `nestof`
+and a negatively bounded type variable (to discuss).
+
+## 233. ~~The arm64 assembler pieces' test: its fix to merge~~ (the user's, 2026-11-10; merged 2026-11-11)
+
+`fixpt-fx26::native_direct_arm64 the_assemblers_pieces_as_the_rust_compiler_makes_them`
+fails in a debug build, on any host: it asks for `continuation_code(n)`
+with `n` 10 and 37, past the machine's own call-outs (`OWN_CALLOUTS`),
+whose field the continuation procedure's code has none of, so
+`Asm::finish`'s assertion fires ("a call-out's field not given"); in a
+release build both sides compared two placeholders. The fix is on the
+branch `fix-callout-fields-in-asm-pieces-test` (`a4563ec5`, from
+`bc0a119f`), test-only: the continuation code for `0, 7, 9` alone, as
+x86_64's twin of the test has it. Merged on the user's word, 2026-11-11
+(`47623b7e`).
+
+## 234. The expander's environments abstract, and indexed (2026-11-11)
+
+`macros-env-types.fx`, `macros-env-list.fx`, `macros-env-indexed.fx`: the
+environments the FX-26 walk resolves names in, behind their operations
+(`env-within`, `env-lookup`, `env-any-shape?`, `env-levels`), one
+implementation chosen by the `load-module` in `macros-nodes.fx`. The
+indexed one makes each import's ribs one level, a tree by name, where the
+list walks a rib for each of a module's items: a module of `n` items cost
+`n` for each name looked for in it. Not yet: a test holding the indexed one
+to the list one on every test program (the user's: keep both).
+
+## 235. A sealed module's names in a module file, and an abstract type of a module a file makes (2026-11-11)
+
+- In a module file, `(import m x)` of `(define m (the (moduleof (val x int))
+  (load-module "f.fx")))` is refused (`` `x` uses `x`, before it is made ``):
+  the file's `import`s are expanded after its shapes are written
+  (`Checker::read_module_file_at`, `expand_datatype`), so the `with` each
+  makes has no record; one written by hand works, and so does an `import`
+  of an unsealed module. At the top level, expansion comes first. To expand
+  a module file's imports before it is shaped, in both front ends.
+- A type `define-generative` makes, in a module a file makes (a functor's
+  application, `(proj (load-module …) rs …)`), cannot be named in that
+  file's own type (`` mentions `m..t`, which is not known outside the module
+  ``); a datatype can. `macros-env-*.fx` keep `env` a datatype for it.
+
+## 236. Calls counted in native register code (2026-11-11)
+
+`FIXPT_PROFILE_CALLS` set: the x86_64 machine's register words count each
+call by its site and the word entered (`fixpt_native::profile`); with
+`perf`, which names our words but cannot walk their stacks, who calls whom
+and how often. About 2.2 times slower when on; nothing assembled when off.
+Not yet: arm64's register words, native-convention procedures, stack code;
+a report from the CLI.
+
+## 237. REPL start checks and lowers the eager reader every time (the Mac team's, 2026-11-11)
+
+REPL start went from 0.10 s to 0.37 s since 10-28, on every machine, with no
+input: each start checks and lowers the eager reader from source
+(`load_own_reader`, `load_reader_alone`, `load_lowered`), and since 11-07
+`reader.fx` reaches the macro modules through `parser-top-module`, for the
+drivers' and `tests/scopes.rs`'s entries (`program-walked`,
+`program-shaped`, `expansions-made`, …), so every start checks that graph.
+Their proposal: cache the lowered reader (`Compiled.code`) at run time,
+keyed by `FIXPT_BUILD_HASH`, as the front end's register code is; `fixpt
+prewarm` makes it. Or move those entries out of `reader.fx`. Check: `fixpt
+--machine rs-scheme-vm repl`, empty input, user time, best of 3, before and
+after; `dialects fx26_machines_by_name`, `help
+fx26_apropos_searches_every_namespace`, `native_reach
+a_definition_calling_itself_in_tail_position_loops`, alone.
+
+Done (2026-11-11), the second way: the first does nothing, since the
+parser itself loads the expander, its walk and its shaper (`parser-top.fx`),
+which it needs; the entries only name what it loads (without them, REPL
+start was 0.79 s user as with them, x86_64 Linux, release). Now
+`load_lowered` keeps the lowering it made, once its licence is checked, in
+the user's cache directory (`front-end-reader-KEY.code`), its key a hash of
+the text, the prefix and the build, and reads it back there, neither
+checking nor lowering again; `fixpt prewarm` makes it; `FIXPT_NO_CACHE`
+turns it off. REPL start 0.80 s to 0.15 s user (0.10 s at 10-28): what is
+left is loading the lowered Scheme, and the process's own start.
+
+## 238. Caching across the board (the user's, 2026-11-11)
+
+"We need to be doing more aggressive caching across the board. We're
+wasting a lot of time re-doing work." Candidates: the eager reader (§237);
+a file's shaping, its shape and its records by path, keyed by its text,
+how it is loaded, its loads' shapes and the build (the FX parse forgets
+every file's shapes at each parse, `shapes-at!`, and the suite shapes the
+front end's files in every process that compiles it).
+
+
+## 239. The FX-26 shaping pass at a program's scale (the Mac team's, 2026-11-11)
+
+Step 2 (97400f83) made the FX-26 parse shape every top-level form and
+every file it loads, through the aligner and walk written for templates of
+a few dozen nodes; the front end is about 1.08 million. Its parse went
+from 0.59 s to 3.59 s. Fixed so far, each where a question cost the size
+of the program: node positions, `under?` and parents found once
+(`macros-tree.fx`); what each module was asked and gives, by node; the
+environments indexed (§234); `repeated?` an array; the nodes a field's
+array each, where each field set made a node's tuple again; `sealed-written`
+and `with-written` giving a form itself where nothing in it changes; heads
+compared as symbols, not names copied to strings. Now 2.20 s: 0.45 s not
+shaping, 0.88 s aligning, 0.19 s walking, about 0.65 s the shaper (0.26 s
+of it asking modules for names). Each linear: what is left is about a
+microsecond and a half a node. Not yet: doing less of it (aligning only
+what a record or a shape asked for depends on), or caching it (§238).
+
+## 240. The FX-26 parse of a program of many top-level forms is quadratic (found 2026-11-11)
+
+3200 one-line `define`s at the top level parse in 2.6 s, 1600 in 0.65 s,
+800 in 0.2 s, before step 2 as after, shaping off or on: something in each
+top-level form's parse costs as many as the forms before it. Not yet
+found.
+
+## 241. A `map` that shares what it does not change (the user's, 2026-11-11)
+
+The FX-26 expander rebuilds lists by recursions written out for each type
+(`sealed-each`, `unshaped-items`, `written-items` in `macros-shapes.fx`,
+`renamed-items` in `macros-walk.fx`), each copying the whole form however
+little it changes; `sealed-written` and `with-written` now give a form
+itself where nothing changed, each by hand. One helper instead, a
+`plambda` over the element type and the function's effect: on the way
+back, a cell whose new car and cdr are `eq?` to its old ones is the old
+cell, so that an unchanged tail is shared and an unchanged list is
+itself, and the `syn` around it need not be made again (nor its
+`syn-datums`). Sound as `eq?` is on immutable data: `#t` means the same,
+`#f` only costs a copy. Then those recursions as calls of it.
+
+## 242. Text embedded in the binary, held as static (the user's, 2026-11-11)
+
+Source text is transient by default, which is right; but some is static:
+the front end's files, `include_str!`'d (`FRONT_END_FILES`). Neither
+compiler keeps that: `fixpt_fx26::front_end()` joins the files into a new
+`String` for each caller, and `syn.rs` copies the text into the nursery
+(`Heap::make_string`), where FX-26 code sees it as any string; only
+symbols have a static path (`Heap::intern_static`, which still copies the
+name). Wanted: such text carried as static, a `Cow<'static, str>` or the
+like, on both sides. In the heap, a string allocated once into the static
+area's immutable half (§161), never moved, copied or scanned, of the same
+layout, so that every string primitive and native fast path reads it as
+it is; the static area has no allocation API but images'
+(`image_static`, `dump_static`) yet. A string that borrows the binary's
+own bytes would instead be a new kind that every primitive and both
+native back ends would have to take. Not a parse-time lever (a profile of
+the FX-26 parse, 2026-11-11, finds no time in the text itself); the work
+derived from static text each run is (its readings' hashes, its read, its
+shapes), for caching by build (§238).
+
+## 243. `jit_lines gdb_shows_the_frames_values` is flaky (found 2026-11-11)
+
+It failed once in a full suite (`no line for \`spin\``) and once in three
+runs alone, then passed ten times alone. A race in the test: `values.fx`
+says `ready` and then has its last form, `(keep 3 …)`, parsed, checked
+and compiled before it enters `spin`; gdb attaches as soon as it reads
+`ready`, and sometimes finds thread 2 still compiling (interning names,
+`WordHasher::write`). Whether it fails more often since the FX-26
+parse's changes of 2026-11-11 is not known (a comparison with a43f87cb
+was begun and stopped). A fix: say `ready` only from inside the loop's
+caller, or let gdb attach again until `spin` is on the stack.
+
+## 244. Sets keyed by small ints: what the checker's walks need, and bit vectors in the runtime (the user's, 2026-11-11)
+
+The FX-26 checker's type-graph walks (`k-param-sels-from`,
+`k-selects-from`, `k-esels-from`, `k-check-apps-from`, `k-knot-in`, …)
+each kept the type ids they had seen in a fresh hash table (`table.fx`,
+from 8 buckets, rehashed as it doubles): 22% of stage 2's cells on small
+workloads (2026-11-11). They now take a stack of epoch-marked arrays
+(`check-holds.fx`, `k-new-seen`): a walk's start is a counter's step, a
+walk inside another takes the next level. To explore what fits each use
+best:
+- a set structure keyed by the ids themselves, a tree (a trie of the
+  id's bits) or an adaptive one, a list or small array while it is small
+  and a hash table, or the marks, only past some size;
+- bit vectors, which FX-26 has not: an array of `bool` is a word a bit,
+  and a bytevector's bits are written out in FX. Operations in the Rust
+  runtime (make, test-and-set, clear, count, union) would give a dense
+  set at a bit an element, and its bulk operations at native speed; for
+  the walks, for the expander's per-node marks (`repeated-marks`,
+  `macros-tree.fx`'s), and wherever a set of small ints is a list now.
+Measure first how many types each walk touches against how many there
+are: that decides between per-walk structures and shared marks.
+
+And `table.fx` itself (the user's, 2026-11-11): it doubles and rehashes
+every entry, chained buckets of conses. Other designs may grow more
+gradually or probe more cheaply: cuckoo hashing, Robin Hood hashing
+(open addressing, a probe's length evened out), linear hashing or
+incremental rehashing (a bucket split at a time), or a list of tables,
+each larger, the old ones never rehashed (a lookup tries each, newest
+first). To compare on the checker's and compiler's real tables
+(`check-env.fx`'s, `compile.fx`'s), by cells on the cellular machine and
+by time as register code.
+
+`table.fx` as it is, to consider (2026-11-11; its clients use only
+`make-table`, `table-ref`, `table-set!`, `table-has?`, `table-count`, so
+its representation may change freely):
+- `bucket-of`'s `modulo` a mask: the buckets are always a power of two;
+- `table-ref`, `table-entry`, `bucket-of` one body, half the calls a
+  lookup makes; `table-set!` testing for growth itself, calling
+  `table-grow` only when due;
+- `eq?` tried before the equality closure, at each entry;
+- the first entry of each bucket inline (the user's): the bucket array
+  holding the first `(key . value)` pair itself, or `nil`, and a second
+  array the rest of the chain, a list; a lookup reads one pair, the list
+  only after a collision; one cons an entry, not two; a doubling moves the
+  pairs, allocating only for what collides again. Keys and values
+  themselves inline need what a generic table cannot give `make-array`,
+  a fill of the key's and value's types: a default given to `make-table`,
+  arrays made at the first insert, or a runtime primitive for an array of
+  any type made without one (beside the bit vectors above).
+- each slot's hash kept beside it (the user's): an `int` array, which has
+  a fill, 0 kept for empty by a hash made never 0 (0 taken to 1, say).
+  It marks a slot free where a key of any type cannot; a lookup compares
+  hashes before calling the equality closure; a doubling calls no hash
+  closure, each entry's hash being kept; and it makes open addressing
+  possible for a generic table, the hash array saying which slots are
+  free. `table.fx` keeps no hash now: each doubling hashes every entry
+  again.
+First, measure which tables are left hot after the seen tables went (10%
+of stage 2's cells on a `parser-top.fx` load), and whether their cost is
+lookups or growth: the call counters on register code (`FIXPT_PROFILE_CALLS`).
+
+## 245. Inlining a module's procedures, generic ones, in cellular code too (2026-11-11)
+
+The compilers inline only small global procedures (`compile-inline.fx`,
+`compile-plan.fx`'s `c-inline-limit`, and the Rust compiler's twin), and
+only in register code: not a module's members, not a `plambda`, and
+nothing in cellular code. So `table.fx`'s lookup is seven calls. Written
+as macros private to the file (`define-syntax`, a module file's own,
+since hygiene's step 3 stage 3), the user's choice over a language
+feature, it made three: on a `parser-top.fx` load, calls into `table.fx`
+21.9 M to 10.0 M, `symbol=?` 3.75 M to 1.25 M, stage 2 9.5 s to 8.8 s.
+Parked on the local branch `table-macros` (`05840827`), its release suite
+failing 5 (§248, §249); to come back to once those are fixed. To consider when more code wants it: an
+annotation saying a procedure is inlined at its calls (both checkers
+accept it, both compilers inline it, at either kind of code; arguments
+evaluated once, a type of its own), or the automatic inliner extended to
+small module members and to cellular code.
+
+## 246. The machine code of the fast paths `table.fx` relies on (the user's, 2026-11-11)
+
+`table.fx`'s lookup (§244, §245) is written on the belief that `eq?`,
+`bitwise-and`, `-`, `array-length`, `array-ref`, `car` and `null?` are
+each a few instructions in register code and one cell each in cellular
+code, where `modulo` and a call were not. Not yet checked. To look at
+the code each machine makes of `table-ref` (x86_64 and arm64 register
+code, native-convention code, the hand-encoded machine's cells): which
+of these are inline and which are call-outs, and that `eq?` on two
+values is one compare, with no type test or boxing; then the same for
+`bitwise-and`, shifts, and the comparisons the hash arithmetic uses
+(`fixpt dump-heap`, `FIXPT_JIT_DEBUG`, the disassembler).
+
+## 247. ~~Templates writing the forms only programs' walks know~~ (2026-11-11; the forms that bind nothing, done the same day)
+
+A template is aligned with the kernel's form signatures alone
+(`kernel-forms`); `scope-forms` (`macros-kernel.fx`), which binding
+shapes' step 1 made for the walk of programs after expansion, is
+consulted only in that mode (`macros.rs`'s `Mode::Program` arm,
+`macros-align.fx`'s `program-form`), so a template writing `bloblet-ref`
+is refused, "not yet in a template". To let a template use a
+`scope-forms` signature written in the kernel's notation alone (no
+`item`, no `(shape A)`): every `bloblet-*` and `blobref-*` form, which
+binds nothing, in both expanders, with a test that a template writing
+one aligns and expands alike in both.
+
+Done for those that bind nothing (the user's framing: forms like `if`,
+unlike `lambda` and `let`): a template may use a `scope-forms` signature
+with no `import` or `export` in it (`macros.rs`'s `binds_nothing`,
+`macros-types.fx`'s `binds-nothing?`), so `bloblet-*` and `blobref-*`;
+`typecase`, `case` and the other binding ones are refused in a template
+as before (`programs/macros/template-bloblet-ref.fx`,
+`unknown-form-in-template.fx`). Then `table.fx`'s `entry-of` (on
+the branch `table-macros`, §245) reads the table's fields itself, as its
+comment says: `(bloblet-ref t 2)` the buckets, `(bloblet-ref t 0)` the
+hash, `(bloblet-ref t 1)` the equality.
+
+## 248. A module file's own hidden macros, loaded on the native-convention machines (found 2026-11-11; fixed the same day, but the top level's `hide`)
+
+`table.fx` with hidden `define-syntax`es of its own (the branch
+`table-macros`, §245): `(define t (load-module "fx26:table.fx"))` fails
+"not an expression in the FX-26 kernel" on `fx-regs-rsjit-nativecc` (the
+default), `fx-regs-fxjit-nativecc` and `fx-cells-rsinterp-nativecc`, and
+runs on `rs-scheme-vm`, `fx-ast-eval`, `fx-cells-rsinterp`,
+`fx-regs-rsjit-cellcc`; `fixpt check` passes, both checkers agreeing, and
+the module's type shows none of the hidden macros. Not the `.fasl` path
+(as first filed): it fails with an empty cache, and those machines make
+no `.fasl`. The message is the FX-26 parser's (`parser-exps.fx`), though
+its own expansion (`parser-top.fx`'s `file-own-expanded`) and its
+stripping of macros, hidden ones too (`parser.fx`'s `without-syntax`),
+look right: the native-convention machines give the parser the file's
+forms by some way around them, not yet found
+(`fasl::a_built_in_module_is_kept_in_the_cache`, run on the default
+machine, is how it showed).
+
+Fixed: on those machines a built-in module of no parameters is defined
+natively as a `module` of its text (`session.rs`'s `built_in_load`, so
+that its procedures are in the program's convention), which no own
+expansion read: now of its items as a module file is read
+(`Checker::built_in_items`, `without_own_macros`) where it has macros of
+its own, its text as written where not. And an error in that text is
+said in its file, `in `fx26:table.fx`, L:C` (`BuiltInLoad::said_in`).
+
+Two more it showed: the error is placed `p.fx:3:1`, in the two-line
+program that loads the file, where it is in `table.fx` (a loaded file's
+place said as the loader's); and the tests that paste `table.fx`'s text
+into a program (`tests/table.rs`, `parser::the_parsers_agree_on_real_programs`)
+meet `(hide (define-syntax …))` at the top level, which is refused: load
+it as a module there, or let the top level hide a macro. (The first of
+the two, fixed as above; this one, not yet.)
+
+## 249. ~~Macro-made code's places differ between the two front ends~~ (found 2026-11-11; built the same day)
+
+Not a disagreement of the compilers, as first filed: the Rust compiler
+recorded a template's place, the FX-26 compiler the expander's key. Now
+both record a provenance's id, made by the runtime from its chain
+(template, use, out), as `docs/research/macro-provenance.md` says, with
+the user's decisions: a debugger's line the use, `fx-frame` saying the
+template too; only keys placed in code made ids; an entry living as long
+as code holds it. `bootstrap::fixpoint_as_register_code` passes with
+`table.fx`'s macros (the branch `table-macros`); `rust_compiler::macro_made_code_is_placed_alike`,
+`jit_lines::a_macros_code_is_at_its_use`.
+
+Not yet: an image's and a `.fasl`'s words hold ids whose entries are not
+written beside them (read elsewhere: "from where not known"); an image's
+entries immortal; `copy_graph_from` carrying a word's entries. Later (the
+user's): the provenance as a heap object, weakly interned, once the
+binary has a portion in the heap's own format (§161, §242).
+
+## 250. The CLI's sessions place a macro's code by position in the form's text (found 2026-11-11)
+
+On the machines that compile a form from its text written out (the
+native convention's, `session.rs`), code is placed at characters of that
+text, and `sources::resolve` maps a character to the form's innermost
+datum there, by position. For a form a macro expanded, the text compiled
+is the expansion's and the datums the form's, so a place may map to
+another datum: `(spin (+ n 1))`, made by `(again spin n)`, mapped to
+`(spin 1)` beside it (the same line, by luck). Lines and `fx-frame`'s
+provenance there are only as good as that mapping. To place such code by
+the expanded form's own datums (their spans, expansion and all), or to
+give it provenance ids as the trees' compile does.

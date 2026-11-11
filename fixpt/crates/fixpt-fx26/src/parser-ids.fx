@@ -18,9 +18,10 @@
 (define parser-types ((proj (load-module "fx26:parser-types.fx") rs re rm rc rp)))
 (define tables (load-module "fx26:table.fx"))
 (import tables make-table table-ref table-set! (type table))
-(import parser-types e-var e-int e-bool e-str e-char e-float e-sym e-unit e-lambda e-app e-plambda
-        e-proj e-if e-letrec e-let e-begin e-prompt e-letregion e-rlambda e-the e-convention
-        e-bloblet e-product e-extract e-sum e-tagcase e-module e-with t-define t-define-rec t-exp
+(import parser-types e-var e-int e-bool e-str e-char e-float e-sym e-quote e-unit e-lambda e-app
+        e-plambda e-proj e-if e-letrec e-let e-begin e-prompt e-letregion e-rlambda e-the
+        e-convention e-bloblet e-product e-extract e-sum e-tagcase e-module e-with t-define
+        t-define-rec t-exp
         (type exp top exp-list let-list letrec-list arm-list mod-items top-list keys given))
 (define readings ((proj (load-module "fx26:readings.fx") rs re rm rc)))
 (import readings fold1 read-again-reading)
@@ -142,6 +143,9 @@
         (e-sym (v a b k kr)
                (let ((n (next-kth t a b)))
                     (if (and (= n k) (= reading kr)) x (e-sym v a b n reading))))
+        (e-quote (v a b k kr)
+                 (let ((n (next-kth t a b)))
+                      (if (and (= n k) (= reading kr)) x (e-quote v a b n reading))))
         (e-unit (a b k kr)
                 (let ((n (next-kth t a b)))
                      (if (and (= n k) (= reading kr)) x (e-unit a b n reading))))
@@ -215,10 +219,10 @@
         (e-module (items a b k kr)
           (let* ((n (next-kth t a b)) (items2 (number-items t items)))
             (if (and (= n k) (= reading kr) (eq? items items2)) x (e-module items2 a b n reading))))
-        (e-with (m body a b k kr)
+        (e-with (m body a b k kr wrl)
           (let* ((n (next-kth t a b)) (body2 (number-exp t body)))
             (if (and (= n k) (= reading kr) (eq? body body2)) x
-                (e-with m body2 a b n reading))))))))
+                (e-with m body2 a b n reading wrl))))))))
   (number-exps (->* (seen exp-list) exp-list)
     (lambda (t xs)
       (if (null? xs)

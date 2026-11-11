@@ -113,7 +113,7 @@
   (k-synth (->* (kx) k-te)
     (lambda (x)
       (let* ((was (k-entered x)) (r (k-synth-node x)) (e (k-frozen x (extract r 2))))
-        (begin (k-note-effect x e) (k-kill-paths e)
+        (begin (k-note-effect x e) (k-kill-paths e) (if (k-any-held?) (k-kept x (extract r 1)) #u)
                (k-left was) (k-path-te x (k-te (extract r 1) e))))))
   (k-synth-node (->* (kx) k-te)
     (lambda (x)
@@ -127,7 +127,8 @@
         (x-lambda (ps body a b abk abkr) (k-synth-lambda-as x nil -1 nil))
         (x-app (f args a b abk abkr) (k-split-app x f args -1 k-synth-app k-synth))
         (x-the (t0 e a b abk abkr)
-          (let ((t (k-resolve-selects t0 a b))) (k-sized e (k-te t (k-check e t)))))
+          (if (pair? (k-sealed-members t0)) (k-the-sealed e t0 k-synth k-expect)
+              (let ((t (k-resolve-selects t0 a b))) (k-sized e (k-te t (k-check e t))))))
         (x-convention (c e a b abk abkr)
           (let* ((r (k-synth e)) (t (k-resolve (extract r 1))))
             (tagcase (k-get t)
@@ -377,8 +378,7 @@
           (k-fail-at "`certify-acyclic` takes only a variable `acyclic?` has just found acyclic" x)
           (let* ((r (k-synth (car args))) (t (extract r 1)))
             (if (k-is-data? t) (k-te (k-finitized t) (extract r 2)) (k-fail-not-data t x))))))
-  ;; An application's operator, where a second-class standard operation may
-  ;; be named.
+  ;; An application's operator, where a second-class standard operation may be named.
   (k-synth-operator (->* (kx) k-te)
     (lambda (f)
       (let ((outer (get k-operator)))
@@ -991,10 +991,10 @@
             (tagcase (k-get mt)
               (ty-module (abs ds vs)
                 (let* ((used (k-with-used-at vs (k-include-free m (k-free-vars body)) 0 a b m))
+                       (held (k-with-held x m mt (k-comp-names (extract used 1)) a b))
                        (noted (k-note-with
                                 (product (1 (k-at-of x)) (2 (k-comp-names (extract used 1)))
-                                         (3 (extract used 2)))))
-                       (naming (k-naming-effect m mt))
+                                         (3 (extract used 2))))) (naming (k-naming-effect m mt))
                        (r (k-in-scope-parts (extract used 1) body expected k-synth-as
                                             a b (k-start body) (k-end body))))
                   (k-te-masked x (extract r 1) (k-union naming (extract r 2)))))

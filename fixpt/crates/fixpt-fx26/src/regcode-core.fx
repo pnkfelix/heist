@@ -71,6 +71,7 @@
         (e-str (s a b abk abkr) (r-const-value g (wcell-string s) tail))
         (e-float (x a b abk abkr) (r-const-value g (wcell-f64 x) tail))
         (e-sym (s a b abk abkr) (r-const-value g (wcell-symbol s) tail))
+        (e-quote (x a b abk abkr) (r-const-value g (c-quote-cell x) tail))
         (e-unit (a b abk abkr) (r-const-value g (wcell-unit) tail))
         (e-plambda (d body a b abk abkr) (r-exp g body env te tail))
         (e-proj (body ds a b abk abkr) (r-exp g body env te tail))
@@ -108,9 +109,7 @@
         (e-bloblet (op i args got a b abk abkr) (r-bloblet g x env te tail r-exp r-prim))
         (e-prompt (t body h a b abk abkr)
           (let ((ops (r-args-3 (a-e t) (a-e h) (a-thunk body))))
-            (begin
-              (r-call-out g rop-cellular routine-prompt ops env te)
-              (r-done g tail))))
+            (begin (r-call-out g rop-cellular routine-prompt ops env te) (r-done g tail))))
         (e-tagcase (s arms els got a b abk abkr)
           (if (< (r-datum-operand got a b abk abkr) 0) (r-tagcase g s arms els env te tail)
               (r-flat-tagcase g (r-datum-operand got a b abk abkr) s arms els env te tail r-exp
@@ -132,7 +131,7 @@
                 (r-let g (extract (car l) 1) (extract (car l) 2) env te tail))))
         ;; `regcode-modules.fx`'s.
         (e-module (items a b abk abkr) (r-module-or-with g x env te tail))
-        (e-with (m body a b abk abkr) (r-module-or-with g x env te tail)))))))
+        (e-with (m body a b abk abkr wrl) (r-module-or-with g x env te tail)))))))
   ;; The region's name bound, as a `let`'s, to a region entered (never in a
   ;; leaf), and left with the body's value, which is so not in tail
   ;; position.
@@ -1053,7 +1052,7 @@
     (lambda (g x env te tail)
       (tagcase x
         (e-module (items a b abk abkr) (r-module g items env te tail))
-        (e-with (m body a b abk abkr) (r-with g m body a b abk abkr env te tail))
+        (e-with (m body a b abk abkr wrl) (r-with g m body a b abk abkr env te tail))
         (else y (r-decline)))))
   (r-reshape (->* (rgen exp k-picks renv cenv bool) unit)
     (lambda (g x at env te tail)
