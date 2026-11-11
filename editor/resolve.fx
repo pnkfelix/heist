@@ -12,6 +12,11 @@
 ;;; binder is what M-. wants either way.
 (module-parameters ((m-base (load-moduleof "base.fx"))
                     (m-buffer (load-moduleof "buffer.fx" m-base))))
+
+;; Macros: each file defines its own, for now (docs/macros.md).
+(define-syntax loop
+  (syntax-rules ()
+    ((_ go eff ((x t i) ...) r body) (letrec ((go (subr eff (t ...) r) (lambda (x ...) body))) (go i ...)))))
 (hide (define kit-lists (load-module "../kit/lists.fx"))
       (import kit-lists member? find))
 
@@ -76,39 +81,31 @@ and each variant's constructor, `define-rec`'s names, and `import`'s."
                  acc))
             ((string=? head "define-datatype")
              (if (pair? rest)
-                 (letrec ((variants (subr spin (syns-a binders) binders)
-                            (lambda (vs acc)
-                              (if (null? vs) acc
-                                  (variants (cdr vs)
-                                            (let ((is (items-of (car vs))))
-                                              (if (pair? is) (binder-of (car is) acc) acc)))))))
-                   (variants (cdr rest)
-                             (tagcase (car rest)
-                               (lst (is d a b xpn) (if (pair? is) (binder-of (car is) acc) acc))
-                               (else y (binder-of (car rest) acc)))))
+                 (loop variants spin ((vs syns-a (cdr rest)) (acc binders (tagcase (car rest)
+                                                                            (lst (is d a b xpn) (if (pair? is) (binder-of (car is) acc) acc))
+                                                                            (else y (binder-of (car rest) acc))))) binders
+                   (if (null? vs) acc
+                       (variants (cdr vs)
+                                 (let ((is (items-of (car vs))))
+                                   (if (pair? is) (binder-of (car is) acc) acc)))))
                  acc))
             ((string=? head "define-rec")
-             (letrec ((go (subr spin (syns-a binders) binders)
-                        (lambda (bs acc)
-                          (if (null? bs) acc
-                              (go (cdr bs) (let ((is (items-of (car bs))))
-                                             (if (pair? is) (binder-of (car is) acc) acc)))))))
-               (go rest acc)))
+             (loop go spin ((bs syns-a rest) (acc binders acc)) binders
+               (if (null? bs) acc
+                   (go (cdr bs) (let ((is (items-of (car bs))))
+                                  (if (pair? is) (binder-of (car is) acc) acc))))))
             ((string=? head "import")
              ;; `(import m name … (type t …) (effect e …))`: the names, the
              ;; marked groups' too.
-             (letrec ((go (subr spin (syns-a binders) binders)
-                        (lambda (xs acc)
-                          (if (null? xs) acc
-                              (go (cdr xs)
-                                  (tagcase (car xs)
-                                    (lst (is d a b xpn) (go (if (pair? is) (cdr is) nil) acc))
-                                    (else y (binder-of (car xs) acc))))))))
-               (go (if (pair? rest) (cdr rest) nil) acc)))
+             (loop go spin ((xs syns-a (if (pair? rest) (cdr rest) nil)) (acc binders acc)) binders
+               (if (null? xs) acc
+                   (go (cdr xs)
+                       (tagcase (car xs)
+                         (lst (is d a b xpn) (go (if (pair? is) (cdr is) nil) acc))
+                         (else y (binder-of (car xs) acc)))))))
             ((string=? head "hide")
-             (letrec ((go (subr spin (syns-a binders) binders)
-                        (lambda (xs acc) (if (null? xs) acc (go (cdr xs) (defined-binders (car xs) acc))))))
-               (go rest acc)))
+             (loop go spin ((xs syns-a rest) (acc binders acc)) binders
+               (if (null? xs) acc (go (cdr xs) (defined-binders (car xs) acc)))))
             (else acc)))))
 
 "The binders the forms `xs` define, as items in one scope."
@@ -165,13 +162,11 @@ and each variant's constructor, `define-rec`'s names, and `import`'s."
         ;; `(let* …)`: each binding sees those before it.
         ((string=? head "let*")
          (if (pair? rest)
-             (letrec ((go (subr spin ((listof syn acyclic) binders references) references)
-                        (lambda (bs env acc)
-                          (if (null? bs)
-                              (resolve-all (cdr rest) env acc)
-                              (go (cdr bs) (bindings-binders (the syns-a (list (car bs))) env)
-                                  (resolve-binding-values (the syns-a (list (car bs))) env acc))))))
-               (go (items-of (car rest)) env acc))
+             (loop go spin ((bs (listof syn acyclic) (items-of (car rest))) (env binders env) (acc references acc)) references
+               (if (null? bs)
+                   (resolve-all (cdr rest) env acc)
+                   (go (cdr bs) (bindings-binders (the syns-a (list (car bs))) env)
+                       (resolve-binding-values (the syns-a (list (car bs))) env acc))))
              acc))
         ;; `(letrec ((x T e) …) body …)`: every name in scope everywhere.
         ((string=? head "letrec")
@@ -185,50 +180,42 @@ and each variant's constructor, `define-rec`'s names, and `import`'s."
         ;; `(tagcase e (tag x body) (tag (x y) body) (else y body))`.
         ((string=? head "tagcase")
          (if (pair? rest)
-             (letrec ((arms (subr spin ((listof syn acyclic) references) references)
-                        (lambda (as acc)
-                          (if (null? as) acc
-                              (let ((is (items-of (car as))))
-                                (arms (cdr as)
-                                      (if (and (pair? is) (pair? (cdr is)))
-                                          (let ((names (tagcase (car (cdr is))
-                                                         (lst (ns d a b xpn) (params-binders ns env))
-                                                         (else y (binder-of (car (cdr is)) env)))))
-                                            (resolve-all (cdr (cdr is)) names acc))
-                                          acc)))))))
-               (arms (cdr rest) (resolve-syn (car rest) env acc)))
+             (loop arms spin ((as (listof syn acyclic) (cdr rest)) (acc references (resolve-syn (car rest) env acc))) references
+               (if (null? as) acc
+                   (let ((is (items-of (car as))))
+                     (arms (cdr as)
+                           (if (and (pair? is) (pair? (cdr is)))
+                               (let ((names (tagcase (car (cdr is))
+                                              (lst (ns d a b xpn) (params-binders ns env))
+                                              (else y (binder-of (car (cdr is)) env)))))
+                                 (resolve-all (cdr (cdr is)) names acc))
+                               acc)))))
              acc))
         ;; `(typecase e (shape x body) … (else x body))`.
         ((string=? head "typecase")
          (if (pair? rest)
-             (letrec ((arms (subr spin ((listof syn acyclic) references) references)
-                        (lambda (as acc)
-                          (if (null? as) acc
-                              (let ((is (items-of (car as))))
-                                (arms (cdr as)
-                                      (if (and (pair? is) (pair? (cdr is)))
-                                          (resolve-all (cdr (cdr is)) (binder-of (car (cdr is)) env) acc)
-                                          acc)))))))
-               (arms (cdr rest) (resolve-syn (car rest) env acc)))
+             (loop arms spin ((as (listof syn acyclic) (cdr rest)) (acc references (resolve-syn (car rest) env acc))) references
+               (if (null? as) acc
+                   (let ((is (items-of (car as))))
+                     (arms (cdr as)
+                           (if (and (pair? is) (pair? (cdr is)))
+                               (resolve-all (cdr (cdr is)) (binder-of (car (cdr is)) env) acc)
+                               acc)))))
              acc))
         ;; `(case key ((datum …) e …) … (else e …))`: the data are not uses.
         ((string=? head "case")
          (if (pair? rest)
-             (letrec ((clauses (subr spin ((listof syn acyclic) references) references)
-                        (lambda (cs acc)
-                          (if (null? cs) acc
-                              (let ((is (items-of (car cs))))
-                                (clauses (cdr cs) (if (pair? is) (resolve-all (cdr is) env acc) acc)))))))
-               (clauses (cdr rest) (resolve-syn (car rest) env acc)))
+             (loop clauses spin ((cs (listof syn acyclic) (cdr rest)) (acc references (resolve-syn (car rest) env acc))) references
+               (if (null? cs) acc
+                   (let ((is (items-of (car cs))))
+                     (clauses (cdr cs) (if (pair? is) (resolve-all (cdr is) env acc) acc)))))
              acc))
         ;; `(product (label e) …)`: the labels are not uses.
         ((string=? head "product")
-         (letrec ((fields (subr spin ((listof syn acyclic) references) references)
-                    (lambda (fs acc)
-                      (if (null? fs) acc
-                          (let ((is (items-of (car fs))))
-                            (fields (cdr fs) (if (pair? is) (resolve-all (cdr is) env acc) acc)))))))
-           (fields rest acc)))
+         (loop fields spin ((fs (listof syn acyclic) rest) (acc references acc)) references
+           (if (null? fs) acc
+               (let ((is (items-of (car fs))))
+                 (fields (cdr fs) (if (pair? is) (resolve-all (cdr is) env acc) acc))))))
         ;; `(extract e label)`, `(sum tag e)`: the label and tag are not uses.
         ((string=? head "extract") (if (pair? rest) (resolve-syn (car rest) env acc) acc))
         ((string=? head "sum") (resolve-all (second rest) env acc))
@@ -237,11 +224,9 @@ and each variant's constructor, `define-rec`'s names, and `import`'s."
          (resolve-all (second rest) env acc))
         ((string=? head "define-datatype") acc)
         ((string=? head "define-rec")
-         (letrec ((go (subr spin ((listof syn acyclic) references) references)
-                    (lambda (bs acc)
-                      (if (null? bs) acc
-                          (go (cdr bs) (resolve-all (second (items-of (car bs))) env acc))))))
-           (go rest acc)))
+         (loop go spin ((bs (listof syn acyclic) rest) (acc references acc)) references
+           (if (null? bs) acc
+               (go (cdr bs) (resolve-all (second (items-of (car bs))) env acc)))))
         ((string=? head "import") (if (pair? rest) (resolve-syn (car rest) env acc) acc))
         ;; A module: its items' names in scope in all its items.
         ((string=? head "module") (resolve-all rest (items-binders rest env) acc))
@@ -269,9 +254,8 @@ its binder (-1 if not in the text). The text's definitions are in scope
 everywhere in it."
 (define* resolve-text (subr spin ((listof syn acyclic)) references)
   (lambda (xs)
-    (letrec ((rev (subr pure (references references) references)
-               (lambda (l acc) (if (null? l) acc (rev (cdr l) (cons (car l) acc))))))
-      (rev (resolve-all xs (items-binders xs nil) nil) nil))))
+    (loop rev pure ((l references (resolve-all xs (items-binders xs nil) nil)) (acc references nil)) references
+      (if (null? l) acc (rev (cdr l) (cons (car l) acc))))))
 
 "The file a module expression loads: the string of the first
 `(load-module \"f\")` or `(load-input \"f\")` in it, or \"\"."
@@ -283,11 +267,9 @@ everywhere in it."
           (tagcase (car (cdr is))
             (atom (d a b xpn) (typecase d (string s s) (else y "")))
             (else y ""))
-          (letrec ((go (subr spin ((listof syn acyclic)) string)
-                     (lambda (xs)
-                       (if (null? xs) ""
-                           (let ((f (loaded-file (car xs)))) (if (string=? f "") (go (cdr xs)) f))))))
-            (go is))))))
+          (loop go spin ((xs (listof syn acyclic) is)) string
+            (if (null? xs) ""
+                (let ((f (loaded-file (car xs)))) (if (string=? f "") (go (cdr xs)) f))))))))
 
 "The names a text's top-level `import`s bring in from modules it defines
 by loading a file, `(define m (… (load-module \"f\") …))`: each name's

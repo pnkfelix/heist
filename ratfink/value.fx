@@ -19,6 +19,11 @@
 
 (module-parameters ((m-core (load-moduleof "core.fx")) (m-term (load-moduleof "term.fx" m-core))))
 
+;; Macros: each file defines its own, for now (docs/macros.md).
+(define-syntax iterate
+  (syntax-rules ()
+    ((_ go eff ((x t i) ...) r body) (letrec ((go (subr eff (t ...) r) (lambda (x ...) body))) (go i ...)))))
+
 (hide (define kit-lists (load-module "../kit/lists.fx"))
       (import kit-lists map))
 
@@ -117,12 +122,10 @@ many to list."
   (lambda (g v)
     (tagcase v
       (union ms
-        (letrec ((loop (subr rf-st (rf-members rf-members) rf-members)
-                   (lambda (ms acc)
-                     (if (null? ms) (the rf-members (reverse acc))
-                         (let ((g2 (t-and g (extract (car ms) g))))
-                           (loop (cdr ms) (if (rf-false? g2) acc (the rf-members (cons (member g2 (extract (car ms) v)) acc)))))))))
-          (loop ms nil)))
+        (iterate loop rf-st ((ms rf-members ms) (acc rf-members nil)) rf-members
+          (if (null? ms) (the rf-members (reverse acc))
+              (let ((g2 (t-and g (extract (car ms) g))))
+                (loop (cdr ms) (if (rf-false? g2) acc (the rf-members (cons (member g2 (extract (car ms) v)) acc))))))))
       (else x (the rf-members (list (member g v)))))))
 
 "Which values merge into one: those of the same shape (see the top)."
@@ -197,28 +200,24 @@ head; the list itself if nothing changed."
 kind are merged, and if more than one kind is left they make a union."
 (define merge-members (subr rf-st (rf-members) rf-value)
   (lambda (members)
-    (letrec ((loop (subr rf-st (rf-members rf-members) rf-value)
-               (lambda (ms groups)
-                 (if (null? ms)
-                     (let ((groups (the rf-members (reverse groups))))
-                       (cond ((null? groups) rf-unspecified)
-                             ((null? (cdr groups)) (extract (car groups) v))
-                             (else (make-union groups))))
-                     (let* ((m (car ms)) (g (extract m g)) (v (extract m v)))
-                       (cond ((rf-false? g) (loop (cdr ms) groups))
-                             ((rf-union? v) (loop (the rf-members (append (guarded-members g v) (cdr ms))) groups))
-                             (else
-                              (letrec ((find (subr rf-st (rf-members rf-members) rf-value)
-                                         (lambda (gs before)
-                                           (cond ((null? gs) (loop (cdr ms) (the rf-members (cons m groups))))
-                                                 ((same-kind? (extract (car gs) v) v)
-                                                  (let* ((g1 (extract (car gs) g))
-                                                         (gor (t-or g1 g))
-                                                         (mv (merge-same g1 (extract (car gs) v) v)))
-                                                    (loop (cdr ms) (the rf-members (append (reverse before) (cons (member gor mv) (cdr gs)))))))
-                                                 (else (find (cdr gs) (the rf-members (cons (car gs) before))))))))
-                                (find groups nil)))))))))
-      (loop members nil))))
+    (iterate loop rf-st ((ms rf-members members) (groups rf-members nil)) rf-value
+      (if (null? ms)
+          (let ((groups (the rf-members (reverse groups))))
+            (cond ((null? groups) rf-unspecified)
+                  ((null? (cdr groups)) (extract (car groups) v))
+                  (else (make-union groups))))
+          (let* ((m (car ms)) (g (extract m g)) (v (extract m v)))
+            (cond ((rf-false? g) (loop (cdr ms) groups))
+                  ((rf-union? v) (loop (the rf-members (append (guarded-members g v) (cdr ms))) groups))
+                  (else
+                   (iterate find rf-st ((gs rf-members groups) (before rf-members nil)) rf-value
+                     (cond ((null? gs) (loop (cdr ms) (the rf-members (cons m groups))))
+                           ((same-kind? (extract (car gs) v) v)
+                            (let* ((g1 (extract (car gs) g))
+                                   (gor (t-or g1 g))
+                                   (mv (merge-same g1 (extract (car gs) v) v)))
+                              (loop (cdr ms) (the rf-members (append (reverse before) (cons (member gor mv) (cdr gs)))))))
+                           (else (find (cdr gs) (the rf-members (cons (car gs) before)))))))))))))
 
 "When v counts as true, as a Bool term or boolean: Scheme's rule, that
 everything but #f is true."

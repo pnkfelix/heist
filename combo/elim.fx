@@ -15,6 +15,13 @@
 ;;; it comes from, and is added before they are deleted.
 
 (module-parameters ((m-sat (load-moduleof "sat.fx"))))
+
+;; Macros: each file defines its own, for now (docs/macros.md).
+(define-syntax loop
+  (syntax-rules ()
+    ((_ go eff ((x t i) ...) r body) (letrec ((go (subr eff (t ...) r) (lambda (x ...) body))) (go i ...)))))
+(define-syntax when (syntax-rules () ((_ c e ...) (if c (begin e ...) #u))))
+(define-syntax unless (syntax-rules () ((_ c e ...) (if c #u (begin e ...)))))
 (hide (define kit-strings (load-module "../kit/strings.fx"))
       (import kit-strings string-concatenate))
 
@@ -60,17 +67,16 @@ clauses they subsume. stack: the latest elimination first."
 
 (define* proof-line! (subr cb-eff (elim-state string ivec) unit)
   (lambda (st prefix lits)
-    (if (not (extract st proof)) #u
-        (letrec ((go (subr cb-eff (int strings) strings)
-                   (lambda (k acc) (if (= k (array-length lits)) acc (go (+ k 1) (cons " " (cons (int->string (lit->int (array-ref lits k))) acc)))))))
-          (set (extract st proof-lines) (cons (string-concatenate (reverse (cons "0\n" (go 0 (list prefix))))) (get (extract st proof-lines))))))))
+    (unless (not (extract st proof))
+      (letrec ((go (subr cb-eff (int strings) strings)
+                 (lambda (k acc) (if (= k (array-length lits)) acc (go (+ k 1) (cons " " (cons (int->string (lit->int (array-ref lits k))) acc)))))))
+        (set (extract st proof-lines) (cons (string-concatenate (reverse (cons "0\n" (go 0 (list prefix))))) (get (extract st proof-lines))))))))
 
 "A clause's variables, as bits (v mod 32): if c subsumes d (but for a
 literal negated), c's bits are among d's."
 (define* signature (subr cb-eff (ivec) int)
-  (lambda (c) (letrec ((go (subr cb-eff (int int) int)
-                         (lambda (k sig) (if (= k (array-length c)) sig (go (+ k 1) (bitwise-ior sig (arithmetic-shift 1 (bitwise-and (lit-var (array-ref c k)) 31))))))))
-                (go 0 0))))
+  (lambda (c) (loop go cb-eff ((k int 0) (sig int 0)) int
+                (if (= k (array-length c)) sig (go (+ k 1) (bitwise-ior sig (arithmetic-shift 1 (bitwise-and (lit-var (array-ref c k)) 31))))))))
 
 "Add a clause (distinct literals, not a tautology, with no literal of a
 unit): a unit becomes one, and the empty clause makes the CNF
@@ -82,22 +88,20 @@ unsatisfiable."
           (else
            (let ((n (get (extract st nclauses))))
              (begin
-               (if (< n (array-length (get (extract st clauses)))) #u
-                   (begin (set (extract st clauses) (grow-ivecs (get (extract st clauses)) n))
-                          (set (extract st sigs) (grow-ivec (get (extract st sigs)) n 0))))
+               (unless (< n (array-length (get (extract st clauses))))
+                 (set (extract st clauses) (grow-ivecs (get (extract st clauses)) n))
+                 (set (extract st sigs) (grow-ivec (get (extract st sigs)) n 0)))
                (array-set! (get (extract st clauses)) n c)
                (array-set! (get (extract st sigs)) n (signature c))
                (set (extract st nclauses) (+ n 1))
                (set (extract st squeue) (cons n (get (extract st squeue))))
-               (letrec ((go (subr cb-eff (int) unit)
-                          (lambda (k)
-                            (if (= k (array-length c)) #u
-                                (let ((l (array-ref c k)))
-                                  (begin (array-set! (extract st occs) l (cons n (array-ref (extract st occs) l)))
-                                         (array-set! (extract st noccs) l (+ 1 (noccs st l)))
-                                         (array-set! (extract st touched) (lit-var l) #t)
-                                         (go (+ k 1))))))))
-                 (go 0))))))))
+               (loop go cb-eff ((k int 0)) unit
+                 (unless (= k (array-length c))
+                   (let ((l (array-ref c k)))
+                     (begin (array-set! (extract st occs) l (cons n (array-ref (extract st occs) l)))
+                            (array-set! (extract st noccs) l (+ 1 (noccs st l)))
+                            (array-set! (extract st touched) (lit-var l) #t)
+                            (go (+ k 1))))))))))))
 
 (define* no-clause (subr (alloc @cb) () ivec) (lambda () (the ivec (make-array 0 0))))
 
@@ -107,13 +111,12 @@ unsatisfiable."
       (begin
         (proof-line! st "d " c)
         (array-set! (get (extract st clauses)) i (no-clause))
-        (letrec ((go (subr cb-eff (int) unit)
-                   (lambda (k) (if (= k (array-length c)) #u
-                                   (let ((l (array-ref c k)))
-                                     (begin (array-set! (extract st noccs) l (- (noccs st l) 1))
-                                            (array-set! (extract st touched) (lit-var l) #t)
-                                            (go (+ k 1))))))))
-          (go 0))))))
+        (loop go cb-eff ((k int 0)) unit
+          (unless (= k (array-length c))
+            (let ((l (array-ref c k)))
+              (begin (array-set! (extract st noccs) l (- (noccs st l) 1))
+                     (array-set! (extract st touched) (lit-var l) #t)
+                     (go (+ k 1))))))))))
 
 (define el-unit! (subr cb-eff (elim-state int) unit)
   (lambda (st l)
@@ -128,46 +131,40 @@ unsatisfiable."
 (define* without (subr cb-eff (ivec int) ivec)
   (lambda (c x)
     (let ((d (the ivec (make-array (- (array-length c) 1) 0))))
-      (letrec ((go (subr cb-eff (int int) ivec)
-                 (lambda (i j) (cond ((= i (array-length c)) d)
-                                     ((= (array-ref c i) x) (go (+ i 1) j))
-                                     (else (begin (array-set! d j (array-ref c i)) (go (+ i 1) (+ j 1))))))))
-        (go 0 0)))))
+      (loop go cb-eff ((i int 0) (j int 0)) ivec
+        (cond ((= i (array-length c)) d)
+              ((= (array-ref c i) x) (go (+ i 1) j))
+              (else (begin (array-set! d j (array-ref c i)) (go (+ i 1) (+ j 1)))))))))
 
 "Propagate the units: delete the clauses they satisfy, and remove their
 negations from the others."
 (define* el-propagate! (subr cb-eff (elim-state) unit)
   (lambda (st)
-    (if (not (and (st-ok? st) (pair? (get (extract st queue))))) #u
-        (let ((l (car (get (extract st queue)))) (occs (extract st occs)))
-          (begin
-            (set (extract st queue) (cdr (get (extract st queue))))
-            (letrec ((del (subr cb-eff (ints) unit)
-                       (lambda (is) (if (null? is) #u (begin (if (live? (ec st (car is))) (el-delete! st (car is)) #u) (del (cdr is)))))))
-              (del (array-ref occs l)))
-            (array-set! occs l nil)
-            (let ((nl (lit-neg l)))
-              (begin
-                (letrec ((shorten (subr cb-eff (ints) unit)
-                           (lambda (is)
-                             (if (null? is) #u
-                                 (let ((c (ec st (car is))))
-                                   (begin
-                                     (if (and (live? c) (st-ok? st))
-                                         (let ((d (without c nl)))
-                                           (begin (proof-line! st "" d) (el-delete! st (car is)) (el-add! st d)))
-                                         #u)
-                                     (shorten (cdr is))))))))
-                  (shorten (array-ref occs nl)))
-                (array-set! occs nl nil)))
-            (el-propagate! st))))))
+    (unless (not (and (st-ok? st) (pair? (get (extract st queue)))))
+      (let ((l (car (get (extract st queue)))) (occs (extract st occs)))
+        (begin
+          (set (extract st queue) (cdr (get (extract st queue))))
+          (loop del cb-eff ((is ints (array-ref occs l))) unit
+            (unless (null? is) (when (live? (ec st (car is))) (el-delete! st (car is))) (del (cdr is))))
+          (array-set! occs l nil)
+          (let ((nl (lit-neg l)))
+            (begin
+              (loop shorten cb-eff ((is ints (array-ref occs nl))) unit
+                (unless (null? is)
+                  (let ((c (ec st (car is))))
+                    (begin
+                      (when (and (live? c) (st-ok? st))
+                        (let ((d (without c nl)))
+                          (begin (proof-line! st "" d) (el-delete! st (car is)) (el-add! st d))))
+                      (shorten (cdr is))))))
+              (array-set! occs nl nil)))
+          (el-propagate! st))))))
 
 "The live clauses with literal l, which also become l's occurrences."
 (define* live-occs! (subr cb-eff (elim-state int) ints)
   (lambda (st l)
-    (let ((is (letrec ((go (subr cb-eff (ints ints) ints)
-                         (lambda (is acc) (cond ((null? is) acc) ((live? (ec st (car is))) (go (cdr is) (cons (car is) acc))) (else (go (cdr is) acc))))))
-                (go (array-ref (extract st occs) l) nil))))
+    (let ((is (loop go cb-eff ((is ints (array-ref (extract st occs) l)) (acc ints nil)) ints
+                (cond ((null? is) acc) ((live? (ec st (car is))) (go (cdr is) (cons (car is) acc))) (else (go (cdr is) acc))))))
       (begin (array-set! (extract st occs) l is) is))))
 
 ;;; ------------------------------------------------------------ resolving
@@ -179,8 +176,8 @@ negations from the others."
   (lambda (st p)
     (let ((stamp (+ 1 (get (extract st stamp)))))
       (begin (set (extract st stamp) stamp)
-             (letrec ((go (subr cb-eff (int) unit) (lambda (k) (if (= k (array-length p)) #u (begin (array-set! (extract st mark) (array-ref p k) stamp) (go (+ k 1)))))))
-               (go 0))))))
+             (loop go cb-eff ((k int 0)) unit
+               (unless (= k (array-length p)) (array-set! (extract st mark) (array-ref p k) stamp) (go (+ k 1))))))))
 (define* marked? (subr (read @cb) (elim-state int) bool)
   (lambda (st l) (= (array-ref (extract st mark) l) (get (extract st stamp)))))
 
@@ -188,15 +185,13 @@ negations from the others."
 if it is a tautology."
 (define* resolvent-size (subr cb-eff (elim-state ivec ivec int) int)
   (lambda (st p n nx)
-    (letrec ((go (subr cb-eff (int int) int)
-               (lambda (k size)
-                 (if (= k (array-length n)) size
-                     (let ((l (array-ref n k)))
-                       (cond ((= l nx) (go (+ k 1) size))
-                             ((marked? st (lit-neg l)) -1)
-                             ((marked? st l) (go (+ k 1) size))
-                             (else (go (+ k 1) (+ size 1)))))))))
-      (go 0 (- (array-length p) 1)))))
+    (loop go cb-eff ((k int 0) (size int (- (array-length p) 1))) int
+      (if (= k (array-length n)) size
+          (let ((l (array-ref n k)))
+            (cond ((= l nx) (go (+ k 1) size))
+                  ((marked? st (lit-neg l)) -1)
+                  ((marked? st l) (go (+ k 1) size))
+                  (else (go (+ k 1) (+ size 1)))))))))
 
 "The resolvent of the marked clause p (with x) with n, of size literals."
 (define* resolvent (subr cb-eff (elim-state ivec ivec int int) ivec)
@@ -260,13 +255,13 @@ max-resolvent literals."
            (>= (count-resolvents st x pos neg (+ np nn)) 0)
            (let ((rs (build-resolvents st x pos neg)))
              (begin
-               (letrec ((each (subr cb-eff (clause-list (subr cb-eff (ivec) unit)) unit) (lambda (l f) (if (null? l) #u (begin (f (car l)) (each (cdr l) f)))))
-                        (each-i (subr cb-eff (ints) unit) (lambda (l) (if (null? l) #u (begin (el-delete! st (car l)) (each-i (cdr l)))))))
+               (letrec ((each (subr cb-eff (clause-list (subr cb-eff (ivec) unit)) unit) (lambda (l f) (unless (null? l) (f (car l)) (each (cdr l) f))))
+                        (each-i (subr cb-eff (ints) unit) (lambda (l) (unless (null? l) (el-delete! st (car l)) (each-i (cdr l))))))
                  (begin
                    (each rs (lambda ((r ivec)) (proof-line! st "" r)))
                    (set (extract st stack)
-                        (cons (product (x x) (clauses (letrec ((go (subr cb-eff (ints) clause-list) (lambda (is) (if (null? is) nil (cons (ec st (car is)) (go (cdr is)))))))
-                                                        (go (el-append pos neg)))))
+                        (cons (product (x x) (clauses (loop go cb-eff ((is ints (el-append pos neg))) clause-list
+                                                        (if (null? is) nil (cons (ec st (car is)) (go (cdr is)))))))
                               (get (extract st stack))))
                    (each-i pos)
                    (each-i neg)
@@ -286,30 +281,28 @@ max-resolvent literals."
 
 (define subsume-all! (subr cb-eff (elim-state) unit)
   (lambda (st)
-    (if (not (and (st-ok? st) (pair? (get (extract st squeue))) (> (get (extract st budget)) 0))) #u
-        (let ((i (car (get (extract st squeue)))))
-          (begin (set (extract st squeue) (cdr (get (extract st squeue))))
-                 (if (live? (ec st i)) (begin (subsume-with! st i) (el-propagate! st)) #u)
-                 (subsume-all! st))))))
+    (unless (not (and (st-ok? st) (pair? (get (extract st squeue))) (> (get (extract st budget)) 0)))
+      (let ((i (car (get (extract st squeue)))))
+        (begin (set (extract st squeue) (cdr (get (extract st squeue))))
+               (when (live? (ec st i)) (subsume-with! st i) (el-propagate! st))
+               (subsume-all! st))))))
 
 "The literal of c whose variable has the fewest occurrences."
 (define* rarest (subr cb-eff (elim-state ivec) int)
   (lambda (st c)
-    (letrec ((go (subr cb-eff (int int) int)
-               (lambda (k best)
-                 (if (= k (array-length c)) best
-                     (let ((l (array-ref c k)))
-                       (go (+ k 1) (if (< (+ (noccs st l) (noccs st (lit-neg l))) (+ (noccs st best) (noccs st (lit-neg best)))) l best)))))))
-      (go 1 (array-ref c 0)))))
+    (loop go cb-eff ((k int 1) (best int (array-ref c 0))) int
+      (if (= k (array-length c)) best
+          (let ((l (array-ref c k)))
+            (go (+ k 1) (if (< (+ (noccs st l) (noccs st (lit-neg l))) (+ (noccs st best) (noccs st (lit-neg best)))) l best)))))))
 
 (define subsume-with! (subr cb-eff (elim-state int) unit)
   (lambda (st i)
     (let* ((c (ec st i)) (x (rarest st c)))
-      (if (> (+ (noccs st x) (noccs st (lit-neg x))) max-subsume-occs) #u
-          (begin (mark-clause! st c)
-                 (set (extract st limit) (array-length c))
-                 (subsume-each! st i (live-occs! st x))
-                 (subsume-each! st i (live-occs! st (lit-neg x))))))))
+      (unless (> (+ (noccs st x) (noccs st (lit-neg x))) max-subsume-occs)
+        (mark-clause! st c)
+        (set (extract st limit) (array-length c))
+        (subsume-each! st i (live-occs! st x))
+        (subsume-each! st i (live-occs! st (lit-neg x)))))))
 
 ;; What subsume-check finds.
 (define not-subsumed int -1)
@@ -333,19 +326,17 @@ is negated there (0: none)."
 "Check the marked clause i against the clauses js."
 (define subsume-each! (subr cb-eff (elim-state int ints) unit)
   (lambda (st i js)
-    (if (or (null? js) (not (live? (ec st i)))) #u
-        (let* ((j (car js)) (d (ec st j)))
-          (begin
-            (if (and (live? d) (not (= i j)) (>= (array-length d) (get (extract st limit)))
+    (unless (or (null? js) (not (live? (ec st i))))
+      (let* ((j (car js)) (d (ec st j)))
+        (begin
+          (when (and (live? d) (not (= i j)) (>= (array-length d) (get (extract st limit)))
                      (= 0 (bitwise-and (array-ref (get (extract st sigs)) i) (bitwise-not (array-ref (get (extract st sigs)) j)))))
-                (begin
-                  (set (extract st budget) (- (get (extract st budget)) (array-length d)))
-                  (let ((r (subsume-check st d 0 0 0)))
-                    (cond ((= r subsumed) (el-delete! st j))
-                          ((> r 0) (let ((e (without d r))) (begin (proof-line! st "" e) (el-delete! st j) (el-add! st e))))
-                          (else #u))))
-                #u)
-            (subsume-each! st i (cdr js)))))))
+            (set (extract st budget) (- (get (extract st budget)) (array-length d)))
+            (let ((r (subsume-check st d 0 0 0)))
+              (cond ((= r subsumed) (el-delete! st j))
+                    ((> r 0) (let ((e (without d r))) (begin (proof-line! st "" e) (el-delete! st j) (el-add! st e))))
+                    (else #u))))
+          (subsume-each! st i (cdr js)))))))
 
 ;;; ------------------------------------------------------------ rounds
 
@@ -361,11 +352,10 @@ which are then no longer touched."
 (define* candidates (subr cb-eff (elim-state int) ints)
   (lambda (st nvars)
     (let* ((touched (extract st touched))
-           (vs (letrec ((go (subr cb-eff (int ints) ints)
-                          (lambda (v acc) (cond ((= v 0) acc)
-                                                ((array-ref touched v) (begin (array-set! touched v #f) (go (- v 1) (cons v acc))))
-                                                (else (go (- v 1) acc))))))
-                 (go nvars nil)))
+           (vs (loop go cb-eff ((v int nvars) (acc ints nil)) ints
+                 (cond ((= v 0) acc)
+                       ((array-ref touched v) (begin (array-set! touched v #f) (go (- v 1) (cons v acc))))
+                       (else (go (- v 1) acc)))))
            (vec (list->ivec vs))
            (cost (lambda ((v int)) (* (noccs st (+ v v)) (noccs st (+ (+ v v) 1))))))
       (begin (ivec-sort! vec (array-length vec) (lambda ((a int) (b int)) (< (cost a) (cost b))))
@@ -376,13 +366,11 @@ since the last, the fewest occurrences first."
 (define* eliminate-all! (subr cb-eff (elim-state int) unit)
   (lambda (st nvars)
     (let ((vs (candidates st nvars)))
-      (if (null? vs) #u
-          (let ((any? (letrec ((go (subr cb-eff (ints bool) bool)
-                                 (lambda (vs any?)
-                                   (if (or (null? vs) (not (st-ok? st)) (<= (get (extract st budget)) 0)) any?
-                                       (go (cdr vs) (or (and (eligible? st (car vs)) (try-eliminate! st (car vs))) any?))))))
-                        (go vs #f))))
-            (if (and any? (st-ok? st) (> (get (extract st budget)) 0)) (eliminate-all! st nvars) #u))))))
+      (unless (null? vs)
+        (let ((any? (loop go cb-eff ((vs ints vs) (any? bool #f)) bool
+                      (if (or (null? vs) (not (st-ok? st)) (<= (get (extract st budget)) 0)) any?
+                          (go (cdr vs) (or (and (eligible? st (car vs)) (try-eliminate! st (car vs))) any?))))))
+          (when (and any? (st-ok? st) (> (get (extract st budget)) 0)) (eliminate-all! st nvars)))))))
 
 "The literals as a sorted array without duplicates, or an empty one for a
 tautology (a clause read is never empty: lockpick's #f)."
@@ -392,13 +380,11 @@ tautology (a clause read is never empty: lockpick's #f)."
     (let ((v (list->ivec lits)))
       (begin
         (insertion-sort! v)
-        (letrec ((go (subr cb-eff (int ints) normalized)
-                   (lambda (i acc)
-                     (cond ((= i (array-length v)) (product (taut #f) (c (list->ivec (reverse acc)))))
-                           ((and (pair? acc) (= (car acc) (array-ref v i))) (go (+ i 1) acc))
-                           ((and (pair? acc) (= (car acc) (lit-neg (array-ref v i)))) (product (taut #t) (c (no-clause))))
-                           (else (go (+ i 1) (cons (array-ref v i) acc)))))))
-          (go 0 nil))))))
+        (loop go cb-eff ((i int 0) (acc ints nil)) normalized
+          (cond ((= i (array-length v)) (product (taut #f) (c (list->ivec (reverse acc)))))
+                ((and (pair? acc) (= (car acc) (array-ref v i))) (go (+ i 1) acc))
+                ((and (pair? acc) (= (car acc) (lit-neg (array-ref v i)))) (product (taut #t) (c (no-clause))))
+                (else (go (+ i 1) (cons (array-ref v i) acc)))))))))
 
 "What elimination gives: whether the clauses may be satisfiable; if so,
 clauses (lists of literals) to solve, and the stack for `extend-model!`;
@@ -420,46 +406,40 @@ nvars), keeping a proof if `proof`."
                         (proof proof) (proof-lines (new (the strings nil)))
                         (ok (new #t))))))
       (begin
-        (letrec ((add (subr cb-eff ((listof ints acyclic)) unit)
-                   (lambda (cs)
-                     (if (null? cs) #u
-                         (let ((n (normalize (car cs))))
-                           (begin
-                             (if (and (not (extract n taut)) (st-ok? st) (not (exists-unit? st (extract n c))))
-                                 (el-add! st (remove-false st (extract n c)))
-                                 #u)
-                             (add (cdr cs))))))))
-          (add clauses))
+        (loop add cb-eff ((cs (listof ints acyclic) clauses)) unit
+          (unless (null? cs)
+            (let ((n (normalize (car cs))))
+              (begin
+                (when (and (not (extract n taut)) (st-ok? st) (not (exists-unit? st (extract n c))))
+                  (el-add! st (remove-false st (extract n c))))
+                (add (cdr cs))))))
         (el-propagate! st)
         (subsume-all! st)
-        (if (st-ok? st) (eliminate-all! st nvars) #u)
+        (when (st-ok? st) (eliminate-all! st nvars))
         (if (st-ok? st)
             (product (ok #t)
-                     (clauses (append (letrec ((go (subr cb-eff (ints) (listof ints acyclic)) (lambda (l) (if (null? l) nil (cons (list (car l)) (go (cdr l)))))))
-                                        (go (get (extract st units))))
-                                      (letrec ((go (subr cb-eff (int (listof ints acyclic)) (listof ints acyclic))
-                                                 (lambda (i acc) (if (< i 0) acc
-                                                                     (let ((c (ec st i)))
-                                                                       (go (- i 1) (if (live? c) (cons (ivec->list c 0 (array-length c)) acc) acc)))))))
-                                        (go (- (get (extract st nclauses)) 1) nil))))
+                     (clauses (append (loop go cb-eff ((l ints (get (extract st units)))) (listof ints acyclic)
+                                        (if (null? l) nil (cons (list (car l)) (go (cdr l)))))
+                                      (loop go cb-eff ((i int (- (get (extract st nclauses)) 1)) (acc (listof ints acyclic) nil)) (listof ints acyclic)
+                                        (if (< i 0) acc
+                                            (let ((c (ec st i)))
+                                              (go (- i 1) (if (live? c) (cons (ivec->list c 0 (array-length c)) acc) acc)))))))
                      (stack (get (extract st stack)))
                      (proof (get (extract st proof-lines))))
             (product (ok #f) (clauses nil) (stack nil) (proof (get (extract st proof-lines)))))))))
 
 "Whether a literal of c is a unit already."
 (define* exists-unit? (subr cb-eff (elim-state ivec) bool)
-  (lambda (st c) (letrec ((go (subr cb-eff (int) bool) (lambda (k) (and (< k (array-length c)) (or (array-ref (extract st vals) (array-ref c k)) (go (+ k 1)))))))
-                   (go 0))))
+  (lambda (st c) (loop go cb-eff ((k int 0)) bool
+                   (and (< k (array-length c)) (or (array-ref (extract st vals) (array-ref c k)) (go (+ k 1)))))))
 "c without the negations of units (written to the proof if any)."
 (define* remove-false (subr cb-eff (elim-state ivec) ivec)
   (lambda (st c)
-    (letrec ((go (subr cb-eff (ivec int) ivec)
-               (lambda (c k)
-                 (cond ((= k (array-length c)) c)
-                       ((array-ref (extract st vals) (lit-neg (array-ref c k)))
-                        (let ((d (without c (array-ref c k)))) (begin (proof-line! st "" d) (go d k))))
-                       (else (go c (+ k 1)))))))
-      (go c 0))))
+    (loop go cb-eff ((c ivec c) (k int 0)) ivec
+      (cond ((= k (array-length c)) c)
+            ((array-ref (extract st vals) (lit-neg (array-ref c k)))
+             (let ((d (without c (array-ref c k)))) (begin (proof-line! st "" d) (go d k))))
+            (else (go c (+ k 1)))))))
 
 "model: by variable, satisfying the clauses `eliminate` gave; it is changed
 into one of the clauses it was given. Of the clauses of an eliminated x,
@@ -468,30 +448,25 @@ to make the others true."
 (define* extend-model! (subr cb-eff (elim-stack (arrayof bool @cb)) unit)
   (lambda (stack model)
     (let ((true? (lambda ((l int)) (if (lit-negative? l) (not (array-ref model (lit-var l))) (array-ref model (lit-var l))))))
-      (letrec ((each (subr cb-eff (elim-stack) unit)
-                 (lambda (es)
-                   (if (null? es) #u
-                       (let* ((x (extract (car es) x)) (v (lit-var x)))
-                         (begin
-                           (array-set! model v
-                                       (letrec ((go (subr cb-eff (clause-list) bool)
-                                                  (lambda (cs)
-                                                    (and (pair? cs)
-                                                         (let ((c (car cs)))
-                                                           (or (and (ivec-member? x c)
-                                                                    (not (letrec ((any (subr cb-eff (int) bool)
-                                                                                         (lambda (k) (and (< k (array-length c))
-                                                                                                          (or (and (not (= (array-ref c k) x)) (true? (array-ref c k)))
-                                                                                                              (any (+ k 1)))))))
-                                                                           (any 0))))
-                                                               (go (cdr cs))))))))
-                                         (go (extract (car es) clauses))))
-                           (each (cdr es))))))))
-        (each stack)))))
+      (loop each cb-eff ((es elim-stack stack)) unit
+        (unless (null? es)
+          (let* ((x (extract (car es) x)) (v (lit-var x)))
+            (begin
+              (array-set! model v
+                          (loop go cb-eff ((cs clause-list (extract (car es) clauses))) bool
+                            (and (pair? cs)
+                                 (let ((c (car cs)))
+                                   (or (and (ivec-member? x c)
+                                            (not (loop any cb-eff ((k int 0)) bool
+                                                   (and (< k (array-length c))
+                                                        (or (and (not (= (array-ref c k) x)) (true? (array-ref c k)))
+                                                            (any (+ k 1)))))))
+                                       (go (cdr cs)))))))
+              (each (cdr es)))))))))
 
 (define* ivec-member? (subr cb-eff (int ivec) bool)
-  (lambda (x c) (letrec ((go (subr cb-eff (int) bool) (lambda (k) (and (< k (array-length c)) (or (= x (array-ref c k)) (go (+ k 1)))))))
-                  (go 0))))
+  (lambda (x c) (loop go cb-eff ((k int 0)) bool
+                  (and (< k (array-length c)) (or (= x (array-ref c k)) (go (+ k 1)))))))
 "The variables eliminated."
 (define* eliminated-vars (subr spin (elim-stack) ints)
   (lambda (stack) (if (null? stack) nil (cons (lit-var (extract (car stack) x)) (eliminated-vars (cdr stack))))))

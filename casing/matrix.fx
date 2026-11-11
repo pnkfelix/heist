@@ -10,6 +10,11 @@
 (module-parameters ((m-sat (load-moduleof "../combo/sat.fx"))
                     (m-circuit (load-moduleof "circuit.fx" m-sat))))
 
+;; Macros: each file defines its own, for now (docs/macros.md).
+(define-syntax loop
+  (syntax-rules ()
+    ((_ go eff ((x t i) ...) r body) (letrec ((go (subr eff (t ...) r) (lambda (x ...) body))) (go i ...)))))
+
 (define-type matrix (productof (arity int) (cells ivec)))
 
 (define* power (subr spin (int int) int) (lambda (n k) (if (<= k 0) 1 (* n (power n (- k 1))))))
@@ -25,19 +30,17 @@
 (define* m-build (subr cb-eff (int int (subr cb-eff (int) int)) matrix)
   (lambda (n k f)
     (let ((v (the ivec (make-array (power n k) c-false))))
-      (letrec ((go (subr cb-eff (int) matrix)
-                 (lambda (i) (if (>= i (array-length v)) (product (arity k) (cells v))
-                                 (begin (array-set! v i (f i)) (go (+ i 1)))))))
-        (go 0)))))
+      (loop go cb-eff ((i int 0)) matrix
+        (if (>= i (array-length v)) (product (arity k) (cells v))
+            (begin (array-set! v i (f i)) (go (+ i 1))))))))
 
 "Cell by cell."
 (define* m-map2 (subr cb-eff (matrix matrix (subr cb-eff (int int) int)) matrix)
   (lambda (a b f)
     (let* ((s (m-size a)) (v (the ivec (make-array s c-false))))
-      (letrec ((go (subr cb-eff (int) matrix)
-                 (lambda (i) (if (>= i s) (product (arity (m-arity a)) (cells v))
-                                 (begin (array-set! v i (f (m-ref a i) (m-ref b i))) (go (+ i 1)))))))
-        (go 0)))))
+      (loop go cb-eff ((i int 0)) matrix
+        (if (>= i s) (product (arity (m-arity a)) (cells v))
+            (begin (array-set! v i (f (m-ref a i) (m-ref b i))) (go (+ i 1))))))))
 
 (define* m-union (subr cb-eff (circuit matrix matrix) matrix)
   (lambda (c a b) (m-map2 a b (lambda ((x int) (y int)) (c-or2 c x y)))))
@@ -92,9 +95,8 @@ dropped. Arity (+ ka kb -2), at least 1."
 and so on, until paths of n steps."
 (define* m-closure (subr cb-eff (circuit int matrix) matrix)
   (lambda (c n a)
-    (letrec ((go (subr cb-eff (matrix int) matrix)
-               (lambda (r len) (if (>= len n) r (go (m-union c r (m-join c n r r)) (* len 2))))))
-      (go a 1))))
+    (loop go cb-eff ((r matrix a) (len int 1)) matrix
+      (if (>= len n) r (go (m-union c r (m-join c n r r)) (* len 2))))))
 (define* m-rclosure (subr cb-eff (circuit int matrix) matrix)
   (lambda (c n a) (m-union c (m-closure c n a) (m-iden n))))
 
@@ -117,25 +119,22 @@ last is."
   (lambda (c n r s)
     (let* ((k (m-arity s)) (rest (power n (- k 1)))
            (dom (m-build n 1 (lambda ((x int))
-                               (c-or c (letrec ((go (subr cb-eff (int ints) ints)
-                                                  (lambda (j acc) (if (>= j rest) acc (go (+ j 1) (cons (m-ref s (+ (* x rest) j)) acc))))))
-                                         (go 0 nil)))))))
+                               (c-or c (loop go cb-eff ((j int 0) (acc ints nil)) ints
+                                         (if (>= j rest) acc (go (+ j 1) (cons (m-ref s (+ (* x rest) j)) acc)))))))))
       (m-build n k (lambda ((i int)) (c-or2 c (m-ref s i) (c-and2 c (m-ref r i) (c-not (m-ref dom (quotient i rest))))))))))
 
 ;;; ------------------------------------------------------------ formulas
 
 "Every cell's circuit."
 (define* m-cells (subr cb-eff (matrix) ints)
-  (lambda (m) (letrec ((go (subr cb-eff (int ints) ints)
-                         (lambda (i acc) (if (< i 0) acc (go (- i 1) (let ((x (m-ref m i))) (if (= x c-false) acc (cons x acc))))))))
-                (go (- (m-size m) 1) nil))))
+  (lambda (m) (loop go cb-eff ((i int (- (m-size m) 1)) (acc ints nil)) ints
+                (if (< i 0) acc (go (- i 1) (let ((x (m-ref m i))) (if (= x c-false) acc (cons x acc))))))))
 
 (define* m-subset (subr cb-eff (circuit matrix matrix) int)
   (lambda (c a b)
-    (c-and c (letrec ((go (subr cb-eff (int ints) ints)
-                        (lambda (i acc) (if (>= i (m-size a)) acc
-                                            (go (+ i 1) (let ((x (m-ref a i))) (if (= x c-false) acc (cons (c-implies c x (m-ref b i)) acc))))))))
-               (go 0 nil)))))
+    (c-and c (loop go cb-eff ((i int 0) (acc ints nil)) ints
+               (if (>= i (m-size a)) acc
+                   (go (+ i 1) (let ((x (m-ref a i))) (if (= x c-false) acc (cons (c-implies c x (m-ref b i)) acc)))))))))
 (define* m-equal (subr cb-eff (circuit matrix matrix) int)
   (lambda (c a b) (c-and2 c (m-subset c a b) (m-subset c b a))))
 (define* m-some (subr cb-eff (circuit matrix) int) (lambda (c a) (c-or c (m-cells a))))
@@ -203,25 +202,22 @@ operation that wraps, and only when asked."
 (define* i-eq (subr cb-eff (circuit bits bits) int)
   (lambda (c a b)
     (let ((w (max (i-width a) (i-width b))))
-      (c-and c (letrec ((go (subr cb-eff (bits bits) ints)
-                          (lambda (x y) (if (null? x) nil (cons (c-iff c (car x) (car y)) (go (cdr x) (cdr y)))))))
-                 (go (i-ext a w) (i-ext b w)))))))
+      (c-and c (loop go cb-eff ((x bits (i-ext a w)) (y bits (i-ext b w))) ints
+                 (if (null? x) nil (cons (c-iff c (car x) (car y)) (go (cdr x) (cdr y)))))))))
 "`i` ? a : b, bit by bit."
 (define* i-ite (subr cb-eff (circuit int bits bits) bits)
   (lambda (c i a b)
     (let ((w (max (i-width a) (i-width b))))
-      (i-trim (letrec ((go (subr cb-eff (bits bits) bits)
-                         (lambda (x y) (if (null? x) nil (cons (c-ite c i (car x) (car y)) (go (cdr x) (cdr y)))))))
-                (go (i-ext a w) (i-ext b w)))))))
+      (i-trim (loop go cb-eff ((x bits (i-ext a w)) (y bits (i-ext b w))) bits
+                (if (null? x) nil (cons (c-ite c i (car x) (car y)) (go (cdr x) (cdr y)))))))))
 "The sum of integers, added in pairs."
 (define* i-sum (subr cb-eff (circuit (listof bits acyclic)) bits)
   (lambda (c l)
     (cond ((null? l) (i-const 0))
           ((null? (cdr l)) (car l))
-          (else (i-sum c (letrec ((pairs (subr cb-eff ((listof bits acyclic)) (listof bits acyclic))
-                                    (lambda (l) (cond ((null? l) nil) ((null? (cdr l)) l)
-                                                      (else (cons (i-add c (car l) (car (cdr l))) (pairs (cdr (cdr l)))))))))
-                           (pairs l)))))))
+          (else (i-sum c (loop pairs cb-eff ((l (listof bits acyclic) l)) (listof bits acyclic)
+                           (cond ((null? l) nil) ((null? (cdr l)) l)
+                                 (else (cons (i-add c (car l) (car (cdr l))) (pairs (cdr (cdr l))))))))))))
 "`a` wrapped to `w` bits: its value mod 2^w, as a `w`-bit two's complement."
 (define* i-wrap (subr spin (bits int) bits)
   (lambda (a w) (i-trim (take-bits (i-ext a w) w))))
@@ -243,9 +239,8 @@ result is not said (the caller says it)."
                               (t (add-bits c r2 d c-true))                     ; r2 - |b|
                               (ge (c-not (i-sign t))))
                          (go (cdr ns)
-                             (letrec ((pick (subr cb-eff (bits bits) bits)
-                                        (lambda (x y) (if (null? x) nil (cons (c-ite c ge (car x) (car y)) (pick (cdr x) (cdr y)))))))
-                               (pick t r2))
+                             (loop pick cb-eff ((x bits t) (y bits r2)) bits
+                               (if (null? x) nil (cons (c-ite c ge (car x) (car y)) (pick (cdr x) (cdr y)))))
                              (cons ge q)))))))
         (let ((qr (go (reverse ua) (repeat c-false w) nil)))
           (product (q (i-ite c (c-not (c-iff c (i-sign a) (i-sign b))) (i-neg c (extract qr q)) (extract qr q)))
@@ -253,6 +248,5 @@ result is not said (the caller says it)."
 
 "How many of `a`'s tuples there are."
 (define* m-count (subr cb-eff (circuit matrix) bits)
-  (lambda (c a) (i-sum c (letrec ((go (subr cb-eff (ints) (listof bits acyclic))
-                                    (lambda (l) (if (null? l) nil (cons (list (car l) c-false) (go (cdr l)))))))
-                           (go (m-cells a))))))
+  (lambda (c a) (i-sum c (loop go cb-eff ((l ints (m-cells a))) (listof bits acyclic)
+                           (if (null? l) nil (cons (list (car l) c-false) (go (cdr l))))))))

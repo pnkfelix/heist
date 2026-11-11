@@ -13,6 +13,11 @@
 
 (module-parameters ((m-core (load-moduleof "core.fx")) (m-print (load-moduleof "print.fx" m-core))))
 
+;; Macros: each file defines its own, for now (docs/macros.md).
+(define-syntax iterate
+  (syntax-rules ()
+    ((_ go eff ((x t i) ...) r body) (letrec ((go (subr eff (t ...) r) (lambda (x ...) body))) (go i ...)))))
+
 (hide (define kit-lists (load-module "../kit/lists.fx"))
       (import kit-lists map for-each filter find))
 
@@ -124,15 +129,13 @@ one binding for each match."
 "The expansion of form x, a use of macro m."
 (define expand-macro (subr rf-eff (rf-macro rf-value syntax-error-proc) rf-value)
   (lambda (m x error)
-    (letrec ((loop (subr rf-eff ((listof rf-rule acyclic)) rf-value)
-               (lambda (rules)
-                 (if (null? rules)
-                     (error "no syntax-rules pattern matches" (strip x))
-                     (tagcase (match m (extract (car rules) pattern) (rf-cdr x) nil)
-                       (some b (transcribe m (extract (car rules) template) b
-                                           (the (table symbol symbol @rf) (make-table symbol-hash symbol=?)) error))
-                       (none u (loop (cdr rules))))))))
-      (loop (extract m rules)))))
+    (iterate loop rf-eff ((rules (listof rf-rule acyclic) (extract m rules))) rf-value
+      (if (null? rules)
+          (error "no syntax-rules pattern matches" (strip x))
+          (tagcase (match m (extract (car rules) pattern) (rf-cdr x) nil)
+            (some b (transcribe m (extract (car rules) template) b
+                                (the (table symbol symbol @rf) (make-table symbol-hash symbol=?)) error))
+            (none u (loop (cdr rules))))))))
 
 (define ellipsis? (subr rf-st (rf-macro rf-value) bool)
   (lambda (m x) (tagcase x (sym s (eq? (strip-name s) (strip-name (extract m ellipsis)))) (else y #f))))
@@ -154,25 +157,23 @@ one binding for each match."
                   (min-after (rf-length after))
                   (available (rf-length f)))
              (if (< available min-after) (sum none #u)
-                 (letrec ((collect (subr rf-eff (rf-value int (listof mbindings acyclic)) maybe-mbindings)
-                            (lambda (f k matches)
-                              (if (= k 0)
-                                  (tagcase (match m after f b)
-                                    (none u (sum none #u))
-                                    (some b2
-                                      (sum some
-                                           (the mbindings
-                                             (append (map (lambda ((v symbol))
-                                                            (product (var v)
-                                                                     (b (sum many (map (lambda ((mb mbindings))
-                                                                              (tagcase (mb-assq v mb) (some x x) (none u (sum one rf-nil))))
-                                                                            (reverse matches))))))
-                                                          (pattern-vars m (rf-car p)))
-                                                     b2)))))
-                                  (tagcase (match m (rf-car p) (rf-car f) nil)
-                                    (none u (sum none #u))
-                                    (some mb (collect (rf-cdr f) (- k 1) (the (listof mbindings acyclic) (cons mb matches)))))))))
-                   (collect f (- available min-after) nil)))))
+                 (iterate collect rf-eff ((f rf-value f) (k int (- available min-after)) (matches (listof mbindings acyclic) nil)) maybe-mbindings
+                   (if (= k 0)
+                       (tagcase (match m after f b)
+                         (none u (sum none #u))
+                         (some b2
+                           (sum some
+                                (the mbindings
+                                  (append (map (lambda ((v symbol))
+                                                 (product (var v)
+                                                          (b (sum many (map (lambda ((mb mbindings))
+                                                                   (tagcase (mb-assq v mb) (some x x) (none u (sum one rf-nil))))
+                                                                 (reverse matches))))))
+                                               (pattern-vars m (rf-car p)))
+                                          b2)))))
+                       (tagcase (match m (rf-car p) (rf-car f) nil)
+                         (none u (sum none #u))
+                         (some mb (collect (rf-cdr f) (- k 1) (the (listof mbindings acyclic) (cons mb matches))))))))))
           ((rf-pair? p)
            (if (not (rf-pair? f)) (sum none #u)
                (tagcase (match m (rf-car p) (rf-car f) b)
@@ -223,14 +224,12 @@ one binding for each match."
                        ((and (not escaped?) (rf-pair? t) (ellipsis? m (rf-car t)) (rf-pair? (rf-cdr t)))
                         (walk (rf-cadr t) b #t))
                        ((and (not escaped?) (rf-pair? t) (rf-pair? (rf-cdr t)) (ellipsis? m (rf-cadr t)))
-                        (letrec ((count (subr rf-eff (rf-value int) rf-value)
-                                   (lambda (rest depth)
-                                     (if (and (rf-pair? rest) (ellipsis? m (rf-car rest)))
-                                         (count (rf-cdr rest) (+ depth 1))
-                                         (let* ((repeated (repeat (rf-car t) b depth))
-                                                (after (walk rest b escaped?)))
-                                           (rf-append2 repeated after))))))
-                          (count (rf-cddr t) 1)))
+                        (iterate count rf-eff ((rest rf-value (rf-cddr t)) (depth int 1)) rf-value
+                          (if (and (rf-pair? rest) (ellipsis? m (rf-car rest)))
+                              (count (rf-cdr rest) (+ depth 1))
+                              (let* ((repeated (repeat (rf-car t) b depth))
+                                     (after (walk rest b escaped?)))
+                                (rf-append2 repeated after)))))
                        ((rf-pair? t)
                         (let* ((a (walk (rf-car t) b escaped?))
                                (d (walk (rf-cdr t) b escaped?)))
@@ -246,18 +245,16 @@ one binding for each match."
                    (begin
                      (if (null? vars) (error "ellipsis after a template with no pattern variable under one" (strip t)) #u)
                      (if (not (all-equal? lengths)) (error "pattern variables under one ellipsis matched different numbers of forms" (strip t)) #u)
-                     (letrec ((each (subr rf-eff (int rf-value) rf-value)
-                                (lambda (i acc)
-                                  (if (= i (car lengths))
-                                      (rf-reverse-append acc)
-                                      (let* ((bi (the mbindings
-                                                   (append (map (lambda ((v symbol))
-                                                                  (product (var v) (b (list-ref-mbind (items-of (mb-assq v b)) i))))
-                                                                vars)
-                                                           b)))
-                                             (part (if (= depth 1) (rf-list1 (walk sub bi #f)) (repeat sub bi (- depth 1)))))
-                                        (each (+ i 1) (rf-cons part acc)))))))
-                       (each 0 rf-nil)))))))
+                     (iterate each rf-eff ((i int 0) (acc rf-value rf-nil)) rf-value
+                       (if (= i (car lengths))
+                           (rf-reverse-append acc)
+                           (let* ((bi (the mbindings
+                                        (append (map (lambda ((v symbol))
+                                                       (product (var v) (b (list-ref-mbind (items-of (mb-assq v b)) i))))
+                                                     vars)
+                                                b)))
+                                  (part (if (= depth 1) (rf-list1 (walk sub bi #f)) (repeat sub bi (- depth 1)))))
+                             (each (+ i 1) (rf-cons part acc))))))))))
       (walk t b #f))))
 (define items-of (subr rf-st ((sumof (none unit) (some mbind))) (listof mbind acyclic))
   (lambda (x) (tagcase x (some mb (tagcase mb (many items items) (one v nil))) (none u nil))))
@@ -268,6 +265,5 @@ one binding for each match."
 "acc is a list of lists, last first: them appended, first first."
 (define rf-reverse-append (subr rf-st (rf-value) rf-value)
   (lambda (acc)
-    (letrec ((go (subr rf-st (rf-value rf-value) rf-value)
-               (lambda (acc result) (if (rf-pair? acc) (go (rf-cdr acc) (rf-append2 (rf-car acc) result)) result))))
-      (go acc rf-nil))))
+    (iterate go rf-st ((acc rf-value acc) (result rf-value rf-nil)) rf-value
+      (if (rf-pair? acc) (go (rf-cdr acc) (rf-append2 (rf-car acc) result)) result))))

@@ -12,6 +12,11 @@
 ;;; variable the first time an assertion reaches it.
 
 (module-parameters ((m-sat (load-moduleof "../combo/sat.fx"))))
+
+;; Macros: each file defines its own, for now (docs/macros.md).
+(define-syntax loop
+  (syntax-rules ()
+    ((_ go eff ((x t i) ...) r body) (letrec ((go (subr eff (t ...) r) (lambda (x ...) body))) (go i ...)))))
 (hide (define kit-lists (load-module "../kit/lists.fx"))
       (import kit-lists list-sort)
       (define kit-numbers (load-module "../kit/numbers.fx"))
@@ -50,15 +55,13 @@ the solver they go to."
   (define* widen-ivec (subr cb-eff (ivec int) ivec)
     (lambda (v n)
       (let ((w (the ivec (make-array n 0))))
-        (letrec ((go (subr cb-eff (int) ivec)
-                   (lambda (i) (if (>= i (array-length v)) w (begin (array-set! w i (array-ref v i)) (go (+ i 1)))))))
-          (go 0)))))
+        (loop go cb-eff ((i int 0)) ivec
+          (if (>= i (array-length v)) w (begin (array-set! w i (array-ref v i)) (go (+ i 1))))))))
   (define* widen-args (subr cb-eff ((arrayof ints @cb) int) (arrayof ints @cb))
     (lambda (v n)
       (let ((w (the (arrayof ints @cb) (make-array n (the ints nil)))))
-        (letrec ((go (subr cb-eff (int) (arrayof ints @cb))
-                   (lambda (i) (if (>= i (array-length v)) w (begin (array-set! w i (array-ref v i)) (go (+ i 1)))))))
-          (go 0)))))
+        (loop go cb-eff ((i int 0)) (arrayof ints @cb)
+          (if (>= i (array-length v)) w (begin (array-set! w i (array-ref v i)) (go (+ i 1))))))))
   (define* mix (subr pure (int int) int) (lambda (h x) (bitwise-and (+ (* h 31) x) 281474976710655)))
   (define* hash-ints (subr spin (int ints) int)
     (lambda (h l) (if (null? l) h (hash-ints (mix h (+ (car l) 1099511627776)) (cdr l)))))
@@ -131,18 +134,16 @@ duplicates one, none true, one itself."
                 ((null? (cdr as)) (car as))
                 (else
                  (let* ((h (hash-ints 7 as)) (b (get (extract c buckets))))
-                   (letrec ((look (subr cb-eff (int) int)
-                              (lambda (n)
-                                (cond ((= n 0) (new-node! c 1 as h))
-                                      ((and (= (array-ref (get (extract c hashes)) n) h)
-                                            (same-ints? (array-ref (get (extract c args)) n) as))
-                                       n)
-                                      (else (look (array-ref (get (extract c chain)) n)))))))
-                     (look (array-ref b (modulo h (array-length b)))))))))))))
+                   (loop look cb-eff ((n int (array-ref b (modulo h (array-length b))))) int
+                     (cond ((= n 0) (new-node! c 1 as h))
+                           ((and (= (array-ref (get (extract c hashes)) n) h)
+                                 (same-ints? (array-ref (get (extract c args)) n) as))
+                            n)
+                           (else (look (array-ref (get (extract c chain)) n)))))))))))))
 
 (define* c-or (subr cb-eff (circuit ints) int)
-  (lambda (c xs) (c-not (c-and c (letrec ((neg (subr spin (ints) ints) (lambda (l) (if (null? l) nil (cons (- 0 (car l)) (neg (cdr l)))))))
-                                   (neg xs))))))
+  (lambda (c xs) (c-not (c-and c (loop neg spin ((l ints xs)) ints
+                                   (if (null? l) nil (cons (- 0 (car l)) (neg (cdr l)))))))))
 (define* c-and2 (subr cb-eff (circuit int int) int) (lambda (c a b) (c-and c (list a b))))
 (define* c-or2 (subr cb-eff (circuit int int) int) (lambda (c a b) (c-or c (list a b))))
 (define* c-implies (subr cb-eff (circuit int int) int) (lambda (c a b) (c-or c (list (c-not a) b))))
@@ -159,9 +160,8 @@ duplicates one, none true, one itself."
                (lambda (l acc)
                  (if (null? l) acc
                      (pairs (cdr l)
-                            (letrec ((against (subr cb-eff (ints ints) ints)
-                                       (lambda (m acc) (if (null? m) acc (against (cdr m) (cons (c-or2 c (c-not (car l)) (c-not (car m))) acc))))))
-                              (against (cdr l) acc)))))))
+                            (loop against cb-eff ((m ints (cdr l)) (acc ints acc)) ints
+                              (if (null? m) acc (against (cdr m) (cons (c-or2 c (c-not (car l)) (c-not (car m))) acc)))))))))
       (c-and c (pairs xs nil)))))
 (define* c-exactly-one (subr cb-eff (circuit ints) int)
   (lambda (c xs) (c-and2 c (c-or c xs) (c-at-most-one c xs))))
@@ -182,13 +182,11 @@ duplicates one, none true, one itself."
                         ;; g = AND(as): g -> a for each a, and (AND as) -> g
                         (let* ((as (array-ref (get (extract c args)) n))
                                (g (make-lit v #f)) (ng (make-lit v #t)))
-                          (letrec ((each (subr cb-eff (ints ints) unit)
-                                     (lambda (l negs)
-                                       (if (null? l) (begin (sat-add-clause! (extract c solver) (cons g negs)) #u)
-                                           (let ((a (c-lit! c (car l))))
-                                             (begin (sat-add-clause! (extract c solver) (list ng a))
-                                                    (each (cdr l) (cons (bitwise-xor a 1) negs))))))))
-                            (each as nil)))
+                          (loop each cb-eff ((l ints as) (negs ints nil)) unit
+                            (if (null? l) (begin (sat-add-clause! (extract c solver) (cons g negs)) #u)
+                                (let ((a (c-lit! c (car l))))
+                                  (begin (sat-add-clause! (extract c solver) (list ng a))
+                                         (each (cdr l) (cons (bitwise-xor a 1) negs)))))))
                         #u)
                     (make-lit v (< x 0))))))))))
 
@@ -212,13 +210,11 @@ input, else as its inputs say."
                    (let ((v (array-ref (get (extract c vars)) n)))
                      (cond ((> v 0) (sat-value (extract c solver) v))
                            ((= (array-ref (get (extract c kinds)) n) 0) #f)
-                           (else (letrec ((all (subr cb-eff (ints) bool)
-                                            (lambda (l) (or (null? l) (and (c-value c (car l)) (all (cdr l)))))))
-                                   (all (array-ref (get (extract c args)) n)))))))))
+                           (else (loop all cb-eff ((l ints (array-ref (get (extract c args)) n))) bool
+                                   (or (null? l) (and (c-value c (car l)) (all (cdr l)))))))))))
         (if (< x 0) (not b) b)))))
 
 "The SAT variables made so far, and the gates."
 (define* c-sat-vars (subr (maxeff (read @cb) spin) (circuit) int)
-  (lambda (c) (letrec ((go (subr (maxeff (read @cb) spin) (int int) int)
-                         (lambda (i k) (if (>= i (get (extract c count))) k (go (+ i 1) (if (> (array-ref (get (extract c vars)) i) 0) (+ k 1) k))))))
-                (go 2 1))))
+  (lambda (c) (loop go (maxeff (read @cb) spin) ((i int 2) (k int 1)) int
+                (if (>= i (get (extract c count))) k (go (+ i 1) (if (> (array-ref (get (extract c vars)) i) 0) (+ k 1) k))))))

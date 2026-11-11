@@ -12,6 +12,11 @@
 
 (module-parameters ((m-core (load-moduleof "core.fx")) (m-numbers (load-moduleof "numbers.fx" m-core))))
 
+;; Macros: each file defines its own, for now (docs/macros.md).
+(define-syntax iterate
+  (syntax-rules ()
+    ((_ go eff ((x t i) ...) r body) (letrec ((go (subr eff (t ...) r) (lambda (x ...) body))) (go i ...)))))
+
 (hide (define kit-numbers (load-module "../kit/numbers.fx"))
       (import kit-numbers expt))
 (hide (define kit-strings (load-module "../kit/strings.fx"))
@@ -34,9 +39,8 @@
 (define source-file (subr rf-st (rf-value) string)
   (lambda (x)
     (let ((at (source-location x)))
-      (letrec ((loop (subr rf-st (int) string)
-                 (lambda (i) (cond ((< i 0) "") ((char=? (string-ref at i) #\:) (substring at 0 i)) (else (loop (- i 1)))))))
-        (loop (- (string-length at) 1))))))
+      (iterate loop rf-st ((i int (- (string-length at) 1))) string
+        (cond ((< i 0) "") ((char=? (string-ref at i) #\:) (substring at 0 i)) (else (loop (- i 1))))))))
 
 ;;; ------------------------------------------------------------ atoms
 
@@ -48,12 +52,10 @@
 (define parse-digits (subr rf-st (string int int int) (sumof (none unit) (some int)))
   (lambda (s i j radix)
     (if (>= i j) (sum none #u)
-        (letrec ((go (subr rf-st (int int) (sumof (none unit) (some int)))
-                   (lambda (k acc)
-                     (if (>= k j) (sum some acc)
-                         (let ((d (digit-value (string-ref s k) radix)))
-                           (if (< d 0) (sum none #u) (go (+ k 1) (+ (* acc radix) d))))))))
-          (go i 0)))))
+        (iterate go rf-st ((k int i) (acc int 0)) (sumof (none unit) (some int))
+          (if (>= k j) (sum some acc)
+              (let ((d (digit-value (string-ref s k) radix)))
+                (if (< d 0) (sum none #u) (go (+ k 1) (+ (* acc radix) d)))))))))
 
 "Whether s[i..j) is a decimal: digits, a point, digits (one at least in
 all), then an exponent."
@@ -273,14 +275,12 @@ not yet read, the file (for places and messages), and fold-case."
             (else c)))))
 (define block-comment! (subr rf-eff (reader) unit)
   (lambda (r)
-    (letrec ((loop (subr rf-eff (int) unit)
-               (lambda (depth)
-                 (let ((c (rd-next! r)))
-                   (cond ((< c 0) (rd-fail r "unterminated #| comment"))
-                         ((and (is? c #\|) (is? (rd-peek r) #\#)) (begin (rd-next! r) (if (= depth 1) #u (loop (- depth 1)))))
-                         ((and (is? c #\#) (is? (rd-peek r) #\|)) (begin (rd-next! r) (loop (+ depth 1))))
-                         (else (loop depth)))))))
-      (loop 1))))
+    (iterate loop rf-eff ((depth int 1)) unit
+      (let ((c (rd-next! r)))
+        (cond ((< c 0) (rd-fail r "unterminated #| comment"))
+              ((and (is? c #\|) (is? (rd-peek r) #\#)) (begin (rd-next! r) (if (= depth 1) #u (loop (- depth 1)))))
+              ((and (is? c #\#) (is? (rd-peek r) #\|)) (begin (rd-next! r) (loop (+ depth 1))))
+              (else (loop depth)))))))
 "The text of an atom from here, after prefix."
 (define token (subr rf-st (reader string) string)
   (lambda (r prefix)
@@ -338,45 +338,39 @@ not yet read, the file (for places and messages), and fold-case."
             (else (atom r (token r "#")))))))
 (define read-list (subr rf-eff (reader) rf-value)
   (lambda (r)
-    (letrec ((loop (subr rf-eff (rf-value) rf-value)
-               (lambda (acc)
-                 (let ((c (skip! r)))
-                   (cond ((< c 0) (rd-fail r "end of file in a list"))
-                         ((get (extract r pending-hash)) (loop (rf-cons (datum r) acc)))
-                         ((or (is? c #\)) (is? c #\])) (begin (rd-next! r) (rf-reverse acc)))
-                         ((and (is? c #\.) (begin (rd-next! r) (delimiter? (rd-peek r))))
-                          (let ((tail (datum r)))
-                            (begin
-                              (let ((d (skip! r))) (if (not (or (is? d #\)) (is? d #\]))) (rd-fail r "bad dotted list") #u))
-                              (rd-next! r)
-                              (append-reverse acc tail))))
-                         ((is? c #\.) (loop (rf-cons (atom r (token r ".")) acc)))
-                         (else (loop (rf-cons (datum r) acc))))))))
-      (loop rf-nil))))
+    (iterate loop rf-eff ((acc rf-value rf-nil)) rf-value
+      (let ((c (skip! r)))
+        (cond ((< c 0) (rd-fail r "end of file in a list"))
+              ((get (extract r pending-hash)) (loop (rf-cons (datum r) acc)))
+              ((or (is? c #\)) (is? c #\])) (begin (rd-next! r) (rf-reverse acc)))
+              ((and (is? c #\.) (begin (rd-next! r) (delimiter? (rd-peek r))))
+               (let ((tail (datum r)))
+                 (begin
+                   (let ((d (skip! r))) (if (not (or (is? d #\)) (is? d #\]))) (rd-fail r "bad dotted list") #u))
+                   (rd-next! r)
+                   (append-reverse acc tail))))
+              ((is? c #\.) (loop (rf-cons (atom r (token r ".")) acc)))
+              (else (loop (rf-cons (datum r) acc))))))))
 (define append-reverse (subr rf-st (rf-value rf-value) rf-value)
   (lambda (rev tail) (if (rf-pair? rev) (append-reverse (rf-cdr rev) (rf-cons (rf-car rev) tail)) tail)))
 (define read-string-text (subr rf-eff (reader) string)
   (lambda (r)
     (begin
       (rd-next! r)
-      (letrec ((loop (subr rf-eff ((listof char acyclic)) string)
-                 (lambda (acc)
-                   (let ((c (rd-next! r)))
-                     (cond ((< c 0) (rd-fail r "end of file in a string"))
-                           ((is? c #\\) (let ((d (rd-next! r))) (loop (cons (integer->char (if (< d 0) 32 d)) (cons #\\ acc)))))
-                           ((is? c #\") (reverse-list->string (the (listof char acyclic) (cons #\" acc))))
-                           (else (loop (cons (integer->char c) acc))))))))
-        (loop (list #\"))))))
+      (iterate loop rf-eff ((acc (listof char acyclic) (list #\"))) string
+        (let ((c (rd-next! r)))
+          (cond ((< c 0) (rd-fail r "end of file in a string"))
+                ((is? c #\\) (let ((d (rd-next! r))) (loop (cons (integer->char (if (< d 0) 32 d)) (cons #\\ acc)))))
+                ((is? c #\") (reverse-list->string (the (listof char acyclic) (cons #\" acc))))
+                (else (loop (cons (integer->char c) acc)))))))))
 (define read-bar-text (subr rf-eff (reader) string)
   (lambda (r)
-    (letrec ((loop (subr rf-eff ((listof char acyclic)) string)
-               (lambda (acc)
-                 (let ((c (rd-next! r)))
-                   (cond ((< c 0) (rd-fail r "end of file in a |symbol|"))
-                         ((is? c #\\) (let ((d (rd-next! r))) (loop (cons (integer->char (if (< d 0) 32 d)) (cons #\\ acc)))))
-                         ((is? c #\|) (reverse-list->string (the (listof char acyclic) (cons #\| acc))))
-                         (else (loop (cons (integer->char c) acc))))))))
-      (loop nil))))
+    (iterate loop rf-eff ((acc (listof char acyclic) nil)) string
+      (let ((c (rd-next! r)))
+        (cond ((< c 0) (rd-fail r "end of file in a |symbol|"))
+              ((is? c #\\) (let ((d (rd-next! r))) (loop (cons (integer->char (if (< d 0) 32 d)) (cons #\\ acc)))))
+              ((is? c #\|) (reverse-list->string (the (listof char acyclic) (cons #\| acc))))
+              (else (loop (cons (integer->char c) acc))))))))
 
 "The data of text, in order, its lists noted as read from file; with
 fold-case, its symbols and character names folded to lower case."
@@ -386,9 +380,8 @@ fold-case, its symbols and character names folded to lower case."
 (define read-text* (subr rf-eff (string string bool bool) rf-vals)
   (lambda (text file fold? note?)
     (let ((r (the reader (product (text text) (pos (new 0)) (line (new 1)) (pending-hash (new #f)) (file file) (fold (new fold?)) (note? note?)))))
-      (letrec ((loop (subr rf-eff (rf-vals) rf-vals)
-                 (lambda (acc) (let ((x (datum r))) (if (rf-eof? x) (reverse acc) (loop (cons x acc)))))))
-        (loop nil)))))
+      (iterate loop rf-eff ((acc rf-vals nil)) rf-vals
+        (let ((x (datum r))) (if (rf-eof? x) (reverse acc) (loop (cons x acc))))))))
 
 "The text of a file, or none if it cannot be read."
 (define file-text (subr rf-eff (string) (sumof (none unit) (some string)))

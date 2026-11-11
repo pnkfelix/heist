@@ -25,6 +25,11 @@
                     (m-smt (load-moduleof "smt.fx" m-sat m-rat m-term m-bv m-arith m-eval m-simplex m-blast))
                     (m-smtlib (load-moduleof "smtlib.fx" m-sat m-rat m-term m-bv m-arith m-eval m-simplex m-blast m-sexp m-smt))
                     (m-serve (load-moduleof "serve.fx" m-sat m-rat m-term m-bv m-arith m-eval m-simplex m-blast m-sexp m-smt m-smtlib))))
+
+;; Macros: each file defines its own, for now (docs/macros.md).
+(define-syntax loop
+  (syntax-rules ()
+    ((_ go eff ((x t i) ...) r body) (letrec ((go (subr eff (t ...) r) (lambda (x ...) body))) (go i ...)))))
 (hide (define kit-strings (load-module "../kit/strings.fx"))
       (import kit-strings string-concatenate))
 
@@ -54,25 +59,23 @@
           (dimacs-bad (why) (begin (say-err (string-append why "\n")) 2))
           (dimacs-ok (nvars items)
             (let* ((s (make-solver)) (proof? (not (string=? proof-file "")))
-                   (clauses (letrec ((go (subr main-eff (dimacs-items) (listof ints acyclic))
-                                       (lambda (l) (if (null? l) nil
-                                                       (tagcase (car l) (d-clause (lits) (cons lits (go (cdr l)))) (d-assume (lits) (go (cdr l))))))))
-                              (go items)))
-                   (nvars (letrec ((go (subr main-eff ((listof ints acyclic) int) int)
-                                     (lambda (cs m) (if (null? cs) m (go (cdr cs) (letrec ((mx (subr spin (ints int) int) (lambda (l m) (if (null? l) m (mx (cdr l) (max m (lit-var (car l))))))))
-                                                                                    (mx (car cs) m)))))))
-                            (go clauses nvars)))
+                   (clauses (loop go main-eff ((l dimacs-items items)) (listof ints acyclic)
+                              (if (null? l) nil
+                                  (tagcase (car l) (d-clause (lits) (cons lits (go (cdr l)))) (d-assume (lits) (go (cdr l)))))))
+                   (nvars (loop go main-eff ((cs (listof ints acyclic) clauses) (m int nvars)) int
+                            (if (null? cs) m (go (cdr cs) (loop mx spin ((l ints (car cs)) (m int m)) int
+                                                            (if (null? l) m (mx (cdr l) (max m (lit-var (car l))))))))))
                    (add-all (lambda ((cs (listof ints acyclic)))
-                              (letrec ((go (subr main-eff ((listof ints acyclic)) unit) (lambda (l) (if (null? l) #u (begin (sat-add-clause! s (car l)) (go (cdr l)))))))
-                                (go cs)))))
+                              (loop go main-eff ((l (listof ints acyclic) cs)) unit
+                                (if (null? l) #u (begin (sat-add-clause! s (car l)) (go (cdr l))))))))
               (begin
                 (if proof? (sat-keep-proof! s) #u)
                 (let* ((el (if elim? (eliminate nvars clauses proof?) (the eliminated (product (ok #t) (clauses clauses) (stack nil) (proof nil)))))
                        (answer (begin
                                  (ensure-vars! s nvars)
                                  (if (extract el ok) (add-all (extract el clauses)) (begin (sat-add-clause! s nil) #u))
-                                 (letrec ((go (subr main-eff (ints) unit) (lambda (l) (if (null? l) #u (begin (sat-remove-var! s (car l)) (go (cdr l)))))))
-                                   (go (eliminated-vars (extract el stack))))
+                                 (loop go main-eff ((l ints (eliminated-vars (extract el stack)))) unit
+                                   (if (null? l) #u (begin (sat-remove-var! s (car l)) (go (cdr l)))))
                                  (sat-solve s nil))))
                   (begin
                     (if (= answer sat-sat) (extend-model! (extract el stack) (sat-model s)) #u)
@@ -82,11 +85,10 @@
                           (failed e (say-err (string-append "combo: cannot write " (string-append proof-file "\n")))))
                         #u)
                     (if stats?
-                        (letrec ((go (subr main-eff ((listof stat acyclic)) unit)
-                                   (lambda (l) (if (null? l) #u
-                                                   (begin (say (string-append "c " (string-append (extract (car l) name) (string-append " " (string-append (int->string (extract (car l) value)) "\n")))))
-                                                          (go (cdr l)))))))
-                          (go (sat-stats s)))
+                        (loop go main-eff ((l (listof stat acyclic) (sat-stats s))) unit
+                          (if (null? l) #u
+                              (begin (say (string-append "c " (string-append (extract (car l) name) (string-append " " (string-append (int->string (extract (car l) value)) "\n")))))
+                                     (go (cdr l)))))
                         #u)
                     (say (dimacs-result s answer))
                     answer))))))))))
@@ -100,18 +102,16 @@
           (dimacs-bad (why) (begin (say-err (string-append why "\n")) 2))
           (dimacs-ok (nvars items)
             (let ((s (make-solver)))
-              (letrec ((go (subr main-eff (dimacs-items) int)
-                         (lambda (l)
-                           (if (null? l) 0
-                               (begin
-                                 (tagcase (car l)
-                                   (d-clause (lits) (begin (sat-add-clause! s lits) #u))
-                                   (d-assume (lits)
-                                     (let ((answer (sat-solve s lits)))
-                                       (begin (say (dimacs-result s answer))
-                                              (if (= answer sat-unsat) (say (dimacs-failed s)) #u)))))
-                                 (go (cdr l)))))))
-                (go items)))))))))
+              (loop go main-eff ((l dimacs-items items)) int
+                (if (null? l) 0
+                    (begin
+                      (tagcase (car l)
+                        (d-clause (lits) (begin (sat-add-clause! s lits) #u))
+                        (d-assume (lits)
+                          (let ((answer (sat-solve s lits)))
+                            (begin (say (dimacs-result s answer))
+                                   (if (= answer sat-unsat) (say (dimacs-failed s)) #u)))))
+                      (go (cdr l))))))))))))
 
 "The value of option `name` in `as`, or \"\"."
 (define* option (subr (maxeff spin (read @a)) (string (listof string @a)) string)
@@ -148,13 +148,11 @@ command is answered as soon as it is read whole."
 (define* run-smtlib-stdin (subr main-eff () int)
   (lambda ()
     (let ((s (make-session)) (r (make-sexp-reader)))
-      (letrec ((go (subr main-eff () int)
-                 (lambda ()
-                   (tagcase (read-line)
-                     (line l (begin (sexp-feed! r (string-append l "\n"))
-                                    (if (= (run-and-say! s r) run-more) (go) (if (session-errors? s) 1 0))))
-                     (else y (begin (sexp-close! r) (run-and-say! s r) (if (session-errors? s) 1 0)))))))
-        (go)))))
+      (loop go main-eff () int
+        (tagcase (read-line)
+          (line l (begin (sexp-feed! r (string-append l "\n"))
+                         (if (= (run-and-say! s r) run-more) (go) (if (session-errors? s) 1 0))))
+          (else y (begin (sexp-close! r) (run-and-say! s r) (if (session-errors? s) 1 0))))))))
 
 (define* main (subr main-eff () int)
   (lambda ()
@@ -166,11 +164,10 @@ command is answered as soon as it is read whole."
             (else
              ;; z3's -in and -smt2 are taken and ignored, so that combo can be
              ;; run as z3 is.
-             (let ((files (letrec ((go (subr main-eff ((listof string @a)) (listof string acyclic))
-                                         (lambda (l) (cond ((null? l) nil)
-                                                           ((or (string=? (car l) "-in") (string=? (car l) "-smt2")) (go (cdr l)))
-                                                           (else (cons (car l) (go (cdr l))))))))
-                            (go as))))
+             (let ((files (loop go main-eff ((l (listof string @a) as)) (listof string acyclic)
+                            (cond ((null? l) nil)
+                                  ((or (string=? (car l) "-in") (string=? (car l) "-smt2")) (go (cdr l)))
+                                  (else (cons (car l) (go (cdr l))))))))
                (cond ((null? files) (run-smtlib-stdin))
                      ((and (null? (cdr files)) (not (char=? (string-ref (car files) 0) #\-))) (run-smtlib-file (car files)))
                      (else (usage)))))))))

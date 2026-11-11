@@ -22,6 +22,11 @@
                     (m-reader (load-moduleof "reader.fx" m-core m-numbers))
                     (m-machine (load-moduleof "machine.fx" m-core m-term m-value))))
 
+;; Macros: each file defines its own, for now (docs/macros.md).
+(define-syntax iterate
+  (syntax-rules ()
+    ((_ go eff ((x t i) ...) r body) (letrec ((go (subr eff (t ...) r) (lambda (x ...) body))) (go i ...)))))
+
 (hide (define kit-lists (load-module "../kit/lists.fx"))
       (import kit-lists map map2 for-each filter))
 (hide (define kit-strings (load-module "../kit/strings.fx"))
@@ -42,9 +47,8 @@ the arguments."
 "The primitive of a name (the latest defined)."
 (define primitive-named (subr rf-st (symbol) rf-value)
   (lambda (name)
-    (letrec ((find (subr rf-st (prim-entries) rf-value)
-               (lambda (l) (cond ((null? l) rf-unspecified) ((eq? (extract (car l) name) name) (extract (car l) value)) (else (find (cdr l)))))))
-      (find (get primitive-table)))))
+    (iterate find rf-st ((l prim-entries (get primitive-table))) rf-value
+      (cond ((null? l) rf-unspecified) ((eq? (extract (car l) name) name) (extract (car l) value)) (else (find (cdr l)))))))
 
 "An arity: n to m arguments, m -1 for any number."
 (define-type arity (productof (min int) (max int)))
@@ -80,20 +84,18 @@ the arguments."
 "(k ctx args), once for each choice of members of the union arguments."
 (define lift (subr rf-eff (rf-ctx rf-vals (subr rf-eff (rf-ctx rf-vals) rf-value)) rf-value)
   (lambda (ctx args k)
-    (letrec ((loop (subr rf-eff (rf-vals rf-vals) rf-value)
-               (lambda (before after)
-                 (cond ((null? after) (k ctx args))
-                       ((rf-union? (car after))
-                        (join-union ctx (car after)
-                                    (lambda ((ctx rf-ctx) (v rf-value)) (lift ctx (vals-append (reverse before) (cons v (cdr after))) k))))
-                       ((rf-choice? (car after))
-                        (tagcase (symbol-choice-members (car after))
-                          (none u (begin (fail! ctx 'unsupported "a choice of too many symbols") rf-unspecified))
-                          (some members
-                            (join-union ctx (make-union members)
-                                        (lambda ((ctx rf-ctx) (v rf-value)) (lift ctx (vals-append (reverse before) (cons v (cdr after))) k))))))
-                       (else (loop (cons (car after) before) (cdr after)))))))
-      (loop nil args))))
+    (iterate loop rf-eff ((before rf-vals nil) (after rf-vals args)) rf-value
+      (cond ((null? after) (k ctx args))
+            ((rf-union? (car after))
+             (join-union ctx (car after)
+                         (lambda ((ctx rf-ctx) (v rf-value)) (lift ctx (vals-append (reverse before) (cons v (cdr after))) k))))
+            ((rf-choice? (car after))
+             (tagcase (symbol-choice-members (car after))
+               (none u (begin (fail! ctx 'unsupported "a choice of too many symbols") rf-unspecified))
+               (some members
+                 (join-union ctx (make-union members)
+                             (lambda ((ctx rf-ctx) (v rf-value)) (lift ctx (vals-append (reverse before) (cons v (cdr after))) k))))))
+            (else (loop (cons (car after) before) (cdr after)))))))
 
 (define describe-call (subr rf-eff (rf-value string) string)
   (lambda (src message) (string-append (datum->string src) ": " message)))
@@ -216,8 +218,8 @@ false if some are integer terms. Terms with other numbers are unsupported."
 
 "Bitwise operations of exact integers (as Larceny's on fixnums)."
 (define host-bitwise (subr rf-st ((subr rf-st (int int) int) int) (subr rf-eff (rf-vals) rf-value))
-  (lambda (op identity) (lambda ((args rf-vals)) (rf-int (letrec ((go (subr rf-st (rf-vals int) int) (lambda (l acc) (if (null? l) acc (go (cdr l) (op acc (rf-int-of (car l))))))))
-                                                          (go args identity))))))
+  (lambda (op identity) (lambda ((args rf-vals)) (rf-int (iterate go rf-st ((l rf-vals args) (acc int identity)) int
+                                                           (if (null? l) acc (go (cdr l) (op acc (rf-int-of (car l))))))))))
 
 (define install-number-primitives! (subr rf-st () unit)
   (lambda ()
@@ -297,9 +299,8 @@ false if some are integer terms. Terms with other numbers are unsupported."
           (let ((base (car args)) (n (car (cdr args))))
             (cond ((check-number-args ctx src args) (num-expt base n))
                   ((and (rf-exact-integer? n) (<= 0 (rf-int-of n)) (<= (rf-int-of n) max-expt))
-                   (letrec ((loop (subr rf-eff (int rf-value) rf-value)
-                              (lambda (i acc) (if (= i (rf-int-of n)) acc (loop (+ i 1) (t-* acc base))))))
-                     (loop 0 (rf-int 1))))
+                   (iterate loop rf-eff ((i int 0) (acc rf-value (rf-int 1))) rf-value
+                     (if (= i (rf-int-of n)) acc (loop (+ i 1) (t-* acc base)))))
                   (else (begin (fail! ctx 'unsupported (describe-call src "a symbolic exponent")) rf-unspecified)))))))))
 (define memv-exact-zero? (subr rf-st (rf-vals) bool)
   (lambda (l) (and (pair? l) (or (rf-eqv? (car l) (rf-int 0)) (memv-exact-zero? (cdr l))))))
@@ -375,26 +376,22 @@ false if some are integer terms. Terms with other numbers are unsupported."
            (ops (the (listof char acyclic) (reverse (string->list (substring s 1 (- (string-length s) 1)))))))
       (define-primitive! name (exactly 1)
         (lambda ((ctx rf-ctx) (src rf-value) (args rf-vals))
-          (letrec ((loop (subr rf-eff ((listof char acyclic) rf-ctx rf-value) rf-value)
-                     (lambda (ops ctx v)
-                       (cond ((null? ops) v)
-                             ((rf-union? v) (join-union ctx v (lambda ((ctx rf-ctx) (v rf-value)) (loop ops ctx v))))
-                             (else (let ((p (pair-arg ctx src v)))
-                                     (loop (cdr ops) ctx (if (char=? (car ops) #\a) (rf-car p) (rf-cdr p)))))))))
-            (loop ops ctx (car args))))))))
+          (iterate loop rf-eff ((ops (listof char acyclic) ops) (ctx rf-ctx ctx) (v rf-value (car args))) rf-value
+            (cond ((null? ops) v)
+                  ((rf-union? v) (join-union ctx v (lambda ((ctx rf-ctx) (v rf-value)) (loop ops ctx v))))
+                  (else (let ((p (pair-arg ctx src v)))
+                          (loop (cdr ops) ctx (if (char=? (car ops) #\a) (rf-car p) (rf-cdr p))))))))))))
 
 "(k ctx elements) for the elements of the list l, once for each way its
 spine can be. Fails if it is not a proper list."
 (define spine (subr rf-eff (rf-ctx rf-value rf-value (subr rf-eff (rf-ctx rf-vals) rf-value)) rf-value)
   (lambda (ctx src l k)
-    (letrec ((walk (subr rf-eff (rf-ctx rf-value rf-vals) rf-value)
-               (lambda (ctx l acc)
-                 (tagcase l
-                   (null u (k ctx (reverse acc)))
-                   (pair p (walk ctx (array-ref p 1) (cons (array-ref p 0) acc)))
-                   (union ms (join-union ctx l (lambda ((ctx rf-ctx) (v rf-value)) (walk ctx v acc))))
-                   (else x (begin (fail! ctx 'error (describe-call src "argument is not a proper list")) rf-unspecified))))))
-      (walk ctx l nil))))
+    (iterate walk rf-eff ((ctx rf-ctx ctx) (l rf-value l) (acc rf-vals nil)) rf-value
+      (tagcase l
+        (null u (k ctx (reverse acc)))
+        (pair p (walk ctx (array-ref p 1) (cons (array-ref p 0) acc)))
+        (union ms (join-union ctx l (lambda ((ctx rf-ctx) (v rf-value)) (walk ctx v acc))))
+        (else x (begin (fail! ctx 'error (describe-call src "argument is not a proper list")) rf-unspecified))))))
 
 "The cases of a symbolic index i within [0, n), as integer-cases gives them."
 (define index-cases (subr rf-eff (rf-value int) (sumof (none unit) (some cases)))
@@ -422,9 +419,8 @@ spine can be. Fails if it is not a proper list."
                    (some cs (if (null? cs) (array-ref v 0)
                                 (merge-members (map (lambda ((c a-case)) (member (extract c cond) (array-ref v (extract c value)))) cs))))
                    (none u
-                     (letrec ((loop (subr rf-eff (int rf-value) rf-value)
-                                (lambda (j acc) (if (< j 0) acc (loop (- j 1) (let ((c (t-= i (rf-int j)))) (merge c (array-ref v j) acc)))))))
-                       (loop (- n 2) (array-ref v (- n 1)))))))))))))
+                     (iterate loop rf-eff ((j int (- n 2)) (acc rf-value (array-ref v (- n 1)))) rf-value
+                       (if (< j 0) acc (loop (- j 1) (let ((c (t-= i (rf-int j)))) (merge c (array-ref v j) acc))))))))))))))
 
 ;;; ------------------------------------------------------------ vectors
 
@@ -457,8 +453,8 @@ spine can be. Fails if it is not a proper list."
     (tagcase v
       (term t #t) (union u #t) (choice c #t)
       (pair p (or (holds-symbolic? (array-ref p 0)) (holds-symbolic? (array-ref p 1))))
-      (vec a (letrec ((loop (subr rf-st (int) bool) (lambda (i) (and (< i (array-length a)) (or (holds-symbolic? (array-ref a i)) (loop (+ i 1)))))))
-               (loop 0)))
+      (vec a (iterate loop rf-st ((i int 0)) bool
+               (and (< i (array-length a)) (or (holds-symbolic? (array-ref a i)) (loop (+ i 1))))))
       (else x #f))))
 
 "(host arg …), whose arguments are lifted: unsupported if one is symbolic,
@@ -466,21 +462,19 @@ or holds something symbolic. An argument that is a choice among a few
 integers is taken one value at a time, in a join."
 (define apply-concrete (subr rf-eff (rf-ctx rf-value host-proc rf-vals) rf-value)
   (lambda (ctx src host args)
-    (letrec ((loop (subr rf-eff (rf-vals rf-vals) rf-value)
-               (lambda (before after)
-                 (cond ((null? after) (apply-concrete-now ctx src host args))
-                       ((and (rf-term? (car after)) (tagcase (integer-cases (car after)) (some c #t) (none u #f)))
-                        (tagcase (integer-cases (car after))
-                          (some cs
-                            (join ctx (map (lambda ((c a-case))
-                                             (make-arm (extract c cond)
-                                                       (lambda ((ctx rf-ctx))
-                                                         (apply-concrete ctx src host (vals-append (reverse before) (cons (rf-int (extract c value)) (cdr after)))))))
-                                           cs)
-                                  #f))
-                          (none u rf-unspecified)))
-                       (else (loop (cons (car after) before) (cdr after)))))))
-      (loop nil args))))
+    (iterate loop rf-eff ((before rf-vals nil) (after rf-vals args)) rf-value
+      (cond ((null? after) (apply-concrete-now ctx src host args))
+            ((and (rf-term? (car after)) (tagcase (integer-cases (car after)) (some c #t) (none u #f)))
+             (tagcase (integer-cases (car after))
+               (some cs
+                 (join ctx (map (lambda ((c a-case))
+                                  (make-arm (extract c cond)
+                                            (lambda ((ctx rf-ctx))
+                                              (apply-concrete ctx src host (vals-append (reverse before) (cons (rf-int (extract c value)) (cdr after)))))))
+                                cs)
+                       #f))
+               (none u rf-unspecified)))
+            (else (loop (cons (car after) before) (cdr after)))))))
 (define apply-concrete-now (subr rf-eff (rf-ctx rf-value host-proc rf-vals) rf-value)
   (lambda (ctx src host args)
     (begin
@@ -614,14 +608,13 @@ integers is taken one value at a time, in a join."
       (define-concrete! 'exact->inexact (exactly 1) (lambda ((a rf-vals)) (on-number "exact->inexact" (car a) (lambda ((v rf-value)) (ok (num-inexact v))))))
       (define-concrete! 'inexact (exactly 1) (lambda ((a rf-vals)) (on-number "inexact" (car a) (lambda ((v rf-value)) (ok (num-inexact v))))))
       (define-concrete! 'symbol=? (at-least 1)
-        (lambda ((a rf-vals)) (ok (rf-bool (letrec ((go (subr rf-st (rf-vals) bool) (lambda (l) (or (null? l) (null? (cdr l)) (and (rf-eqv? (car l) (car (cdr l))) (go (cdr l))))))) (go a))))))
-      (define-concrete! 'gcd (at-least 0) (lambda ((a rf-vals)) (ok (rf-int (letrec ((go (subr rf-st (rf-vals int) int) (lambda (l acc) (if (null? l) acc (go (cdr l) (gcd acc (rf-int-of (car l)))))))) (go a 0))))))
+        (lambda ((a rf-vals)) (ok (rf-bool (iterate go rf-st ((l rf-vals a)) bool (or (null? l) (null? (cdr l)) (and (rf-eqv? (car l) (car (cdr l))) (go (cdr l)))))))))
+      (define-concrete! 'gcd (at-least 0) (lambda ((a rf-vals)) (ok (rf-int (iterate go rf-st ((l rf-vals a) (acc int 0)) int (if (null? l) acc (go (cdr l) (gcd acc (rf-int-of (car l))))))))))
       (define-concrete! 'lcm (at-least 0)
-        (lambda ((a rf-vals)) (ok (rf-int (letrec ((go (subr rf-st (rf-vals int) int)
-                                                     (lambda (l acc) (if (null? l) acc
-                                                                         (let ((x (abs (rf-int-of (car l)))))
-                                                                           (go (cdr l) (if (or (= x 0) (= acc 0)) 0 (quotient (* acc x) (gcd acc x)))))))))
-                                             (go a 1))))))
+        (lambda ((a rf-vals)) (ok (rf-int (iterate go rf-st ((l rf-vals a) (acc int 1)) int
+                                            (if (null? l) acc
+                                                (let ((x (abs (rf-int-of (car l)))))
+                                                  (go (cdr l) (if (or (= x 0) (= acc 0)) 0 (quotient (* acc x) (gcd acc x)))))))))))
       (define-concrete! 'exact-integer-sqrt (exactly 1)
         (lambda ((a rf-vals)) (let* ((n (rf-int-of (car a))) (s (isqrt n))) (ok (sum multiple (list (rf-int s) (rf-int (- n (* s s)))))))))
       (define-concrete! 'rationalize (exactly 2) (lambda ((a rf-vals)) (ok (car a))))
@@ -652,8 +645,8 @@ so bin/ratfink gives it (env -0's output, --environment)."
                  (cond ((>= i (string-length text)) (the (listof env-entry acyclic) (reverse acc)))
                        ((= 0 (char->integer (string-ref text i)))
                         (let* ((entry (substring text start i))
-                               (eq (letrec ((find (subr rf-st (int) int) (lambda (j) (cond ((>= j (string-length entry)) -1) ((char=? (string-ref entry j) #\=) j) (else (find (+ j 1)))))))
-                                     (find 0))))
+                               (eq (iterate find rf-st ((j int 0)) int
+                                     (cond ((>= j (string-length entry)) -1) ((char=? (string-ref entry j) #\=) j) (else (find (+ j 1)))))))
                           (loop (+ i 1) (+ i 1)
                                 (if (< eq 0) acc
                                     (the (listof env-entry acyclic) (cons (product (name (substring entry 0 eq)) (value (substring entry (+ eq 1) (string-length entry)))) acc))))))
@@ -661,9 +654,8 @@ so bin/ratfink gives it (env -0's output, --environment)."
       (set environment (loop 0 0 nil)))))
 (define environment-variable (subr rf-st (string) rf-value)
   (lambda (name)
-    (letrec ((find (subr rf-st ((listof env-entry acyclic)) rf-value)
-               (lambda (l) (cond ((null? l) rf-false) ((string=? (extract (car l) name) name) (rf-str (extract (car l) value))) (else (find (cdr l)))))))
-      (find (get environment)))))
+    (iterate find rf-st ((l (listof env-entry acyclic) (get environment))) rf-value
+      (cond ((null? l) rf-false) ((string=? (extract (car l) name) name) (rf-str (extract (car l) value))) (else (find (cdr l)))))))
 
 ;;; ------------------------------------------------------------ output and errors
 
@@ -744,18 +736,16 @@ gives (guard . none)."
 (define-type footprint-entries (listof footprint-entry acyclic))
 (define footprint (subr rf-eff (rf-value rf-value) footprint-entries)
   (lambda (g v)
-    (letrec ((loop (subr rf-eff (rf-members) footprint-entries)
-               (lambda (ms)
-                 (if (null? ms) nil
-                     (let ((g (extract (car ms) g)) (x (extract (car ms) v)))
-                       (append (tagcase x
-                                 (vec a (list (product (g g) (obj (sum some a)))))
-                                 (inst i (list (product (g g) (obj (sum some (extract i fields))))))
-                                 (pair p (let* ((a (footprint g (array-ref p 0))) (d (footprint g (array-ref p 1)))) (append a d)))
-                                 (null u (the footprint-entries nil))
-                                 (else y (list (product (g g) (obj (sum none #u))))))
-                               (loop (cdr ms))))))))
-      (loop (guarded-members g v)))))
+    (iterate loop rf-eff ((ms rf-members (guarded-members g v))) footprint-entries
+      (if (null? ms) nil
+          (let ((g (extract (car ms) g)) (x (extract (car ms) v)))
+            (append (tagcase x
+                      (vec a (list (product (g g) (obj (sum some a)))))
+                      (inst i (list (product (g g) (obj (sum some (extract i fields))))))
+                      (pair p (let* ((a (footprint g (array-ref p 0))) (d (footprint g (array-ref p 1)))) (append a d)))
+                      (null u (the footprint-entries nil))
+                      (else y (list (product (g g) (obj (sum none #u))))))
+                    (loop (cdr ms))))))))
 
 "(old e) in a postcondition is the value e had on entry. Each (old e) in
 the expressions xs is replaced by a variable; the new expressions, and a
@@ -773,9 +763,8 @@ list of (variable . e), in order."
                           (let ((v (string->symbol (string-append "ratfink-old-" (int->string (+ 1 (list-length (get olds))))))))
                             (begin (set olds (cons (product (var v) (expr (rf-cadr x))) (get olds)))
                                    (rf-sym v))))
-                         (else (letrec ((loop (subr rf-eff (rf-value) rf-value)
-                                          (lambda (x) (if (rf-pair? x) (let* ((a (walk (rf-car x))) (d (loop (rf-cdr x)))) (rf-cons a d)) x))))
-                                 (loop x)))))))
+                         (else (iterate loop rf-eff ((x rf-value x)) rf-value
+                                 (if (rf-pair? x) (let* ((a (walk (rf-car x))) (d (loop (rf-cdr x)))) (rf-cons a d)) x)))))))
         (let ((new (map walk xs)))
           (product (exprs new) (olds (the (listof old-entry acyclic) (reverse (get olds))))))))))
 
@@ -836,20 +825,16 @@ first)."
                   (lambda ((ctx rf-ctx) (ks rf-vals))
                     (let ((k (car ks)))
                       (if (rf-exact-integer? k)
-                          (letrec ((loop (subr rf-eff (rf-ctx rf-value int) rf-value)
-                                     (lambda (ctx l k)
-                                       (cond ((= k 0) l)
-                                             ((rf-pair? l) (loop ctx (rf-cdr l) (- k 1)))
-                                             ((rf-union? l) (join-union ctx l (lambda ((ctx rf-ctx) (v rf-value)) (loop ctx v k))))
-                                             (else (begin (fail! ctx 'error (describe-call src "index out of range")) rf-unspecified))))))
-                            (loop ctx l (rf-int-of k)))
+                          (iterate loop rf-eff ((ctx rf-ctx ctx) (l rf-value l) (k int (rf-int-of k))) rf-value
+                            (cond ((= k 0) l)
+                                  ((rf-pair? l) (loop ctx (rf-cdr l) (- k 1)))
+                                  ((rf-union? l) (join-union ctx l (lambda ((ctx rf-ctx) (v rf-value)) (loop ctx v k))))
+                                  (else (begin (fail! ctx 'error (describe-call src "index out of range")) rf-unspecified))))
                           ;; At a symbolic index, the one of its tails the index picks.
-                          (letrec ((walk (subr rf-eff (rf-ctx rf-value rf-vals) rf-value)
-                                     (lambda (ctx l tails)
-                                       (cond ((rf-pair? l) (walk ctx (rf-cdr l) (cons l tails)))
-                                             ((rf-union? l) (join-union ctx l (lambda ((ctx rf-ctx) (v rf-value)) (walk ctx v tails))))
-                                             (else (select ctx src (reverse (cons l tails)) k))))))
-                            (walk ctx l nil)))))))))
+                          (iterate walk rf-eff ((ctx rf-ctx ctx) (l rf-value l) (tails rf-vals nil)) rf-value
+                            (cond ((rf-pair? l) (walk ctx (rf-cdr l) (cons l tails)))
+                                  ((rf-union? l) (join-union ctx l (lambda ((ctx rf-ctx) (v rf-value)) (walk ctx v tails))))
+                                  (else (select ctx src (reverse (cons l tails)) k)))))))))))
       (define-primitive! 'vector (at-least 0) (lambda ((ctx rf-ctx) (src rf-value) (xs rf-vals)) (new-vector xs)))
       ;; Of a length that is a choice of a few integers, a vector of each, in a join.
       (define-lifted! 'make-vector (between 1 2)
@@ -878,16 +863,15 @@ first)."
                     (else
                      (tagcase (index-cases i n)
                        (some cs (for-each (lambda ((c a-case)) (write! ctx v (extract c value) (merge (extract c cond) x (array-ref v (extract c value))))) cs))
-                       (none u (letrec ((loop (subr rf-eff (int) unit)
-                                          (lambda (j) (if (= j n) #u
-                                                          (begin (write! ctx v j (let ((c (t-= i (rf-int j)))) (merge c x (array-ref v j)))) (loop (+ j 1)))))))
-                                 (loop 0))))))
+                       (none u (iterate loop rf-eff ((j int 0)) unit
+                                 (if (= j n) #u
+                                     (begin (write! ctx v j (let ((c (t-= i (rf-int j)))) (merge c x (array-ref v j)))) (loop (+ j 1)))))))))
               rf-unspecified))))
       (define-lifted! 'vector-fill! (exactly 2)
         (lambda ((ctx rf-ctx) (src rf-value) (args rf-vals))
           (let ((v (vector-arg ctx src (car args))))
-            (letrec ((loop (subr rf-eff (int) rf-value) (lambda (j) (if (= j (array-length v)) rf-unspecified (begin (write! ctx v j (arg2 args)) (loop (+ j 1)))))))
-              (loop 0)))))
+            (iterate loop rf-eff ((j int 0)) rf-value
+              (if (= j (array-length v)) rf-unspecified (begin (write! ctx v j (arg2 args)) (loop (+ j 1))))))))
       (define-lifted! 'vector-copy (between 1 3)
         (lambda ((ctx rf-ctx) (src rf-value) (args rf-vals))
           (let ((r (vector-range ctx src (car args) (cdr args))))
@@ -900,9 +884,8 @@ first)."
               (if (rf-exact-integer? at) #u (fail! ctx 'unsupported (describe-call src "symbolic index")))
               (check! ctx 'error (describe-call src "index out of range")
                       (rf-bool (and (<= 0 (rf-int-of at)) (<= (rf-int-of at) (- (array-length (vector-arg ctx src to)) (- (extract r end) (extract r start)))))))
-              (letrec ((loop (subr rf-eff (int rf-vals) unit)
-                         (lambda (i xs) (if (null? xs) #u (begin (write! ctx (rf-slots-of to) i (car xs)) (loop (+ i 1) (cdr xs)))))))
-                (loop (rf-int-of at) (slots->vals (rf-slots-of from) (extract r start) (extract r end))))
+              (iterate loop rf-eff ((i int (rf-int-of at)) (xs rf-vals (slots->vals (rf-slots-of from) (extract r start) (extract r end)))) unit
+                (if (null? xs) #u (begin (write! ctx (rf-slots-of to) i (car xs)) (loop (+ i 1) (cdr xs)))))
               rf-unspecified))))
       (define-lifted! 'vector-append (at-least 0)
         (lambda ((ctx rf-ctx) (src rf-value) (vs rf-vals))

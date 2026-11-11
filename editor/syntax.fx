@@ -16,6 +16,11 @@
 (module-parameters ((m-base (load-moduleof "base.fx"))
                     (m-buffer (load-moduleof "buffer.fx" m-base))
                     (m-resolve (load-moduleof "resolve.fx" m-base m-buffer))))
+
+;; Macros: each file defines its own, for now (docs/macros.md).
+(define-syntax loop
+  (syntax-rules ()
+    ((_ go eff ((x t i) ...) r body) (letrec ((go (subr eff (t ...) r) (lambda (x ...) body))) (go i ...)))))
 (hide (define kit-lists (load-module "../kit/lists.fx"))
       (import kit-lists member? last))
 
@@ -138,17 +143,15 @@ reader's context (its marks: innermost first, each `(name start …)`); -1
 if none is."
 (define* open-start (subr (maxeff (read @c) spin) ((listof datum @c)) int)
   (lambda (ctx)
-    (letrec ((go (subr (maxeff (read @c) spin) ((listof datum @c) int) int)
-               (lambda (l found)
-                 (if (null? l)
-                     found
-                     (let ((e (car l)))
-                       (go (cdr l)
-                           (if (and (pair? e) (pair? (cdr e)) (symbol? (car e))
-                                    (not (symbol=? (car e) 'top)) (not (symbol=? (car e) 'comment)))
-                               (typecase (car (cdr e)) (int i i) (else y found))
-                               found)))))))
-      (go ctx -1))))
+    (loop go (maxeff (read @c) spin) ((l (listof datum @c) ctx) (found int -1)) int
+      (if (null? l)
+          found
+          (let ((e (car l)))
+            (go (cdr l)
+                (if (and (pair? e) (pair? (cdr e)) (symbol? (car e))
+                         (not (symbol=? (car e) 'top)) (not (symbol=? (car e) 'comment)))
+                    (typecase (car (cdr e)) (int i i) (else y found))
+                    found)))))))
 
 "A reader's state partway through a text, at `at`: since the reader
 changes nothing (its states are values), it can be resumed from there for
@@ -165,9 +168,8 @@ of the other)."
 (define* first-difference (subr spin (string string) int)
   (lambda (a b)
     (let ((n (min (string-length a) (string-length b))))
-      (letrec ((go (subr spin (int) int)
-                 (lambda (i) (if (or (>= i n) (not (char=? (string-ref a i) (string-ref b i)))) i (go (+ i 1))))))
-        (go 0)))))
+      (loop go spin ((i int 0)) int
+        (if (or (>= i n) (not (char=? (string-ref a i) (string-ref b i)))) i (go (+ i 1)))))))
 
 "The checkpoints of `cs` at or before `d`, in order."
 (define* checkpoints-before (subr spin (checkpoints int) checkpoints)
@@ -203,12 +205,11 @@ the same before it."
 (define* append-definitions (subr spin (definitions links) definitions)
   (lambda (ds ls)
     (if (null? ds)
-        (letrec ((go (subr spin (links) definitions)
-                   (lambda (ls) (if (null? ls) nil
-                                    (cons (product (name (extract (car ls) name)) (start (extract (car ls) start))
-                                                   (end (extract (car ls) end)))
-                                          (go (cdr ls)))))))
-          (go ls))
+        (loop go spin ((ls links ls)) definitions
+          (if (null? ls) nil
+              (cons (product (name (extract (car ls) name)) (start (extract (car ls) start))
+                             (end (extract (car ls) end)))
+                    (go (cdr ls)))))
         (cons (car ds) (append-definitions (cdr ds) ls)))))
 
 "What text `s` of revision `rev` is, from the reader's state `st` at its

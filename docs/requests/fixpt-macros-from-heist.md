@@ -1,7 +1,9 @@
 # Request to Fixpt: macros, as Heist found them
 
-Status: open; 1(a) done in Fixpt 5983942d (2026-11-11, below) for module
-files without module parameters. Drafted
+Status: open. 1(a) done in Fixpt 5983942d (2026-11-11) for module files
+without module parameters, and in eed406e0 (2026-11-11) for those with
+them; 1(b) refused cleanly, the panic gone; a file of macros alone
+imported; item 6's keywords in part (below). Drafted
 2026-11-09 by Heist, against Fixpt 07b0d743. While
 surveying where Heist's FX-26 code could use macros, we wrote macros for
 it and probed what the macro system can and cannot do. These are the
@@ -60,6 +62,15 @@ expression in the FX-26 kernel``. This is now what matters most to us.
 Heist rewrote its files without module parameters to use macros
 (`docs/macros.md`, 50,891 characters saved), and 43 of its 53 files with
 parameters would save 44,625 more.
+
+**On eed406e0** (2026-11-11): (a) works with module parameters too
+(`module-params/` prints `10`), and Heist's 43 files now use macros
+(`docs/macros.md`). `import-with-syntax` in a module file is refused,
+`in a module file: not yet`, the panic gone; a program's
+`import-with-syntax` of a file of macros alone works. (b) remains, as
+the only thing that would let Heist's files share one set of definitions
+instead of each writing its own (about 150 characters per file per
+macro).
 
 ## 2. `syntax-rules` lacks R7RS's ellipsis tails
 
@@ -144,6 +155,15 @@ What would help:
   variable's first value, ``is of none of the shapes this part may
   have``. Heist's rewrite leaves such uses alone; the names `cond`,
   `void`, `self` and `prompt` are used so as well.
+
+  **On eed406e0**, half done: a keyword is taken as the loop's name, and
+  anywhere inside a part's list, so all but three of Heist's such uses
+  are rewritten. Still refused (`keyword-args.fx`): a keyword as a
+  binder within the pattern's list, `fields` as `x` in `((x t i) ...)`
+  (`((fields int 3))`; casing binds `region` so), and a keyword alone as
+  an expression, as `i` or as `when`'s `c`: `` `fields` is a form's
+  name, not an expression `` (the CFA and ratfink pass `fields` so). The
+  code each stands for takes both.
 
 - **No `when` or `unless`.** Heist writes `(if c (begin …) #u)` about
   170 times. A standard `when` would be a three-line macro.

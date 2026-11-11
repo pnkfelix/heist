@@ -11,6 +11,11 @@
 ;;; a pipe waits for each answer. It does no I/O itself.
 
 (module-parameters ((m-sat (load-moduleof "sat.fx")) (m-rat (load-moduleof "rat.fx"))))
+
+;; Macros: each file defines its own, for now (docs/macros.md).
+(define-syntax loop
+  (syntax-rules ()
+    ((_ go eff ((x t i) ...) r body) (letrec ((go (subr eff (t ...) r) (lambda (x ...) body))) (go i ...)))))
 (hide (define kit-strings (load-module "../kit/strings.fx"))
       (import kit-strings reverse-list->string))
 
@@ -61,8 +66,8 @@ whether all of the text has been fed."
   (lambda (c) (or (char=? c #\space) (char=? c #\newline) (char=? c #\tab) (= (char-code c) 13) (= (char-code c) 12) (= (char-code c) 11))))
 (define* symbol-char? (subr spin (char) bool)
   (lambda (c) (or (letter? c) (digit? c)
-                  (letrec ((go (subr spin ((listof char acyclic)) bool) (lambda (l) (and (pair? l) (or (char=? c (car l)) (go (cdr l)))))))
-                    (go (string->list "~!@$%^&*_-+=<>.?/"))))))
+                  (loop go spin ((l (listof char acyclic) (string->list "~!@$%^&*_-+=<>.?/"))) bool
+                    (and (pair? l) (or (char=? c (car l)) (go (cdr l))))))))
 (define* hex-value (subr pure (char) int)
   (lambda (c) (cond ((digit? c) (- (char-code c) 48))
                     ((and (char>=? c #\a) (char<=? c #\f)) (+ 10 (- (char-code c) 97)))
@@ -90,9 +95,8 @@ whether all of the text has been fed."
                          ((char=? (at i) #\newline) (skip (+ i 1) (+ line 1) 0))
                          ((white? (at i)) (skip (+ i 1) line (+ col 1)))
                          ((char=? (at i) #\;)
-                          (letrec ((go (subr cb-eff (int int) (productof (i int) (line int) (col int)))
-                                     (lambda (i col) (if (and (< i n) (not (char=? (at i) #\newline))) (go (+ i 1) (+ col 1)) (skip i line col)))))
-                            (go i col)))
+                          (loop go cb-eff ((i int i) (col int col)) (productof (i int) (line int) (col int))
+                            (if (and (< i n) (not (char=? (at i) #\newline))) (go (+ i 1) (+ col 1)) (skip i line col))))
                          (else (product (i i) (line line) (col col))))))
                (span (subr cb-eff (int (subr spin (char) bool)) int)
                  (lambda (i ok?) (if (and (< i n) (ok? (at i))) (span (+ i 1) ok?) i)))
@@ -141,24 +145,20 @@ whether all of the text has been fed."
                                       (else (s-ok (sx-bv (radix (substring buf (+ i 2) j) 16) (* 4 (- j (+ i 2)))) j line (+ col (- j i)))))))
                              (else (s-bad "invalid literal" line (+ col 2)))))
                       ((char=? c #\")
-                       (letrec ((go (subr cb-eff (int int int (listof char acyclic)) scan)
-                                  (lambda (k line col acc)
-                                    (cond ((>= k n) (if closed (s-bad "unexpected end of file in a string" line col) (s-short)))
-                                          ((char=? (at k) #\")
-                                           (cond ((>= (+ k 1) n) (if closed (s-ok (sx-str (reverse-list->string acc)) (+ k 1) line (+ col 1)) (s-short)))
-                                                 ((char=? (at (+ k 1)) #\") (go (+ k 2) line (+ col 2) (cons #\" acc)))
-                                                 (else (s-ok (sx-str (reverse-list->string acc)) (+ k 1) line (+ col 1)))))
-                                          ((char=? (at k) #\newline) (go (+ k 1) (+ line 1) 0 (cons #\newline acc)))
-                                          (else (go (+ k 1) line (+ col 1) (cons (at k) acc)))))))
-                         (go (+ i 1) line (+ col 1) nil)))
+                       (loop go cb-eff ((k int (+ i 1)) (line int line) (col int (+ col 1)) (acc (listof char acyclic) nil)) scan
+                         (cond ((>= k n) (if closed (s-bad "unexpected end of file in a string" line col) (s-short)))
+                               ((char=? (at k) #\")
+                                (cond ((>= (+ k 1) n) (if closed (s-ok (sx-str (reverse-list->string acc)) (+ k 1) line (+ col 1)) (s-short)))
+                                      ((char=? (at (+ k 1)) #\") (go (+ k 2) line (+ col 2) (cons #\" acc)))
+                                      (else (s-ok (sx-str (reverse-list->string acc)) (+ k 1) line (+ col 1)))))
+                               ((char=? (at k) #\newline) (go (+ k 1) (+ line 1) 0 (cons #\newline acc)))
+                               (else (go (+ k 1) line (+ col 1) (cons (at k) acc))))))
                       ((char=? c #\|)
-                       (letrec ((go (subr cb-eff (int int int) scan)
-                                  (lambda (k line col)
-                                    (cond ((>= k n) (if closed (s-bad "unexpected end of file in a quoted symbol" line col) (s-short)))
-                                          ((char=? (at k) #\|) (s-ok (sx-sym (substring buf (+ i 1) k)) (+ k 1) line (+ col 1)))
-                                          ((char=? (at k) #\newline) (go (+ k 1) (+ line 1) 0))
-                                          (else (go (+ k 1) line (+ col 1)))))))
-                         (go (+ i 1) line (+ col 1))))
+                       (loop go cb-eff ((k int (+ i 1)) (line int line) (col int (+ col 1))) scan
+                         (cond ((>= k n) (if closed (s-bad "unexpected end of file in a quoted symbol" line col) (s-short)))
+                               ((char=? (at k) #\|) (s-ok (sx-sym (substring buf (+ i 1) k)) (+ k 1) line (+ col 1)))
+                               ((char=? (at k) #\newline) (go (+ k 1) (+ line 1) 0))
+                               (else (go (+ k 1) line (+ col 1))))))
                       ((char=? c #\:)
                        (let ((j (span (+ i 1) symbol-char?)))
                          (if (and (>= j n) (not closed)) (s-short) (s-ok (sx-sym (substring buf i j)) j line (+ col (- j i))))))
@@ -174,19 +174,17 @@ whether all of the text has been fed."
                 (s-ok (x i line col) (begin (set (extract r pos) i) (set (extract r line) line) (set (extract r column) col) (r-datum x)))
                 (s-short () (if closed
                                 ;; Where the text ends.
-                                (letrec ((go (subr cb-eff (int int int) sexp-result)
-                                           (lambda (i line col)
-                                             (cond ((>= i n) (begin (set (extract r pos) n) (r-error "unexpected end of file" line col)))
-                                                   ((char=? (at i) #\newline) (go (+ i 1) (+ line 1) 0))
-                                                   (else (go (+ i 1) line (+ col 1)))))))
-                                  (go (get (extract r pos)) (get (extract r line)) (get (extract r column))))
+                                (loop go cb-eff ((i int (get (extract r pos))) (line int (get (extract r line))) (col int (get (extract r column)))) sexp-result
+                                  (cond ((>= i n) (begin (set (extract r pos) n) (r-error "unexpected end of file" line col)))
+                                        ((char=? (at i) #\newline) (go (+ i 1) (+ line 1) 0))
+                                        (else (go (+ i 1) line (+ col 1)))))
                                 (r-more)))
                 (s-bad (m line col) (begin (set (extract r pos) n) (set (extract r line) line) (set (extract r column) col) (r-error m line col))))))))))
 
 "The number the digits of `s` write in base `b`."
 (define* radix (subr spin (string int) int)
-  (lambda (s b) (letrec ((go (subr spin (int int) int) (lambda (i acc) (if (>= i (string-length s)) acc (go (+ i 1) (+ (* acc b) (hex-value (string-ref s i))))))))
-                  (go 0 0))))
+  (lambda (s b) (loop go spin ((i int 0) (acc int 0)) int
+                  (if (>= i (string-length s)) acc (go (+ i 1) (+ (* acc b) (hex-value (string-ref s i))))))))
 (define* decimal (subr spin (string) int) (lambda (s) (radix s 10)))
 (define* expt10 (subr spin (int) int) (lambda (k) (if (= k 0) 1 (* 10 (expt10 (- k 1))))))
 
@@ -196,8 +194,8 @@ whether all of the text has been fed."
 (define* symbol->smt-string (subr spin (string) string)
   (lambda (s)
     (if (and (> (string-length s) 0) (not (digit? (string-ref s 0)))
-             (letrec ((go (subr spin (int) bool) (lambda (i) (or (= i (string-length s)) (and (symbol-char? (string-ref s i)) (go (+ i 1)))))))
-               (go 0)))
+             (loop go spin ((i int 0)) bool
+               (or (= i (string-length s)) (and (symbol-char? (string-ref s i)) (go (+ i 1))))))
         s
         (string-append "|" (string-append s "|")))))
 
@@ -220,17 +218,15 @@ whether all of the text has been fed."
 "A decimal as it was read: digits, a point, digits."
 (define* decimal->string (subr spin (rat) string)
   (lambda (q)
-    (letrec ((go (subr spin (int int) string)
-               (lambda (scale k)
-                 (let ((x (rat* q (int->rat scale))))
-                   (cond ((rat-int? x)
-                          (let* ((ds (int->string (rat-num x)))
-                                 (ds (if (< (string-length ds) (+ k 1)) (string-append (make-string (- (+ k 1) (string-length ds)) #\0) ds) ds))
-                                 (point (- (string-length ds) k)))
-                            (string-append (substring ds 0 point) (string-append "." (if (= k 0) "0" (substring ds point (string-length ds)))))))
-                         ((> k 40) (rat->string q))
-                         (else (go (* scale 10) (+ k 1))))))))
-      (go 1 0))))
+    (loop go spin ((scale int 1) (k int 0)) string
+      (let ((x (rat* q (int->rat scale))))
+        (cond ((rat-int? x)
+               (let* ((ds (int->string (rat-num x)))
+                      (ds (if (< (string-length ds) (+ k 1)) (string-append (make-string (- (+ k 1) (string-length ds)) #\0) ds) ds))
+                      (point (- (string-length ds) k)))
+                 (string-append (substring ds 0 point) (string-append "." (if (= k 0) "0" (substring ds point (string-length ds)))))))
+              ((> k 40) (rat->string q))
+              (else (go (* scale 10) (+ k 1))))))))
 
 (define* sexp->string (subr spin (sexp) string)
   (lambda (x)
@@ -239,15 +235,13 @@ whether all of the text has been fed."
       (sx-num (n) (if (< n 0) (string-append "(- " (string-append (int->string (- 0 n)) ")")) (int->string n)))
       (sx-dec (q) (decimal->string q))
       (sx-bv (v w) (bv->string v w))
-      (sx-str (s) (string-append "\"" (string-append (list->string (letrec ((go (subr spin ((listof char acyclic)) (listof char acyclic))
-                                                                            (lambda (l) (cond ((null? l) nil)
-                                                                                              ((char=? (car l) #\") (cons #\" (cons #\" (go (cdr l)))))
-                                                                                              (else (cons (car l) (go (cdr l))))))))
-                                                                   (go (string->list s))))
+      (sx-str (s) (string-append "\"" (string-append (list->string (loop go spin ((l (listof char acyclic) (string->list s))) (listof char acyclic)
+                                                                     (cond ((null? l) nil)
+                                                                           ((char=? (car l) #\") (cons #\" (cons #\" (go (cdr l)))))
+                                                                           (else (cons (car l) (go (cdr l)))))))
                                                  "\"")))
       (sx-list (l) (if (null? l) "()"
                        (string-append "(" (string-append (sexp->string (car l))
-                                                        (string-append (letrec ((go (subr spin (sexps) string)
-                                                                                  (lambda (l) (if (null? l) "" (string-append " " (string-append (sexp->string (car l)) (go (cdr l))))))))
-                                                                         (go (cdr l)))
+                                                        (string-append (loop go spin ((l sexps (cdr l))) string
+                                                                         (if (null? l) "" (string-append " " (string-append (sexp->string (car l)) (go (cdr l))))))
                                                                        ")"))))))))

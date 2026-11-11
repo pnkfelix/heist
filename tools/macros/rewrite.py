@@ -1,16 +1,17 @@
 """Heist's FX-26 files rewritten to use `loop`, `when` and `unless`
 macros (docs/macros.md).
 
-  rewrite.py [--write] [--with-parameters] FILE...   module files
-  rewrite.py [--write] --program FILE...             one program's files
+  rewrite.py [--write] FILE...             module files
+  rewrite.py [--write] --program FILE...   one program's files
 
 A module file defines the macros it uses itself; a program's files share
 one top level, so the first of them defines them for all. A macro is used
 only if its uses save more characters than its definition costs, and a
 module file is changed only if it is shorter for it. Without `--write`,
-says what it would do. A module file with module parameters is left as it
-is unless `--with-parameters` (Fixpt 5983942d refuses macros there); one
-that defines a macro already is left as it is.
+says what it would do. Where the file (or the program) defines some of
+these macros already, it uses them, and adds the others' definitions after
+its last `define-syntax`; a file that defines only other macros is left as
+it is.
 """
 import sys, os, re
 sys.path.insert(0, os.path.dirname(__file__))
@@ -120,25 +121,12 @@ _kw = _top[_top.index('pub const KEYWORDS'):]
 KEYWORDS = set(re.findall(r'"([^"]+)"', _kw[:_kw.index('];')])) | {'define-syntax', 'define-syntax-rec'}
 
 
-def binders_ok(m):
-    """Whether the expander lets a macro bind the loop's names: no keyword."""
-    return all(x[3] not in KEYWORDS for x in [m['name']] + m['params'])
-
-
-TYPE_WORDS = {'acyclic', 'pure', 'type', 'region', 'effect'}
-
-
-def keyword_as_name(n):
-    """Whether `n` uses a keyword other than at a list's head (a variable
-    or a label named so), which a macro's shapes refuse."""
-    if n[0] != 'list' or (n[4] == 'q' and n[3][0][3] == "'"):
-        return False
-    for i, k in enumerate(n[3]):
-        if k[0] == 'atom' and k[3] in KEYWORDS - TYPE_WORDS and (i > 0 or n[4] == 'q'):
-            return True
-        if keyword_as_name(k):
-            return True
-    return False
+def bare_keyword(*parts):
+    """Whether one of a use's parts is an FX-26 keyword alone: Fixpt
+    eed406e0 refuses it as an expression (`fields` is a form's name) or a
+    binder in a pattern's list, though it takes one as the loop's name,
+    and inside a part's list (docs/requests/fixpt-macros-from-heist.md)."""
+    return any(x[0] == 'atom' and x[3] in KEYWORDS for x in parts)
 
 
 def name_only_called(body, name):
@@ -209,15 +197,17 @@ def render_when(src, w):
 def matches(src, enabled):
     found = []
     for f in src.forms:
+        if head(f) == 'define-syntax':
+            continue  # a macro's own template
         for n in walk(f):
             if 'loop' in enabled:
                 m = loop_match(src, n)
-                if m and m['name'][3] not in NAME_OF.values() and name_only_called(m['body'], m['name'][3]) and binders_ok(m) and not keyword_as_name(n):
+                if m and m['name'][3] not in NAME_OF.values() and name_only_called(m['body'], m['name'][3]) and not bare_keyword(*m['params'], *m['args'], m['body']):
                     found.append(('loop', n, m))
                     continue
             if 'when' in enabled or 'unless' in enabled:
                 w = when_match(n)
-                if w and w[0] in enabled and not keyword_as_name(n):
+                if w and w[0] in enabled and not bare_keyword(w[2], *w[3]):
                     found.append((w[0], n, w))
     return found
 
@@ -266,6 +256,7 @@ def uses_name(text, name):
 
 
 NAME_OF = dict((k, k) for k in ORDER)
+HAVE = {}  # the macros a file (or program) defines already
 
 
 def choose_name(texts, k):
@@ -274,6 +265,21 @@ def choose_name(texts, k):
             NAME_OF[k] = name
             return name
     raise SystemExit(f'no name free for {k}')
+
+
+def defined(texts):
+    """The macros the files define already, each kind by its name."""
+    return {k: name for k in ORDER for name in NAMES[k]
+            if any(def_of(k, name) in t for t in texts)}
+
+
+def after_defs(text, enabled):
+    """`text` with the definitions of `enabled` added after its last
+    `define-syntax`."""
+    if not enabled:
+        return text
+    at = max(f[2] for f in Src(text).forms if head(f) == 'define-syntax') + 1
+    return text[:at] + ''.join(def_of(k, NAME_OF[k]) for k in ORDER if k in enabled) + text[at:]
 
 
 def defs_text(enabled, head_=DEFS_HEAD):
@@ -298,6 +304,8 @@ def plan(text, candidates=ORDER):
     """The macros worth defining in `text`, each by its net saving."""
     chosen, report = [], {}
     for k in candidates:
+        if k in HAVE:
+            continue
         name = choose_name([text], k)
         new, count = rewrite(text, [k])
         net = len(text) - len(new) - len(def_of(k, name))
@@ -311,10 +319,13 @@ def main_program(files, write):
     """Files sharing one top level: each macro planned over all, defined
     once, in the first."""
     texts = [open(f).read() for f in files]
-    if any('(define-syntax ' in t for t in texts):
-        raise SystemExit('a file of the program defines a macro already')
+    HAVE.clear()
+    HAVE.update(defined(texts))
+    NAME_OF.update(HAVE)
     chosen, report = [], {}
     for k in ORDER:
+        if k in HAVE:
+            continue
         name = choose_name(texts, k)
         saved = n = 0
         for t in texts:
@@ -326,9 +337,9 @@ def main_program(files, write):
             chosen.append(k)
     total = 0
     for i, (f, t) in enumerate(zip(files, texts)):
-        new, _ = rewrite(t, chosen)
+        new, _ = rewrite(t, chosen + list(HAVE))
         if i == 0 and chosen:
-            new = insert_defs(new, chosen, PROGRAM_HEAD)
+            new = after_defs(new, chosen) if HAVE else insert_defs(new, chosen, PROGRAM_HEAD)
         Src(new)
         total += len(t) - len(new)
         print(f'{f:28} {len(t):7} -> {len(new):7} ({len(new) - len(t):+6})')
@@ -341,25 +352,25 @@ def main(argv):
     write = '--write' in argv
     if '--program' in argv:
         return main_program([a for a in argv if not a.startswith('--')], write)
-    params = '--with-parameters' in argv
     files = [a for a in argv if not a.startswith('--')]
     total = 0
     for f in files:
         text = open(f).read()
-        if head(Src(text).forms[0]) == 'module-parameters' and not params:
-            print(f'{f:28} {len(text):7} unchanged: it has module parameters')
+        HAVE.clear()
+        HAVE.update(defined([text]))
+        if '(define-syntax ' in text and not HAVE:
+            print(f'{f:28} {len(text):7} unchanged: it defines other macros')
             continue
-        if '(define-syntax ' in text:
-            print(f'{f:28} {len(text):7} unchanged: it defines a macro already')
-            continue
+        NAME_OF.update(HAVE)
         chosen, report = plan(text)
-        if not chosen:
+        if not chosen and not HAVE:
             print(f'{f:28} {len(text):7} unchanged {report}')
             continue
-        new, count = rewrite(text, chosen)
-        new = insert_defs(new, chosen)
+        new, count = rewrite(text, chosen + list(HAVE))
+        if chosen:
+            new = after_defs(new, chosen) if HAVE else insert_defs(new, chosen)
         Src(new)  # still reads
-        if len(new) >= len(text):
+        if len(new) >= len(text) and not (HAVE and len(new) == len(text)):
             print(f'{f:28} {len(text):7} unchanged, the definitions cost more {report}')
             continue
         total += len(text) - len(new)

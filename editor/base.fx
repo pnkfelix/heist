@@ -6,6 +6,11 @@
 ;;; This one takes none, but has state, so it too is made once.
 (module-parameters ())
 
+;; Macros: each file defines its own, for now (docs/macros.md).
+(define-syntax loop
+  (syntax-rules ()
+    ((_ go eff ((x t i) ...) r body) (letrec ((go (subr eff (t ...) r) (lambda (x ...) body))) (go i ...)))))
+
 ;; What Fixpt's own reader does to its regions: it keeps its state there,
 ;; and leaves a form it cannot read by an escape.
 (define-effect reader-eff
@@ -36,11 +41,9 @@
 (define* string-replace-char (subr spin (string char char) string)
   (lambda (s from to)
     (list->string
-     (letrec ((go (subr spin (int (listof char acyclic)) (listof char acyclic))
-                (lambda (i acc)
-                  (if (< i 0) acc
-                      (go (- i 1) (cons (let ((c (string-ref s i))) (if (char=? c from) to c)) acc))))))
-       (go (- (string-length s) 1) nil)))))
+     (loop go spin ((i int (- (string-length s) 1)) (acc (listof char acyclic) nil)) (listof char acyclic)
+       (if (< i 0) acc
+           (go (- i 1) (cons (let ((c (string-ref s i))) (if (char=? c from) to c)) acc)))))))
 
 "Whether a file is Scheme: its name ends in .scm, .sld, .ss or .sps."
 (define* scheme-name? (subr spin (string) bool)
@@ -52,22 +55,18 @@
 "The last part of a file name, after its last `/`."
 (define* base-name (subr spin (string) string)
   (lambda (file)
-    (letrec ((go (subr spin (int) string)
-               (lambda (i)
-                 (cond ((< i 0) file)
-                       ((char=? (string-ref file i) #\/) (substring file (+ i 1) (string-length file)))
-                       (else (go (- i 1)))))))
-      (go (- (string-length file) 1)))))
+    (loop go spin ((i int (- (string-length file) 1))) string
+      (cond ((< i 0) file)
+            ((char=? (string-ref file i) #\/) (substring file (+ i 1) (string-length file)))
+            (else (go (- i 1)))))))
 
 "A file name's directory, with its last `/`; \"\" if it has none."
 (define* directory-of (subr spin (string) string)
   (lambda (file)
-    (letrec ((go (subr spin (int) string)
-               (lambda (i)
-                 (cond ((< i 0) "")
-                       ((char=? (string-ref file i) #\/) (substring file 0 (+ i 1)))
-                       (else (go (- i 1)))))))
-      (go (- (string-length file) 1)))))
+    (loop go spin ((i int (- (string-length file) 1))) string
+      (cond ((< i 0) "")
+            ((char=? (string-ref file i) #\/) (substring file 0 (+ i 1)))
+            (else (go (- i 1)))))))
 
 "Fixpt's own reader of FX-26 (`fx26:eager-reader.fx`), the one that reads
 the editor itself: syntax with each form's span, in characters."

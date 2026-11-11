@@ -28,6 +28,11 @@
                     (m-frame (load-moduleof "frame.fx" m-base m-buffer m-resolve m-syntax m-sexp m-index m-view))
                     (m-calls (load-moduleof "calls.fx" m-base m-buffer m-resolve m-syntax m-sexp m-index m-view m-frame))))
 
+;; Macros: each file defines its own, for now (docs/macros.md).
+(define-syntax loop
+  (syntax-rules ()
+    ((_ go eff ((x t i) ...) r body) (letrec ((go (subr eff (t ...) r) (lambda (x ...) body))) (go i ...)))))
+
 "A program running: its number, the buffer its output goes to, the frame
 (for the echo area), what it is (\"compilation\", \"command\", \"shell\"),
 and where in the buffer its output has reached, after which is the input
@@ -53,16 +58,14 @@ typed and not yet sent."
 (define* set-input-start! (subr (maxeff (read @ed) (write @ed) spin) (int int) unit)
   (lambda (id at)
     (set live-processes
-         (letrec ((go (subr spin ((listof running-process acyclic)) (listof running-process acyclic))
-                    (lambda (ps)
-                      (cond ((null? ps) nil)
-                            ((= (extract (car ps) id) id)
-                             (let ((p (car ps)))
-                               (cons (product (id id) (buffer (extract p buffer)) (frame (extract p frame))
-                                              (kind (extract p kind)) (input-start at))
-                                     (cdr ps))))
-                            (else (cons (car ps) (go (cdr ps))))))))
-           (go (get live-processes))))))
+         (loop go spin ((ps (listof running-process acyclic) (get live-processes))) (listof running-process acyclic)
+           (cond ((null? ps) nil)
+                 ((= (extract (car ps) id) id)
+                  (let ((p (car ps)))
+                    (cons (product (id id) (buffer (extract p buffer)) (frame (extract p frame))
+                                   (kind (extract p kind)) (input-start at))
+                          (cdr ps))))
+                 (else (cons (car ps) (go (cdr ps)))))))))
 
 "The process numbered `id`, if it runs."
 (define* process-of-id (subr (maxeff (read @ed) spin) (int) (sumof (none unit) (found running-process)))
@@ -146,17 +149,14 @@ runs."
 (define* poll-processes! (subr cmd-eff () bool)
   (lambda ()
     (begin
-      (set abandoned (letrec ((go (subr cmd-eff (ints) ints)
-                                (lambda (ids)
-                                  (if (null? ids) nil
-                                      (begin (process-output (car ids))
-                                        (tagcase (process-status (car ids))
-                                          (running u (cons (car ids) (go (cdr ids))))
-                                          (else y (go (cdr ids)))))))))
-                       (go (get abandoned))))
-      (letrec ((each (subr cmd-eff ((listof running-process acyclic)) unit)
-                 (lambda (ps) (if (null? ps) #u (begin (poll-one! (car ps)) (each (cdr ps)))))))
-        (each (get live-processes)))
+      (set abandoned (loop go cmd-eff ((ids ints (get abandoned))) ints
+                       (if (null? ids) nil
+                           (begin (process-output (car ids))
+                             (tagcase (process-status (car ids))
+                               (running u (cons (car ids) (go (cdr ids))))
+                               (else y (go (cdr ids))))))))
+      (loop each cmd-eff ((ps (listof running-process acyclic) (get live-processes))) unit
+        (if (null? ps) #u (begin (poll-one! (car ps)) (each (cdr ps)))))
       (pair? (get live-processes)))))
 
 "Program `argv` run in `dir` (\"\": the editor's), and waited for, nothing
@@ -190,9 +190,8 @@ ended."
 "Every process sent signal `sig` (the editor ending: 1, a hangup)."
 (define* signal-processes! (subr cmd-eff (int) unit)
   (lambda (sig)
-    (letrec ((each (subr cmd-eff ((listof running-process acyclic)) unit)
-               (lambda (ps) (if (null? ps) #u (begin (process-signal (extract (car ps) id) sig) (each (cdr ps)))))))
-      (each (get live-processes)))))
+    (loop each cmd-eff ((ps (listof running-process acyclic) (get live-processes))) unit
+      (if (null? ps) #u (begin (process-signal (extract (car ps) id) sig) (each (cdr ps)))))))
 
 "Program `argv` started in `dir`, its output to buffer `b`."
 (define* start-process! (subr cmd-eff ((actor frame) (actor buffer) string strings string int) unit)
@@ -217,17 +216,14 @@ one split, the new window below showing it (Emacs's `display-buffer`)."
       (cond ((shown? ws b) (draw f))
             ((null? (cdr ws)) (split-showing fr f b))
             (else
-             (let* ((old (letrec ((go (subr spin (windows) window)
-                                    (lambda (ws) (if (= (extract (car ws) id) sel) (go (cdr ws)) (car ws)))))
-                           (go ws)))
+             (let* ((old (loop go spin ((ws windows ws)) window
+                           (if (= (extract (car ws) id) sel) (go (cdr ws)) (car ws))))
                     (id (extract f next-id))
                     (made (new-window fr f b id (extract old height)))
-                    (ws2 (letrec ((go (subr spin (windows) windows)
-                                        (lambda (ws)
-                                          (cond ((null? ws) nil)
-                                                ((= (extract (car ws) id) (extract old id)) (cons (extract made window) (cdr ws)))
-                                                (else (cons (car ws) (go (cdr ws))))))))
-                           (go ws))))
+                    (ws2 (loop go spin ((ws windows ws)) windows
+                           (cond ((null? ws) nil)
+                                 ((= (extract (car ws) id) (extract old id)) (cons (extract made window) (cdr ws)))
+                                 (else (cons (car ws) (go (cdr ws))))))))
                (reply-with (frame-of f ws2 sel (extract f buffers) (+ id 1) (extract f echo) (extract f prefix) (extract f mini))
                            (cons (tell (extract old buffer) (unsubscribe (extract old id))) (extract made cmds)))))))))
 
@@ -283,12 +279,10 @@ editor's own)."
 (define* selected-directory (subr turn-eff (frame) string)
   (lambda (f)
     (let ((b (extract (selected-window f) buffer)))
-      (letrec ((go (subr spin (buffer-infos) string)
-                 (lambda (bs)
-                   (cond ((null? bs) "")
-                         ((same-actor? (extract (car bs) actor) b) (directory-of (extract (car bs) file)))
-                         (else (go (cdr bs)))))))
-        (go (extract f buffers))))))
+      (loop go spin ((bs buffer-infos (extract f buffers))) string
+        (cond ((null? bs) "")
+              ((same-actor? (extract (car bs) actor) b) (directory-of (extract (car bs) file)))
+              (else (go (cdr bs))))))))
 
 ;;; ------------------------------------------------------------ compiling
 
@@ -404,16 +398,14 @@ it goes to the buffer's directory."
 "Text `s` sent to *fxpt*'s REPL, and shown there as if typed."
 (define* fxpt-send! (subr cmd-eff (string) unit)
   (lambda (s)
-    (letrec ((go (subr cmd-eff ((listof running-process acyclic)) unit)
-               (lambda (ps)
-                 (cond ((null? ps) #u)
-                       ((string=? (extract (car ps) kind) "fxpt")
-                        (let ((p (car ps)))
-                          (begin (tell! (extract p buffer) (process-insert (extract p id) (string-append s "\n")))
-                            (process-write (extract p id) (string-append s "\n"))
-                            #u)))
-                       (else (go (cdr ps)))))))
-      (go (get live-processes)))))
+    (loop go cmd-eff ((ps (listof running-process acyclic) (get live-processes))) unit
+      (cond ((null? ps) #u)
+            ((string=? (extract (car ps) kind) "fxpt")
+             (let ((p (car ps)))
+               (begin (tell! (extract p buffer) (process-insert (extract p id) (string-append s "\n")))
+                 (process-write (extract p id) (string-append s "\n"))
+                 #u)))
+            (else (go (cdr ps)))))))
 
 "C-x C-e in an FX-26 buffer: the sexp before point sent to *fxpt*'s REPL,
 which is started, and shown in another window, if it runs nothing."
@@ -427,9 +419,8 @@ which is started, and shown in another window, if it runs nothing."
         (if (< a 0)
             (draw (with-echo f "No sexp before point"))
             (let* ((s (rope-substring t a p))
-                   (running (letrec ((go (subr (maxeff (read @ed) spin) ((listof running-process acyclic)) bool)
-                                           (lambda (ps) (and (pair? ps) (or (string=? (extract (car ps) kind) "fxpt") (go (cdr ps)))))))
-                              (go (get live-processes))))
+                   (running (loop go (maxeff (read @ed) spin) ((ps (listof running-process acyclic) (get live-processes))) bool
+                              (and (pair? ps) (or (string=? (extract (car ps) kind) "fxpt") (go (cdr ps))))))
                    (dir (selected-directory f))
                    (r (if running
                           (draw f)
@@ -485,9 +476,8 @@ FILE a word with a `.` or `/` in it, so that a time (10:30) is none."
                  ;; Where the digits from `i` end.
                  (lambda (i) (if (and (< i n) (char-numeric? (string-ref s i))) (digits (+ i 1)) i)))
                (number (subr spin (int int) int)
-                 (lambda (i e) (letrec ((go (subr spin (int int) int)
-                                          (lambda (i acc) (if (>= i e) acc (go (+ i 1) (+ (* 10 acc) (- (char->integer (string-ref s i)) 48)))))))
-                                 (go i 0))))
+                 (lambda (i e) (loop go spin ((i int i) (acc int 0)) int
+                                 (if (>= i e) acc (go (+ i 1) (+ (* 10 acc) (- (char->integer (string-ref s i)) 48)))))))
                (word-start (subr spin (int) int)
                  (lambda (i) (if (and (> i 0) (not (char-in? (string-ref s (- i 1)) " \t\"'(:"))) (word-start (- i 1)) i)))
                (has-dot-or-slash? (subr spin (int int) bool)
@@ -520,11 +510,10 @@ FILE a word with a `.` or `/` in it, so that a time (10:30) is none."
              (f3 (extract f2 state))
              (f4 (if (same-actor? (extract (selected-window f3) buffer) away)
                      (frame-of f3 (extract f3 windows)
-                               (letrec ((go (subr spin (windows) int)
-                                          (lambda (ws) (cond ((null? ws) (extract f3 selected))
-                                                             ((same-actor? (extract (car ws) buffer) away) (go (cdr ws)))
-                                                             (else (extract (car ws) id))))))
-                                 (go (extract f3 windows)))
+                               (loop go spin ((ws windows (extract f3 windows))) int
+                                 (cond ((null? ws) (extract f3 selected))
+                                       ((same-actor? (extract (car ws) buffer) away) (go (cdr ws)))
+                                       (else (extract (car ws) id))))
                                (extract f3 buffers) (extract f3 next-id) (extract f3 echo) (extract f3 prefix) (extract f3 mini))
                      f3))
              (pos-in (lambda ((t rope))
@@ -608,14 +597,12 @@ line shown as the current one there. Whether there was one."
                  (from (rope-line-of t (min (get compile-error-at) (rope-length t))))
                  ;; Going back, from the line before the one visited last.
                  (start (if (> dir 0) from (- from 2))))
-            (letrec ((go (subr turn-eff (int) (reply frame))
-                       (lambda (i)
-                         (if (or (< i 0) (>= i last))
-                             (draw (with-echo f (if (> dir 0) "No more errors" "No earlier errors")))
-                             (tagcase (visit-line-of fr b i)
-                               (found cs (reply-with f cs))
-                               (none u (go (+ i dir))))))))
-              (go start))))))))
+            (loop go turn-eff ((i int start)) (reply frame)
+              (if (or (< i 0) (>= i last))
+                  (draw (with-echo f (if (> dir 0) "No more errors" "No earlier errors")))
+                  (tagcase (visit-line-of fr b i)
+                    (found cs (reply-with f cs))
+                    (none u (go (+ i dir))))))))))))
 
 "RET in *compilation*: the place on point's line visited."
 (define* compile-goto-error (subr pure () frame-action)

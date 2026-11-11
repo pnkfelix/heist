@@ -7,6 +7,11 @@
                     (m-numbers (load-moduleof "numbers.fx" m-core))
                     (m-reader (load-moduleof "reader.fx" m-core m-numbers))))
 
+;; Macros: each file defines its own, for now (docs/macros.md).
+(define-syntax iterate
+  (syntax-rules ()
+    ((_ go eff ((x t i) ...) r body) (letrec ((go (subr eff (t ...) r) (lambda (x ...) body))) (go i ...)))))
+
 (hide (define kit-lists (load-module "../kit/lists.fx"))
       (import kit-lists map for-each filter any))
 
@@ -30,20 +35,16 @@ prelude, whichever of them is imported."
 directory of the library path that has one; or \"\"."
 (define find-library-file (subr rf-eff (rf-value) string)
   (lambda (name)
-    (let ((stem (letrec ((loop (subr rf-eff (rf-value string) string)
-                           (lambda (parts acc)
-                             (if (not (rf-pair? parts)) acc
-                                 (loop (rf-cdr parts) (string-append acc (if (string=? acc "") "" "/") (part->string (rf-car parts))))))))
-                  (loop name ""))))
-      (letrec ((loop (subr rf-eff (strings) string)
-                 (lambda (dirs)
-                   (if (null? dirs) ""
-                       (let ((sld (string-append (car dirs) "/" stem ".sld"))
-                             (scm (string-append (car dirs) "/" stem ".scm")))
-                         (cond ((file-exists? sld) sld)
-                               ((file-exists? scm) scm)
-                               (else (loop (cdr dirs)))))))))
-        (loop (get the-library-path))))))
+    (let ((stem (iterate loop rf-eff ((parts rf-value name) (acc string "")) string
+                  (if (not (rf-pair? parts)) acc
+                      (loop (rf-cdr parts) (string-append acc (if (string=? acc "") "" "/") (part->string (rf-car parts))))))))
+      (iterate loop rf-eff ((dirs strings (get the-library-path))) string
+        (if (null? dirs) ""
+            (let ((sld (string-append (car dirs) "/" stem ".sld"))
+                  (scm (string-append (car dirs) "/" stem ".scm")))
+              (cond ((file-exists? sld) sld)
+                    ((file-exists? scm) scm)
+                    (else (loop (cdr dirs))))))))))
 
 (define read-forms (subr rf-eff (string) rf-vals) (lambda (file) (read-file-data file #f)))
 
@@ -52,9 +53,8 @@ directory of the library path that has one; or \"\"."
 
 (define directory-of (subr rf-st (string) string)
   (lambda (file)
-    (letrec ((loop (subr rf-st (int) string)
-               (lambda (i) (cond ((< i 0) ".") ((char=? (string-ref file i) #\/) (substring file 0 i)) (else (loop (- i 1)))))))
-      (loop (- (string-length file) 1)))))
+    (iterate loop rf-st ((i int (- (string-length file) 1))) string
+      (cond ((< i 0) ".") ((char=? (string-ref file i) #\/) (substring file 0 i)) (else (loop (- i 1)))))))
 (define resolve-file (subr rf-st (string string) string)
   (lambda (dir f) (if (and (> (string-length f) 0) (char=? (string-ref f 0) #\/)) f (string-append dir "/" f))))
 
@@ -77,30 +77,28 @@ include-library-declarations done (relative to dir) and cond-expand
 chosen: a list of export, import and begin forms."
 (define expand-declarations (subr rf-eff (rf-vals string (subr rf-eff (rf-value) bool) syntax-error-proc) rf-vals)
   (lambda (decls dir known? error)
-    (letrec ((loop (subr rf-eff (rf-vals rf-vals) rf-vals)
-               (lambda (decls acc)
-                 (if (null? decls) (reverse acc)
-                     (let ((d (car decls)))
-                       (begin
-                         (if (and (rf-pair? d) (rf-symbol? (rf-car d)) (rf-list? d)) #u (error "bad library declaration" d))
-                         (let ((head (strip-name (rf-sym-of (rf-car d)))))
-                           (cond ((or (eq? head 'export) (eq? head 'import) (eq? head 'begin)) (loop (cdr decls) (cons d acc)))
-                                 ((or (eq? head 'include) (eq? head 'include-ci))
-                                  (loop (cdr decls)
-                                        (cons (rf-cons (rf-sym 'begin)
-                                                       (rf-list (apply append
-                                                                 (map (lambda ((f rf-value)) (read-file-data (resolve-file dir (rf-str-of f)) (eq? head 'include-ci)))
-                                                                      (rf-elements (rf-cdr d))))))
-                                              acc)))
-                                 ((eq? head 'include-library-declarations)
-                                  (loop (vals-append (apply append (map (lambda ((f rf-value)) (read-forms (resolve-file dir (rf-str-of f))))
-                                                                              (rf-elements (rf-cdr d))))
-                                                     (cdr decls))
-                                        acc))
-                                 ((eq? head 'cond-expand)
-                                  (loop (vals-append (cond-expand-choice (rf-cdr d) known? error) (cdr decls)) acc))
-                                 (else (begin (error "unknown library declaration" d) nil))))))))))
-      (loop decls nil))))
+    (iterate loop rf-eff ((decls rf-vals decls) (acc rf-vals nil)) rf-vals
+      (if (null? decls) (reverse acc)
+          (let ((d (car decls)))
+            (begin
+              (if (and (rf-pair? d) (rf-symbol? (rf-car d)) (rf-list? d)) #u (error "bad library declaration" d))
+              (let ((head (strip-name (rf-sym-of (rf-car d)))))
+                (cond ((or (eq? head 'export) (eq? head 'import) (eq? head 'begin)) (loop (cdr decls) (cons d acc)))
+                      ((or (eq? head 'include) (eq? head 'include-ci))
+                       (loop (cdr decls)
+                             (cons (rf-cons (rf-sym 'begin)
+                                            (rf-list (apply append
+                                                      (map (lambda ((f rf-value)) (read-file-data (resolve-file dir (rf-str-of f)) (eq? head 'include-ci)))
+                                                           (rf-elements (rf-cdr d))))))
+                                   acc)))
+                      ((eq? head 'include-library-declarations)
+                       (loop (vals-append (apply append (map (lambda ((f rf-value)) (read-forms (resolve-file dir (rf-str-of f))))
+                                                                   (rf-elements (rf-cdr d))))
+                                          (cdr decls))
+                             acc))
+                      ((eq? head 'cond-expand)
+                       (loop (vals-append (cond-expand-choice (rf-cdr d) known? error) (cdr decls)) acc))
+                      (else (begin (error "unknown library declaration" d) nil))))))))))
 
 "The forms of the first clause of a cond-expand whose requirement holds."
 (define cond-expand-choice (subr rf-eff (rf-value (subr rf-eff (rf-value) bool) syntax-error-proc) rf-vals)
@@ -111,10 +109,10 @@ chosen: a list of export, import and begin forms."
                         (let ((s (strip-name (rf-sym-of req)))) (or (eq? s 'else) (symbols-member? s library-features))))
                        ((and (rf-pair? req) (rf-symbol? (rf-car req)))
                         (let ((h (strip-name (rf-sym-of (rf-car req)))))
-                          (cond ((eq? h 'and) (letrec ((all (subr rf-eff (rf-value) bool) (lambda (rs) (or (not (rf-pair? rs)) (and (holds? (rf-car rs)) (all (rf-cdr rs)))))))
-                                                (all (rf-cdr req))))
-                                ((eq? h 'or) (letrec ((any (subr rf-eff (rf-value) bool) (lambda (rs) (and (rf-pair? rs) (or (holds? (rf-car rs)) (any (rf-cdr rs)))))))
-                                               (any (rf-cdr req))))
+                          (cond ((eq? h 'and) (iterate all rf-eff ((rs rf-value (rf-cdr req))) bool
+                                                (or (not (rf-pair? rs)) (and (holds? (rf-car rs)) (all (rf-cdr rs))))))
+                                ((eq? h 'or) (iterate any rf-eff ((rs rf-value (rf-cdr req))) bool
+                                               (and (rf-pair? rs) (or (holds? (rf-car rs)) (any (rf-cdr rs))))))
                                 ((eq? h 'not) (not (holds? (rf-cadr req))))
                                 ((eq? h 'library) (known? (strip (rf-cadr req))))
                                 (else (begin (error "bad cond-expand requirement" req) #f)))))
@@ -166,12 +164,11 @@ library exports."
                       inner))
                 (else
                  (map (lambda ((b binding-name))
-                        (letrec ((find (subr rf-st (rf-vals) binding-name)
-                                   (lambda (rs) (cond ((null? rs) b)
-                                                      ((rf-eqv? (rf-car (car rs)) (rf-sym (extract b local)))
-                                                       (product (local (rf-sym-of (rf-cadr (car rs)))) (name (extract b name))))
-                                                      (else (find (cdr rs)))))))
-                          (find args)))
+                        (iterate find rf-st ((rs rf-vals args)) binding-name
+                          (cond ((null? rs) b)
+                                ((rf-eqv? (rf-car (car rs)) (rf-sym (extract b local)))
+                                 (product (local (rf-sym-of (rf-cadr (car rs)))) (name (extract b name))))
+                                (else (find (cdr rs))))))
                       inner))))
         (map (lambda ((n symbol)) (product (local n) (name n))) exported))))
 
@@ -191,39 +188,33 @@ define-syntax, in begin and include too (not through macro uses)."
 (define-type defined (productof (vars symbols) (macros symbols)))
 (define defined-names (subr rf-eff (rf-vals syntax-error-proc) defined)
   (lambda (forms error)
-    (letrec ((loop (subr rf-eff (rf-vals symbols symbols) defined)
-               (lambda (forms vars macros)
-                 (if (null? forms)
-                     (product (vars (reverse vars)) (macros (reverse macros)))
-                     (let* ((f (car forms))
-                            (head (if (and (rf-pair? f) (rf-symbol? (rf-car f))) (strip-name (rf-sym-of (rf-car f))) '||)))
-                       (cond ((eq? head 'begin) (loop (vals-append (rf-elements (rf-cdr f)) (cdr forms)) vars macros))
-                             ((or (eq? head 'include) (eq? head 'include-ci))
-                              (loop (vals-append (included-forms f error) (cdr forms)) vars macros))
-                             ((or (eq? head 'define) (eq? head 'define/contract) (eq? head 'define-proof))
-                              (letrec ((name (subr rf-eff (rf-value) defined)
-                                         (lambda (t)
-                                           (cond ((rf-symbol? t) (loop (cdr forms) (cons (strip-name (rf-sym-of t)) vars) macros))
-                                                 ((rf-pair? t) (name (rf-car t)))
-                                                 (else (loop (cdr forms) vars macros))))))
-                                (name (if (rf-pair? (rf-cdr f)) (rf-cadr f) rf-false))))
-                             ((eq? head 'define-values)
-                              (loop (cdr forms)
-                                    (if (rf-pair? (rf-cdr f))
-                                        (letrec ((names (subr rf-eff (rf-value symbols) symbols)
-                                                   (lambda (t vars)
-                                                     (cond ((rf-symbol? t) (cons (strip-name (rf-sym-of t)) vars))
-                                                           ((rf-pair? t) (names (rf-cdr t) (if (rf-symbol? (rf-car t)) (cons (strip-name (rf-sym-of (rf-car t))) vars) vars)))
-                                                           (else vars)))))
-                                          (names (rf-cadr f) vars))
-                                        vars)
-                                    macros))
-                             ((eq? head 'define-syntax)
-                              (loop (cdr forms) vars (if (and (rf-pair? (rf-cdr f)) (rf-symbol? (rf-cadr f))) (cons (strip-name (rf-sym-of (rf-cadr f))) macros) macros)))
-                             ((eq? head 'define-record-type)
-                              (loop (cdr forms) (append (reverse (record-type-names (strip f))) vars) macros))
-                             (else (loop (cdr forms) vars macros))))))))
-      (loop forms nil nil))))
+    (iterate loop rf-eff ((forms rf-vals forms) (vars symbols nil) (macros symbols nil)) defined
+      (if (null? forms)
+          (product (vars (reverse vars)) (macros (reverse macros)))
+          (let* ((f (car forms))
+                 (head (if (and (rf-pair? f) (rf-symbol? (rf-car f))) (strip-name (rf-sym-of (rf-car f))) '||)))
+            (cond ((eq? head 'begin) (loop (vals-append (rf-elements (rf-cdr f)) (cdr forms)) vars macros))
+                  ((or (eq? head 'include) (eq? head 'include-ci))
+                   (loop (vals-append (included-forms f error) (cdr forms)) vars macros))
+                  ((or (eq? head 'define) (eq? head 'define/contract) (eq? head 'define-proof))
+                   (iterate name rf-eff ((t rf-value (if (rf-pair? (rf-cdr f)) (rf-cadr f) rf-false))) defined
+                     (cond ((rf-symbol? t) (loop (cdr forms) (cons (strip-name (rf-sym-of t)) vars) macros))
+                           ((rf-pair? t) (name (rf-car t)))
+                           (else (loop (cdr forms) vars macros)))))
+                  ((eq? head 'define-values)
+                   (loop (cdr forms)
+                         (if (rf-pair? (rf-cdr f))
+                             (iterate names rf-eff ((t rf-value (rf-cadr f)) (vars symbols vars)) symbols
+                               (cond ((rf-symbol? t) (cons (strip-name (rf-sym-of t)) vars))
+                                     ((rf-pair? t) (names (rf-cdr t) (if (rf-symbol? (rf-car t)) (cons (strip-name (rf-sym-of (rf-car t))) vars) vars)))
+                                     (else vars)))
+                             vars)
+                         macros))
+                  ((eq? head 'define-syntax)
+                   (loop (cdr forms) vars (if (and (rf-pair? (rf-cdr f)) (rf-symbol? (rf-cadr f))) (cons (strip-name (rf-sym-of (rf-cadr f))) macros) macros)))
+                  ((eq? head 'define-record-type)
+                   (loop (cdr forms) (append (reverse (record-type-names (strip f))) vars) macros))
+                  (else (loop (cdr forms) vars macros))))))))
 
 (define record-type-names (subr rf-eff (rf-value) symbols)
   (lambda (form)

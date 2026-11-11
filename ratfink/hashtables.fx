@@ -23,6 +23,11 @@
                     (m-machine (load-moduleof "machine.fx" m-core m-term m-value))
                     (m-prims (load-moduleof "prims.fx" m-core m-term m-value m-print m-syntax m-numbers m-reader m-machine))))
 
+;; Macros: each file defines its own, for now (docs/macros.md).
+(define-syntax iterate
+  (syntax-rules ()
+    ((_ go eff ((x t i) ...) r body) (letrec ((go (subr eff (t ...) r) (lambda (x ...) body))) (go i ...)))))
+
 (hide (define kit-lists (load-module "../kit/lists.fx"))
       (import kit-lists map for-each))
 
@@ -61,27 +66,23 @@
                ;; The value for key in entries, or default.
                (lookup (subr rf-eff (rf-ctx rf-value rf-table rf-value rf-value rf-value) rf-value)
                  (lambda (ctx src t entries key default)
-                   (letrec ((loop (subr rf-eff (rf-value) rf-value)
-                              (lambda (es)
-                                (if (not (rf-pair? es)) default
-                                    (let* ((v (if (rf-deleted? (rf-cdar es)) default (rf-cdar es)))
-                                           (c (same ctx src t key (rf-caar es))))
-                                      (cond ((rf-true? c) v)
-                                            ((rf-false? c) (loop (rf-cdr es)))
-                                            (else (let ((rest (loop (rf-cdr es)))) (merge c v rest)))))))))
-                     (loop entries))))
+                   (iterate loop rf-eff ((es rf-value entries)) rf-value
+                     (if (not (rf-pair? es)) default
+                         (let* ((v (if (rf-deleted? (rf-cdar es)) default (rf-cdar es)))
+                                (c (same ctx src t key (rf-caar es))))
+                           (cond ((rf-true? c) v)
+                                 ((rf-false? c) (loop (rf-cdr es)))
+                                 (else (let ((rest (loop (rf-cdr es)))) (merge c v rest)))))))))
                ;; Whether key has an entry (not deleted): a Bool term.
                (has? (subr rf-eff (rf-ctx rf-value rf-table rf-value rf-value) rf-value)
                  (lambda (ctx src t entries key)
-                   (letrec ((loop (subr rf-eff (rf-value) rf-value)
-                              (lambda (es)
-                                (if (not (rf-pair? es)) rf-false
-                                    (let* ((live (rf-bool (not (rf-deleted? (rf-cdar es)))))
-                                           (c (same ctx src t key (rf-caar es))))
-                                      (cond ((rf-true? c) live)
-                                            ((rf-false? c) (loop (rf-cdr es)))
-                                            (else (let ((rest (loop (rf-cdr es)))) (t-ite c live rest)))))))))
-                     (loop entries))))
+                   (iterate loop rf-eff ((es rf-value entries)) rf-value
+                     (if (not (rf-pair? es)) rf-false
+                         (let* ((live (rf-bool (not (rf-deleted? (rf-cdar es)))))
+                                (c (same ctx src t key (rf-caar es))))
+                           (cond ((rf-true? c) live)
+                                 ((rf-false? c) (loop (rf-cdr es)))
+                                 (else (let ((rest (loop (rf-cdr es)))) (t-ite c live rest)))))))))
                ;; Store entry (key . v) (v may be deleted).
                (put! (subr rf-eff (rf-ctx rf-value rf-table rf-value rf-value rf-value) rf-value)
                  (lambda (ctx src t entries key v)
@@ -89,25 +90,21 @@
                      (if (extract t mutable) #u (fail! ctx 'error (describe-call src "the hashtable is immutable")))
                      (write! ctx (extract t cell) 0
                              (rf-cons (rf-cons key v)
-                                      (letrec ((drop (subr rf-eff (rf-value) rf-value)
-                                                 (lambda (es)
-                                                   (cond ((not (rf-pair? es)) rf-nil)
-                                                         ((rf-true? (same ctx src t key (rf-caar es))) (drop (rf-cdr es)))
-                                                         (else (let ((rest (drop (rf-cdr es)))) (rf-cons (rf-car es) rest)))))))
-                                        (drop entries))))
+                                      (iterate drop rf-eff ((es rf-value entries)) rf-value
+                                        (cond ((not (rf-pair? es)) rf-nil)
+                                              ((rf-true? (same ctx src t key (rf-caar es))) (drop (rf-cdr es)))
+                                              (else (let ((rest (drop (rf-cdr es)))) (rf-cons (rf-car es) rest)))))))
                      rf-unspecified)))
                ;; The live entries, oldest first, as a value (a union where
                ;; which are live is symbolic) of a list of (key . value).
                (live-entries (subr rf-eff (rf-ctx rf-value rf-table rf-value) rf-value)
                  (lambda (ctx src t entries)
-                   (letrec ((loop (subr rf-eff (rf-value rf-vals rf-value) rf-value)
-                              (lambda (es newer acc)
-                                (if (not (rf-pair? es)) acc
-                                    (let* ((e (rf-car es))
-                                           (live (t-and (rf-bool (not (rf-deleted? (rf-cdr e))))
-                                                        (t-and* (map (lambda ((k rf-value)) (t-not (same ctx src t (rf-car e) k))) newer)))))
-                                      (loop (rf-cdr es) (cons (rf-car e) newer) (merge live (rf-cons e acc) acc)))))))
-                     (loop entries nil rf-nil))))
+                   (iterate loop rf-eff ((es rf-value entries) (newer rf-vals nil) (acc rf-value rf-nil)) rf-value
+                     (if (not (rf-pair? es)) acc
+                         (let* ((e (rf-car es))
+                                (live (t-and (rf-bool (not (rf-deleted? (rf-cdr e))))
+                                             (t-and* (map (lambda ((k rf-value)) (t-not (same ctx src t (rf-car e) k))) newer)))))
+                           (loop (rf-cdr es) (cons (rf-car e) newer) (merge live (rf-cons e acc) acc)))))))
                (vector-of (subr rf-eff (rf-ctx rf-value) rf-value)
                  (lambda (ctx l)
                    (merge-members (map (lambda ((m rf-member)) (member (extract m g) (new-vector (rf-elements (extract m v)))))

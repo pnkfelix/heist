@@ -27,6 +27,11 @@
                     (m-reader (load-moduleof "reader.fx" m-core m-numbers))
                     (m-library (load-moduleof "library.fx" m-core m-print m-syntax m-numbers m-reader))))
 
+;; Macros: each file defines its own, for now (docs/macros.md).
+(define-syntax loop
+  (syntax-rules ()
+    ((_ go eff ((x t i) ...) r body) (letrec ((go (subr eff (t ...) r) (lambda (x ...) body))) (go i ...)))))
+
 (hide (define kit-lists (load-module "../kit/lists.fx"))
       (import kit-lists map map2 for-each filter))
 (hide (define kit-strings (load-module "../kit/strings.fx"))
@@ -54,17 +59,15 @@ module."
 (define files-read (ref (listof read-file acyclic) @rf) (new nil))
 (define fx26-read (subr rf-eff (string) rf-vals)
   (lambda (file)
-    (letrec ((find (subr rf-eff ((listof read-file acyclic)) rf-vals)
-               (lambda (l)
-                 (cond ((null? l)
-                        (begin (set-fx26-syntax! #t)
-                               (let ((forms (read-file-data file #f)))
-                                 (begin (set-fx26-syntax! #f)
-                                        (set files-read (cons (product (path file) (forms forms)) (get files-read)))
-                                        forms))))
-                       ((string=? (extract (car l) path) file) (extract (car l) forms))
-                       (else (find (cdr l)))))))
-      (find (get files-read)))))
+    (loop find rf-eff ((l (listof read-file acyclic) (get files-read))) rf-vals
+      (cond ((null? l)
+             (begin (set-fx26-syntax! #t)
+                    (let ((forms (read-file-data file #f)))
+                      (begin (set-fx26-syntax! #f)
+                             (set files-read (cons (product (path file) (forms forms)) (get files-read)))
+                             forms))))
+            ((string=? (extract (car l) path) file) (extract (car l) forms))
+            (else (find (cdr l)))))))
 
 (define ignored-heads symbols
   (list 'module-parameters 'define-type 'define-effect 'define-generative 'define-syscall 'define-optional-syscall
@@ -76,16 +79,14 @@ module."
     (map (lambda ((v rf-value))
            (let* ((ctor (rf-car v))
                   (n (rf-length (rf-cdr v)))
-                  (args (letrec ((mk (subr rf-st (int) rf-vals)
-                                   (lambda (i) (if (> i n) nil (cons (rf-sym (string->symbol (string-append " field" (int->string i)))) (mk (+ i 1)))))))
-                          (mk 1))))
+                  (args (loop mk rf-st ((i int 1)) rf-vals
+                          (if (> i n) nil (cons (rf-sym (string->symbol (string-append " field" (int->string i)))) (mk (+ i 1)))))))
              (rf-list (list (q 'define) (rf-cons ctor (rf-list args))
                             (rf-list (list (q 'cons) (rf-list (list (q 'quote) ctor))
                                            (rf-cons (q 'list)
-                                                    (rf-list (letrec ((fields (subr rf-st (rf-vals int) rf-vals)
-                                                                        (lambda (as i) (if (null? as) nil
-                                                                                           (cons (rf-list (list (q 'cons) (rf-int i) (car as))) (fields (cdr as) (+ i 1)))))))
-                                                               (fields args 1))))))))))
+                                                    (rf-list (loop fields rf-st ((as rf-vals args) (i int 1)) rf-vals
+                                                               (if (null? as) nil
+                                                                   (cons (rf-list (list (q 'cons) (rf-int i) (car as))) (fields (cdr as) (+ i 1)))))))))))))
          (rf-elements (rf-cddr form)))))
 
 "The value of a definition: its last part."
@@ -154,9 +155,8 @@ proof of it."
 (define expand-type (subr rf-st (rf-value) rf-value)
   (lambda (t)
     (if (rf-symbol? t)
-        (letrec ((find (subr rf-st ((listof param acyclic)) rf-value)
-                   (lambda (l) (cond ((null? l) t) ((rf-eqv? (extract (car l) name) t) (expand-type (extract (car l) type))) (else (find (cdr l)))))))
-          (find (get type-names)))
+        (loop find rf-st ((l (listof param acyclic) (get type-names))) rf-value
+          (cond ((null? l) t) ((rf-eqv? (extract (car l) name) t) (expand-type (extract (car l) type))) (else (find (cdr l)))))
         t)))
 
 (define list-bound int 4)
@@ -230,18 +230,16 @@ define-type's, mu's, dletrec's): the depth of recursive values."
 (name (p kind) …) type) is (fx26-family (p …) type)."
 (define type-definition (subr rf-st (rf-value) rf-value)
   (lambda (n)
-    (letrec ((find (subr rf-st ((listof param acyclic)) rf-value)
-               (lambda (l) (cond ((null? l) rf-false) ((rf-eqv? (extract (car l) name) n) (extract (car l) type)) (else (find (cdr l)))))))
-      (find (get type-names)))))
+    (loop find rf-st ((l (listof param acyclic) (get type-names))) rf-value
+      (cond ((null? l) rf-false) ((rf-eqv? (extract (car l) name) n) (extract (car l) type)) (else (find (cdr l)))))))
 (define family? (subr rf-st (rf-value) bool) (lambda (d) (and (rf-pair? d) (rf-eqv? (rf-car d) (q 'fx26-family)))))
 
 "t with each name of s its type there."
 (define subst-type (subr rf-st ((listof param acyclic) rf-value) rf-value)
   (lambda (s t)
     (cond ((rf-symbol? t)
-           (letrec ((find (subr rf-st ((listof param acyclic)) rf-value)
-                      (lambda (l) (cond ((null? l) t) ((rf-eqv? (extract (car l) name) t) (extract (car l) type)) (else (find (cdr l)))))))
-             (find s)))
+           (loop find rf-st ((l (listof param acyclic) s)) rf-value
+             (cond ((null? l) t) ((rf-eqv? (extract (car l) name) t) (extract (car l) type)) (else (find (cdr l))))))
           ((rf-pair? t) (rf-cons (subst-type s (rf-car t)) (subst-type s (rf-cdr t))))
           (else t))))
 (define bind-types (subr rf-st (rf-vals rf-vals) (listof param acyclic))
@@ -307,18 +305,16 @@ an alist of its labels, a sum (label . value)."
             ((and (type-head? t 'nlist) (rf-exact-integer? (rf-caddr t)))
              (let ((e (part (rf-cadr t))))
                (if (rf-false? e) rf-false
-                   (letrec ((spine (subr rf-st (int) rf-value) (lambda (k) (if (<= k 0) (F2 (q 'one-of) rf-nil) (F3 (q 'pair) e (spine (- k 1)))))))
-                     (spine (rf-int-of (rf-caddr t)))))))
+                   (loop spine rf-st ((k int (rf-int-of (rf-caddr t)))) rf-value
+                     (if (<= k 0) (F2 (q 'one-of) rf-nil) (F3 (q 'pair) e (spine (- k 1))))))))
             ((type-head? t 'pairof)
              (let ((a (part (rf-cadr t))) (d (part (rf-caddr t)))) (if (or (rf-false? a) (rf-false? d)) rf-false (F3 (q 'pair) a d))))
             ((type-head? t 'productof)
-             (letrec ((fields (subr rf-st (rf-vals) rf-value)
-                        (lambda (fs)
-                          (if (null? fs) (F2 (q 'one-of) rf-nil)
-                              (let ((s (part (rf-cadr (car fs)))) (rest (fields (cdr fs))))
-                                (if (or (rf-false? s) (rf-false? rest)) rf-false
-                                    (F3 (q 'pair) (F3 (q 'pair) (F2 (q 'one-of) (rf-car (car fs))) s) rest)))))))
-               (fields (product-fields t))))
+             (loop fields rf-st ((fs rf-vals (product-fields t))) rf-value
+               (if (null? fs) (F2 (q 'one-of) rf-nil)
+                   (let ((s (part (rf-cadr (car fs)))) (rest (fields (cdr fs))))
+                     (if (or (rf-false? s) (rf-false? rest)) rf-false
+                         (F3 (q 'pair) (F3 (q 'pair) (F2 (q 'one-of) (rf-car (car fs))) s) rest))))))
             ((type-head? t 'sumof)
              (let ((arms (filter (lambda ((x rf-value)) (not (rf-false? x)))
                                  (map (lambda ((v rf-value))
@@ -352,8 +348,8 @@ an alist of its labels, a sum (label . value)."
             ((and (type-head? t 'nlist) (rf-exact-integer? (rf-caddr t)))
              (let ((e (part (rf-cadr t))))
                (if (rf-false? e) rf-false
-                   (rf-cons (q 'list) (rf-list (letrec ((copies (subr rf-st (int) rf-vals) (lambda (k) (if (<= k 0) nil (cons e (copies (- k 1)))))))
-                                                 (copies (rf-int-of (rf-caddr t)))))))))
+                   (rf-cons (q 'list) (rf-list (loop copies rf-st ((k int (rf-int-of (rf-caddr t)))) rf-vals
+                                                 (if (<= k 0) nil (cons e (copies (- k 1))))))))))
             ((type-head? t 'pairof)
              (let ((a (part (rf-cadr t))) (d (part (rf-caddr t)))) (if (or (rf-false? a) (rf-false? d)) rf-false (F3 (q 'cons) a d))))
             ((type-head? t 'arrayof)
@@ -612,9 +608,8 @@ labelled 1, 2, …."
                                               (rf-list (map (lambda ((v rf-value))
                                                               (F2 (rf-car v)
                                                                   (rf-cons (q 'productof)
-                                                                           (letrec ((fields (subr rf-st (rf-value int) rf-value)
-                                                                                              (lambda (ts i) (if (rf-pair? ts) (rf-cons (F2 (rf-int i) (rf-car ts)) (fields (rf-cdr ts) (+ i 1))) rf-nil))))
-                                                                             (fields (rf-cdr v) 1)))))
+                                                                           (loop fields rf-st ((ts rf-value (rf-cdr v)) (i int 1)) rf-value
+                                                                             (if (rf-pair? ts) (rf-cons (F2 (rf-int i) (rf-car ts)) (fields (rf-cdr ts) (+ i 1))) rf-nil)))))
                                                             (rf-elements (rf-cddr f))))))))
                         (else #u))))
               (filter rf-pair? forms))))

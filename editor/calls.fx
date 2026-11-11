@@ -11,6 +11,11 @@
                     (m-index (load-moduleof "index.fx" m-base m-buffer m-resolve m-syntax m-sexp))
                     (m-view (load-moduleof "view.fx" m-base m-buffer m-resolve m-syntax m-sexp m-index))
                     (m-frame (load-moduleof "frame.fx" m-base m-buffer m-resolve m-syntax m-sexp m-index m-view))))
+
+;; Macros: each file defines its own, for now (docs/macros.md).
+(define-syntax loop
+  (syntax-rules ()
+    ((_ go eff ((x t i) ...) r body) (letrec ((go (subr eff (t ...) r) (lambda (x ...) body))) (go i ...)))))
 (hide (define kit-lists (load-module "../kit/lists.fx"))
       (import kit-lists member? map remove))
 (hide (define kit-strings (load-module "../kit/strings.fx"))
@@ -30,11 +35,10 @@
 line`; the text the buffers have (`texts`), else the file's."
 (define* place-line (subr (maxeff (io fs-read) spin) (string int (listof (productof (file string) (text string)) acyclic) string) string)
   (lambda (file start texts what)
-    (let* ((t (string->rope (letrec ((go (subr (maxeff (io fs-read) spin) ((listof (productof (file string) (text string)) acyclic)) string)
-                                       (lambda (ts) (cond ((null? ts) (text-of-file file))
-                                                          ((string=? (extract (car ts) file) file) (extract (car ts) text))
-                                                          (else (go (cdr ts)))))))
-                              (go texts))))
+    (let* ((t (string->rope (loop go (maxeff (io fs-read) spin) ((ts (listof (productof (file string) (text string)) acyclic) texts)) string
+                              (cond ((null? ts) (text-of-file file))
+                                    ((string=? (extract (car ts) file) file) (extract (car ts) text))
+                                    (else (go (cdr ts)))))))
            (line (rope-line-of t start)))
       (string-append (base-name file) ":" (int->string (+ line 1)) ": " what "  "
                      (rope-substring t (rope-line-start t line) (min (rope-line-end t line) (+ (rope-line-start t line) 80)))
@@ -195,10 +199,9 @@ said; or why the program does not check."
                                        (sp2 (string-search answer " " (+ sp1 1)))
                                        (sp3 (string-search answer " " (+ sp2 1)))
                                        (num (lambda ((from int) (to int))
-                                              (letrec ((go (subr spin (int int) int)
-                                                         (lambda (i acc) (if (>= i to) acc
-                                                                             (go (+ i 1) (+ (* 10 acc) (- (char->integer (string-ref answer i)) 48)))))))
-                                                (go from 0)))))
+                                              (loop go spin ((i int from) (acc int 0)) int
+                                                (if (>= i to) acc
+                                                    (go (+ i 1) (+ (* 10 acc) (- (char->integer (string-ref answer i)) 48))))))))
                                   (if (string=? (substring answer 0 (max 0 sp1)) "error")
                                       (let ((a (- (num (+ sp1 1) sp2) offset)) (e (- (num (+ sp2 1) sp3) offset))
                                             (why (substring answer (+ sp3 1) (string-length answer))))

@@ -27,6 +27,11 @@
                     (m-frame (load-moduleof "frame.fx" m-base m-buffer m-resolve m-syntax m-sexp m-index m-view))
                     (m-calls (load-moduleof "calls.fx" m-base m-buffer m-resolve m-syntax m-sexp m-index m-view m-frame))
                     (m-process (load-moduleof "process.fx" m-base m-buffer m-resolve m-syntax m-sexp m-index m-view m-frame m-calls))))
+
+;; Macros: each file defines its own, for now (docs/macros.md).
+(define-syntax loop
+  (syntax-rules ()
+    ((_ go eff ((x t i) ...) r body) (letrec ((go (subr eff (t ...) r) (lambda (x ...) body))) (go i ...)))))
 (hide (define kit-strings (load-module "../kit/strings.fx"))
       (import kit-strings string-prefix?)
       (define kit-lists (load-module "../kit/lists.fx"))
@@ -67,16 +72,14 @@ directory the listing is of; o, in another window."
 "A listing's names and their marks: those of its lines with a mark."
 (define* listing-marks (subr spin (rope) (listof (productof (name string) (mark char)) acyclic))
   (lambda (t)
-    (letrec ((go (subr spin (int) (listof (productof (name string) (mark char)) acyclic))
-               (lambda (line)
-                 (if (>= line (- (rope-line-count t) 1)) nil
-                     (let ((s (rope-substring t (rope-line-start t line) (rope-line-end t line))))
-                       (tagcase (listing-name s)
-                         (some name (if (and (> (string-length s) 0) (not (char=? (string-ref s 0) #\space)) (not (string=? name "..")))
-                                        (cons (product (name name) (mark (string-ref s 0))) (go (+ line 1)))
-                                        (go (+ line 1))))
-                         (none u (go (+ line 1)))))))))
-      (go 2))))
+    (loop go spin ((line int 2)) (listof (productof (name string) (mark char)) acyclic)
+      (if (>= line (- (rope-line-count t) 1)) nil
+          (let ((s (rope-substring t (rope-line-start t line) (rope-line-end t line))))
+            (tagcase (listing-name s)
+              (some name (if (and (> (string-length s) 0) (not (char=? (string-ref s 0) #\space)) (not (string=? name "..")))
+                             (cons (product (name name) (mark (string-ref s 0))) (go (+ line 1)))
+                             (go (+ line 1))))
+              (none u (go (+ line 1)))))))))
 
 "Message for a listing: its text made `t`, point on line `line`, at its
 name. Not a change: not modified, not undone."
@@ -111,15 +114,13 @@ marks kept on the files still there, point at the file it was at."
   (lambda ()
     (lambda ((b buffer))
       (let* ((t (extract b text))
-             (t2 (letrec ((go (subr spin (rope int) rope)
-                            (lambda (t line)
-                              (if (>= line (- (rope-line-count t) 1)) t
-                                  (let ((ls (rope-line-start t line)))
-                                    (go (if (and (< ls (rope-length t)) (not (char=? (rope-ref t ls) #\space)))
-                                            (rope-insert (rope-delete t ls (+ ls 1)) ls " ")
-                                            t)
-                                        (+ line 1)))))))
-                   (go t 2))))
+             (t2 (loop go spin ((t rope t) (line int 2)) rope
+                   (if (>= line (- (rope-line-count t) 1)) t
+                       (let ((ls (rope-line-start t line)))
+                         (go (if (and (< ls (rope-length t)) (not (char=? (rope-ref t ls) #\space)))
+                                 (rope-insert (rope-delete t ls (+ ls 1)) ls " ")
+                                 t)
+                             (+ line 1)))))))
         (done (buffer-of b t2 (extract b point) (extract b mark) (+ 1 (extract b revision)) (extract b modified)
                          (extract b undo) (extract b subscribers)))))))
 
@@ -127,11 +128,10 @@ marks kept on the files still there, point at the file it was at."
 point's line."
 (define* listing-targets (subr spin (buffer) strings)
   (lambda (st)
-    (let ((marked (letrec ((go (subr spin ((listof (productof (name string) (mark char)) acyclic)) strings)
-                             (lambda (ms) (cond ((null? ms) nil)
-                                                ((char=? (extract (car ms) mark) #\*) (cons (extract (car ms) name) (go (cdr ms))))
-                                                (else (go (cdr ms)))))))
-                    (go (listing-marks (extract st text))))))
+    (let ((marked (loop go spin ((ms (listof (productof (name string) (mark char)) acyclic) (listing-marks (extract st text)))) strings
+                    (cond ((null? ms) nil)
+                          ((char=? (extract (car ms) mark) #\*) (cons (extract (car ms) name) (go (cdr ms))))
+                          (else (go (cdr ms)))))))
       (if (pair? marked) marked
           (let ((l (point-line st)))
             (tagcase (if (< (extract l line) 2) (sum none #u) (listing-name (extract l text)))
@@ -173,11 +173,10 @@ after asking; x, those flagged D. A directory with what is in it."
              (dir (extract st file))
              (marks (listing-marks (extract st text)))
              (ns (if flagged
-                     (letrec ((go (subr spin ((listof (productof (name string) (mark char)) acyclic)) strings)
-                                (lambda (ms) (cond ((null? ms) nil)
-                                                   ((char=? (extract (car ms) mark) #\D) (cons (extract (car ms) name) (go (cdr ms))))
-                                                   (else (go (cdr ms)))))))
-                       (go marks))
+                     (loop go spin ((ms (listof (productof (name string) (mark char)) acyclic) marks)) strings
+                       (cond ((null? ms) nil)
+                             ((char=? (extract (car ms) mark) #\D) (cons (extract (car ms) name) (go (cdr ms))))
+                             (else (go (cdr ms)))))
                      (listing-targets st))))
         (cond ((and flagged (null? ns)) (draw (with-echo f "(No deletions requested)")))
               ((null? ns) (draw (with-echo f "No file on this line")))
@@ -303,28 +302,24 @@ then the list made again."
     (lambda ((fr (actor frame)) (f frame))
       (let* ((t (extract (actor-state (extract (selected-window f) buffer)) text))
              (flagged (lambda ((flag char))
-                        (letrec ((go (subr spin (int buffer-infos) buffer-infos)
-                                   (lambda (line acc)
-                                     (if (>= line (rope-line-count t)) acc
-                                         (let ((s (rope-substring t (rope-line-start t line) (rope-line-end t line))))
-                                           (go (+ line 1)
-                                               (if (and (> (string-length s) 0) (char=? (string-ref s 0) flag))
-                                                   (tagcase (buffer-named-on (extract f buffers) s line)
-                                                     (found info (cons info acc))
-                                                     (none u acc))
-                                                   acc)))))))
-                          (go 1 nil))))
+                        (loop go spin ((line int 1) (acc buffer-infos nil)) buffer-infos
+                          (if (>= line (rope-line-count t)) acc
+                              (let ((s (rope-substring t (rope-line-start t line) (rope-line-end t line))))
+                                (go (+ line 1)
+                                    (if (and (> (string-length s) 0) (char=? (string-ref s 0) flag))
+                                        (tagcase (buffer-named-on (extract f buffers) s line)
+                                          (found info (cons info acc))
+                                          (none u acc))
+                                        acc)))))))
              (to-save (flagged #\S))
-             (saves (letrec ((go (subr turn-eff (buffer-infos) cmds)
-                               (lambda (bs) (if (null? bs) nil
-                                                (cons (tell (extract (car bs) actor) (save-buffer-to fr (extract (car bs) actor)))
-                                                      (go (cdr bs)))))))
-                      (go to-save)))
-             (killed (letrec ((go (subr turn-eff (frame buffer-infos) (reply frame))
-                                (lambda (f bs) (if (null? bs) (draw f)
-                                                   (and-then fr (kill-buffer-info fr f (car bs))
-                                                             (lambda ((fr (actor frame)) (f frame)) (go f (cdr bs))))))))
-                       (go f (flagged #\D))))
+             (saves (loop go turn-eff ((bs buffer-infos to-save)) cmds
+                      (if (null? bs) nil
+                          (cons (tell (extract (car bs) actor) (save-buffer-to fr (extract (car bs) actor)))
+                                (go (cdr bs))))))
+             (killed (loop go turn-eff ((f frame f) (bs buffer-infos (flagged #\D))) (reply frame)
+                       (if (null? bs) (draw f)
+                           (and-then fr (kill-buffer-info fr f (car bs))
+                                     (lambda ((fr (actor frame)) (f frame)) (go f (cdr bs)))))))
              (listed ((list-buffers-saving (map (lambda ((i buffer-info)) (extract i actor)) to-save)) fr (extract killed state))))
         (reply-with (extract listed state) (append saves (append (extract killed cmds) (extract listed cmds))))))))
 
@@ -392,9 +387,8 @@ it and the rest, q the rest not. `saved`: how many so far."
                                ((string=? answer "!")
                                 (let ((r (save-some fr f nil (+ saved (length todo)))))
                                   (reply-with (extract r state)
-                                              (append (letrec ((go (subr turn-eff (buffer-infos) cmds)
-                                                                     (lambda (bs) (if (null? bs) nil (cons (save (car bs)) (go (cdr bs)))))))
-                                                        (go todo))
+                                              (append (loop go turn-eff ((bs buffer-infos todo)) cmds
+                                                        (if (null? bs) nil (cons (save (car bs)) (go (cdr bs)))))
                                                       (extract r cmds)))))
                                ((string=? answer "q") (save-some fr f nil saved))
                                (else (save-some fr f (cdr todo) saved)))))))))

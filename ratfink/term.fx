@@ -14,6 +14,11 @@
 
 (module-parameters ((m-core (load-moduleof "core.fx"))))
 
+;; Macros: each file defines its own, for now (docs/macros.md).
+(define-syntax iterate
+  (syntax-rules ()
+    ((_ go eff ((x t i) ...) r body) (letrec ((go (subr eff (t ...) r) (lambda (x ...) body))) (go i ...)))))
+
 (hide (define kit-lists (load-module "../kit/lists.fx"))
       (import kit-lists map for-each))
 (hide (define kit-strings (load-module "../kit/strings.fx"))
@@ -91,9 +96,8 @@
   (lambda (a) (tagcase a (term t (* 31 (extract t id))) (int i (+ 7 (* 31 (modulo i 1000003)))) (bool b (if b 1 2)) (else x 3))))
 (define key-hash (subr rf-st (term-key) int)
   (lambda (k)
-    (letrec ((go (subr rf-st (rf-vals int) int)
-               (lambda (l h) (if (null? l) h (go (cdr l) (modulo (+ (* h 1000003) (arg-hash (car l))) 4294967291))))))
-      (go (extract k args) (+ 17 (extract k op))))))
+    (iterate go rf-st ((l rf-vals (extract k args)) (h int (+ 17 (extract k op)))) int
+      (if (null? l) h (go (cdr l) (modulo (+ (* h 1000003) (arg-hash (car l))) 4294967291))))))
 "Whether two arguments are the same: terms by id, concrete values by value."
 (define same-arg? (subr rf-st (rf-value rf-value) bool)
   (lambda (a b)
@@ -214,37 +218,33 @@ element: `none` if the absorbing element was found."
 (define-type maybe-vals (sumof (none unit) (some rf-vals)))
 (define collect (subr rf-st (int bool rf-vals) maybe-vals)
   (lambda (op identity xs)
-    (letrec ((loop (subr rf-st (rf-vals rf-vals int (sumof (none unit) (some seen-set))) maybe-vals)
-               (lambda (xs acc n seen)
-                 (if (null? xs) (sum some acc)
-                     (let ((x (car xs)))
-                       (cond ((and (rf-boolean? x) (eq? (rf-true? x) identity)) (loop (cdr xs) acc n seen))
-                             ((rf-boolean? x) (sum none #u))
-                             ((and (op? op x) (shorter? (targs x) many-args))
-                              (loop (vals-append (targs x) (cdr xs)) acc n seen))
-                             ((tagcase seen (some s (seen? s x)) (none u (memq-val? x acc)))
-                              (loop (cdr xs) acc n seen))
-                             ((and (tagcase seen (none u #t) (some s #f)) (= n many-args))
-                              (let ((s (new-seen)))
-                                (begin (for-each (lambda ((y rf-value)) (see! s y)) acc)
-                                       (loop xs acc n (sum some s)))))
-                             (else
-                              (begin (tagcase seen (some s (see! s x)) (none u #u))
-                                     (loop (cdr xs) (cons x acc) (+ n 1) seen)))))))))
-      (loop xs nil 0 (sum none #u)))))
+    (iterate loop rf-st ((xs rf-vals xs) (acc rf-vals nil) (n int 0) (seen (sumof (none unit) (some seen-set)) (sum none #u))) maybe-vals
+      (if (null? xs) (sum some acc)
+          (let ((x (car xs)))
+            (cond ((and (rf-boolean? x) (eq? (rf-true? x) identity)) (loop (cdr xs) acc n seen))
+                  ((rf-boolean? x) (sum none #u))
+                  ((and (op? op x) (shorter? (targs x) many-args))
+                   (loop (vals-append (targs x) (cdr xs)) acc n seen))
+                  ((tagcase seen (some s (seen? s x)) (none u (memq-val? x acc)))
+                   (loop (cdr xs) acc n seen))
+                  ((and (tagcase seen (none u #t) (some s #f)) (= n many-args))
+                   (let ((s (new-seen)))
+                     (begin (for-each (lambda ((y rf-value)) (see! s y)) acc)
+                            (loop xs acc n (sum some s)))))
+                  (else
+                   (begin (tagcase seen (some s (see! s x)) (none u #u))
+                          (loop (cdr xs) (cons x acc) (+ n 1) seen)))))))))
 
 (define complementary? (subr rf-st (rf-vals) bool)
   (lambda (xs)
     (if (< (list-length xs) many-args)
-        (letrec ((loop (subr rf-st (rf-vals) bool)
-                   (lambda (ys) (and (pair? ys) (or (and (op? op-not (car ys)) (memq-val? (targ1 (car ys)) xs)) (loop (cdr ys)))))))
-          (loop xs))
+        (iterate loop rf-st ((ys rf-vals xs)) bool
+          (and (pair? ys) (or (and (op? op-not (car ys)) (memq-val? (targ1 (car ys)) xs)) (loop (cdr ys)))))
         (let ((s (new-seen)))
           (begin
             (for-each (lambda ((x rf-value)) (if (rf-term? x) (see! s x) #u)) xs)
-            (letrec ((loop (subr rf-st (rf-vals) bool)
-                       (lambda (ys) (and (pair? ys) (or (and (op? op-not (car ys)) (seen? s (targ1 (car ys)))) (loop (cdr ys)))))))
-              (loop xs)))))))
+            (iterate loop rf-st ((ys rf-vals xs)) bool
+              (and (pair? ys) (or (and (op? op-not (car ys)) (seen? s (targ1 (car ys)))) (loop (cdr ys))))))))))
 
 (define junction (subr rf-st (int bool rf-vals) rf-value)
   (lambda (op identity xs)
@@ -417,9 +417,8 @@ however many."
           ((not (or (op? op-ite t) (op? op-add t) (op? op-sub t))) #f)
           ((table-has? (get choice-table) (tid t)) (table-ref (get choice-table) (tid t) #f))
           (else
-           (let ((c (letrec ((all (subr rf-st (rf-vals) bool)
-                                (lambda (args) (or (null? args) (and (choice? (car args)) (all (cdr args)))))))
-                      (all (if (op? op-ite t) (cdr (targs t)) (targs t))))))
+           (let ((c (iterate all rf-st ((args rf-vals (if (op? op-ite t) (cdr (targs t)) (targs t)))) bool
+                      (or (null? args) (and (choice? (car args)) (all (cdr args)))))))
              (begin (table-set! (get choice-table) (tid t) c) c))))))
 
 "(* c b) for a choice c, as its ites and sums of products, each of a choice
@@ -479,21 +478,19 @@ among few integers and b. Memoized: c is a DAG."
 "The union of two lists of cases, or none if it has too many values."
 (define add-cases (subr rf-st (cases cases) maybe-cases)
   (lambda (xs ys)
-    (letrec ((loop (subr rf-st (cases cases) maybe-cases)
-               (lambda (ys acc)
-                 (cond ((> (list-length acc) max-cases) (sum none #u))
-                       ((null? ys) (sum some acc))
-                       (else
-                        (let ((y (car ys)))
-                          (tagcase (find-case (extract y value) acc)
-                            (some k (loop (cdr ys)
-                                          (map (lambda ((j a-case))
-                                                 (if (eq? j k)
-                                                     (product (value (extract k value)) (cond (t-or (extract k cond) (extract y cond))))
-                                                     j))
-                                               acc)))
-                            (none u (loop (cdr ys) (cons y acc))))))))))
-      (loop ys xs))))
+    (iterate loop rf-st ((ys cases ys) (acc cases xs)) maybe-cases
+      (cond ((> (list-length acc) max-cases) (sum none #u))
+            ((null? ys) (sum some acc))
+            (else
+             (let ((y (car ys)))
+               (tagcase (find-case (extract y value) acc)
+                 (some k (loop (cdr ys)
+                               (map (lambda ((j a-case))
+                                      (if (eq? j k)
+                                          (product (value (extract k value)) (cond (t-or (extract k cond) (extract y cond))))
+                                          j))
+                                    acc)))
+                 (none u (loop (cdr ys) (cons y acc))))))))))
 (define find-case (subr rf-st (int cases) (sumof (none unit) (some a-case)))
   (lambda (v l) (cond ((null? l) (sum none #u)) ((= v (extract (car l) value)) (sum some (car l))) (else (find-case v (cdr l))))))
 
@@ -529,18 +526,16 @@ for true or false."
                                                          (cond (t-and (extract x cond) (extract y cond)))))
                                               ys))
                                        xs)))))
-                    (letrec ((loop (subr rf-st (cases maybe-cases) (sumof (none unit) (some rf-value)))
-                               (lambda (pairs acc)
-                                 (tagcase acc
-                                   (none u (sum none #u))
-                                   (some cs
-                                     (if (null? pairs)
-                                         (let ((cs (filter-cases cs)))
-                                           (if (pair? cs)
-                                               (sum some (from-cases cs (lambda ((v int)) (if bool? (rf-bool (= v 1)) (rf-int v)))))
-                                               (sum none #u)))
-                                         (loop (cdr pairs) (add-cases cs (list (car pairs))))))))))
-                      (loop pairs (sum some (the cases nil)))))))))))))
+                    (iterate loop rf-st ((pairs cases pairs) (acc maybe-cases (sum some (the cases nil)))) (sumof (none unit) (some rf-value))
+                      (tagcase acc
+                        (none u (sum none #u))
+                        (some cs
+                          (if (null? pairs)
+                              (let ((cs (filter-cases cs)))
+                                (if (pair? cs)
+                                    (sum some (from-cases cs (lambda ((v int)) (if bool? (rf-bool (= v 1)) (rf-int v)))))
+                                    (sum none #u)))
+                              (loop (cdr pairs) (add-cases cs (list (car pairs)))))))))))))))))
 (define filter-cases (subr rf-st (cases) cases)
   (lambda (cs) (cond ((null? cs) nil)
                      ((rf-false? (extract (car cs) cond)) (filter-cases (cdr cs)))

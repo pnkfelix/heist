@@ -29,6 +29,11 @@
                     (m-process (load-moduleof "process.fx" m-base m-buffer m-resolve m-syntax m-sexp m-index m-view m-frame m-calls))
                     (m-files (load-moduleof "files.fx" m-base m-buffer m-resolve m-syntax m-sexp m-index m-view m-frame m-calls m-process))
                     (m-help (load-moduleof "help.fx" m-base m-buffer m-resolve m-syntax m-sexp m-index m-view m-frame m-calls m-process m-files))))
+
+;; Macros: each file defines its own, for now (docs/macros.md).
+(define-syntax loop
+  (syntax-rules ()
+    ((_ go eff ((x t i) ...) r body) (letrec ((go (subr eff (t ...) r) (lambda (x ...) body))) (go i ...)))))
 (hide (define kit-lists (load-module "../kit/lists.fx"))
       (import kit-lists member?)
       (define kit-strings (load-module "../kit/strings.fx"))
@@ -90,10 +95,9 @@ else \"\"."
             ((= (skip-space t (+ (car opens) 1)) at)
              (let* ((up (cdr opens))
                     (item? (lambda ((open int) (k int) (at int))
-                             (letrec ((nth (subr spin (sexp-spans int) bool)
-                                        (lambda (cs i) (and (pair? cs) (if (= i 0) (= (extract (car cs) start) at)
-                                                                           (nth (cdr cs) (- i 1)))))))
-                               (nth (children t (+ open 1) (rope-length t)) k)))))
+                             (loop nth spin ((cs sexp-spans (children t (+ open 1) (rope-length t))) (i int k)) bool
+                               (and (pair? cs) (if (= i 0) (= (extract (car cs) start) at)
+                                                   (nth (cdr cs) (- i 1))))))))
                (cond ((and (pair? up) (string=? (head (car up)) "define-rec")) (typed ": "))
                      ((and (pair? up) (string=? (head (car up)) "vlambda") (item? (car up) 1 (car opens))) (typed ": "))
                      ((and (pair? up) (pair? (cdr up))
@@ -107,9 +111,8 @@ else \"\"."
 "Where the name `p` is in or just after starts in `t`."
 (define* name-start (subr spin (rope int) int)
   (lambda (t p)
-    (letrec ((back (subr spin (int) int)
-               (lambda (i) (if (and (> i 0) (symbol-char? (rope-ref t (- i 1)))) (back (- i 1)) i))))
-      (back p))))
+    (loop back spin ((i int p)) int
+      (if (and (> i 0) (symbol-char? (rope-ref t (- i 1)))) (back (- i 1)) i))))
 
 "What eldoc can say of a name: nothing; this; or what a file (read in a
 command) declares at a place; or what Fixpt's standard names give it."
@@ -128,12 +131,11 @@ a standard name's type."
               (char-numeric? (string-ref name 0)))
           (sum none #u)
           (let* ((here (declared-type t at))
-                 (bound (letrec ((go (subr spin (references) int)
-                                   (lambda (rs) (cond ((null? rs) -1)
-                                                      ((and (<= (extract (car rs) start) at) (< at (extract (car rs) end)))
-                                                       (extract (car rs) binder-start))
-                                                      (else (go (cdr rs)))))))
-                          (go (extract (extract st annotation) references)))))
+                 (bound (loop go spin ((rs references (extract (extract st annotation) references))) int
+                          (cond ((null? rs) -1)
+                                ((and (<= (extract (car rs) start) at) (< at (extract (car rs) end)))
+                                 (extract (car rs) binder-start))
+                                (else (go (cdr rs)))))))
             (cond ((not (string=? here "")) (sum said (string-append name here)))
                   ((>= bound 0)
                    (let ((d (declared-type t bound)))

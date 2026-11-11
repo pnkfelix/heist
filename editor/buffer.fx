@@ -7,6 +7,11 @@
 ;;; run in a turn of the buffer's: a procedure from the buffer to the
 ;;; buffer after it, what to do, and a message for the echo area.
 (module-parameters ((m-base (load-moduleof "base.fx"))))
+
+;; Macros: each file defines its own, for now (docs/macros.md).
+(define-syntax loop
+  (syntax-rules ()
+    ((_ go eff ((x t i) ...) r body) (letrec ((go (subr eff (t ...) r) (lambda (x ...) body))) (go i ...)))))
 (hide (define kit-lists (load-module "../kit/lists.fx"))
       (import kit-lists list-ref))
 
@@ -100,9 +105,8 @@ the echo area (\"\" for none)."
 
 (define* take (subr pure (int (listof undo-entry acyclic)) (listof undo-entry acyclic))
   (lambda (n l)
-    (letrec ((go (subr pure (int (listof undo-entry acyclic)) (listof undo-entry acyclic))
-               (lambda (n l) (if (or (<= n 0) (null? l)) nil (cons (car l) (go (- n 1) (cdr l)))))))
-      (go n l))))
+    (loop go pure ((n int n) (l (listof undo-entry acyclic) l)) (listof undo-entry acyclic)
+      (if (or (<= n 0) (null? l)) nil (cons (car l) (go (- n 1) (cdr l)))))))
 
 "`b` with text `t` and point `p`, its old text kept for undo."
 (define* with-text (subr pure (buffer rope int) buffer)
@@ -431,11 +435,9 @@ kill before it in the ring, round to the newest after the oldest."
 "Where `needle` is last in `hay` ending at or before `limit`, or -1."
 (define* search-backward-in (subr spin (string string int) int)
   (lambda (hay needle limit)
-    (letrec ((go (subr spin (int int) int)
-               (lambda (from best)
-                 (let ((i (search-forward-in hay needle from)))
-                   (if (or (< i 0) (> (+ i (string-length needle)) limit)) best (go (+ i 1) i))))))
-      (go 0 -1))))
+    (loop go spin ((from int 0) (best int -1)) int
+      (let ((i (search-forward-in hay needle from)))
+        (if (or (< i 0) (> (+ i (string-length needle)) limit)) best (go (+ i 1) i))))))
 
 "Where a search stands (Yank's isearch): its text, where its match starts
 and ends (or where the last one did, if it is failing), its direction,
@@ -464,11 +466,10 @@ text last searched for, which C-s C-s searches for again."
 letter."
 (define* fold-case? (subr spin (string) bool)
   (lambda (needle)
-    (letrec ((go (subr spin (int) bool)
-               (lambda (i) (cond ((>= i (string-length needle)) #t)
-                                 ((char=? (string-ref needle i) (char-downcase (string-ref needle i))) (go (+ i 1)))
-                                 (else #f)))))
-      (go 0))))
+    (loop go spin ((i int 0)) bool
+      (cond ((>= i (string-length needle)) #t)
+            ((char=? (string-ref needle i) (char-downcase (string-ref needle i))) (go (+ i 1)))
+            (else #f)))))
 
 "Where `needle` starts in `hay` at or after `pos` (before, if not
 `forward`: the last start at or before `pos`), or -1. Case is ignored
@@ -590,15 +591,13 @@ highlighted; failing, as it was."
           (quit u
             (if (extract s failing)
                 ;; The part that fails taken back.
-                (letrec ((go (subr turn-eff ((listof search-state acyclic)) outcome)
-                           (lambda (h)
-                             (cond ((null? h)
-                                    (search-to b (product (text "") (start (get isearch-origin)) (end (get isearch-origin)) (failing #f)
-                                                          (forward (extract s forward)) (wrapped #f) (regexp (extract s regexp)) (invalid ""))
-                                               nil report))
-                                   ((extract (car h) failing) (go (cdr h)))
-                                   (else (search-to b (car h) (cdr h) report))))))
-                  (go history))
+                (loop go turn-eff ((h (listof search-state acyclic) history)) outcome
+                  (cond ((null? h)
+                         (search-to b (product (text "") (start (get isearch-origin)) (end (get isearch-origin)) (failing #f)
+                                               (forward (extract s forward)) (wrapped #f) (regexp (extract s regexp)) (invalid ""))
+                                    nil report))
+                        ((extract (car h) failing) (go (cdr h)))
+                        (else (search-to b (car h) (cdr h) report))))
                 (product (buffer (with-point (with-search b -1 -1 0) (get isearch-origin)))
                          (cmds (list (report (sum over #u))))
                          (message "Quit")))))))))
@@ -624,13 +623,11 @@ where it began, if point moved."
 (define* reference-at (subr spin (buffer) (sumof (none unit) (found reference)))
   (lambda (b)
     (let ((p (extract b point)))
-      (letrec ((go (subr spin (references) (sumof (none unit) (found reference)))
-                 (lambda (rs)
-                   (cond ((null? rs) (sum none #u))
-                         ((and (<= (extract (car rs) start) p) (<= p (extract (car rs) end))) (sum found (car rs)))
-                         ((> (extract (car rs) start) p) (sum none #u))
-                         (else (go (cdr rs)))))))
-        (go (extract (extract b annotation) references))))))
+      (loop go spin ((rs references (extract (extract b annotation) references))) (sumof (none unit) (found reference))
+        (cond ((null? rs) (sum none #u))
+              ((and (<= (extract (car rs) start) p) (<= p (extract (car rs) end))) (sum found (car rs)))
+              ((> (extract (car rs) start) p) (sum none #u))
+              (else (go (cdr rs))))))))
 
 "The binder at point: of the reference there, or the binder itself (a
 definition's name, a parameter). Its start, or -1."
@@ -641,14 +638,12 @@ definition's name, a parameter). Its start, or -1."
       (none u
         ;; Point on a binder: some reference names it.
         (let ((p (extract b point)))
-          (letrec ((go (subr spin (references) int)
-                     (lambda (rs)
-                       (cond ((null? rs) -1)
-                             ((and (>= (extract (car rs) binder-start) 0)
-                                   (<= (extract (car rs) binder-start) p) (<= p (extract (car rs) binder-end)))
-                              (extract (car rs) binder-start))
-                             (else (go (cdr rs)))))))
-            (go (extract (extract b annotation) references))))))))
+          (loop go spin ((rs references (extract (extract b annotation) references))) int
+            (cond ((null? rs) -1)
+                  ((and (>= (extract (car rs) binder-start) 0)
+                        (<= (extract (car rs) binder-start) p) (<= p (extract (car rs) binder-end)))
+                   (extract (car rs) binder-start))
+                  (else (go (cdr rs))))))))))
 
 (define* merge-uses (subr spin (text-faces text-faces) text-faces)
   (lambda (a b)
@@ -721,19 +716,17 @@ before it (-1)."
     (lambda ((b buffer))
       (same (buffer-of b (extract b text) (extract b point) (extract b mark) (extract b revision)
                        (extract b modified) (extract b undo)
-                       (letrec ((go (subr spin ((listof subscription acyclic)) (listof subscription acyclic))
-                                  (lambda (ss) (cond ((null? ss) nil)
-                                                     ((= (extract (car ss) id) id) (go (cdr ss)))
-                                                     (else (cons (car ss) (go (cdr ss))))))))
-                         (go (extract b subscribers))))))))
+                       (loop go spin ((ss (listof subscription acyclic) (extract b subscribers))) (listof subscription acyclic)
+                         (cond ((null? ss) nil)
+                               ((= (extract (car ss) id) id) (go (cdr ss)))
+                               (else (cons (car ss) (go (cdr ss)))))))))))
 
 "Each subscriber's command, sent `b`'s snapshot."
 (define* notify (subr turn-eff (buffer) cmds)
   (lambda (b)
     (let ((snap (snapshot-of b)))
-      (letrec ((go (subr turn-eff ((listof subscription acyclic)) cmds)
-                 (lambda (ss) (if (null? ss) nil (cons ((extract (car ss) send) snap) (go (cdr ss)))))))
-        (go (extract b subscribers))))))
+      (loop go turn-eff ((ss (listof subscription acyclic) (extract b subscribers))) cmds
+        (if (null? ss) nil (cons ((extract (car ss) send) snap) (go (cdr ss))))))))
 
 "`a`, from a party outside, kept if it is of the text as it is now, and
 the subscribers sent a snapshot that has it; else dropped (the text

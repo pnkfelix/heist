@@ -33,6 +33,11 @@
 (module-parameters ((m-core (load-moduleof "core.fx")) (m-term (load-moduleof "term.fx" m-core))
                     (m-value (load-moduleof "value.fx" m-core m-term))))
 
+;; Macros: each file defines its own, for now (docs/macros.md).
+(define-syntax iterate
+  (syntax-rules ()
+    ((_ go eff ((x t i) ...) r body) (letrec ((go (subr eff (t ...) r) (lambda (x ...) body))) (go i ...)))))
+
 (hide (define kit-lists (load-module "../kit/lists.fx"))
       (import kit-lists map for-each filter every find))
 
@@ -361,33 +366,31 @@ merging what they stored. branch?: the join of an if's two arms."
            (calls-after (the (ref int @rf) (new (get calls)))))
       (begin
         (set outer-logs (cons outer-log (get outer-logs)))
-        (letrec ((loop (subr rf-eff (arms (listof done-arm acyclic)) rf-value)
-                   (lambda (arms done)
-                     (if (pair? arms)
-                         (let* ((g (extract (car arms) g))
-                                (arm-pc (if (and branch? (ruled-out? pc g)) rf-false (t-and pc g))))
-                           (if (rf-false? arm-pc)
-                               (loop (cdr arms) done)
-                               (begin
-                                 (set-session-log! (sum some nil))
-                                 (set calls calls-before)
-                                 (let* ((o (catch-abort (lambda () ((extract (car arms) k) (make-ctx arm-pc (+ (ctx-depth ctx) 1) (ctx-unwind ctx))))))
-                                        (writes (undo-log! (log-entries (session-log)))))
-                                   (begin
-                                     (set calls-after (max (get calls-after) (get calls)))
-                                     (loop (cdr arms)
-                                           (if (extract o aborted) done
-                                               (the (listof done-arm acyclic) (cons (product (g g) (result (extract o value)) (writes writes)) done)))))))))
-                         (begin
-                           (set-session-log! outer-log)
-                           (set outer-logs (cdr (get outer-logs)))
-                           (set calls (get calls-after))
-                           (if (null? done)
-                               (abort-path)
-                               (let ((done (the (listof done-arm acyclic) (reverse done))))
-                                 (begin (merge-stores! done)
-                                        (merge-members (map (lambda ((d done-arm)) (member (extract d g) (extract d result))) done))))))))))
-          (loop arms nil))))))
+        (iterate loop rf-eff ((arms arms arms) (done (listof done-arm acyclic) nil)) rf-value
+          (if (pair? arms)
+              (let* ((g (extract (car arms) g))
+                     (arm-pc (if (and branch? (ruled-out? pc g)) rf-false (t-and pc g))))
+                (if (rf-false? arm-pc)
+                    (loop (cdr arms) done)
+                    (begin
+                      (set-session-log! (sum some nil))
+                      (set calls calls-before)
+                      (let* ((o (catch-abort (lambda () ((extract (car arms) k) (make-ctx arm-pc (+ (ctx-depth ctx) 1) (ctx-unwind ctx))))))
+                             (writes (undo-log! (log-entries (session-log)))))
+                        (begin
+                          (set calls-after (max (get calls-after) (get calls)))
+                          (loop (cdr arms)
+                                (if (extract o aborted) done
+                                    (the (listof done-arm acyclic) (cons (product (g g) (result (extract o value)) (writes writes)) done)))))))))
+              (begin
+                (set-session-log! outer-log)
+                (set outer-logs (cdr (get outer-logs)))
+                (set calls (get calls-after))
+                (if (null? done)
+                    (abort-path)
+                    (let ((done (the (listof done-arm acyclic) (reverse done))))
+                      (begin (merge-stores! done)
+                             (merge-members (map (lambda ((d done-arm)) (member (extract d g) (extract d result))) done))))))))))))
 
 "Restore the logged slots; what the arm wrote to each."
 (define undo-log! (subr rf-eff (slot-entries) (listof write-entry acyclic))
@@ -417,11 +420,10 @@ wrote, or the old value if it did not write there."
                      (merge-members
                       (map (lambda ((d done-arm))
                              (member (extract d g)
-                                     (letrec ((find (subr rf-st ((listof write-entry acyclic)) rf-value)
-                                                (lambda (ws) (cond ((null? ws) old)
-                                                                   ((and (eq? (extract (car ws) vec) vec) (= (extract (car ws) i) i)) (extract (car ws) new))
-                                                                   (else (find (cdr ws)))))))
-                                       (find (extract d writes)))))
+                                     (iterate find rf-st ((ws (listof write-entry acyclic) (extract d writes))) rf-value
+                                       (cond ((null? ws) old)
+                                             ((and (eq? (extract (car ws) vec) vec) (= (extract (car ws) i) i)) (extract (car ws) new))
+                                             (else (find (cdr ws)))))))
                            done)))))
          (get slots))))))
 (define find-write (subr rf-st (rf-slots int (listof write-entry acyclic)) bool)
@@ -441,28 +443,22 @@ wrote, or the old value if it did not write there."
   (lambda (pc g)
     (let ((ks (constants-of g)))
       (and (pair? ks)
-           (letrec ((count (subr rf-eff (rf-vals int) bool)
-                      (lambda (ks n)
-                        (cond ((null? ks) #t)
-                              (else (tagcase (values-of (car ks))
-                                      (some vs (let ((n (* n (list-length vs)))) (and (<= n max-tried) (count (cdr ks) n))))
-                                      (none u #f)))))))
-             (count ks 1))
+           (iterate count rf-eff ((ks rf-vals ks) (n int 1)) bool
+             (cond ((null? ks) #t)
+                   (else (tagcase (values-of (car ks))
+                           (some vs (let ((n (* n (list-length vs)))) (and (<= n max-tried) (count (cdr ks) n))))
+                           (none u #f)))))
            (let ((cs (filter (lambda ((c rf-value)) (subset? (constants-of c) ks)) (few-valued-conjuncts pc))))
-             (not (letrec ((try (subr rf-eff (rf-vals (listof kv acyclic)) bool)
-                             (lambda (left chosen)
-                               (if (null? left)
-                                   (let ((value-of (lambda ((k rf-value)) (kv-lookup k chosen)))
-                                         (memo (new-term-memo)))
-                                     (and (rf-true? (term-value g value-of memo))
-                                          (every-term? (lambda ((c rf-value)) (rf-true? (term-value c value-of memo))) cs)))
-                                   (letrec ((next (subr rf-eff (rf-vals) bool)
-                                              (lambda (vs)
-                                                (and (pair? vs)
-                                                     (or (try (cdr left) (the (listof kv acyclic) (cons (product (k (car left)) (v (car vs))) chosen)))
-                                                         (next (cdr vs)))))))
-                                     (next (tagcase (values-of (car left)) (some vs vs) (none u nil))))))))
-                    (try ks nil))))))))
+             (not (iterate try rf-eff ((left rf-vals ks) (chosen (listof kv acyclic) nil)) bool
+                    (if (null? left)
+                        (let ((value-of (lambda ((k rf-value)) (kv-lookup k chosen)))
+                              (memo (new-term-memo)))
+                          (and (rf-true? (term-value g value-of memo))
+                               (every-term? (lambda ((c rf-value)) (rf-true? (term-value c value-of memo))) cs)))
+                        (iterate next rf-eff ((vs rf-vals (tagcase (values-of (car left)) (some vs vs) (none u nil)))) bool
+                          (and (pair? vs)
+                               (or (try (cdr left) (the (listof kv acyclic) (cons (product (k (car left)) (v (car vs))) chosen)))
+                                   (next (cdr vs)))))))))))))
 (define kv-lookup (subr rf-st (rf-value (listof kv acyclic)) rf-value)
   (lambda (k l) (tagcase (find (lambda ((e kv)) (rf-eqv? (extract e k) k)) l) (some e (extract e v)) (none u rf-false))))
 (define every-term? (subr rf-eff ((subr rf-eff (rf-value) bool) rf-vals) bool)
@@ -500,18 +496,14 @@ looks only at what is new."
                ;; The longest list (that of the and before) last, so as not
                ;; to copy it.
                (let* ((lists (map (lambda ((a rf-value)) (few-valued-conjuncts a)) (targs pc)))
-                      (longest (letrec ((loop (subr rf-st ((listof rf-vals acyclic) rf-vals) rf-vals)
-                                          (lambda (ls best)
-                                            (cond ((null? ls) best)
-                                                  ((> (list-length (car ls)) (list-length best)) (loop (cdr ls) (car ls)))
-                                                  (else (loop (cdr ls) best))))))
-                                 (loop lists nil)))
-                      (cs (letrec ((loop (subr rf-st ((listof rf-vals acyclic)) rf-vals)
-                                     (lambda (ls)
-                                       (cond ((null? ls) longest)
-                                             ((eq? (car ls) longest) (loop (cdr ls)))
-                                             (else (vals-append (car ls) (loop (cdr ls))))))))
-                            (loop lists))))
+                      (longest (iterate loop rf-st ((ls (listof rf-vals acyclic) lists) (best rf-vals nil)) rf-vals
+                                 (cond ((null? ls) best)
+                                       ((> (list-length (car ls)) (list-length best)) (loop (cdr ls) (car ls)))
+                                       (else (loop (cdr ls) best)))))
+                      (cs (iterate loop rf-st ((ls (listof rf-vals acyclic) lists)) rf-vals
+                            (cond ((null? ls) longest)
+                                  ((eq? (car ls) longest) (loop (cdr ls)))
+                                  (else (vals-append (car ls) (loop (cdr ls))))))))
                  (begin (table-set! (get conjuncts-table) (tid pc) cs) cs))))
           ((every-few? (constants-of pc)) (list pc))
           (else nil))))
@@ -533,15 +525,13 @@ looks only at what is new."
   (lambda (state)
     (let ((to (tagcase (extract state trail) (some t t) (none u nil))))
       (begin
-        (letrec ((loop (subr rf-st () unit)
-                   (lambda ()
-                     (let ((t (tagcase (get trail) (some t t) (none u nil))))
-                       (if (or (eq? t to) (null? t)) #u
-                           (let ((w (car t)))
-                             (begin (array-set! (extract w vec) (extract w i) (extract w val))
-                                    (set trail (sum some (cdr t)))
-                                    (loop))))))))
-          (loop))
+        (iterate loop rf-st () unit
+          (let ((t (tagcase (get trail) (some t t) (none u nil))))
+            (if (or (eq? t to) (null? t)) #u
+                (let ((w (car t)))
+                  (begin (array-set! (extract w vec) (extract w i) (extract w val))
+                         (set trail (sum some (cdr t)))
+                         (loop))))))
         (set split-pc (extract state split-pc))
         (set (extract (get current) assumptions) (extract state assumptions))
         (set (extract (get current) branches) (extract state branches))
@@ -595,13 +585,11 @@ the arms of splits left, each under a prompt of its own."
 (define finish-splits! (subr rf-eff () unit)
   (lambda ()
     (begin
-      (letrec ((loop (subr rf-eff () unit)
-                 (lambda ()
-                   (let ((more (rf-catch (lambda () (if (next-arm!) rf-true rf-false))
-                                         (lambda ((s rf-signal))
-                                           (tagcase s (abort u rf-true) (finished v rf-true) (err e (rf-signal! s)))))))
-                     (if (rf-true? more) (loop) #u)))))
-        (loop))
+      (iterate loop rf-eff () unit
+        (let ((more (rf-catch (lambda () (if (next-arm!) rf-true rf-false))
+                              (lambda ((s rf-signal))
+                                (tagcase s (abort u rf-true) (finished v rf-true) (err e (rf-signal! s)))))))
+          (if (rf-true? more) (loop) #u)))
       (set trail (sum none #u))
       (set split-pc rf-true))))
 
@@ -622,18 +610,14 @@ the arms of splits left, each under a prompt of its own."
 "store as unwinding from here to a guard whose winds were base leaves it."
 (define unwound (subr rf-st (slot-entries slot-entries) slot-entries)
   (lambda (store base)
-    (letrec ((loop (subr rf-st (slot-entries slot-entries) slot-entries)
-               (lambda (ws store)
-                 (if (or (null? ws) (eq? ws base)) store
-                     (let ((w (car ws)))
-                       (loop (cdr ws)
-                             (cons w (letrec ((drop (subr rf-st (slot-entries) slot-entries)
-                                                (lambda (es)
-                                                  (cond ((null? es) nil)
-                                                        ((and (eq? (extract (car es) vec) (extract w vec)) (= (extract (car es) i) (extract w i))) (cdr es))
-                                                        (else (cons (car es) (drop (cdr es))))))))
-                                       (drop store)))))))))
-      (loop (get winds) store))))
+    (iterate loop rf-st ((ws slot-entries (get winds)) (store slot-entries store)) slot-entries
+      (if (or (null? ws) (eq? ws base)) store
+          (let ((w (car ws)))
+            (loop (cdr ws)
+                  (cons w (iterate drop rf-st ((es slot-entries store)) slot-entries
+                            (cond ((null? es) nil)
+                                  ((and (eq? (extract (car es) vec) (extract w vec)) (= (extract (car es) i) (extract w i))) (cdr es))
+                                  (else (cons (car es) (drop (cdr es)))))))))))))
 
 "Raise v where condition holds (#t: wherever this is reached), as raise or,
 if continuable?, raise-continuable. What a handler gave a
@@ -642,9 +626,8 @@ raise-continuable; ends the path where it raised."
   (lambda (ctx v continuable? condition)
     (let* ((where (t-and (path ctx) condition))
            ;; The call/cc catchers in front go: a raise is not for them.
-           (passed (letrec ((loop (subr rf-st (handler-list handler-list) handler-list)
-                              (lambda (hs acc) (if (and (pair? hs) (tagged? (car hs))) (loop (cdr hs) (cons (car hs) acc)) acc))))
-                     (loop (get handlers) nil)))
+           (passed (iterate loop rf-st ((hs handler-list (get handlers)) (acc handler-list nil)) handler-list
+                     (if (and (pair? hs) (tagged? (car hs))) (loop (cdr hs) (cons (car hs) acc)) acc)))
            (hs (drop-handlers (get handlers) (list-length passed))))
       (cond ((rf-false? where) rf-unspecified)
             ((or (null? hs) (tagcase (car hs) (barrier l #t) (else x #f)))
@@ -696,23 +679,21 @@ escape the path there."
 (define escape! (subr rf-eff (rf-ctx (ref unit @rf) rf-value) rf-value)
   (lambda (ctx tag v)
     (let ((where (path ctx)))
-      (letrec ((loop (subr rf-eff (handler-list handler-list) rf-value)
-                 (lambda (hs passed)
-                   (cond ((null? hs)
-                          (begin (check! ctx 'unsupported "calling a continuation after its call/cc returned" rf-false) rf-unspecified))
-                         (else
-                          (tagcase (car hs)
-                            (barrier l (begin (check! ctx 'unsupported "a continuation called inside a contract's procedure, from outside it" rf-false)
-                                              rf-unspecified))
-                            (catcher c
-                              (if (tagcase (extract c tag) (some t (eq? t tag)) (none u #f))
-                                  (begin
-                                    (for-each (lambda ((h handler)) (tagcase h (catcher p (set (extract p crossed) (t-or (get (extract p crossed)) where))) (else x #u)))
-                                              passed)
-                                    (catch! ctx c where v rf-true))
-                                  (loop (cdr hs) (cons (car hs) passed))))
-                            (else x (loop (cdr hs) passed))))))))
-        (loop (get handlers) nil)))))
+      (iterate loop rf-eff ((hs handler-list (get handlers)) (passed handler-list nil)) rf-value
+        (cond ((null? hs)
+               (begin (check! ctx 'unsupported "calling a continuation after its call/cc returned" rf-false) rf-unspecified))
+              (else
+               (tagcase (car hs)
+                 (barrier l (begin (check! ctx 'unsupported "a continuation called inside a contract's procedure, from outside it" rf-false)
+                                   rf-unspecified))
+                 (catcher c
+                   (if (tagcase (extract c tag) (some t (eq? t tag)) (none u #f))
+                       (begin
+                         (for-each (lambda ((h handler)) (tagcase h (catcher p (set (extract p crossed) (t-or (get (extract p crossed)) where))) (else x #u)))
+                                   passed)
+                         (catch! ctx c where v rf-true))
+                       (loop (cdr hs) (cons (car hs) passed))))
+                 (else x (loop (cdr hs) passed)))))))))
 
 "Call the innermost handler, a procedure, with the handlers outside it in
 force. A raise that is not continuable raises again if it returns."
@@ -739,13 +720,11 @@ force. A raise that is not continuable raises again if it returns."
                (lambda (logs acc)
                  (if (null? logs) acc
                      (loop (cdr logs)
-                           (letrec ((add (subr rf-st (slot-entries slot-entries) slot-entries)
-                                      (lambda (entries acc)
-                                        (cond ((null? entries) acc)
-                                              ((slot-in? (car entries) acc) (add (cdr entries) acc))
-                                              (else (let ((vec (extract (car entries) vec)) (i (extract (car entries) i)))
-                                                      (add (cdr entries) (cons (product (vec vec) (i i) (val (array-ref vec i))) acc))))))))
-                             (add (log-entries (car logs)) acc)))))))
+                           (iterate add rf-st ((entries slot-entries (log-entries (car logs))) (acc slot-entries acc)) slot-entries
+                             (cond ((null? entries) acc)
+                                   ((slot-in? (car entries) acc) (add (cdr entries) acc))
+                                   (else (let ((vec (extract (car entries) vec)) (i (extract (car entries) i)))
+                                           (add (cdr entries) (cons (product (vec vec) (i i) (val (array-ref vec i))) acc)))))))))))
       (loop (cons (session-log) (up (get outer-logs))) nil))))
 
 "The entry of list l for the slot entry e is about."
@@ -793,26 +772,20 @@ none."
                 (tagcase (session-log)
                   (some outer
                     (set-session-log!
-                     (sum some (letrec ((loop (subr rf-st (slot-entries slot-entries) slot-entries)
-                                          (lambda (entries outer)
-                                            (cond ((null? entries) outer)
-                                                  ((slot-in? (car entries) outer) (loop (cdr entries) outer))
-                                                  (else (loop (cdr entries) (cons (car entries) outer)))))))
-                                 (loop log outer)))))
+                     (sum some (iterate loop rf-st ((entries slot-entries log) (outer slot-entries outer)) slot-entries
+                                 (cond ((null? entries) outer)
+                                       ((slot-in? (car entries) outer) (loop (cdr entries) outer))
+                                       (else (loop (cdr entries) (cons (car entries) outer))))))))
                   (none u #u))
                 (if (null? raises)
                     (if (extract o aborted) (begin (abort-path) rf-unspecified) (extract o value))
-                    (let* ((slots (letrec ((loop (subr rf-st ((listof raise-record acyclic) slot-entries) slot-entries)
-                                             (lambda (rs acc)
-                                               (if (null? rs) acc
-                                                   (loop (cdr rs)
-                                                         (letrec ((add (subr rf-st (slot-entries slot-entries) slot-entries)
-                                                                    (lambda (es acc)
-                                                                      (cond ((null? es) acc)
-                                                                            ((slot-in? (car es) acc) (add (cdr es) acc))
-                                                                            (else (add (cdr es) (cons (car es) acc)))))))
-                                                           (add (extract (car rs) store) acc)))))))
-                                    (loop raises log)))
+                    (let* ((slots (iterate loop rf-st ((rs (listof raise-record acyclic) raises) (acc slot-entries log)) slot-entries
+                                    (if (null? rs) acc
+                                        (loop (cdr rs)
+                                              (iterate add rf-st ((es slot-entries (extract (car rs) store)) (acc slot-entries acc)) slot-entries
+                                                (cond ((null? es) acc)
+                                                      ((slot-in? (car es) acc) (add (cdr es) acc))
+                                                      (else (add (cdr es) (cons (car es) acc)))))))))
                            (caught (t-or* (map (lambda ((r raise-record)) (extract r cond)) raises)))
                            (body-arm (if (extract o aborted) (the arms nil)
                                          (the arms (list (make-arm (t-not caught) (lambda ((ctx rf-ctx)) (extract o value))))))))

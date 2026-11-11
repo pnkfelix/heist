@@ -19,6 +19,12 @@
 
 (module-parameters ((m-sat (load-moduleof "sat.fx")) (m-rat (load-moduleof "rat.fx"))))
 
+;; Macros: each file defines its own, for now (docs/macros.md).
+(define-syntax loop
+  (syntax-rules ()
+    ((_ go eff ((x t i) ...) r body) (letrec ((go (subr eff (t ...) r) (lambda (x ...) body))) (go i ...)))))
+(define-syntax unless (syntax-rules () ((_ c e ...) (if c #u (begin e ...)))))
+
 (hide (define kit-numbers (load-module "../kit/numbers.fx"))
       (import kit-numbers gcd lcm))
 
@@ -82,14 +88,14 @@ lower) of x was c + k delta, of reason literal `reason` (0: none)."
   (lambda (v i fill)
     (if (< i (array-length v)) v
         (let ((w (the rats (make-array (* 2 (+ i 1)) fill))))
-          (letrec ((go (subr cb-eff (int) rats) (lambda (k) (if (>= k (array-length v)) w (begin (array-set! w k (array-ref v k)) (go (+ k 1)))))))
-            (go 0))))))
+          (loop go cb-eff ((k int 0)) rats
+            (if (>= k (array-length v)) w (begin (array-set! w k (array-ref v k)) (go (+ k 1)))))))))
 (define* grow-forms (subr cb-eff ((arrayof sform @cb) int) (arrayof sform @cb))
   (lambda (v i)
     (if (< i (array-length v)) v
         (let ((w (the (arrayof sform @cb) (make-array (* 2 (+ i 1)) (the sform nil)))))
-          (letrec ((go (subr cb-eff (int) (arrayof sform @cb)) (lambda (k) (if (>= k (array-length v)) w (begin (array-set! w k (array-ref v k)) (go (+ k 1)))))))
-            (go 0))))))
+          (loop go cb-eff ((k int 0)) (arrayof sform @cb)
+            (if (>= k (array-length v)) w (begin (array-set! w k (array-ref v k)) (go (+ k 1)))))))))
 "`v` with x at i, made longer if need be."
 (define* put (subr cb-eff (ivec int int) ivec)
   (lambda (v i x) (let ((v (grow-ivec v i 0))) (begin (array-set! v i x) v))))
@@ -184,18 +190,18 @@ column the column's last entry."
     (let* ((vars (rvars sx r)) (coefs (rcoefs sx r)) (cpos (array-ref (get (extract sx rcpos)) r))
            (x (array-ref vars i)) (p (array-ref cpos i)) (last (- (rlen sx r) 1)))
       (begin
-        (if (= i last) #u
-            (let ((y (array-ref vars last)) (py (array-ref cpos last)))
-              (begin (array-set! vars i y) (array-set! coefs i (array-ref coefs last)) (array-set! cpos i py)
-                     (array-set! (array-ref (get (extract sx crpos)) y) py i))))
+        (unless (= i last)
+          (let ((y (array-ref vars last)) (py (array-ref cpos last)))
+            (begin (array-set! vars i y) (array-set! coefs i (array-ref coefs last)) (array-set! cpos i py)
+                   (array-set! (array-ref (get (extract sx crpos)) y) py i))))
         (array-set! coefs last 0)
         (array-set! (get (extract sx rlen)) r last)
         (let* ((rows (array-ref (get (extract sx crows)) x)) (rpos (array-ref (get (extract sx crpos)) x)) (lastc (- (clen sx x) 1)))
           (begin
-            (if (= p lastc) #u
-                (let ((r2 (array-ref rows lastc)) (i2 (array-ref rpos lastc)))
-                  (begin (array-set! rows p r2) (array-set! rpos p i2)
-                         (array-set! (array-ref (get (extract sx rcpos)) r2) i2 p))))
+            (unless (= p lastc)
+              (let ((r2 (array-ref rows lastc)) (i2 (array-ref rpos lastc)))
+                (begin (array-set! rows p r2) (array-set! rpos p i2)
+                       (array-set! (array-ref (get (extract sx rcpos)) r2) i2 p))))
             (array-set! (get (extract sx clen)) x lastc)))))))
 
 "Row r2 plus c times row r (r2 has none of r's variables basic)."
@@ -203,33 +209,33 @@ column the column's last entry."
   (lambda (sx r2 c r)
     (let ((where (get (extract sx where))))
       (letrec ((mark (subr cb-eff (int) unit)
-                 (lambda (i) (if (= i (rlen sx r2)) #u (begin (array-set! where (array-ref (rvars sx r2) i) i) (mark (+ i 1))))))
+                 (lambda (i) (unless (= i (rlen sx r2)) (array-set! where (array-ref (rvars sx r2) i) i) (mark (+ i 1)))))
                (unmark (subr cb-eff (int) unit)
-                 (lambda (i) (if (= i (rlen sx r2)) #u (begin (array-set! where (array-ref (rvars sx r2) i) -1) (unmark (+ i 1))))))
+                 (lambda (i) (unless (= i (rlen sx r2)) (array-set! where (array-ref (rvars sx r2) i) -1) (unmark (+ i 1)))))
                (add (subr cb-eff (int) unit)
                  (lambda (i)
-                   (if (= i (rlen sx r)) #u
-                       (let* ((k (array-ref (rvars sx r) i)) (e (* c (array-ref (rcoefs sx r) i))) (w (array-ref where k)))
-                         (begin
-                           (if (< w 0)
-                               (array-set! where k (entry-add! sx r2 k e))
-                               (let* ((coefs2 (rcoefs sx r2)) (e2 (+ (array-ref coefs2 w) e)))
-                                 (if (= e2 0)
-                                     (let ((last (- (rlen sx r2) 1)))
-                                       (begin (array-set! where (array-ref (rvars sx r2) last) w)
-                                              (array-set! where k -1)
-                                              (entry-remove! sx r2 w)))
-                                     (array-set! coefs2 w e2))))
-                           (add (+ i 1))))))))
+                   (unless (= i (rlen sx r))
+                     (let* ((k (array-ref (rvars sx r) i)) (e (* c (array-ref (rcoefs sx r) i))) (w (array-ref where k)))
+                       (begin
+                         (if (< w 0)
+                             (array-set! where k (entry-add! sx r2 k e))
+                             (let* ((coefs2 (rcoefs sx r2)) (e2 (+ (array-ref coefs2 w) e)))
+                               (if (= e2 0)
+                                   (let ((last (- (rlen sx r2) 1)))
+                                     (begin (array-set! where (array-ref (rvars sx r2) last) w)
+                                            (array-set! where k -1)
+                                            (entry-remove! sx r2 w)))
+                                   (array-set! coefs2 w e2))))
+                         (add (+ i 1))))))))
         (begin (mark 0) (add 0) (unmark 0))))))
 
 "Basic x may now be out of bounds."
 (define* touch! (subr cb-eff (simplex int) unit)
   (lambda (sx x)
-    (if (array-ref (get (extract sx in-cand)) x) #u
-        (begin (array-set! (get (extract sx in-cand)) x #t)
-               (set (extract sx cand) (put (get (extract sx cand)) (get (extract sx ncand)) x))
-               (set (extract sx ncand) (+ 1 (get (extract sx ncand))))))))
+    (unless (array-ref (get (extract sx in-cand)) x)
+      (array-set! (get (extract sx in-cand)) x #t)
+      (set (extract sx cand) (put (get (extract sx cand)) (get (extract sx ncand)) x))
+      (set (extract sx ncand) (+ 1 (get (extract sx ncand)))))))
 
 (define* sform-sort (subr cb-eff (sform) sform)
   (lambda (l)
@@ -252,18 +258,16 @@ written over the nonbasic variables."
   (lambda (sx form int?)
     (let* ((s (simplex-new-var! sx int?)) (r (get (extract sx nrows)))
            ;; The total, over nonbasic variables, sorted by variable.
-           (total (letrec ((go (subr cb-eff (sform sform) sform)
-                           (lambda (form total)
-                             (if (null? form) total
-                                 (let* ((x (extract (car form) x)) (c (extract (car form) c)) (rx (array-ref (row-of sx) x)))
-                                   (if (>= rx 0)
-                                       (let ((c (rat/ c (int->rat (rden sx rx)))))
-                                         (letrec ((row (subr cb-eff (int sform) sform)
-                                                    (lambda (i total) (if (= i (rlen sx rx)) total
-                                                                        (row (+ i 1) (sform-add total (array-ref (rvars sx rx) i) (rat* c (int->rat (array-ref (rcoefs sx rx) i)))))))))
-                                           (go (cdr form) (row 0 total))))
-                                       (go (cdr form) (sform-add total x c))))))))
-                  (go form nil))))
+           (total (loop go cb-eff ((form sform form) (total sform nil)) sform
+                    (if (null? form) total
+                        (let* ((x (extract (car form) x)) (c (extract (car form) c)) (rx (array-ref (row-of sx) x)))
+                          (if (>= rx 0)
+                              (let ((c (rat/ c (int->rat (rden sx rx)))))
+                                (letrec ((row (subr cb-eff (int sform) sform)
+                                           (lambda (i total) (if (= i (rlen sx rx)) total
+                                                               (row (+ i 1) (sform-add total (array-ref (rvars sx rx) i) (rat* c (int->rat (array-ref (rcoefs sx rx) i)))))))))
+                                  (go (cdr form) (row 0 total))))
+                              (go (cdr form) (sform-add total x c))))))))
       (begin
         (set (extract sx basic) (grow-ivec (basic sx) r 0))
         (set (extract sx rvars) (grow-ivecs (get (extract sx rvars)) r))
@@ -282,20 +286,17 @@ written over the nonbasic variables."
         (array-set! (get (extract sx defs)) s form)
         ;; In the order of the variables, so that a build is repeatable; d s =
         ;; total (d a) y, d the least common multiple of the denominators.
-        (let ((d (letrec ((go (subr cb-eff (sform int) int) (lambda (l d) (if (null? l) d (go (cdr l) (lcm d (rat-den (extract (car l) c))))))))
-                   (go total 1))))
+        (let ((d (loop go cb-eff ((l sform total) (d int 1)) int
+                   (if (null? l) d (go (cdr l) (lcm d (rat-den (extract (car l) c))))))))
           (begin
             (array-set! (get (extract sx rden)) r d)
-            (letrec ((go (subr cb-eff (sform) unit)
-                       (lambda (l) (if (null? l) #u
-                                       (begin (entry-add! sx r (extract (car l) x) (rat-num (rat* (int->rat d) (extract (car l) c)))) (go (cdr l)))))))
-              (go total))))
-        (letrec ((go (subr cb-eff (sform rat rat) unit)
-                   (lambda (l c k)
-                     (if (null? l) (begin (array-set! (vc sx) s c) (array-set! (vk sx) s k))
-                         (let ((y (extract (car l) x)) (a (extract (car l) c)))
-                           (go (cdr l) (rat+ c (rat* a (array-ref (vc sx) y))) (rat+ k (rat* a (array-ref (vk sx) y)))))))))
-          (go total rat-0 rat-0))
+            (loop go cb-eff ((l sform total)) unit
+              (unless (null? l)
+                (entry-add! sx r (extract (car l) x) (rat-num (rat* (int->rat d) (extract (car l) c)))) (go (cdr l))))))
+        (loop go cb-eff ((l sform total) (c rat rat-0) (k rat rat-0)) unit
+          (if (null? l) (begin (array-set! (vc sx) s c) (array-set! (vk sx) s k))
+              (let ((y (extract (car l) x)) (a (extract (car l) c)))
+                (go (cdr l) (rat+ c (rat* a (array-ref (vc sx) y))) (rat+ k (rat* a (array-ref (vk sx) y)))))))
         (touch! sx s)
         s))))
 
@@ -305,10 +306,10 @@ written over the nonbasic variables."
     (begin
       (set (extract sx has-atom) (grow-bools (get (extract sx has-atom)) v #f))
       (let ((as (get (extract sx atoms))))
-        (if (< v (array-length as)) #u
-            (let ((w (the (arrayof atom @cb) (make-array (* 2 (+ v 1)) no-atom))))
-              (letrec ((go (subr cb-eff (int) unit) (lambda (i) (if (>= i (array-length as)) #u (begin (array-set! w i (array-ref as i)) (go (+ i 1)))))))
-                (begin (go 0) (set (extract sx atoms) w))))))
+        (unless (< v (array-length as))
+          (let ((w (the (arrayof atom @cb) (make-array (* 2 (+ v 1)) no-atom))))
+            (letrec ((go (subr cb-eff (int) unit) (lambda (i) (unless (>= i (array-length as)) (array-set! w i (array-ref as i)) (go (+ i 1))))))
+              (begin (go 0) (set (extract sx atoms) w))))))
       (array-set! (get (extract sx has-atom)) v #t)
       (array-set! (get (extract sx atoms)) v (product (x x) (le le) (k k))))))
 
@@ -329,14 +330,14 @@ written over the nonbasic variables."
           (vcs (vc sx)) (vks (vk sx)))
       (letrec ((go (subr cb-eff (int) unit)
                  (lambda (p)
-                   (if (= p (clen sx x)) #u
-                       (let* ((r (array-ref rows p)) (b (array-ref (basic sx) r))
-                              (a (make-rat (array-ref (rcoefs sx r) (array-ref rpos p)) (rden sx r))))
-                         (begin
-                           (if (rat-zero? dc) #u (array-set! vcs b (rat+ (array-ref vcs b) (rat* a dc))))
-                           (if (rat-zero? dk) #u (array-set! vks b (rat+ (array-ref vks b) (rat* a dk))))
-                           (touch! sx b)
-                           (go (+ p 1))))))))
+                   (unless (= p (clen sx x))
+                     (let* ((r (array-ref rows p)) (b (array-ref (basic sx) r))
+                            (a (make-rat (array-ref (rcoefs sx r) (array-ref rpos p)) (rden sx r))))
+                       (begin
+                         (unless (rat-zero? dc) (array-set! vcs b (rat+ (array-ref vcs b) (rat* a dc))))
+                         (unless (rat-zero? dk) (array-set! vks b (rat+ (array-ref vks b) (rat* a dk))))
+                         (touch! sx b)
+                         (go (+ p 1))))))))
         (begin (go 0) (array-set! vcs x c) (array-set! vks x k))))))
 
 "Assert a bound on x, upper or lower: c + k delta, because of the literal
@@ -391,20 +392,20 @@ cannot all hold; or none."
 (define* row-scale! (subr cb-eff (simplex int int) unit)
   (lambda (sx r m)
     (let ((coefs (rcoefs sx r)))
-      (letrec ((go (subr cb-eff (int) unit) (lambda (i) (if (= i (rlen sx r)) #u (begin (array-set! coefs i (* m (array-ref coefs i))) (go (+ i 1)))))))
+      (letrec ((go (subr cb-eff (int) unit) (lambda (i) (unless (= i (rlen sx r)) (array-set! coefs i (* m (array-ref coefs i))) (go (+ i 1))))))
         (begin (go 0) (array-set! (get (extract sx rden)) r (* m (rden sx r))))))))
 
 "Row r divided by the common factor of its coefficients."
 (define* row-normalize! (subr cb-eff (simplex int) unit)
   (lambda (sx r)
     (let ((d (rden sx r)))
-      (if (= d 1) #u
-          (let* ((coefs (rcoefs sx r)) (n (rlen sx r))
-                 (g (letrec ((go (subr cb-eff (int int) int) (lambda (i g) (if (or (= i n) (= g 1)) g (go (+ i 1) (gcd g (array-ref coefs i)))))))
-                      (go 0 d))))
-            (if (= g 1) #u
-                (letrec ((go (subr cb-eff (int) unit) (lambda (i) (if (= i n) #u (begin (array-set! coefs i (quotient (array-ref coefs i) g)) (go (+ i 1)))))))
-                  (begin (go 0) (array-set! (get (extract sx rden)) r (quotient d g))))))))))
+      (unless (= d 1)
+        (let* ((coefs (rcoefs sx r)) (n (rlen sx r))
+               (g (loop go cb-eff ((i int 0) (g int d)) int
+                    (if (or (= i n) (= g 1)) g (go (+ i 1) (gcd g (array-ref coefs i)))))))
+          (unless (= g 1)
+            (letrec ((go (subr cb-eff (int) unit) (lambda (i) (unless (= i n) (array-set! coefs i (quotient (array-ref coefs i) g)) (go (+ i 1))))))
+              (begin (go 0) (array-set! (get (extract sx rden)) r (quotient d g))))))))))
 
 "Make x_j, entry ij of row r, basic in row r, whose basic variable becomes
 nonbasic."
@@ -415,8 +416,8 @@ nonbasic."
         ;; From d b = a x_j + total a_k x_k: |a| x_j = sign (d b - total a_k x_k).
         (entry-remove! sx r ij)
         (let ((coefs (rcoefs sx r)))
-          (letrec ((go (subr cb-eff (int) unit) (lambda (i) (if (= i (rlen sx r)) #u (begin (array-set! coefs i (* (- 0 sign) (array-ref coefs i))) (go (+ i 1)))))))
-            (go 0)))
+          (loop go cb-eff ((i int 0)) unit
+            (unless (= i (rlen sx r)) (array-set! coefs i (* (- 0 sign) (array-ref coefs i))) (go (+ i 1)))))
         (entry-add! sx r b (* sign d))
         (array-set! (get (extract sx rden)) r (if (< a 0) (- 0 a) a))
         (array-set! (basic sx) r j)
@@ -427,20 +428,18 @@ nonbasic."
         ;; empty. For d2 b2 = c x_j + rest, and D x_j = form (row r):
         ;; (D/g) d2 b2 = (c/g) form + (D/g) rest, g = gcd(c, D).
         (let ((dj (if (< a 0) (- 0 a) a)))
-          (letrec ((go (subr cb-eff () unit)
-                     (lambda ()
-                       (let ((n (clen sx j)))
-                         (if (= n 0) #u
-                             (let* ((r2 (array-ref (array-ref (get (extract sx crows)) j) (- n 1)))
-                                    (i2 (array-ref (array-ref (get (extract sx crpos)) j) (- n 1)))
-                                    (c (array-ref (rcoefs sx r2) i2))
-                                    (g (gcd c dj)))
-                               (begin (entry-remove! sx r2 i2)
-                                      (if (= g dj) #u (row-scale! sx r2 (quotient dj g)))
-                                      (row-add-scaled! sx r2 (quotient c g) r)
-                                      (row-normalize! sx r2)
-                                      (go))))))))
-            (go)))))))
+          (loop go cb-eff () unit
+            (let ((n (clen sx j)))
+              (unless (= n 0)
+                (let* ((r2 (array-ref (array-ref (get (extract sx crows)) j) (- n 1)))
+                       (i2 (array-ref (array-ref (get (extract sx crpos)) j) (- n 1)))
+                       (c (array-ref (rcoefs sx r2) i2))
+                       (g (gcd c dj)))
+                  (begin (entry-remove! sx r2 i2)
+                         (unless (= g dj) (row-scale! sx r2 (quotient dj g)))
+                         (row-add-scaled! sx r2 (quotient c g) r)
+                         (row-normalize! sx r2)
+                         (go)))))))))))
 
 "Set basic x_i (row r) to c + k delta by changing nonbasic x_j, entry ij
 of the row, then pivot them."
@@ -463,15 +462,13 @@ candidates found within bounds are dropped."
 (define* violated-row (subr cb-eff (simplex) int)
   (lambda (sx)
     (let ((cand (get (extract sx cand))) (n (get (extract sx ncand))) (in (get (extract sx in-cand))) (row-of (row-of sx)))
-      (letrec ((go (subr cb-eff (int int int) int)
-                 (lambda (i j best)
-                   (if (= i n)
-                       (begin (set (extract sx ncand) j) (if (< best 0) -1 (array-ref row-of best)))
-                       (let ((x (array-ref cand i)))
-                         (if (and (>= (array-ref row-of x) 0) (or (below-lower? sx x) (above-upper? sx x)))
-                             (begin (array-set! cand j x) (go (+ i 1) (+ j 1) (if (or (< best 0) (< x best)) x best)))
-                             (begin (array-set! in x #f) (go (+ i 1) j best))))))))
-        (go 0 0 -1)))))
+      (loop go cb-eff ((i int 0) (j int 0) (best int -1)) int
+        (if (= i n)
+            (begin (set (extract sx ncand) j) (if (< best 0) -1 (array-ref row-of best)))
+            (let ((x (array-ref cand i)))
+              (if (and (>= (array-ref row-of x) 0) (or (below-lower? sx x) (above-upper? sx x)))
+                  (begin (array-set! cand j x) (go (+ i 1) (+ j 1) (if (or (< best 0) (< x best)) x best)))
+                  (begin (array-set! in x #f) (go (+ i 1) j best)))))))))
 
 "Make the assignment satisfy the bounds, or find them infeasible: none,
 or a conflict (a list of true literals). The basic variable to fix is the
@@ -481,43 +478,37 @@ z3. After 1000 pivots it is the least one: Bland's rule, which
 terminates."
 (define* check! (subr cb-eff (simplex) ints)
   (lambda (sx)
-    (letrec ((go (subr cb-eff (int) ints)
-               (lambda (pivots)
-                 (let ((r (violated-row sx)))
-                   (if (< r 0) nil
-                       (let* ((i (array-ref (basic sx) r)) (vars (rvars sx r)) (coefs (rcoefs sx r)) (n (rlen sx r))
-                              (low? (below-lower? sx i)) (bland? (> pivots 1000)) (clen (get (extract sx clen)))
-                              ;; The entry of the nonbasic variable to pivot with.
-                              (ij (letrec ((find (subr cb-eff (int int) int)
-                                             (lambda (e best)
-                                               (if (= e n) best
-                                                   (let ((x (array-ref vars e)))
-                                                     (if (and (or (< best 0)
-                                                                  (let ((y (array-ref vars best)))
-                                                                    (if bland? (< x y)
-                                                                        (let ((cx (array-ref clen x)) (cy (array-ref clen y)))
-                                                                          (or (< cx cy) (and (= cx cy) (< x y)))))))
-                                                              (if (bool=? low? (> (array-ref coefs e) 0)) (can-increase? sx x) (can-decrease? sx x)))
-                                                         (find (+ e 1) e)
-                                                         (find (+ e 1) best)))))))
-                                    (find 0 -1))))
-                         (if (>= ij 0)
-                             (begin
-                               (if low?
-                                   (pivot-and-update! sx r (array-ref vars ij) ij (array-ref (loc sx) i) (array-ref (lok sx) i))
-                                   (pivot-and-update! sx r (array-ref vars ij) ij (array-ref (hic sx) i) (array-ref (hik sx) i)))
-                               (go (+ pivots 1)))
-                             ;; The row and the bounds of its variables conflict.
-                             (cons (if low? (array-ref (lor sx) i) (array-ref (hir sx) i))
-                                   (letrec ((collect (subr cb-eff (int ints) ints)
-                                              (lambda (e acc)
-                                                (if (= e n) acc
-                                                    (collect (+ e 1) (cons (if (bool=? low? (> (array-ref coefs e) 0))
-                                                                               (array-ref (hir sx) (array-ref vars e))
-                                                                               (array-ref (lor sx) (array-ref vars e)))
-                                                                           acc))))))
-                                     (collect 0 nil))))))))))
-      (go 0))))
+    (loop go cb-eff ((pivots int 0)) ints
+      (let ((r (violated-row sx)))
+        (if (< r 0) nil
+            (let* ((i (array-ref (basic sx) r)) (vars (rvars sx r)) (coefs (rcoefs sx r)) (n (rlen sx r))
+                   (low? (below-lower? sx i)) (bland? (> pivots 1000)) (clen (get (extract sx clen)))
+                   ;; The entry of the nonbasic variable to pivot with.
+                   (ij (loop find cb-eff ((e int 0) (best int -1)) int
+                         (if (= e n) best
+                             (let ((x (array-ref vars e)))
+                               (if (and (or (< best 0)
+                                            (let ((y (array-ref vars best)))
+                                              (if bland? (< x y)
+                                                  (let ((cx (array-ref clen x)) (cy (array-ref clen y)))
+                                                    (or (< cx cy) (and (= cx cy) (< x y)))))))
+                                        (if (bool=? low? (> (array-ref coefs e) 0)) (can-increase? sx x) (can-decrease? sx x)))
+                                   (find (+ e 1) e)
+                                   (find (+ e 1) best)))))))
+              (if (>= ij 0)
+                  (begin
+                    (if low?
+                        (pivot-and-update! sx r (array-ref vars ij) ij (array-ref (loc sx) i) (array-ref (lok sx) i))
+                        (pivot-and-update! sx r (array-ref vars ij) ij (array-ref (hic sx) i) (array-ref (hik sx) i)))
+                    (go (+ pivots 1)))
+                  ;; The row and the bounds of its variables conflict.
+                  (cons (if low? (array-ref (lor sx) i) (array-ref (hir sx) i))
+                        (loop collect cb-eff ((e int 0) (acc ints nil)) ints
+                          (if (= e n) acc
+                              (collect (+ e 1) (cons (if (bool=? low? (> (array-ref coefs e) 0))
+                                                         (array-ref (hir sx) (array-ref vars e))
+                                                         (array-ref (lor sx) (array-ref vars e)))
+                                                     acc))))))))))))
 
 ;;; ------------------------------------------------------------ as a theory
 
@@ -539,22 +530,20 @@ terminates."
 (define* theory-check (subr cb-eff (simplex bool) theory-answer)
   (lambda (sx final?)
     (let* ((s (extract sx solver)) (n (sat-trail-size s)))
-      (letrec ((go (subr cb-eff (int) theory-answer)
-                 (lambda (i)
-                   (if (< i n)
-                       (let* ((l (sat-trail-lit s i)) (v (lit-var l))
-                              (has (and (< v (array-length (get (extract sx has-atom)))) (array-ref (get (extract sx has-atom)) v)))
-                              (confl (if has (assert-atom! sx l (array-ref (get (extract sx atoms)) v) i) nil)))
-                         (if (pair? confl)
-                             (begin (set (extract sx qhead) (+ i 1)) (conflict-clause confl))
-                             (go (+ i 1))))
-                       (begin
-                         (set (extract sx qhead) n)
-                         (let ((confl (check! sx)))
-                           (cond ((pair? confl) (conflict-clause confl))
-                                 (final? (final-check! sx))
-                                 (else (t-ok)))))))))
-        (go (get (extract sx qhead)))))))
+      (loop go cb-eff ((i int (get (extract sx qhead)))) theory-answer
+        (if (< i n)
+            (let* ((l (sat-trail-lit s i)) (v (lit-var l))
+                   (has (and (< v (array-length (get (extract sx has-atom)))) (array-ref (get (extract sx has-atom)) v)))
+                   (confl (if has (assert-atom! sx l (array-ref (get (extract sx atoms)) v) i) nil)))
+              (if (pair? confl)
+                  (begin (set (extract sx qhead) (+ i 1)) (conflict-clause confl))
+                  (go (+ i 1))))
+            (begin
+              (set (extract sx qhead) n)
+              (let ((confl (check! sx)))
+                (cond ((pair? confl) (conflict-clause confl))
+                      (final? (final-check! sx))
+                      (else (t-ok))))))))))
 
 "At a full assignment: make the integer variables integers. First
 integer equalities; then patching: an integer nonbasic variable with a
@@ -591,23 +580,22 @@ test, cuts, and branching."
 ;;; assignment.
 
 (define* touch-basics! (subr cb-eff (simplex) unit)
-  (lambda (sx) (letrec ((go (subr cb-eff (int) unit) (lambda (r) (if (= r (get (extract sx nrows))) #u (begin (touch! sx (array-ref (basic sx) r)) (go (+ r 1)))))))
-                 (go 0))))
+  (lambda (sx) (loop go cb-eff ((r int 0)) unit
+                 (unless (= r (get (extract sx nrows))) (touch! sx (array-ref (basic sx) r)) (go (+ r 1))))))
 
 (define* copy-rats (subr cb-eff (rats) rats)
   (lambda (v) (let ((w (the rats (make-array (array-length v) rat-0))))
-                (letrec ((go (subr cb-eff (int) rats) (lambda (i) (if (= i (array-length v)) w (begin (array-set! w i (array-ref v i)) (go (+ i 1)))))))
-                  (go 0)))))
+                (loop go cb-eff ((i int 0)) rats
+                  (if (= i (array-length v)) w (begin (array-set! w i (array-ref v i)) (go (+ i 1))))))))
 
 "Half the total of the absolute values of the coefficients of x's form over
 the variables that are not slacks, those not fixed."
 (define* half-norm (subr cb-eff (simplex int bools) rat)
   (lambda (sx x fixed)
     (if (slack? sx x)
-        (letrec ((go (subr cb-eff (sform rat) rat)
-                   (lambda (f total) (if (null? f) (rat/ total (int->rat 2))
-                                       (go (cdr f) (if (array-ref fixed (extract (car f) x)) total (rat+ total (rat-abs (extract (car f) c)))))))))
-          (go (expand sx x) rat-0))
+        (loop go cb-eff ((f sform (expand sx x)) (total rat rat-0)) rat
+          (if (null? f) (rat/ total (int->rat 2))
+            (go (cdr f) (if (array-ref fixed (extract (car f) x)) total (rat+ total (rat-abs (extract (car f) c)))))))
         (make-rat 1 2))))
 
 "q rounded to the nearest integer, ties to even (Scheme's `round`)."
@@ -622,41 +610,37 @@ the variables that are not slacks, those not fixed."
 (define* cube! (subr cb-eff (simplex) bool)
   (lambda (sx)
     (let ((n (simplex-nvars sx)))
-      (and (letrec ((go (subr cb-eff (int) bool) (lambda (x) (or (= x n) (and (int-var? sx x) (go (+ x 1))))))) (go 0))
+      (and (loop go cb-eff ((x int 0)) bool (or (= x n) (and (int-var? sx x) (go (+ x 1)))))
            (let* ((fixed (let ((v (the bools (make-array n #f))))
-                           (letrec ((go (subr cb-eff (int) bools)
-                                      (lambda (x) (if (= x n) v
-                                                      (begin (array-set! v x (and (> (array-ref (lor sx) x) 0) (> (array-ref (hir sx) x) 0)
-                                                                                  (rat= (array-ref (loc sx) x) (array-ref (hic sx) x))))
-                                                             (go (+ x 1)))))))
-                             (go 0))))
+                           (loop go cb-eff ((x int 0)) bools
+                             (if (= x n) v
+                                 (begin (array-set! v x (and (> (array-ref (lor sx) x) 0) (> (array-ref (hir sx) x) 0)
+                                                             (rat= (array-ref (loc sx) x) (array-ref (hic sx) x))))
+                                        (go (+ x 1)))))))
                   (lows (copy-rats (loc sx))) (highs (copy-rats (hic sx)))
                   ;; (A fixed slack whose form has variables not fixed leaves no room.)
-                  (room? (letrec ((go (subr cb-eff (int) bool)
-                                    (lambda (x)
-                                      (cond ((= x n) #t)
-                                            ((array-ref fixed x)
-                                             (and (or (not (slack? sx x)) (rat-zero? (half-norm sx x fixed))) (go (+ x 1))))
-                                            (else
-                                             (let ((w (half-norm sx x fixed)))
-                                               (begin
-                                                 (if (> (array-ref (lor sx) x) 0) (array-set! (loc sx) x (rat+ (array-ref (loc sx) x) w)) #u)
-                                                 (if (> (array-ref (hir sx) x) 0) (array-set! (hic sx) x (rat- (array-ref (hic sx) x) w)) #u)
-                                                 (and (not (and (> (array-ref (lor sx) x) 0) (> (array-ref (hir sx) x) 0)
-                                                                (rat< (array-ref (hic sx) x) (array-ref (loc sx) x))))
-                                                      (go (+ x 1))))))))))
-                           (go 0)))
+                  (room? (loop go cb-eff ((x int 0)) bool
+                           (cond ((= x n) #t)
+                                 ((array-ref fixed x)
+                                  (and (or (not (slack? sx x)) (rat-zero? (half-norm sx x fixed))) (go (+ x 1))))
+                                 (else
+                                  (let ((w (half-norm sx x fixed)))
+                                    (begin
+                                      (if (> (array-ref (lor sx) x) 0) (array-set! (loc sx) x (rat+ (array-ref (loc sx) x) w)) #u)
+                                      (if (> (array-ref (hir sx) x) 0) (array-set! (hic sx) x (rat- (array-ref (hic sx) x) w)) #u)
+                                      (and (not (and (> (array-ref (lor sx) x) 0) (> (array-ref (hir sx) x) 0)
+                                                     (rat< (array-ref (hic sx) x) (array-ref (loc sx) x))))
+                                           (go (+ x 1)))))))))
                   (solved? (and room?
                                 (begin
                                   ;; Nonbasic variables are kept within bounds.
-                                  (letrec ((go (subr cb-eff (int) unit)
-                                             (lambda (x) (if (= x n) #u
-                                                             (begin (if (>= (array-ref (row-of sx) x) 0) #u
-                                                                        (cond ((below-lower? sx x) (update! sx x (array-ref (loc sx) x) rat-0))
-                                                                              ((above-upper? sx x) (update! sx x (array-ref (hic sx) x) rat-0))
-                                                                              (else #u)))
-                                                                    (go (+ x 1)))))))
-                                    (go 0))
+                                  (loop go cb-eff ((x int 0)) unit
+                                    (unless (= x n)
+                                      (unless (>= (array-ref (row-of sx) x) 0)
+                                        (cond ((below-lower? sx x) (update! sx x (array-ref (loc sx) x) rat-0))
+                                              ((above-upper? sx x) (update! sx x (array-ref (hic sx) x) rat-0))
+                                              (else #u)))
+                                      (go (+ x 1))))
                                   (touch-basics! sx)
                                   (null? (check! sx))))))
              (begin
@@ -672,24 +656,19 @@ it). This satisfies every row. Whether the bounds hold (they should)."
   (lambda (sx fixed)
     (let ((n (simplex-nvars sx)) (vcs (vc sx)))
       (begin
-        (letrec ((go (subr cb-eff (int) unit)
-                   (lambda (x)
-                     (if (= x n) #u
-                         (begin
-                           (array-set! vcs x
-                                       (cond ((slack? sx x)
-                                              (letrec ((total (subr cb-eff (sform rat) rat)
-                                                              (lambda (f s) (if (null? f) s (total (cdr f) (rat+ s (rat* (extract (car f) c) (array-ref vcs (extract (car f) x)))))))))
-                                                (total (array-ref (get (extract sx defs)) x) rat-0)))
-                                             ((array-ref fixed x) (array-ref vcs x))
-                                             (else (int->rat (rat-round (array-ref vcs x))))))
-                           (array-set! (vk sx) x rat-0)
-                           (go (+ x 1)))))))
-          (go 0))
+        (loop go cb-eff ((x int 0)) unit
+          (unless (= x n)
+            (array-set! vcs x
+                        (cond ((slack? sx x)
+                               (loop total cb-eff ((f sform (array-ref (get (extract sx defs)) x)) (s rat rat-0)) rat
+                                 (if (null? f) s (total (cdr f) (rat+ s (rat* (extract (car f) c) (array-ref vcs (extract (car f) x))))))))
+                              ((array-ref fixed x) (array-ref vcs x))
+                              (else (int->rat (rat-round (array-ref vcs x))))))
+            (array-set! (vk sx) x rat-0)
+            (go (+ x 1))))
         (touch-basics! sx)
-        (letrec ((go (subr cb-eff (int) bool)
-                   (lambda (x) (or (= x n) (and (not (below-lower? sx x)) (not (above-upper? sx x)) (rat-int? (array-ref vcs x)) (go (+ x 1)))))))
-          (go 0))))))
+        (loop go cb-eff ((x int 0)) bool
+          (or (= x n) (and (not (below-lower? sx x)) (not (above-upper? sx x)) (rat-int? (array-ref vcs x)) (go (+ x 1)))))))))
 
 ;;; ------------------------------------------------------------ cuts
 ;;; A Gomory mixed-integer cut, if a row of an integer basic variable with a
@@ -703,13 +682,11 @@ it). This satisfies every row. Whether the bounds hold (they should)."
 
 (define* cut! (subr cb-eff (simplex) ints)
   (lambda (sx)
-    (letrec ((go (subr cb-eff (int) ints)
-               (lambda (r)
-                 (if (>= r (get (extract sx nrows))) nil
-                     (let* ((i (array-ref (basic sx) r)) (b (array-ref (vc sx) i))
-                            (c (if (and (int-var? sx i) (rat-zero? (array-ref (vk sx) i)) (not (rat-int? b))) (gomory sx r b) nil)))
-                       (if (pair? c) c (go (+ r 1))))))))
-      (go 0))))
+    (loop go cb-eff ((r int 0)) ints
+      (if (>= r (get (extract sx nrows))) nil
+          (let* ((i (array-ref (basic sx) r)) (b (array-ref (vc sx) i))
+                 (c (if (and (int-var? sx i) (rat-zero? (array-ref (vk sx) i)) (not (rat-int? b))) (gomory sx r b) nil)))
+            (if (pair? c) c (go (+ r 1))))))))
 
 (define* gomory (subr cb-eff (simplex int rat) ints)
   (lambda (sx r b)
@@ -730,40 +707,38 @@ it). This satisfies every row. Whether the bounds hold (they should)."
           (if (not (extract terms ok)) nil
               ;; x_i = b + total a'_j t_j, t_j >= 0 the distance of x_j from its
               ;; bound; the cut is total g_j t_j >= 1.
-              (letrec ((go (subr cb-eff ((listof gterm acyclic) sform rat ints) ints)
-                         (lambda (ts form rhs reasons)
-                           (if (null? ts) (if (pair? form) (make-cut! sx form rhs reasons) nil)
-                               (let* ((j (extract (car ts) j)) (lower? (extract (car ts) lower)) (a (extract (car ts) a))
-                                      (abar (rat-neg (if lower? a (rat-neg a))))
-                                      (g (if (int-var? sx j)
-                                             (let ((fj (frac abar)))
-                                               (if (rat<= fj f0) (rat/ fj f0) (rat/ (rat- rat-1 fj) (rat- rat-1 f0))))
-                                             (if (rat< rat-0 abar) (rat/ abar f0) (rat/ (rat-neg abar) (rat- rat-1 f0))))))
-                                 (cond ((rat-zero? g) (go (cdr ts) form rhs reasons))
-                                       (lower? (go (cdr ts) (cons (product (x j) (c g)) form) (rat+ rhs (rat* g (array-ref (loc sx) j)))
-                                                   (cons (array-ref (lor sx) j) reasons)))
-                                       (else (go (cdr ts) (cons (product (x j) (c (rat-neg g))) form) (rat- rhs (rat* g (array-ref (hic sx) j)))
-                                                 (cons (array-ref (hir sx) j) reasons)))))))))
-                (go (extract terms ts) nil rat-1 nil))))))))
+              (loop go cb-eff ((ts (listof gterm acyclic) (extract terms ts)) (form sform nil) (rhs rat rat-1) (reasons ints nil)) ints
+                (if (null? ts) (if (pair? form) (make-cut! sx form rhs reasons) nil)
+                    (let* ((j (extract (car ts) j)) (lower? (extract (car ts) lower)) (a (extract (car ts) a))
+                           (abar (rat-neg (if lower? a (rat-neg a))))
+                           (g (if (int-var? sx j)
+                                  (let ((fj (frac abar)))
+                                    (if (rat<= fj f0) (rat/ fj f0) (rat/ (rat- rat-1 fj) (rat- rat-1 f0))))
+                                  (if (rat< rat-0 abar) (rat/ abar f0) (rat/ (rat-neg abar) (rat- rat-1 f0))))))
+                      (cond ((rat-zero? g) (go (cdr ts) form rhs reasons))
+                            (lower? (go (cdr ts) (cons (product (x j) (c g)) form) (rat+ rhs (rat* g (array-ref (loc sx) j)))
+                                        (cons (array-ref (lor sx) j) reasons)))
+                            (else (go (cdr ts) (cons (product (x j) (c (rat-neg g))) form) (rat- rhs (rat* g (array-ref (hic sx) j)))
+                                      (cons (array-ref (hir sx) j) reasons)))))))))))))
 
 "The cut total form >= rhs as a new atom, and the lemma: the reasons imply it."
 (define* make-cut! (subr cb-eff (simplex sform rat ints) ints)
   (lambda (sx form rhs reasons)
-    (let* ((int? (letrec ((go (subr cb-eff (sform) bool) (lambda (f) (or (null? f) (and (int-var? sx (extract (car f) x)) (go (cdr f)))))))
-                   (go form)))
+    (let* ((int? (loop go cb-eff ((f sform form)) bool
+                   (or (null? f) (and (int-var? sx (extract (car f) x)) (go (cdr f))))))
            ;; Over integers: integer coefficients, and the bound rounded up.
-           (scale (if int? (letrec ((go (subr cb-eff (sform int) int) (lambda (f l) (if (null? f) l (go (cdr f) (lcm l (rat-den (extract (car f) c))))))))
-                             (go form 1))
+           (scale (if int? (loop go cb-eff ((f sform form) (l int 1)) int
+                             (if (null? f) l (go (cdr f) (lcm l (rat-den (extract (car f) c))))))
                       1))
-           (form (letrec ((go (subr cb-eff (sform) sform) (lambda (f) (if (null? f) nil (cons (product (x (extract (car f) x)) (c (rat* (int->rat scale) (extract (car f) c)))) (go (cdr f)))))))
-                   (go form)))
+           (form (loop go cb-eff ((f sform form)) sform
+                   (if (null? f) nil (cons (product (x (extract (car f) x)) (c (rat* (int->rat scale) (extract (car f) c)))) (go (cdr f))))))
            (rhs (if int? (int->rat (rat-ceiling (rat* (int->rat scale) rhs))) rhs))
            (x (simplex-slack! sx (sform-sort form) int?))
            (v (sat-new-var! (extract sx solver)))
            (l (make-lit v #f)))
       (begin (simplex-add-atom! sx v x #f rhs)
-             (cons l (letrec ((go (subr cb-eff (ints) ints) (lambda (l) (if (null? l) nil (cons (lit-neg (car l)) (go (cdr l)))))))
-                       (go reasons)))))))
+             (cons l (loop go cb-eff ((l ints reasons)) ints
+                       (if (null? l) nil (cons (lit-neg (car l)) (go (cdr l))))))))))
 
 ;;; ------------------------------------------------------------ integer equalities
 ;;; Those the bounds now assert (a slack or a variable with equal bounds)
@@ -791,8 +766,8 @@ it). This satisfies every row. Whether the bounds hold (they should)."
           (else (cons (car q) (poly+ p (cdr q)))))))
 (define* poly-scale (subr cb-eff (rat sform) sform)
   (lambda (c p) (if (rat-zero? c) nil
-                    (letrec ((go (subr cb-eff (sform) sform) (lambda (p) (if (null? p) nil (cons (product (x (extract (car p) x)) (c (rat* c (extract (car p) c)))) (go (cdr p)))))))
-                      (go p)))))
+                    (loop go cb-eff ((p sform p)) sform
+                      (if (null? p) nil (cons (product (x (extract (car p) x)) (c (rat* c (extract (car p) c)))) (go (cdr p))))))))
 (define* poly-without (subr cb-eff (int sform) sform)
   (lambda (x p) (cond ((null? p) nil) ((= (extract (car p) x) x) (poly-without x (cdr p))) (else (cons (car p) (poly-without x (cdr p)))))))
 
@@ -802,27 +777,24 @@ it). This satisfies every row. Whether the bounds hold (they should)."
     (cond ((not (slack? sx x)) (list (product (x x) (c rat-1))))
           ((array-ref (get (extract sx has-expanded)) x) (array-ref (get (extract sx expanded)) x))
           (else
-           (let ((p (letrec ((go (subr cb-eff (sform sform) sform)
-                               (lambda (f acc) (if (null? f) acc (go (cdr f) (poly+ acc (poly-scale (extract (car f) c) (expand sx (extract (car f) x)))))))))
-                      (go (array-ref (get (extract sx defs)) x) nil))))
+           (let ((p (loop go cb-eff ((f sform (array-ref (get (extract sx defs)) x)) (acc sform nil)) sform
+                      (if (null? f) acc (go (cdr f) (poly+ acc (poly-scale (extract (car f) c) (expand sx (extract (car f) x)))))))))
              (begin (array-set! (get (extract sx expanded)) x p) (array-set! (get (extract sx has-expanded)) x #t) p))))))
 
 (define* current-equalities (subr cb-eff (simplex) equations)
   (lambda (sx)
-    (letrec ((go (subr cb-eff (int equations) equations)
-               (lambda (x acc)
-                 (if (= x (simplex-nvars sx)) acc
-                     (go (+ x 1)
-                         (if (and (int-var? sx x) (> (array-ref (lor sx) x) 0) (> (array-ref (hir sx) x) 0)
-                                  (rat= (array-ref (loc sx) x) (array-ref (hic sx) x))
-                                  (rat-zero? (array-ref (lok sx) x)) (rat-zero? (array-ref (hik sx) x)))
-                             (let ((form (expand sx x)))
-                               (if (letrec ((all (subr cb-eff (sform) bool) (lambda (f) (or (null? f) (and (rat-int? (extract (car f) c)) (all (cdr f)))))))
-                                     (all form))
-                                   (cons (product (form form) (c (array-ref (loc sx) x)) (src (list (array-ref (lor sx) x) (array-ref (hir sx) x)))) acc)
-                                   acc))
-                             acc))))))
-      (go 0 nil))))
+    (loop go cb-eff ((x int 0) (acc equations nil)) equations
+      (if (= x (simplex-nvars sx)) acc
+          (go (+ x 1)
+              (if (and (int-var? sx x) (> (array-ref (lor sx) x) 0) (> (array-ref (hir sx) x) 0)
+                       (rat= (array-ref (loc sx) x) (array-ref (hic sx) x))
+                       (rat-zero? (array-ref (lok sx) x)) (rat-zero? (array-ref (hik sx) x)))
+                  (let ((form (expand sx x)))
+                    (if (loop all cb-eff ((f sform form)) bool
+                          (or (null? f) (and (rat-int? (extract (car f) c)) (all (cdr f)))))
+                        (cons (product (form form) (c (array-ref (loc sx) x)) (src (list (array-ref (lor sx) x) (array-ref (hir sx) x)))) acc)
+                        acc))
+                  acc))))))
 
 (define* member-int? (subr cb-eff (int ints) bool) (lambda (x l) (and (pair? l) (or (= x (car l)) (member-int? x (cdr l))))))
 (define* union-ints (subr cb-eff (ints ints) ints)
@@ -843,45 +815,41 @@ sources of that substitution added if x occurs."
 
 (define* solve-equalities (subr cb-eff (equations int) ints)
   (lambda (eqs fresh)
-    (letrec ((go (subr cb-eff (equations int int) ints)
-               (lambda (eqs fresh steps)
-                 (cond
-                  ((null? eqs) nil)
-                  ((> steps 10000) nil)              ; (it ends; this is a guard)
-                  (else
-                   (let* ((e (car eqs)) (form (extract e form)) (c (extract e c)))
-                     (if (null? form)
-                         (if (rat-zero? c) (go (cdr eqs) fresh (+ steps 1)) (extract e src))
-                         (let ((g (letrec ((gg (subr cb-eff (sform int) int) (lambda (f g) (if (null? f) g (gg (cdr f) (gcd g (rat-num (extract (car f) c))))))))
-                                    (gg form 0))))
-                           (if (not (rat-int? (rat/ c (int->rat g)))) (extract e src)
-                               (let* ((form (poly-scale (make-rat 1 g) form))
-                                      (c (rat/ c (int->rat g)))
-                                      (m (letrec ((least (subr cb-eff (sform smono) smono)
-                                                    (lambda (f b) (if (null? f) b (least (cdr f) (if (rat< (rat-abs (extract (car f) c)) (rat-abs (extract b c))) (car f) b))))))
-                                           (least form (car form))))
-                                      (x (extract m x)) (a (extract m c)) (src (extract e src)))
-                                 (if (rat= (rat-abs a) rat-1)
-                                     ;; x = (c - rest) / a
-                                     (let ((p (poly-scale (rat-neg a) (poly-without x form))) (k (rat* a c)))
-                                       (go (substitute-all (cdr eqs) x p k src) fresh (+ steps 1)))
-                                     ;; a x + total a_j x_j = c, a > 0 (else negate):
-                                     ;; x = s - total floor(a_j/a) x_j + floor(c/a)
-                                     ;; leaves a s + total (a_j mod a) x_j = c mod a.
-                                     (let* ((sign (if (rat< a rat-0) (rat-neg rat-1) rat-1))
-                                            (a (rat* sign a))
-                                            (rest (poly-scale sign (poly-without x form)))
-                                            (c (rat* sign c))
-                                            (p (poly+ (list (product (x fresh) (c rat-1)))
-                                                      (letrec ((fl (subr cb-eff (sform) sform)
-                                                                 (lambda (f) (if (null? f) nil
-                                                                                 (let ((q (int->rat (- 0 (rat-floor (rat/ (extract (car f) c) a))))))
-                                                                                   (if (rat-zero? q) (fl (cdr f)) (cons (product (x (extract (car f) x)) (c q)) (fl (cdr f)))))))))
-                                                        (fl rest))))
-                                            (k (int->rat (rat-floor (rat/ c a))))
-                                            (e (product (form (the sform (cons (product (x x) (c a)) rest))) (c c) (src src))))
-                                       (go (substitute-all (cons e (cdr eqs)) x p k src) (+ fresh 1) (+ steps 1))))))))))))))
-      (go eqs fresh 0))))
+    (loop go cb-eff ((eqs equations eqs) (fresh int fresh) (steps int 0)) ints
+      (cond
+       ((null? eqs) nil)
+       ((> steps 10000) nil)              ; (it ends; this is a guard)
+       (else
+        (let* ((e (car eqs)) (form (extract e form)) (c (extract e c)))
+          (if (null? form)
+              (if (rat-zero? c) (go (cdr eqs) fresh (+ steps 1)) (extract e src))
+              (let ((g (loop gg cb-eff ((f sform form) (g int 0)) int
+                         (if (null? f) g (gg (cdr f) (gcd g (rat-num (extract (car f) c))))))))
+                (if (not (rat-int? (rat/ c (int->rat g)))) (extract e src)
+                    (let* ((form (poly-scale (make-rat 1 g) form))
+                           (c (rat/ c (int->rat g)))
+                           (m (loop least cb-eff ((f sform form) (b smono (car form))) smono
+                                (if (null? f) b (least (cdr f) (if (rat< (rat-abs (extract (car f) c)) (rat-abs (extract b c))) (car f) b)))))
+                           (x (extract m x)) (a (extract m c)) (src (extract e src)))
+                      (if (rat= (rat-abs a) rat-1)
+                          ;; x = (c - rest) / a
+                          (let ((p (poly-scale (rat-neg a) (poly-without x form))) (k (rat* a c)))
+                            (go (substitute-all (cdr eqs) x p k src) fresh (+ steps 1)))
+                          ;; a x + total a_j x_j = c, a > 0 (else negate):
+                          ;; x = s - total floor(a_j/a) x_j + floor(c/a)
+                          ;; leaves a s + total (a_j mod a) x_j = c mod a.
+                          (let* ((sign (if (rat< a rat-0) (rat-neg rat-1) rat-1))
+                                 (a (rat* sign a))
+                                 (rest (poly-scale sign (poly-without x form)))
+                                 (c (rat* sign c))
+                                 (p (poly+ (list (product (x fresh) (c rat-1)))
+                                           (loop fl cb-eff ((f sform rest)) sform
+                                             (if (null? f) nil
+                                                 (let ((q (int->rat (- 0 (rat-floor (rat/ (extract (car f) c) a))))))
+                                                   (if (rat-zero? q) (fl (cdr f)) (cons (product (x (extract (car f) x)) (c q)) (fl (cdr f)))))))))
+                                 (k (int->rat (rat-floor (rat/ c a))))
+                                 (e (product (form (the sform (cons (product (x x) (c a)) rest))) (c c) (src src))))
+                            (go (substitute-all (cons e (cdr eqs)) x p k src) (+ fresh 1) (+ steps 1))))))))))))))
 
 (define* diophantine-conflict (subr cb-eff (simplex) ints)
   (lambda (sx)
@@ -894,28 +862,24 @@ sources of that substitution added if x occurs."
 "Whether some nonbasic variable was moved."
 (define* patch! (subr cb-eff (simplex) bool)
   (lambda (sx)
-    (letrec ((go (subr cb-eff (int bool) bool)
-               (lambda (x moved?)
-                 (if (= x (simplex-nvars sx)) moved?
-                     (let ((c (array-ref (vc sx) x)))
-                       (if (and (int-var? sx x) (< (array-ref (row-of sx) x) 0) (not (rat-int? c)))
-                           (begin (update! sx x (int->rat (rat-floor c)) rat-0) (go (+ x 1) #t))
-                           (go (+ x 1) moved?)))))))
-      (go 0 #f))))
+    (loop go cb-eff ((x int 0) (moved? bool #f)) bool
+      (if (= x (simplex-nvars sx)) moved?
+          (let ((c (array-ref (vc sx) x)))
+            (if (and (int-var? sx x) (< (array-ref (row-of sx) x) 0) (not (rat-int? c)))
+                (begin (update! sx x (int->rat (rat-floor c)) rat-0) (go (+ x 1) #t))
+                (go (+ x 1) moved?)))))))
 
 "The least integer variable (a slack, if `slacks?`) whose value is not an
 integer, or -1."
 (define* fractional (subr cb-eff (simplex bool) int)
   (lambda (sx slacks?)
-    (letrec ((go (subr cb-eff (int) int)
-               (lambda (x)
-                 (cond ((= x (simplex-nvars sx)) -1)
-                       ((and (int-var? sx x)
-                             (not (and (rat-int? (array-ref (vc sx) x)) (rat-zero? (array-ref (vk sx) x))))
-                             (or (not slacks?) (slack? sx x)))
-                        x)
-                       (else (go (+ x 1)))))))
-      (go 0))))
+    (loop go cb-eff ((x int 0)) int
+      (cond ((= x (simplex-nvars sx)) -1)
+            ((and (int-var? sx x)
+                  (not (and (rat-int? (array-ref (vc sx) x)) (rat-zero? (array-ref (vk sx) x))))
+                  (or (not slacks?) (slack? sx x)))
+             x)
+            (else (go (+ x 1)))))))
 
 "Branch and bound: for an integer variable with a value not an integer, a
 new atom x <= floor(value) for the SAT solver to decide (its negation is x
@@ -930,16 +894,16 @@ walks along the line for ever."
                  (f (if (and (rat-int? c) (rat< (array-ref (vk sx) x) rat-0)) (- (rat-num c) 1) (rat-floor c)))
                  (key (string-append (int->string x) (string-append ":" (int->string f)))))
             (begin
-              (if (table-has? (extract sx branches) key) #u
-                  (let ((v (sat-new-var! (extract sx solver))))
-                    (begin
-                      (table-set! (extract sx branches) key v)
-                      ;; Not simplex-add-atom!'s list of a variable's atoms
-                      ;; (lockpick's, for propagation): propagating branch atoms
-                      ;; made branch and bound wander.
-                      (simplex-add-atom! sx v x #t (int->rat f))
-                      ;; Try first the side toward 0.
-                      (sat-set-phase! (extract sx solver) v (rat< c rat-0)))))
+              (unless (table-has? (extract sx branches) key)
+                (let ((v (sat-new-var! (extract sx solver))))
+                  (begin
+                    (table-set! (extract sx branches) key v)
+                    ;; Not simplex-add-atom!'s list of a variable's atoms
+                    ;; (lockpick's, for propagation): propagating branch atoms
+                    ;; made branch and bound wander.
+                    (simplex-add-atom! sx v x #t (int->rat f))
+                    ;; Try first the side toward 0.
+                    (sat-set-phase! (extract sx solver) v (rat< c rat-0)))))
               (t-continue)))))))
 
 "A value for delta small enough that every bound holds of the values with

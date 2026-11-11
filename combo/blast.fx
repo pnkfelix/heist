@@ -27,6 +27,12 @@
                     (m-eval (load-moduleof "eval.fx" m-sat m-rat m-term))
                     (m-simplex (load-moduleof "simplex.fx" m-sat m-rat))))
 
+;; Macros: each file defines its own, for now (docs/macros.md).
+(define-syntax loop
+  (syntax-rules ()
+    ((_ go eff ((x t i) ...) r body) (letrec ((go (subr eff (t ...) r) (lambda (x ...) body))) (go i ...)))))
+(define-syntax unless (syntax-rules () ((_ c e ...) (if c #u (begin e ...)))))
+
 (hide (define kit-lists (load-module "../kit/lists.fx"))
       (import kit-lists map member?))
 
@@ -181,25 +187,23 @@
 "The conjunction of a list of literals, as one gate."
 (define* and-list (subr cb-eff (blaster ints) int)
   (lambda (b ls)
-    (let ((ls (letrec ((go (subr cb-eff (ints ints) ints)
-                         (lambda (ls acc)
-                           (cond ((null? ls) acc)
-                                 ((= (car ls) (tt b)) (go (cdr ls) acc))
-                                 ((member? (car ls) acc =) (go (cdr ls) acc))
-                                 (else (go (cdr ls) (cons (car ls) acc)))))))
-                (go ls nil))))
+    (let ((ls (loop go cb-eff ((ls ints ls) (acc ints nil)) ints
+                (cond ((null? ls) acc)
+                      ((= (car ls) (tt b)) (go (cdr ls) acc))
+                      ((member? (car ls) acc =) (go (cdr ls) acc))
+                      (else (go (cdr ls) (cons (car ls) acc)))))))
       (cond ((member? (ff b) ls =) (ff b))
             ((null? ls) (tt b))
             ((null? (cdr ls)) (car ls))
             ((null? (cdr (cdr ls))) (and2 b (car ls) (car (cdr ls))))
-            ((letrec ((go (subr cb-eff (ints) bool) (lambda (l) (and (pair? l) (or (member? (neg (car l)) ls =) (go (cdr l)))))))
-               (go ls))
+            ((loop go cb-eff ((l ints ls)) bool
+               (and (pair? l) (or (member? (neg (car l)) ls =) (go (cdr l)))))
              (ff b))
             (else
              (let ((z (new-lit! b)))
                (begin
-                 (letrec ((go (subr cb-eff (ints) unit) (lambda (l) (if (null? l) #u (begin (clause! b (list (neg z) (car l))) (go (cdr l)))))))
-                   (go ls))
+                 (loop go cb-eff ((l ints ls)) unit
+                   (unless (null? l) (clause! b (list (neg z) (car l))) (go (cdr l))))
                  (clause! b (cons z (map-neg ls)))
                  z)))))))
 (define* or-list (subr cb-eff (blaster ints) int) (lambda (b ls) (neg (and-list b (map-neg ls)))))
@@ -239,33 +243,30 @@
 (define* bits-map1 (subr cb-eff ((subr cb-eff (int) int) ivec) ivec)
   (lambda (f v)
     (let ((out (the ivec (make-array (array-length v) 0))))
-      (letrec ((go (subr cb-eff (int) ivec) (lambda (i) (if (= i (array-length v)) out (begin (array-set! out i (f (array-ref v i))) (go (+ i 1)))))))
-        (go 0)))))
+      (loop go cb-eff ((i int 0)) ivec
+        (if (= i (array-length v)) out (begin (array-set! out i (f (array-ref v i))) (go (+ i 1))))))))
 (define* bits-map2 (subr cb-eff ((subr cb-eff (int int) int) ivec ivec) ivec)
   (lambda (f v w)
     (let ((out (the ivec (make-array (array-length v) 0))))
-      (letrec ((go (subr cb-eff (int) ivec) (lambda (i) (if (= i (array-length v)) out (begin (array-set! out i (f (array-ref v i) (array-ref w i))) (go (+ i 1)))))))
-        (go 0)))))
+      (loop go cb-eff ((i int 0)) ivec
+        (if (= i (array-length v)) out (begin (array-set! out i (f (array-ref v i) (array-ref w i))) (go (+ i 1))))))))
 (define* bits-neg (subr cb-eff (ivec) ivec) (lambda (v) (bits-map1 (lambda ((x int)) (lit-neg x)) v)))
 
 (define* const-bits (subr cb-eff (blaster int int) ivec)
   (lambda (b value width)
     (let ((out (the ivec (make-array width 0))))
-      (letrec ((go (subr cb-eff (int int) ivec)
-                 (lambda (i v) (if (= i width) out (begin (array-set! out i (if (= 1 (bitwise-and v 1)) (tt b) (ff b))) (go (+ i 1) (arithmetic-shift v -1)))))))
-        (go 0 value)))))
+      (loop go cb-eff ((i int 0) (v int value)) ivec
+        (if (= i width) out (begin (array-set! out i (if (= 1 (bitwise-and v 1)) (tt b) (ff b))) (go (+ i 1) (arithmetic-shift v -1))))))))
 
 "The sum of xs + ys + cin, and the carry out."
 (define-type sum-bits (productof (s ivec) (c int)))
 (define* adder (subr cb-eff (blaster ivec ivec int) sum-bits)
   (lambda (b xs ys cin)
     (let* ((n (array-length xs)) (out (the ivec (make-array n 0))))
-      (letrec ((go (subr cb-eff (int int) sum-bits)
-                 (lambda (i c)
-                   (if (= i n) (product (s out) (c c))
-                       (let ((sc (full-adder b (array-ref xs i) (array-ref ys i) c)))
-                         (begin (array-set! out i (extract sc s)) (go (+ i 1) (extract sc c))))))))
-        (go 0 cin)))))
+      (loop go cb-eff ((i int 0) (c int cin)) sum-bits
+        (if (= i n) (product (s out) (c c))
+            (let ((sc (full-adder b (array-ref xs i) (array-ref ys i) c)))
+              (begin (array-set! out i (extract sc s)) (go (+ i 1) (extract sc c)))))))))
 (define* add-bits (subr cb-eff (blaster ivec ivec) ivec) (lambda (b xs ys) (extract (adder b xs ys (ff b)) s)))
 (define* sub-bits (subr cb-eff (blaster ivec ivec) ivec) (lambda (b xs ys) (extract (adder b xs (bits-neg ys) (tt b)) s)))
 (define* neg-bits (subr cb-eff (blaster ivec) ivec)
@@ -288,30 +289,26 @@ truncated to width first)."
   (lambda (b xs ys width)
     (let* ((pad (lambda ((v ivec))
                   (let ((w (the ivec (make-array width (ff b)))))
-                    (letrec ((go (subr cb-eff (int) ivec) (lambda (i) (if (= i (min width (array-length v))) w (begin (array-set! w i (array-ref v i)) (go (+ i 1)))))))
-                      (go 0)))))
+                    (loop go cb-eff ((i int 0)) ivec
+                      (if (= i (min width (array-length v))) w (begin (array-set! w i (array-ref v i)) (go (+ i 1))))))))
            (xs (pad xs)) (ys (pad ys))
            ;; Shift the operand with more constant bits into ys, whose bits
            ;; select the partial products.
-           (nconst (lambda ((v ivec)) (letrec ((go (subr cb-eff (int int) int) (lambda (i n) (if (= i width) n (go (+ i 1) (if (const? b (array-ref v i)) (+ n 1) n))))))
-                                        (go 0 0))))
+           (nconst (lambda ((v ivec)) (loop go cb-eff ((i int 0) (n int 0)) int
+                                        (if (= i width) n (go (+ i 1) (if (const? b (array-ref v i)) (+ n 1) n))))))
            (swap? (> (nconst xs) (nconst ys)))
            (xs* (the ivec (if swap? ys xs))) (ys* (the ivec (if swap? xs ys)))
            (acc (the ivec (make-array width (ff b)))))
-      (letrec ((row (subr cb-eff (int) ivec)
-                 (lambda (i)
-                   (if (= i width) acc
-                       (let ((y (array-ref ys* i)))
-                         (begin
-                           (if (= y (ff b)) #u
-                               (letrec ((go (subr cb-eff (int int) unit)
-                                          (lambda (j c)
-                                            (if (>= j width) #u
-                                                (let ((sc (full-adder b (array-ref acc j) (and2 b (array-ref xs* (- j i)) y) c)))
-                                                  (begin (array-set! acc j (extract sc s)) (go (+ j 1) (extract sc c))))))))
-                                 (go i (ff b))))
-                           (row (+ i 1))))))))
-        (row 0)))))
+      (loop row cb-eff ((i int 0)) ivec
+        (if (= i width) acc
+            (let ((y (array-ref ys* i)))
+              (begin
+                (unless (= y (ff b))
+                  (loop go cb-eff ((j int i) (c int (ff b))) unit
+                    (unless (>= j width)
+                      (let ((sc (full-adder b (array-ref acc j) (and2 b (array-ref xs* (- j i)) y) c)))
+                        (begin (array-set! acc j (extract sc s)) (go (+ j 1) (extract sc c)))))))
+                (row (+ i 1)))))))))
 
 "Quotient and remainder of unsigned division, as fresh bits q and r with
 constraints: if ys is not 0, xs = ys*q + r (computed at twice the width, so
@@ -323,29 +320,27 @@ constraints are unguarded: they define q and r."
            (q (the ivec (make-array n 0))) (r (the ivec (make-array n 0)))
            (zero (eq-bits b ys (const-bits b 0 n))))
       (begin
-        (letrec ((go (subr cb-eff (int) unit) (lambda (i) (if (= i n) #u (begin (array-set! q i (new-lit! b)) (array-set! r i (new-lit! b)) (go (+ i 1)))))))
-          (go 0))
+        (loop go cb-eff ((i int 0)) unit
+          (unless (= i n) (array-set! q i (new-lit! b)) (array-set! r i (new-lit! b)) (go (+ i 1))))
         (let* ((ext (lambda ((v ivec)) (ivec-grow v (* 2 n) (ff b))))
                (prod (mul-bits b ys q (* 2 n)))
                (total (adder b prod (ext r) (ff b)))
                (ax (ext xs)))
           (begin
             ;; not zero -> sum = xs (no carry out either), r < ys
-            (letrec ((go (subr cb-eff (int) unit)
-                       (lambda (i) (if (= i (* 2 n)) #u
-                                       (let ((s (array-ref (extract total s) i)) (a (array-ref ax i)))
-                                         (begin (clause! b (list zero (neg s) a)) (clause! b (list zero s (neg a))) (go (+ i 1))))))))
-              (go 0))
+            (loop go cb-eff ((i int 0)) unit
+              (unless (= i (* 2 n))
+                (let ((s (array-ref (extract total s) i)) (a (array-ref ax i)))
+                  (begin (clause! b (list zero (neg s) a)) (clause! b (list zero s (neg a))) (go (+ i 1))))))
             (clause! b (list zero (neg (extract total c))))
             (clause! b (list zero (ult-bits b r ys)))
             ;; zero -> q = ones, r = xs
-            (letrec ((go (subr cb-eff (int) unit)
-                       (lambda (i) (if (= i n) #u
-                                       (begin (clause! b (list (neg zero) (array-ref q i)))
-                                              (clause! b (list (neg zero) (neg (array-ref r i)) (array-ref xs i)))
-                                              (clause! b (list (neg zero) (array-ref r i) (neg (array-ref xs i))))
-                                              (go (+ i 1)))))))
-              (go 0))
+            (loop go cb-eff ((i int 0)) unit
+              (unless (= i n)
+                (clause! b (list (neg zero) (array-ref q i)))
+                (clause! b (list (neg zero) (neg (array-ref r i)) (array-ref xs i)))
+                (clause! b (list (neg zero) (array-ref r i) (neg (array-ref xs i))))
+                (go (+ i 1))))
             (product (q q) (r r))))))))
 
 "Barrel shifter: (shift-once v k) shifts by the constant k, and `f` is the
@@ -353,31 +348,28 @@ bit shifted in."
 (define* shift-bits (subr cb-eff (blaster ivec ivec (subr cb-eff (ivec int) ivec) int) ivec)
   (lambda (b xs ss shift-once f)
     (let* ((n (array-length xs))
-           (stages (letrec ((go (subr cb-eff (int) int) (lambda (k) (if (< (expt2 k) n) (go (+ k 1)) k)))) (go 0))))
-      (letrec ((go (subr cb-eff (int ivec) ivec)
-                 (lambda (k v)
-                   (if (and (< k stages) (< k (array-length ss)))
-                       (let ((s (array-ref ss k)) (shifted (shift-once v (expt2 k))))
-                         (go (+ k 1) (bits-map2 (lambda ((x int) (y int)) (ite-gate b s x y)) shifted v)))
-                       ;; A shift amount with a bit at or above stages set shifts
-                       ;; everything out.
-                       (let ((over (or-list b (letrec ((hi (subr cb-eff (int ints) ints)
-                                                          (lambda (i acc) (if (< i (array-length ss)) (hi (+ i 1) (cons (array-ref ss i) acc)) acc))))
-                                                 (hi stages nil)))))
-                         (bits-map1 (lambda ((x int)) (ite-gate b over f x)) v))))))
-        (go 0 xs)))))
+           (stages (loop go cb-eff ((k int 0)) int (if (< (expt2 k) n) (go (+ k 1)) k))))
+      (loop go cb-eff ((k int 0) (v ivec xs)) ivec
+        (if (and (< k stages) (< k (array-length ss)))
+            (let ((s (array-ref ss k)) (shifted (shift-once v (expt2 k))))
+              (go (+ k 1) (bits-map2 (lambda ((x int) (y int)) (ite-gate b s x y)) shifted v)))
+            ;; A shift amount with a bit at or above stages set shifts
+            ;; everything out.
+            (let ((over (or-list b (loop hi cb-eff ((i int stages) (acc ints nil)) ints
+                                     (if (< i (array-length ss)) (hi (+ i 1) (cons (array-ref ss i) acc)) acc)))))
+              (bits-map1 (lambda ((x int)) (ite-gate b over f x)) v)))))))
 (define* shl-once (subr cb-eff (blaster) (subr cb-eff (ivec int) ivec))
   (lambda (b)
     (lambda ((v ivec) (k int))
       (let* ((n (array-length v)) (w (the ivec (make-array n (ff b)))))
-        (letrec ((go (subr cb-eff (int) ivec) (lambda (i) (if (>= i n) w (begin (array-set! w i (array-ref v (- i k))) (go (+ i 1)))))))
-          (go k))))))
+        (loop go cb-eff ((i int k)) ivec
+          (if (>= i n) w (begin (array-set! w i (array-ref v (- i k))) (go (+ i 1)))))))))
 (define* shr-once (subr cb-eff (int) (subr cb-eff (ivec int) ivec))
   (lambda (fill)
     (lambda ((v ivec) (k int))
       (let* ((n (array-length v)) (w (the ivec (make-array n fill))))
-        (letrec ((go (subr cb-eff (int) ivec) (lambda (i) (if (>= (+ i k) n) w (begin (array-set! w i (array-ref v (+ i k))) (go (+ i 1)))))))
-          (go 0))))))
+        (loop go cb-eff ((i int 0)) ivec
+          (if (>= (+ i k) n) w (begin (array-set! w i (array-ref v (+ i k))) (go (+ i 1)))))))))
 
 ;;; ------------------------------------------------------------ terms to literals and bits
 
@@ -400,14 +392,14 @@ bit shifted in."
        ;; left): x is made before the arguments are blasted.
        ((string=? op "and")
         (let* ((x (new-lit! b)) (ls (blast-list! b args)))
-          (begin (letrec ((go (subr cb-eff (ints) unit) (lambda (l) (if (null? l) #u (begin (clause! b (list (neg x) (car l))) (go (cdr l)))))))
-                   (go ls))
+          (begin (loop go cb-eff ((l ints ls)) unit
+                   (unless (null? l) (clause! b (list (neg x) (car l))) (go (cdr l))))
                  (clause! b (cons x (map-neg ls)))
                  x)))
        ((string=? op "or")
         (let* ((x (new-lit! b)) (ls (blast-list! b args)))
-          (begin (letrec ((go (subr cb-eff (ints) unit) (lambda (l) (if (null? l) #u (begin (clause! b (list x (neg (car l)))) (go (cdr l)))))))
-                   (go ls))
+          (begin (loop go cb-eff ((l ints ls)) unit
+                   (unless (null? l) (clause! b (list x (neg (car l)))) (go (cdr l))))
                  (clause! b (cons (neg x) ls))
                  x)))
        ((string=? op "=")
@@ -455,25 +447,22 @@ least c)."
                (m (min (+ p q) c))
                (r (the ivec (make-array m 0))))
           (begin
-            (letrec ((go (subr cb-eff (int) unit) (lambda (k) (if (= k m) #u (begin (array-set! r k (new-lit! b)) (go (+ k 1)))))))
-              (go 0))
+            (loop go cb-eff ((k int 0)) unit
+              (unless (= k m) (array-set! r k (new-lit! b)) (go (+ k 1))))
             ;; At least i on the left and j on the right: at least i+j. x0 and
             ;; y0 are true, and x(p+1) and y(q+1) false.
             (let ((xi (lambda ((i int)) (cond ((= i 0) (tt b)) ((> i p) (ff b)) (else (array-ref x (- i 1))))))
                   (yj (lambda ((j int)) (cond ((= j 0) (tt b)) ((> j q) (ff b)) (else (array-ref y (- j 1)))))))
-              (letrec ((outer (subr cb-eff (int) unit)
-                         (lambda (i)
-                           (if (> i p) #u
-                               (letrec ((inner (subr cb-eff (int) unit)
-                                          (lambda (j)
-                                            (if (> j q) #u
-                                                (begin
-                                                  (if (> (+ i j) 0) (clause! b (list (neg (xi i)) (neg (yj j)) (array-ref r (- (min (+ i j) m) 1)))) #u)
-                                                  ;; At most i on the left and j on the right: at most i+j.
-                                                  (if (< (+ i j) m) (clause! b (list (xi (+ i 1)) (yj (+ j 1)) (neg (array-ref r (+ i j))))) #u)
-                                                  (inner (+ j 1)))))))
-                                 (begin (inner 0) (outer (+ i 1))))))))
-                (outer 0)))
+              (loop outer cb-eff ((i int 0)) unit
+                (unless (> i p)
+                  (letrec ((inner (subr cb-eff (int) unit)
+                             (lambda (j)
+                               (unless (> j q)
+                                 (if (> (+ i j) 0) (clause! b (list (neg (xi i)) (neg (yj j)) (array-ref r (- (min (+ i j) m) 1)))) #u)
+                                 ;; At most i on the left and j on the right: at most i+j.
+                                 (if (< (+ i j) m) (clause! b (list (xi (+ i 1)) (yj (+ j 1)) (neg (array-ref r (+ i j))))) #u)
+                                 (inner (+ j 1))))))
+                    (begin (inner 0) (outer (+ i 1)))))))
             r)))))
 
 "The bits of a bitvector term, blasting it if need be."
@@ -486,8 +475,8 @@ least c)."
            (arg (lambda ((i int)) (blast-bits! b (list-ref-int args i)))))
       (cond
        ((string=? op "var") (let ((v (the ivec (make-array w 0))))
-                              (letrec ((go (subr cb-eff (int) ivec) (lambda (i) (if (= i w) v (begin (array-set! v i (new-lit! b)) (go (+ i 1)))))))
-                                (go 0))))
+                              (loop go cb-eff ((i int 0)) ivec
+                                (if (= i w) v (begin (array-set! v i (new-lit! b)) (go (+ i 1)))))))
        ((string=? op "bv") (const-bits b (bv-value t) w))
        ((string=? op "bvnot") (bits-neg (arg 0)))
        ((string=? op "bvand") (bits-map2 (lambda ((x int) (y int)) (and2 b x y)) (arg 0) (arg 1)))
@@ -506,13 +495,12 @@ least c)."
           (shift-bits b x (arg 1) (shr-once sign) sign)))
        ((string=? op "concat")
         (let* ((lo (arg 1)) (hi (arg 0)) (v (the ivec (make-array w 0))) (nl (array-length lo)))
-          (letrec ((go (subr cb-eff (int) ivec)
-                     (lambda (i) (if (= i w) v (begin (array-set! v i (if (< i nl) (array-ref lo i) (array-ref hi (- i nl)))) (go (+ i 1)))))))
-            (go 0))))
+          (loop go cb-eff ((i int 0)) ivec
+            (if (= i w) v (begin (array-set! v i (if (< i nl) (array-ref lo i) (array-ref hi (- i nl)))) (go (+ i 1)))))))
        ((string=? op "extract")
         (let* ((lo (term-param1 t)) (x (arg 0)) (v (the ivec (make-array w 0))))
-          (letrec ((go (subr cb-eff (int) ivec) (lambda (i) (if (= i w) v (begin (array-set! v i (array-ref x (+ lo i))) (go (+ i 1)))))))
-            (go 0))))
+          (loop go cb-eff ((i int 0)) ivec
+            (if (= i w) v (begin (array-set! v i (array-ref x (+ lo i))) (go (+ i 1)))))))
        ((string=? op "sign_extend")
         (let* ((x (arg 0)) (n (array-length x))) (ivec-grow x w (array-ref x (- n 1)))))
        ((string=? op "ite")
@@ -535,9 +523,9 @@ least c)."
 (define* simplex-of (subr cb-eff (blaster) simplex)
   (lambda (b)
     (begin
-      (if (get (extract b has-simplex)) #u
-          (begin (set (extract b has-simplex) #t)
-                 (sat-set-theory! (extract b solver) (simplex-theory (extract b simplex)))))
+      (unless (get (extract b has-simplex))
+        (set (extract b has-simplex) #t)
+        (sat-set-theory! (extract b solver) (simplex-theory (extract b simplex))))
       (extract b simplex))))
 
 "The literal of the atom t, (<= form k) or (>= form k)."
@@ -555,11 +543,10 @@ variable for a sum."
         (let ((x (tvar-of b form)))
           (if (>= x 0) x
               (let* ((f (linear-form form))
-                     (sf (letrec ((go (subr cb-eff (monos) sform)
-                                    (lambda (ms) (if (null? ms) nil
-                                                     (let ((v (term-var! b (extract (car ms) x))))
-                                                       (cons (product (x v) (c (extract (car ms) c))) (go (cdr ms))))))))
-                           (go (extract f ms))))
+                     (sf (loop go cb-eff ((ms monos (extract f ms))) sform
+                           (if (null? ms) nil
+                               (let ((v (term-var! b (extract (car ms) x))))
+                                 (cons (product (x v) (c (extract (car ms) c))) (go (cdr ms)))))))
                      (x (simplex-slack! (simplex-of b) (sform-sort sf) (all-int? (extract f ms)))))
                 (begin (set-tvar! b form x) x))))
         (term-var! b form))))
@@ -588,27 +575,24 @@ variable for a sum."
        ;; its path (c1 -> t = x, not c1 and c2 -> t = y, ...), with no
        ;; variables for the inner ites.
        ((string=? op "ite")
-        (letrec ((go (subr cb-eff ((listof ints acyclic)) unit)
-                   (lambda (paths)
-                     (if (null? paths) #u
-                         (let* ((path (car paths))
-                                (guards (the ints (map (lambda ((c int)) (if (term-op? c "not") (term-arg0 c) (mk-not c))) (cdr path)))))
-                           (begin
-                             (define! b (mk-or (the ints (append guards (list (mk-le t (car path)))))))
-                             (define! b (mk-or (the ints (append guards (list (mk-ge t (car path)))))))
-                             (go (cdr paths))))))))
-          (go (ite-leaves b t))))
+        (loop go cb-eff ((paths (listof ints acyclic) (ite-leaves b t))) unit
+          (unless (null? paths)
+            (let* ((path (car paths))
+                   (guards (the ints (map (lambda ((c int)) (if (term-op? c "not") (term-arg0 c) (mk-not c))) (cdr path)))))
+              (begin
+                (define! b (mk-or (the ints (append guards (list (mk-le t (car path)))))))
+                (define! b (mk-or (the ints (append guards (list (mk-ge t (car path)))))))
+                (go (cdr paths)))))))
        ((or (string=? op "div") (string=? op "mod"))
         (let* ((a (car args)) (k (car (cdr args)))
                (key (string-append (int->string a) (string-append " " (rat->string (num-value k))))))
-          (if (table-has? (extract b defined) key) #u
+          (unless (table-has? (extract b defined) key)
+            (table-set! (extract b defined) key #t)
+            (let* ((r (mk-imod a k)) (q (mk-idiv a k)))
               (begin
-                (table-set! (extract b defined) key #t)
-                (let* ((r (mk-imod a k)) (q (mk-idiv a k)))
-                  (begin
-                    (define! b (mk-arith-eq a (mk-add (list (mk-mul (list k q)) r))))
-                    (define! b (mk-ge r (num rat-0 int-sort)))
-                    (define! b (mk-le r (num (rat- (rat-abs (num-value k)) rat-1) int-sort)))))))))
+                (define! b (mk-arith-eq a (mk-add (list (mk-mul (list k q)) r))))
+                (define! b (mk-ge r (num rat-0 int-sort)))
+                (define! b (mk-le r (num (rat- (rat-abs (num-value k)) rat-1) int-sort))))))))
        ((string=? op "to_int")
         (let ((x (car args)) (i (mk-to-real t)))
           (begin (define! b (mk-le i x))
@@ -623,17 +607,15 @@ it has a variable (it is in another term, perhaps a condition here, as in
 (define ite-leaves (subr cb-eff (blaster int) (listof ints acyclic))
   (lambda (b t)
     (let ((leaves (the (ref int @cb) (new 1))))
-      (letrec ((walk (subr cb-eff (int ints bool) (listof ints acyclic))
-                 (lambda (t path top?)
-                   (if (and (term-op? t "ite") (or top? (and (< (get leaves) 16) (< (tvar-of b t) 0))))
-                       (let ((c (term-arg0 t)))
-                         (begin
-                           (if top? #u (set leaves (+ (get leaves) 1)))
-                           (blast-bool! b c)
-                           (let ((x (walk (term-arg1 t) (cons c path) #f)))
-                             (append x (walk (term-arg2 t) (cons (mk-not c) path) #f)))))
-                       (list (cons t path))))))
-        (walk t nil #t)))))
+      (loop walk cb-eff ((t int t) (path ints nil) (top? bool #t)) (listof ints acyclic)
+        (if (and (term-op? t "ite") (or top? (and (< (get leaves) 16) (< (tvar-of b t) 0))))
+            (let ((c (term-arg0 t)))
+              (begin
+                (unless top? (set leaves (+ (get leaves) 1)))
+                (blast-bool! b c)
+                (let ((x (walk (term-arg1 t) (cons c path) #f)))
+                  (append x (walk (term-arg2 t) (cons (mk-not c) path) #f)))))
+            (list (cons t path)))))))
 
 "The value of variable v in the solver's model. A variable never blasted
 is unconstrained, and takes its sort's default value."
@@ -656,36 +638,30 @@ need no literal of their own."
 (define blast-assert! (subr cb-eff (blaster int int) unit)
   (lambda (b t guard)
     (let ((g (the ints (if (> guard 0) (list (neg guard)) nil))))
-      (letrec ((go (subr cb-eff (int) unit)
-                 (lambda (t)
-                   (let ((op (term-op t)))
-                     (cond
-                      ((string=? op "and") (letrec ((each (subr cb-eff (ints) unit) (lambda (l) (if (null? l) #u (begin (go (car l)) (each (cdr l)))))))
-                                             (each (term-args t))))
-                      ((string=? op "or") (clause! b (the ints (append g (blast-list! b (term-args t))))))
-                      ;; At most one of a few: a clause for each pair (and one
-                      ;; of them all, for exactly one), which propagate at once.
-                      ((string=? op "card")
-                       (let ((lo (term-param0 t)) (hi (term-param1 t)) (args (term-args t)))
-                         (if (and (= hi 1) (<= (list-length args) 6))
-                             (let ((ls (blast-list! b args)))
-                               (begin
-                                 (if (= lo 1) (clause! b (the ints (append g ls))) #u)
-                                 (letrec ((pairs (subr cb-eff (ints) unit)
-                                            (lambda (ls)
-                                              (if (null? ls) #u
-                                                  (begin
-                                                    (letrec ((each (subr cb-eff (ints) unit)
-                                                               (lambda (l) (if (null? l) #u (begin (clause! b (the ints (append g (list (neg (car ls)) (neg (car l)))))) (each (cdr l)))))))
-                                                      (each (cdr ls)))
-                                                    (pairs (cdr ls)))))))
-                                   (pairs ls))))
-                             (clause! b (the ints (append g (list (blast-bool! b t))))))))
-                      ((string=? op "not")
-                       (let ((a (term-arg0 t)))
-                         (if (term-op? a "or")
-                             (letrec ((each (subr cb-eff (ints) unit) (lambda (l) (if (null? l) #u (begin (go (mk-not (car l))) (each (cdr l)))))))
-                               (each (term-args a)))
-                             (clause! b (the ints (append g (list (blast-bool! b t))))))))
-                      (else (clause! b (the ints (append g (list (blast-bool! b t)))))))))))
-        (go t)))))
+      (loop go cb-eff ((t int t)) unit
+        (let ((op (term-op t)))
+          (cond
+           ((string=? op "and") (loop each cb-eff ((l ints (term-args t))) unit
+                                  (unless (null? l) (go (car l)) (each (cdr l)))))
+           ((string=? op "or") (clause! b (the ints (append g (blast-list! b (term-args t))))))
+           ;; At most one of a few: a clause for each pair (and one
+           ;; of them all, for exactly one), which propagate at once.
+           ((string=? op "card")
+            (let ((lo (term-param0 t)) (hi (term-param1 t)) (args (term-args t)))
+              (if (and (= hi 1) (<= (list-length args) 6))
+                  (let ((ls (blast-list! b args)))
+                    (begin
+                      (if (= lo 1) (clause! b (the ints (append g ls))) #u)
+                      (loop pairs cb-eff ((ls ints ls)) unit
+                        (unless (null? ls)
+                          (loop each cb-eff ((l ints (cdr ls))) unit
+                            (unless (null? l) (clause! b (the ints (append g (list (neg (car ls)) (neg (car l)))))) (each (cdr l))))
+                          (pairs (cdr ls))))))
+                  (clause! b (the ints (append g (list (blast-bool! b t))))))))
+           ((string=? op "not")
+            (let ((a (term-arg0 t)))
+              (if (term-op? a "or")
+                  (loop each cb-eff ((l ints (term-args a))) unit
+                    (unless (null? l) (go (mk-not (car l))) (each (cdr l))))
+                  (clause! b (the ints (append g (list (blast-bool! b t))))))))
+           (else (clause! b (the ints (append g (list (blast-bool! b t))))))))))))

@@ -25,6 +25,13 @@
                     (m-blast (load-moduleof "blast.fx" m-sat m-rat m-term m-bv m-arith m-eval m-simplex))
                     (m-sexp (load-moduleof "sexp.fx" m-sat m-rat))
                     (m-smt (load-moduleof "smt.fx" m-sat m-rat m-term m-bv m-arith m-eval m-simplex m-blast))))
+
+;; Macros: each file defines its own, for now (docs/macros.md).
+(define-syntax loop
+  (syntax-rules ()
+    ((_ go eff ((x t i) ...) r body) (letrec ((go (subr eff (t ...) r) (lambda (x ...) body))) (go i ...)))))
+(define-syntax when (syntax-rules () ((_ c e ...) (if c (begin e ...) #u))))
+(define-syntax unless (syntax-rules () ((_ c e ...) (if c #u (begin e ...)))))
 (hide (define kit-strings (load-module "../kit/strings.fx"))
       (import kit-strings string-concatenate))
 
@@ -86,7 +93,7 @@ same name."
 (define* bad? (subr (read @cb) (session) bool) (lambda (s) (not (string=? (get (extract s err)) ""))))
 "The command fails, with this message (the first failure is the one said)."
 (define* fail! (subr cb-eff (session string) int)
-  (lambda (s m) (begin (if (bad? s) #u (set (extract s err) m)) 0)))
+  (lambda (s m) (begin (unless (bad? s) (set (extract s err) m)) 0)))
 (define* str* (subr cb-eff (strings) string) (lambda (l) (string-concatenate l)))
 
 (define* entry-serial (subr pure (entry) int)
@@ -104,8 +111,8 @@ same name."
         (begin (fail! s (str* (list "invalid declaration, constant '" (symbol->smt-string name) "' already declared"))) #u)
         (let ((scopes (get (extract s scopes))))
           (begin
-            (if (null? scopes) #u
-                (set (extract s scopes) (cons (cons (product (name name) (before (e-none))) (car scopes)) (cdr scopes))))
+            (unless (null? scopes)
+              (set (extract s scopes) (cons (cons (product (name name) (before (e-none))) (car scopes)) (cdr scopes))))
             (table-set! (get (extract s names)) name e)
             (set (extract s defs) (cons (product (name name) (entry e)) (get (extract s defs)))))))))
 
@@ -114,15 +121,13 @@ same name."
 (define* pop-scope! (subr cb-eff (session) unit)
   (lambda (s)
     (begin
-      (letrec ((go (subr cb-eff ((listof undo acyclic)) unit)
-                 (lambda (l) (if (null? l) #u (begin (table-set! (get (extract s names)) (extract (car l) name) (extract (car l) before)) (go (cdr l)))))))
-        (go (car (get (extract s scopes)))))
+      (loop go cb-eff ((l (listof undo acyclic) (car (get (extract s scopes))))) unit
+        (unless (null? l) (table-set! (get (extract s names)) (extract (car l) name) (extract (car l) before)) (go (cdr l))))
       (set (extract s defs)
-           (letrec ((go (subr cb-eff ((listof def acyclic)) (listof def acyclic))
-                      (lambda (ds) (cond ((null? ds) nil)
-                                         ((= (entry-serial (lookup s (extract (car ds) name))) (entry-serial (extract (car ds) entry))) ds)
-                                         (else (go (cdr ds)))))))
-             (go (get (extract s defs)))))
+           (loop go cb-eff ((ds (listof def acyclic) (get (extract s defs)))) (listof def acyclic)
+             (cond ((null? ds) nil)
+                   ((= (entry-serial (lookup s (extract (car ds) name))) (entry-serial (extract (car ds) entry))) ds)
+                   (else (go (cdr ds))))))
       (set (extract s scopes) (cdr (get (extract s scopes))))
       (smt-pop! (session-smt s)))))
 
@@ -201,15 +206,11 @@ parameters."
                 (let ((t (parse-term s (nth l 1) locals)))
                   (if (bad? s) 0
                       (begin
-                        (letrec ((go (subr cb-eff (sexps) unit)
-                                   (lambda (attrs)
-                                     (if (and (pair? attrs) (pair? (cdr attrs)))
-                                         (begin (if (is-sym? (car attrs) ":named")
-                                                    (bind! s (sym-name (car (cdr attrs))) (e-const (next-serial! s) t))
-                                                    #u)
-                                                (go (cdr (cdr attrs))))
-                                         #u))))
-                          (go (cdr (cdr l))))
+                        (loop go cb-eff ((attrs sexps (cdr (cdr l)))) unit
+                          (when (and (pair? attrs) (pair? (cdr attrs)))
+                            (when (is-sym? (car attrs) ":named")
+                              (bind! s (sym-name (car (cdr attrs))) (e-const (next-serial! s) t)))
+                            (go (cdr (cdr attrs)))))
                         t))))
                ((is-sym? head "_") (parse-indexed-constant s x))
                ((and (sxlist? head) (pair? (items head)) (is-sym? (car (items head)) "_"))
@@ -242,17 +243,15 @@ again, exponentially."
     (let ((ps (extract f params)))
       (cond ((not (= (list-length ps) (list-length args)))
              (fail! s (string-append "invalid function application, wrong number of arguments for " (symbol->smt-string name))))
-            ((letrec ((go (subr cb-eff (params ints) bool)
-                        (lambda (ps as) (and (pair? ps) (or (not (= (extract (car ps) sort) (term-sort (car as)))) (go (cdr ps) (cdr as)))))))
-               (go ps args))
+            ((loop go cb-eff ((ps params ps) (as ints args)) bool
+               (and (pair? ps) (or (not (= (extract (car ps) sort) (term-sort (car as)))) (go (cdr ps) (cdr as)))))
              (fail! s (string-append "sort mismatch at argument of " (symbol->smt-string name))))
             (else
              (let ((key (ids-key args)))
                (if (table-has? (extract f cache) key) (table-ref (extract f cache) key 0)
                    (let ((t (parse-term s (extract f body)
-                                        (letrec ((go (subr cb-eff (params ints) locals)
-                                                   (lambda (ps as) (if (null? ps) nil (cons (product (name (extract (car ps) name)) (term (car as))) (go (cdr ps) (cdr as)))))))
-                                          (go ps args)))))
+                                        (loop go cb-eff ((ps params ps) (as ints args)) locals
+                                          (if (null? ps) nil (cons (product (name (extract (car ps) name)) (term (car as))) (go (cdr ps) (cdr as))))))))
                      (if (bad? s) 0 (begin (table-set! (extract f cache) key t) t))))))))))
 
 ;;; ------------------------------------------------------------ built-in functions
@@ -270,31 +269,29 @@ again, exponentially."
 (define* arith-ok? (subr cb-eff (session string ints int) bool)
   (lambda (s name args n)
     (if (< (list-length args) n) (begin (fail! s (string-append "invalid number of arguments to " name)) #f)
-        (letrec ((go (subr cb-eff (ints) bool)
-                   (lambda (as) (cond ((null? as) #t)
-                                      ((not (arith-sort? (term-sort (car as))))
-                                       (begin (fail! s (str* (list "Sort mismatch at argument for function " name ", supplied sort is " (sort->string (term-sort (car as)))))) #f))
-                                      (else (go (cdr as)))))))
-          (go args)))))
+        (loop go cb-eff ((as ints args)) bool
+          (cond ((null? as) #t)
+                ((not (arith-sort? (term-sort (car as))))
+                 (begin (fail! s (str* (list "Sort mismatch at argument for function " name ", supplied sort is " (sort->string (term-sort (car as)))))) #f))
+                (else (go (cdr as))))))))
 (define* check-bv (subr cb-eff (session string int) bool)
   (lambda (s name a)
     (if (bv-sort? (term-sort a)) #t
         (begin (fail! s (str* (list "Sort mismatch at argument for function " name ", supplied sort is " (sort->string (term-sort a))))) #f))))
 (define* arith-args? (subr cb-eff (ints) bool)
-  (lambda (args) (and (pair? args) (letrec ((go (subr cb-eff (ints) bool) (lambda (l) (or (null? l) (and (arith-sort? (term-sort (car l))) (go (cdr l)))))))
-                                     (go args)))))
+  (lambda (args) (and (pair? args) (loop go cb-eff ((l ints args)) bool
+                                     (or (null? l) (and (arith-sort? (term-sort (car l))) (go (cdr l))))))))
 "Integers among reals become reals (z3 does so; SMT-LIB's mixed logics ask
 for to_real)."
 (define* coerce (subr cb-eff (ints) ints)
-  (lambda (args) (if (letrec ((go (subr cb-eff (ints) bool) (lambda (l) (and (pair? l) (or (= (term-sort (car l)) real-sort) (go (cdr l)))))))
-                       (go args))
+  (lambda (args) (if (loop go cb-eff ((l ints args)) bool
+                       (and (pair? l) (or (= (term-sort (car l)) real-sort) (go (cdr l)))))
                      (the ints (map mk-to-real args)) args)))
 "Chained relations: (= a b c) is (and (= a b) (= b c))."
 (define* chain (subr cb-eff ((subr cb-eff (int int) int) ints) int)
   (lambda (mk args)
-    (letrec ((go (subr cb-eff (ints ints) int)
-               (lambda (as acc) (if (or (null? as) (null? (cdr as))) (mk-and (reverse acc)) (go (cdr as) (cons (mk (car as) (car (cdr as))) acc))))))
-      (go args nil))))
+    (loop go cb-eff ((as ints args) (acc ints nil)) int
+      (if (or (null? as) (null? (cdr as))) (mk-and (reverse acc)) (go (cdr as) (cons (mk (car as) (car (cdr as))) acc))))))
 "Left-associative: (bvadd a b c) is (bvadd (bvadd a b) c)."
 (define* fold-left2 (subr cb-eff ((subr cb-eff (int int) int) int ints) int)
   (lambda (mk acc as) (if (null? as) acc (fold-left2 mk (mk acc (car as)) (cdr as)))))
@@ -322,9 +319,8 @@ for to_real)."
                          (else (fold-left2 mk-xor (car args) (cdr args)))))
        ((is "=>") (cond ((not (check-sorts s name args bool-sort)) 0)
                         ((null? args) (fail! s "invalid number of arguments to =>"))
-                        (else (letrec ((go (subr cb-eff (ints) int)
-                                         (lambda (as) (if (null? (cdr as)) (car as) (go (cons (mk-implies (car (cdr as)) (car as)) (cdr (cdr as))))))))
-                                (go (reverse args))))))
+                        (else (loop go cb-eff ((as ints (reverse args))) int
+                                (if (null? (cdr as)) (car as) (go (cons (mk-implies (car (cdr as)) (car as)) (cdr (cdr as)))))))))
        ((is "=") (cond ((< (list-length args) 2) (fail! s "invalid number of arguments to ="))
                        ((arith-args? args) (chain mk-arith-eq (coerce args)))
                        ((check-sorts s name args (term-sort (car args))) (chain mk-eq args))
@@ -348,14 +344,12 @@ for to_real)."
                        (if (term-op? t "*") (fail! s "combo: nonlinear arithmetic is not supported") t))
                      0))
        ((is "/") (if (arith-ok? s name args 2)
-                     (letrec ((go (subr cb-eff (int ints) int)
-                                (lambda (acc as)
-                                  (if (null? as) acc
-                                      (let ((d (mk-to-real (car as))))
-                                        (if (and (num? d) (not (rat-zero? (num-value d))))
-                                            (go (mk-div-real acc d) (cdr as))
-                                            (fail! s "combo: division is supported by nonzero constants only")))))))
-                       (go (mk-to-real (car args)) (cdr args)))
+                     (loop go cb-eff ((acc int (mk-to-real (car args))) (as ints (cdr args))) int
+                       (if (null? as) acc
+                           (let ((d (mk-to-real (car as))))
+                             (if (and (num? d) (not (rat-zero? (num-value d))))
+                                 (go (mk-div-real acc d) (cdr as))
+                                 (fail! s "combo: division is supported by nonzero constants only")))))
                      0))
        ((or (is "div") (is "mod"))
         (cond ((not (and (check-arity s name args 2) (check-sorts s name args int-sort))) 0)
@@ -401,8 +395,8 @@ for to_real)."
        ((is "bvsge") (bv-binary s name args mk-bvsge))
        ((is "concat")
         (cond ((null? args) (fail! s "invalid number of arguments to concat"))
-              ((letrec ((go (subr cb-eff (ints) bool) (lambda (l) (or (null? l) (and (check-bv s name (car l)) (go (cdr l)))))))
-                 (go args))
+              ((loop go cb-eff ((l ints args)) bool
+                 (or (null? l) (and (check-bv s name (car l)) (go (cdr l)))))
                (fold-left2 mk-concat (car args) (cdr args)))
               (else 0)))
        (else (fail! s (string-append "unknown function/constant " (symbol->smt-string name))))))))
@@ -414,8 +408,8 @@ for to_real)."
       (if (and (= 3 (len l)) (sym? (nth l 1)) (nat? (nth l 2)) (> (nat-value (nth l 2)) 0))
           (let* ((name (sym-name (nth l 1))) (n (string-length name)))
             (if (and (> n 2) (string=? "bv" (substring name 0 2))
-                     (letrec ((go (subr cb-eff (int) bool) (lambda (i) (or (= i n) (and (digit? (string-ref name i)) (go (+ i 1)))))))
-                       (go 2)))
+                     (loop go cb-eff ((i int 2)) bool
+                       (or (= i n) (and (digit? (string-ref name i)) (go (+ i 1))))))
                 (bv-const (decimal (substring name 2 n)) (nat-value (nth l 2)))
                 (fail! s (string-append "unknown indexed constant " (sexp->string x)))))
           (fail! s (string-append "invalid indexed constant " (sexp->string x)))))))
@@ -429,8 +423,8 @@ for to_real)."
       (sx-num (n) (product (ok #t) (value n)))
       (sx-sym (name)
         (let* ((n (string-length name)) (neg (and (> n 1) (char=? (string-ref name 0) #\-))) (from (if neg 1 0)))
-          (if (and (> n from) (letrec ((go (subr cb-eff (int) bool) (lambda (i) (or (= i n) (and (digit? (string-ref name i)) (go (+ i 1)))))))
-                                (go from)))
+          (if (and (> n from) (loop go cb-eff ((i int from)) bool
+                                (or (= i n) (and (digit? (string-ref name i)) (go (+ i 1))))))
               (let ((v (decimal (substring name from n)))) (product (ok #t) (value (if neg (- 0 v) v))))
               (product (ok #f) (value 0)))))
       (else y (product (ok #f) (value 0))))))
@@ -458,7 +452,7 @@ copies times the bound."
                  (if (all indices) (go indices) nil))))
       (cond
        ((or (null? indices) (null? is)) (fail! s (string-append "invalid indexed function " (sexp->string head))))
-       ((not (letrec ((go (subr cb-eff (ints) bool) (lambda (l) (or (null? l) (and (term-bool? (car l)) (go (cdr l))))))) (go args)))
+       ((not (loop go cb-eff ((l ints args)) bool (or (null? l) (and (term-bool? (car l)) (go (cdr l))))))
         (fail! s (string-append "Sort mismatch at argument for function " (sexp->string head))))
        (else
         (let* ((k (car is))
@@ -466,14 +460,13 @@ copies times the bound."
                (cs (if card? (the ints (map (lambda ((a int)) 1) args)) (cdr is))))
           (if (not (and (= (list-length cs) (list-length args)) (or (not card?) (null? (cdr is)))))
               (fail! s (string-append "invalid number of arguments to " (sexp->string head)))
-              (if (and (> (letrec ((go (subr cb-eff (ints int) int) (lambda (l t) (if (null? l) t (go (cdr l) (+ t (if (< (car l) 0) (- 0 (car l)) (car l)))))))) (go cs 0)) 64)
-                       (not (letrec ((go (subr cb-eff (ints) bool) (lambda (l) (or (null? l) (and (or (= (car l) 1) (= (car l) -1)) (go (cdr l))))))) (go cs))))
+              (if (and (> (loop go cb-eff ((l ints cs) (t int 0)) int (if (null? l) t (go (cdr l) (+ t (if (< (car l) 0) (- 0 (car l)) (car l)))))) 64)
+                       (not (loop go cb-eff ((l ints cs)) bool (or (null? l) (and (or (= (car l) 1) (= (car l) -1)) (go (cdr l)))))))
                   ;; kt first: lockpick's `let` under Twobit (inits right to left).
                   (let* ((kt (num-int k int-sort))
-                         (total (mk-add (letrec ((go (subr cb-eff (ints ints) ints)
-                                                     (lambda (cs as) (if (null? cs) nil
-                                                                         (let ((t (mk-ite (car as) (num-int (car cs) int-sort) (num-int 0 int-sort)))) (cons t (go (cdr cs) (cdr as))))))))
-                                          (go cs args)))))
+                         (total (mk-add (loop go cb-eff ((cs ints cs) (as ints args)) ints
+                                          (if (null? cs) nil
+                                              (let ((t (mk-ite (car as) (num-int (car cs) int-sort) (num-int 0 int-sort)))) (cons t (go (cdr cs) (cdr as)))))))))
                     (cond ((string=? name "pbeq") (mk-arith-eq total kt)) ((string=? name "pble") (mk-le total kt)) (else (mk-ge total kt))))
                   (letrec ((copies (subr cb-eff (int int ints) ints) (lambda (n x l) (if (= n 0) l (copies (- n 1) x (cons x l)))))
                            (go (subr cb-eff (ints ints int ints) int)
@@ -490,7 +483,7 @@ copies times the bound."
   (lambda (s head name indices args)
     (cond
      ((not (and (not (string=? name "")) (pair? indices)
-                (letrec ((go (subr cb-eff (sexps) bool) (lambda (l) (or (null? l) (and (nat? (car l)) (go (cdr l))))))) (go indices))))
+                (loop go cb-eff ((l sexps indices)) bool (or (null? l) (and (nat? (car l)) (go (cdr l)))))))
       (fail! s (string-append "invalid indexed function " (sexp->string head))))
      ((not (check-arity s name args 1)) 0)
      ((not (check-bv s name (car args))) 0)
@@ -525,7 +518,7 @@ copies times the bound."
 
 ;;; ------------------------------------------------------------ commands
 
-(define* success (subr cb-eff (session) unit) (lambda (s) (if (get (extract s print-success)) (out! s "success\n") #u)))
+(define* success (subr cb-eff (session) unit) (lambda (s) (when (get (extract s print-success)) (out! s "success\n"))))
 
 (define known-options strings
   (list ":produce-models" ":produce-unsat-cores" ":produce-assignments" ":produce-proofs"
@@ -540,8 +533,8 @@ copies times the bound."
   (lambda (name)
     (let ((has? (lambda ((part string))
                   (let ((n (string-length name)) (k (string-length part)))
-                    (letrec ((go (subr spin (int) bool) (lambda (i) (and (<= (+ i k) n) (or (string=? part (substring name i (+ i k))) (go (+ i 1)))))))
-                      (go 0))))))
+                    (loop go spin ((i int 0)) bool
+                      (and (<= (+ i k) n) (or (string=? part (substring name i (+ i k))) (go (+ i 1)))))))))
       (and (or (has? "RA") (has? "RDL")) (not (has? "IRA"))))))
 
 (define* write-answer (subr cb-eff (session int) unit)
@@ -557,9 +550,9 @@ copies times the bound."
   (lambda (s name arg-sorts sort-sexp)
     (if (pair? arg-sorts) (begin (fail! s "combo: functions with arguments are not supported yet") #u)
         (let ((sort (parse-sort s sort-sexp)))
-          (if (bad? s) #u
-              (begin (bind! s name (e-const (next-serial! s) (make-var name sort)))
-                     (if (bad? s) #u (success s))))))))
+          (unless (bad? s)
+            (bind! s name (e-const (next-serial! s) (make-var name sort)))
+            (unless (bad? s) (success s)))))))
 
 ;; What a command comes to.
 (define cmd-go int 0)
@@ -572,7 +565,7 @@ copies times the bound."
           (let* ((name (sym-name (car l))) (is (lambda ((n string)) (string=? name n))) (n (len l)) (smt (session-smt s)))
             (cond
              ((is "set-logic")
-              (begin (if (and (> n 1) (sym? (nth l 1))) (set (extract s reals) (real-logic? (sym-name (nth l 1)))) #u)
+              (begin (when (and (> n 1) (sym? (nth l 1))) (set (extract s reals) (real-logic? (sym-name (nth l 1)))))
                      (success s) cmd-go))
              ((is "set-info") (begin (success s) cmd-go))
              ((is "set-option")
@@ -588,7 +581,7 @@ copies times the bound."
                                                               (if (> n 1) (sexp->string (nth l 1)) ""))
                                                           "'")))
                                      #u)))
-                  (if (bad? s) #u (success s))
+                  (unless (bad? s) (success s))
                   cmd-go)))
              ((is "get-option")
               (let ((key (if (> n 1) (sym-name (nth l 1)) "")))
@@ -604,11 +597,9 @@ copies times the bound."
                         ((string=? key ":reason-unknown") (out! s (str* (list "(:reason-unknown " (sexp->string (sx-str (smt-reason-unknown smt))) ")\n"))))
                         ((string=? key ":all-statistics")
                          (out! s (str* (list "("
-                                             (letrec ((go (subr cb-eff ((listof stat acyclic) bool) string)
-                                                        (lambda (kvs first?)
-                                                          (if (null? kvs) ""
-                                                              (str* (list (if first? "" "\n ") ":" (extract (car kvs) name) " " (int->string (extract (car kvs) value)) (go (cdr kvs) #f)))))))
-                                               (go (smt-stats smt) #t))
+                                             (loop go cb-eff ((kvs (listof stat acyclic) (smt-stats smt)) (first? bool #t)) string
+                                               (if (null? kvs) ""
+                                                   (str* (list (if first? "" "\n ") ":" (extract (car kvs) name) " " (int->string (extract (car kvs) value)) (go (cdr kvs) #f)))))
                                              ")\n"))))
                         (else (out! s "unsupported\n")))
                   cmd-go)))
@@ -622,31 +613,28 @@ copies times the bound."
              ((is "define-fun")
               (begin
                 (if (not (and (= 5 n) (sym? (nth l 1)) (sxlist? (nth l 2)))) (begin (fail! s "invalid function definition") #u)
-                    (let ((ps (letrec ((go (subr cb-eff (sexps) params)
-                                         (lambda (ps)
-                                           (cond ((or (null? ps) (bad? s)) nil)
-                                                 ((not (and (sxlist? (car ps)) (= 2 (len (items (car ps)))) (sym? (nth (items (car ps)) 0))))
-                                                  (begin (fail! s "invalid function definition, parameter expected") nil))
-                                                 (else (let ((sort (parse-sort s (nth (items (car ps)) 1))))
-                                                         (cons (product (name (sym-name (nth (items (car ps)) 0))) (sort sort)) (go (cdr ps)))))))))
-                                (go (items (nth l 2))))))
+                    (let ((ps (loop go cb-eff ((ps sexps (items (nth l 2)))) params
+                                (cond ((or (null? ps) (bad? s)) nil)
+                                      ((not (and (sxlist? (car ps)) (= 2 (len (items (car ps)))) (sym? (nth (items (car ps)) 0))))
+                                       (begin (fail! s "invalid function definition, parameter expected") nil))
+                                      (else (let ((sort (parse-sort s (nth (items (car ps)) 1))))
+                                              (cons (product (name (sym-name (nth (items (car ps)) 0))) (sort sort)) (go (cdr ps)))))))))
                       (if (bad? s) #u
                           (let ((sort (parse-sort s (nth l 3))) (body (nth l 4)))
                             (if (bad? s) #u
                                 ;; Check the body now, with the parameters as variables.
-                                (let ((t (parse-term s body (letrec ((go (subr cb-eff (params) locals)
-                                                                       (lambda (ps) (if (null? ps) nil
-                                                                                        (let ((v (make-var (extract (car ps) name) (extract (car ps) sort))))
-                                                                                          (cons (product (name (extract (car ps) name)) (term v)) (go (cdr ps))))))))
-                                                              (go ps)))))
+                                (let ((t (parse-term s body (loop go cb-eff ((ps params ps)) locals
+                                                              (if (null? ps) nil
+                                                                  (let ((v (make-var (extract (car ps) name) (extract (car ps) sort))))
+                                                                    (cons (product (name (extract (car ps) name)) (term v)) (go (cdr ps)))))))))
                                   (cond ((bad? s) #u)
                                         ((not (= (term-sort t) sort)) (begin (fail! s "invalid function definition, sort mismatch") #u))
                                         (else
                                          (let ((cache (the (table string int @cb) (make-table string-hash string=?))))
                                            (begin
-                                             (if (null? ps) (table-set! cache "" t) #u)
+                                             (when (null? ps) (table-set! cache "" t))
                                              (bind! s (sym-name (nth l 1)) (e-fun (next-serial! s) (product (params ps) (sort sort) (body body) (cache cache))))
-                                             (if (bad? s) #u (success s))))))))))))
+                                             (unless (bad? s) (success s))))))))))))
                 cmd-go))
              ((is "assert")
               (begin
@@ -659,8 +647,8 @@ copies times the bound."
              ((is "push")
               (let ((k (if (> n 1) (nth l 1) (sx-num 1))))
                 (begin (if (not (nat? k)) (begin (fail! s "invalid push command") #u)
-                           (begin (letrec ((go (subr cb-eff (int) unit) (lambda (i) (if (= i (nat-value k)) #u (begin (push-scope! s) (go (+ i 1)))))))
-                                    (go 0))
+                           (begin (loop go cb-eff ((i int 0)) unit
+                                    (unless (= i (nat-value k)) (push-scope! s) (go (+ i 1))))
                                   (success s)))
                        cmd-go)))
              ((is "pop")
@@ -668,8 +656,8 @@ copies times the bound."
                 (begin (cond ((not (nat? k)) (begin (fail! s "invalid pop command") #u))
                              ((> (nat-value k) (list-length (get (extract s scopes))))
                               (begin (fail! s "invalid pop command, argument is greater than the current stack depth") #u))
-                             (else (begin (letrec ((go (subr cb-eff (int) unit) (lambda (i) (if (= i (nat-value k)) #u (begin (pop-scope! s) (go (+ i 1)))))))
-                                            (go 0))
+                             (else (begin (loop go cb-eff ((i int 0)) unit
+                                            (unless (= i (nat-value k)) (pop-scope! s) (go (+ i 1))))
                                           (success s))))
                        cmd-go)))
              ((is "check-sat") (begin (write-answer s (smt-check smt nil)) cmd-go))
@@ -678,35 +666,29 @@ copies times the bound."
                 (if (not (and (= 2 n) (sxlist? (nth l 1)))) (begin (fail! s "invalid check-sat-assuming command") #u)
                     (let ((ts (parse-terms s (items (nth l 1)) nil)))
                       (cond ((bad? s) #u)
-                            ((not (letrec ((go (subr cb-eff (ints) bool) (lambda (l) (or (null? l) (and (term-bool? (car l)) (go (cdr l))))))) (go ts)))
+                            ((not (loop go cb-eff ((l ints ts)) bool (or (null? l) (and (term-bool? (car l)) (go (cdr l))))))
                              (begin (fail! s "invalid check-sat-assuming command, Boolean expected") #u))
                             (else (write-answer s (smt-check smt ts))))))
                 cmd-go))
              ((is "get-model")
               (begin
-                (if (need-model s)
-                    (begin
-                      (out! s "(\n")
-                      (letrec ((go (subr cb-eff ((listof def acyclic)) unit)
-                                 (lambda (ds)
-                                   (if (null? ds) #u
-                                       (let ((dn (symbol->smt-string (extract (car ds) name))))
-                                         (begin
-                                           (tagcase (extract (car ds) entry)
-                                             (e-const (k t)
-                                               (if (var-term? t)
-                                                   (out! s (str* (list "  (define-fun " dn " () " (sort->string (term-sort t)) "\n    "
-                                                                       (value->string (smt-value smt t) (term-sort t)) ")\n")))
-                                                   #u))
-                                             (e-fun (k f)
-                                               (if (null? (extract f params))
-                                                   (out! s (str* (list "  (define-fun " dn " () " (sort->string (extract f sort)) "\n    " (sexp->string (extract f body)) ")\n")))
-                                                   #u))
-                                             (e-none () #u))
-                                           (go (cdr ds))))))))
-                        (go (reverse (get (extract s defs)))))
-                      (out! s ")\n"))
-                    #u)
+                (when (need-model s)
+                  (out! s "(\n")
+                  (loop go cb-eff ((ds (listof def acyclic) (reverse (get (extract s defs))))) unit
+                    (unless (null? ds)
+                      (let ((dn (symbol->smt-string (extract (car ds) name))))
+                        (begin
+                          (tagcase (extract (car ds) entry)
+                            (e-const (k t)
+                              (when (var-term? t)
+                                (out! s (str* (list "  (define-fun " dn " () " (sort->string (term-sort t)) "\n    "
+                                                    (value->string (smt-value smt t) (term-sort t)) ")\n")))))
+                            (e-fun (k f)
+                              (when (null? (extract f params))
+                                (out! s (str* (list "  (define-fun " dn " () " (sort->string (extract f sort)) "\n    " (sexp->string (extract f body)) ")\n")))))
+                            (e-none () #u))
+                          (go (cdr ds))))))
+                  (out! s ")\n"))
                 cmd-go))
              ((is "get-value")
               (begin
@@ -714,17 +696,14 @@ copies times the bound."
                       ((not (need-model s)) #u)
                       (else
                        (let ((ts (parse-terms s (items (nth l 1)) nil)))
-                         (if (bad? s) #u
-                             (begin
-                               (out! s "(")
-                               (letrec ((go (subr cb-eff (sexps ints bool) unit)
-                                          (lambda (xs ts first?)
-                                            (if (null? xs) #u
-                                                (begin (out! s (str* (list (if first? "" "\n ") "(" (sexp->string (car xs)) " "
-                                                                           (value->string (smt-value smt (car ts)) (term-sort (car ts))) ")")))
-                                                       (go (cdr xs) (cdr ts) #f))))))
-                                 (go (items (nth l 1)) ts #t))
-                               (out! s ")\n"))))))
+                         (unless (bad? s)
+                           (out! s "(")
+                           (loop go cb-eff ((xs sexps (items (nth l 1))) (ts ints ts) (first? bool #t)) unit
+                             (unless (null? xs)
+                               (out! s (str* (list (if first? "" "\n ") "(" (sexp->string (car xs)) " "
+                                                   (value->string (smt-value smt (car ts)) (term-sort (car ts))) ")")))
+                               (go (cdr xs) (cdr ts) #f)))
+                           (out! s ")\n")))))
                 cmd-go))
              ((is "echo") (begin (out! s (string-append (if (> n 1) (tagcase (nth l 1) (sx-str (x) x) (else y "")) "") "\n")) cmd-go))
              ((is "reset")
@@ -737,8 +716,8 @@ copies times the bound."
                      cmd-go))
              ((is "reset-assertions")
               (begin
-                (letrec ((go (subr cb-eff () unit) (lambda () (if (null? (get (extract s scopes))) #u (begin (pop-scope! s) (go))))))
-                  (go))
+                (loop go cb-eff () unit
+                  (unless (null? (get (extract s scopes))) (pop-scope! s) (go)))
                 ;; Level 0's assertions go with a new context; its names stay.
                 (let ((new-smt (make-smt)))
                   (begin (smt-set-timeout! new-smt (smt-timeout (session-smt s))) (set (extract s smt) new-smt)))
@@ -777,6 +756,6 @@ ends, or a command exits; the answers are the session's output."
       (r-datum (cmd)
         (let ((what (begin (set (extract s err) "") (run-command s cmd))))
           (begin
-            (if (bad? s) (report! s r (get (extract s err))) #u)
+            (when (bad? s) (report! s r (get (extract s err))))
             (set (extract s err) "")
             (if (= what cmd-exit) run-end (smtlib-run! s r))))))))

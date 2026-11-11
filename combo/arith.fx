@@ -21,6 +21,11 @@
 (module-parameters ((m-sat (load-moduleof "sat.fx")) (m-rat (load-moduleof "rat.fx"))
                     (m-term (load-moduleof "term.fx" m-sat m-rat))))
 
+;; Macros: each file defines its own, for now (docs/macros.md).
+(define-syntax loop
+  (syntax-rules ()
+    ((_ go eff ((x t i) ...) r body) (letrec ((go (subr eff (t ...) r) (lambda (x ...) body))) (go i ...)))))
+
 (hide (define kit-lists (load-module "../kit/lists.fx"))
       (import kit-lists map filter)
       (define kit-numbers (load-module "../kit/numbers.fx"))
@@ -52,14 +57,12 @@
       (cond ((string=? op "num") (product (ms nil) (k (num-value t))))
             ((string=? op "scale") (product (ms (list (product (x (term-arg0 t)) (c (scale-coeff t))))) (k rat-0)))
             ((string=? op "+")
-             (letrec ((go (subr cb-eff (ints monos rat) form)
-                        (lambda (as ms k)
-                          (if (null? as) (product (ms (reverse ms)) (k k))
-                              (let ((a (car as)))
-                                (cond ((num? a) (go (cdr as) ms (rat+ k (num-value a))))
-                                      ((term-op? a "scale") (go (cdr as) (cons (product (x (term-arg0 a)) (c (scale-coeff a))) ms) k))
-                                      (else (go (cdr as) (cons (product (x a) (c rat-1)) ms) k))))))))
-               (go (term-args t) nil rat-0)))
+             (loop go cb-eff ((as ints (term-args t)) (ms monos nil) (k rat rat-0)) form
+               (if (null? as) (product (ms (reverse ms)) (k k))
+                   (let ((a (car as)))
+                     (cond ((num? a) (go (cdr as) ms (rat+ k (num-value a))))
+                           ((term-op? a "scale") (go (cdr as) (cons (product (x (term-arg0 a)) (c (scale-coeff a))) ms) k))
+                           (else (go (cdr as) (cons (product (x a) (c rat-1)) ms) k)))))))
             ((string=? op "to_real") (linear-form (term-arg0 t)))
             (else (product (ms (list (product (x t) (c rat-1)))) (k rat-0)))))))
 
@@ -77,9 +80,8 @@
 (define* form-scale (subr cb-eff (rat monos) monos)
   (lambda (c ms)
     (if (rat-zero? c) nil
-        (letrec ((go (subr cb-eff (monos) monos)
-                   (lambda (ms) (if (null? ms) nil (cons (product (x (extract (car ms) x)) (c (rat* c (extract (car ms) c)))) (go (cdr ms)))))))
-          (go ms)))))
+        (loop go cb-eff ((ms monos ms)) monos
+          (if (null? ms) nil (cons (product (x (extract (car ms) x)) (c (rat* c (extract (car ms) c)))) (go (cdr ms))))))))
 
 (define* monomial (subr cb-eff (int rat int) int)
   (lambda (x c sort) (if (rat= c rat-1) x (make-app "scale" (list (rat-num c) (rat-den c)) (list x) sort))))
@@ -96,19 +98,17 @@
              (make-app "+" nil (go ms) sort))))))
 
 (define* sum-sort (subr cb-eff (ints) int)
-  (lambda (ts) (if (letrec ((go (subr cb-eff (ints) bool) (lambda (l) (and (pair? l) (or (= (term-sort (car l)) real-sort) (go (cdr l)))))))
-                     (go ts))
+  (lambda (ts) (if (loop go cb-eff ((l ints ts)) bool
+                     (and (pair? l) (or (= (term-sort (car l)) real-sort) (go (cdr l)))))
                    real-sort int-sort)))
 
 ;;; ------------------------------------------------------------ arithmetic
 
 (define* mk-add (subr cb-eff (ints) int)
   (lambda (ts)
-    (letrec ((go (subr cb-eff (ints monos rat) int)
-               (lambda (as ms k)
-                 (if (null? as) (linear-term ms k (sum-sort ts))
-                     (let ((f (linear-form (car as)))) (go (cdr as) (form+ ms (extract f ms)) (rat+ k (extract f k))))))))
-      (go ts nil rat-0))))
+    (loop go cb-eff ((as ints ts) (ms monos nil) (k rat rat-0)) int
+      (if (null? as) (linear-term ms k (sum-sort ts))
+          (let ((f (linear-form (car as)))) (go (cdr as) (form+ ms (extract f ms)) (rat+ k (extract f k))))))))
 (define* mk-neg (subr cb-eff (int) int) (lambda (t) (mk-mul (list (num-int -1 (term-sort t)) t))))
 (define* mk-sub (subr cb-eff (int ints) int)
   (lambda (t ts) (if (null? ts) (mk-neg t) (mk-add (cons t (the ints (map mk-neg ts)))))))
@@ -120,8 +120,8 @@ nonlinear product, which the theory does not handle."
     (let* ((sort (sum-sort ts))
            (consts (the ints (filter (lambda ((t int)) (term-op? t "num")) ts)))
            (others (the ints (filter (lambda ((t int)) (not (term-op? t "num"))) ts)))
-           (c (letrec ((go (subr cb-eff (ints rat) rat) (lambda (l c) (if (null? l) c (go (cdr l) (rat* c (num-value (car l))))))))
-                (go consts rat-1))))
+           (c (loop go cb-eff ((l ints consts) (c rat rat-1)) rat
+                (if (null? l) c (go (cdr l) (rat* c (num-value (car l))))))))
       (cond ((null? others) (num c sort))
             ((rat-zero? c) (num rat-0 sort))
             ((null? (cdr others))
@@ -188,11 +188,10 @@ nonlinear product, which the theory does not handle."
         (let* ((int? (all-int? ms))
                ;; Scale: integers without a common factor, or a leading 1.
                (scale (if int?
-                          (let ((l (letrec ((go (subr cb-eff (monos int) int) (lambda (ms l) (if (null? ms) l (go (cdr ms) (lcm l (rat-den (extract (car ms) c))))))))
-                                     (go ms 1))))
-                            (let ((g (letrec ((go (subr cb-eff (monos int) int)
-                                                (lambda (ms g) (if (null? ms) g (go (cdr ms) (gcd g (rat-num (rat* (int->rat l) (extract (car ms) c)))))))))
-                                       (go ms 0))))
+                          (let ((l (loop go cb-eff ((ms monos ms) (l int 1)) int
+                                     (if (null? ms) l (go (cdr ms) (lcm l (rat-den (extract (car ms) c))))))))
+                            (let ((g (loop go cb-eff ((ms monos ms) (g int 0)) int
+                                       (if (null? ms) g (go (cdr ms) (gcd g (rat-num (rat* (int->rat l) (extract (car ms) c)))))))))
                               (make-rat l g)))
                           (rat/ rat-1 (rat-abs (extract (car ms) c)))))
                (scale (if (< (rat-sign (extract (car ms) c)) 0) (rat-neg scale) scale))
@@ -215,8 +214,6 @@ nonlinear product, which the theory does not handle."
 (define mk-arith-eq (subr cb-eff (int int) int) (lambda (a b) (mk-and2 (mk-le a b) (mk-ge a b))))
 (define* mk-arith-distinct (subr cb-eff (ints) int)
   (lambda (ts)
-    (letrec ((go (subr cb-eff (ints ints) int)
-               (lambda (ts acc)
-                 (if (null? ts) (mk-and acc)
-                     (go (cdr ts) (the ints (append (the ints (map (lambda ((u int)) (mk-not (mk-arith-eq (car ts) u))) (cdr ts))) acc)))))))
-      (go ts nil))))
+    (loop go cb-eff ((ts ints ts) (acc ints nil)) int
+      (if (null? ts) (mk-and acc)
+          (go (cdr ts) (the ints (append (the ints (map (lambda ((u int)) (mk-not (mk-arith-eq (car ts) u))) (cdr ts))) acc)))))))

@@ -30,6 +30,12 @@
                     (m-eval (load-moduleof "eval.fx" m-core m-term m-value m-print m-syntax m-numbers m-reader m-machine m-prims m-hashtables m-ports m-prelude m-library))
                     (m-playback (load-moduleof "playback.fx" m-core m-term m-value m-print m-syntax m-numbers m-reader m-machine m-prims m-hashtables m-ports m-prelude m-library m-eval))))
 
+;; Macros: each file defines its own, for now (docs/macros.md).
+(define-syntax iterate
+  (syntax-rules ()
+    ((_ go eff ((x t i) ...) r body) (letrec ((go (subr eff (t ...) r) (lambda (x ...) body))) (go i ...)))))
+(define-syntax when (syntax-rules () ((_ c e ...) (if c (begin e ...) #u))))
+
 (hide (define kit-lists (load-module "../kit/lists.fx"))
       (import kit-lists map map2 for-each filter filter-map))
 (hide (define kit-strings (load-module "../kit/strings.fx"))
@@ -83,9 +89,8 @@ number of proofs that did not pass, or -1 if there were none."
 (define make-directory (subr rf-eff (string) unit)
   (lambda (dir)
     (tagcase (process-start (list "mkdir" "-p" dir) "")
-      (started id (letrec ((wait (subr rf-eff () unit)
-                             (lambda () (tagcase (process-status id) (running u (begin (process-output id) (sleep-until (i64+ (clock) (int->i64 1000000))) (wait))) (else x #u)))))
-                    (wait)))
+      (started id (iterate wait rf-eff () unit
+                    (tagcase (process-status id) (running u (begin (process-output id) (sleep-until (i64+ (clock) (int->i64 1000000))) (wait))) (else x #u))))
       (failed e #u))))
 
 (define selected (subr rf-eff (check-options) proofs)
@@ -113,11 +118,9 @@ number of proofs that did not pass, or -1 if there were none."
              (solver (start-solver (extract options timeout) (extract options solver)))
              (failed (+ (if (null? top-level) 0
                             (report-proof "(top level)" (check-all solver top-level top-constants) (extract options verbose) (sum none #u) out))
-                        (letrec ((loop (subr rf-eff (proofs int) int)
-                                   (lambda (ps failed)
-                                     (if (null? ps) failed
-                                         (loop (cdr ps) (+ failed (run-proof solver (car ps) top-constants options forms out)))))))
-                          (loop (selected options) 0)))))
+                        (iterate loop rf-eff ((ps proofs (selected options)) (failed int 0)) int
+                          (if (null? ps) failed
+                              (loop (cdr ps) (+ failed (run-proof solver (car ps) top-constants options forms out))))))))
         (begin
           ((extract solver stop!))
           (let ((n (+ (list-length (selected options)) (if (null? top-level) 0 1))))
@@ -172,23 +175,20 @@ the constants made, in order."
   (lambda (s obligations constants)
     (begin
       (for-each (lambda ((k rf-value)) ((extract s declare!) k)) constants)
-      (letrec ((loop (subr rf-eff (obligations rf-vals (listof result acyclic) (table int symbol @rf)) (listof result acyclic))
-                 (lambda (obs asserted acc reached)
-                   (if (null? obs) (the (listof result acyclic) (reverse acc))
-                       (let* ((ob (car obs))
-                              (assumptions (extract ob assumptions))
-                              ;; Whether a path condition can hold is remembered
-                              ;; while the assumptions are the same.
-                              (reached (if (eq? assumptions asserted) reached (new-reached))))
-                         (begin
-                           ;; Assert the assumptions made since the last check.
-                           (letrec ((add (subr rf-eff (rf-vals) unit)
-                                      (lambda (as) (if (or (eq? as asserted) (null? as)) #u
-                                                       (begin (add (cdr as)) ((extract s assert!) (car as)))))))
-                             (add assumptions))
-                           (let ((r (check-one s ob constants reached)))
-                             (loop (cdr obs) assumptions (cons r acc) reached))))))))
-        (loop obligations nil nil (new-reached))))))
+      (iterate loop rf-eff ((obs obligations obligations) (asserted rf-vals nil) (acc (listof result acyclic) nil) (reached (table int symbol @rf) (new-reached))) (listof result acyclic)
+        (if (null? obs) (the (listof result acyclic) (reverse acc))
+            (let* ((ob (car obs))
+                   (assumptions (extract ob assumptions))
+                   ;; Whether a path condition can hold is remembered
+                   ;; while the assumptions are the same.
+                   (reached (if (eq? assumptions asserted) reached (new-reached))))
+              (begin
+                ;; Assert the assumptions made since the last check.
+                (iterate add rf-eff ((as rf-vals assumptions)) unit
+                  (if (or (eq? as asserted) (null? as)) #u
+                      (begin (add (cdr as)) ((extract s assert!) (car as)))))
+                (let ((r (check-one s ob constants reached)))
+                  (loop (cdr obs) assumptions (cons r acc) reached)))))))))
 (define new-reached (subr rf-st () (table int symbol @rf)) (lambda () (the (table int symbol @rf) (make-table id-hash id-same?))))
 
 "Whether pc can hold, with the assumptions asserted, remembered."
@@ -248,11 +248,10 @@ values of the constants."
     (tagcase v
       (term t (term-value v value-of (new-term-memo)))
       (choice t (term->symbol (term-value (sum term t) value-of (new-term-memo))))
-      (union ms (letrec ((find (subr rf-st (rf-members) rf-value)
-                           (lambda (l) (cond ((null? l) rf-unspecified)
-                                             ((rf-true? (term-value (extract (car l) g) value-of (new-term-memo))) (concrete (extract (car l) v) value-of))
-                                             (else (find (cdr l)))))))
-                  (find ms)))
+      (union ms (iterate find rf-st ((l rf-members ms)) rf-value
+                  (cond ((null? l) rf-unspecified)
+                        ((rf-true? (term-value (extract (car l) g) value-of (new-term-memo))) (concrete (extract (car l) v) value-of))
+                        (else (find (cdr l))))))
       (pair s (rf-cons (concrete (rf-car v) value-of) (concrete (rf-cdr v) value-of)))
       (vec s (sum vec (list->array (map (lambda ((e rf-value)) (concrete e value-of)) (slots-list s)))))
       (else x v))))
@@ -261,23 +260,20 @@ values of the constants."
 (define model-value (subr rf-st (model) (subr rf-st (rf-value) rf-value))
   (lambda (m)
     (lambda ((k rf-value))
-      (letrec ((find (subr rf-st (model) rf-value)
-                 (lambda (l) (cond ((null? l) (if (bool-term? k) rf-false (rf-int 0)))
-                                   ((rf-eqv? (extract (car l) k) k) (extract (car l) v))
-                                   (else (find (cdr l)))))))
-        (find m)))))
+      (iterate find rf-st ((l model m)) rf-value
+        (cond ((null? l) (if (bool-term? k) rf-false (rf-int 0)))
+              ((rf-eqv? (extract (car l) k) k) (extract (car l) v))
+              (else (find (cdr l))))))))
 
 "The branches on the model's path to ob, in order."
 (define trace (subr rf-eff (obligation model) (listof trace-entry acyclic))
   (lambda (ob m)
     (let ((value-of (model-value m)))
-      (letrec ((loop (subr rf-eff (branches (listof trace-entry acyclic)) (listof trace-entry acyclic))
-                 (lambda (bs acc)
-                   (cond ((null? bs) acc)
-                         ((rf-true? (term-value (extract (car bs) pc) value-of (new-term-memo)))
-                          (loop (cdr bs) (cons (product (source (extract (car bs) source)) (value (term-value (extract (car bs) condition) value-of (new-term-memo)))) acc)))
-                         (else (loop (cdr bs) acc))))))
-        (loop (extract ob branches) nil)))))
+      (iterate loop rf-eff ((bs branches (extract ob branches)) (acc (listof trace-entry acyclic) nil)) (listof trace-entry acyclic)
+        (cond ((null? bs) acc)
+              ((rf-true? (term-value (extract (car bs) pc) value-of (new-term-memo)))
+               (loop (cdr bs) (cons (product (source (extract (car bs) source)) (value (term-value (extract (car bs) condition) value-of (new-term-memo)))) acc)))
+              (else (loop (cdr bs) acc)))))))
 
 "The values a concrete run asks for, in order."
 (define playback-values (subr rf-eff (rf-vals model) rf-vals)
@@ -327,17 +323,16 @@ library."
              (let* ((ob (extract r ob)) (status (extract r status)) (kind (extract ob kind)) (label (extract ob label))
                     (once? (or (eq? status 'success) (eq? status 'unreachable) (eq? status 'unsatisfiable))))
                (begin
-                 (if (or (eq? status 'failure) (eq? status 'undetermined)) (set failed (+ 1 (get failed))) #u)
+                 (when (or (eq? status 'failure) (eq? status 'undetermined)) (set failed (+ 1 (get failed))))
                  (if (and (or verbose? (eq? kind 'assert) (eq? kind 'cover) (eq? kind 'contract) (not (eq? status 'success)))
                           (not (and once? (key-member? status kind label (get shown))))
                           (not (and (or (eq? status 'unreachable) (eq? status 'unsatisfiable))
-                                    (letrec ((any (subr rf-st ((listof result acyclic)) bool)
-                                                (lambda (l) (and (pair? l) (or (and (eq? (extract (extract (car l) ob) kind) kind)
-                                                                                    (string=? (extract (extract (car l) ob) label) label))
-                                                                               (any (cdr l)))))))
-                                      (any reached)))))
+                                    (iterate any rf-st ((l (listof result acyclic) reached)) bool
+                                      (and (pair? l) (or (and (eq? (extract (extract (car l) ob) kind) kind)
+                                                              (string=? (extract (extract (car l) ob) label) label))
+                                                         (any (cdr l))))))))
                      (begin
-                       (if once? (set shown (cons (product (status status) (kind kind) (label label)) (get shown))) #u)
+                       (when once? (set shown (cons (product (status status) (kind kind) (label label)) (get shown))))
                        (out (string-append "  " (string-pad-right (status-name status) 14 #\space) (kind-prefix kind) label "\n"))
                        (let ((at (if (eq? status 'success) "" (source-location (extract ob source)))))
                          (if (string=? at "") #u (out (string-append "      at " at "\n"))))
@@ -350,18 +345,16 @@ library."
                                                        "  ->  " (show-value (extract e v)) "\n")))
                                  (if (null? (extract r inputs)) (extract r model)
                                      (filter (lambda ((e model-entry)) (not (memq-val? (extract e k) (get input-constants)))) (extract r model))))
-                       (if (extract r has-trace) (write-trace (extract r trace) out) #u)
+                       (when (extract r has-trace) (write-trace (extract r trace) out))
                        (tagcase playback
-                         (some pb (if (and (eq? status 'failure) (or (eq? kind 'assert) (eq? kind 'error) (eq? kind 'contract)))
-                                      (begin (set played (+ 1 (get played)))
-                                             (play-back pb (get played) ob (extract r model) (extract r values) out))
-                                      #u))
+                         (some pb (when (and (eq? status 'failure) (or (eq? kind 'assert) (eq? kind 'error) (eq? kind 'contract)))
+                                    (set played (+ 1 (get played)))
+                                    (play-back pb (get played) ob (extract r model) (extract r values) out)))
                          (none u #u)))
                      (set quiet (+ 1 (get quiet)))))))
            results)
-          (if (> (get quiet) 0)
-              (out (string-append "  (" (int->string (get quiet)) (if (= (get quiet) 1) " other check" " other checks") " passed)\n"))
-              #u)
+          (when (> (get quiet) 0)
+            (out (string-append "  (" (int->string (get quiet)) (if (= (get quiet) 1) " other check" " other checks") " passed)\n")))
           (out (if (= 0 (get failed)) "  VERIFICATION SUCCESSFUL\n"
                    (string-append "  VERIFICATION FAILED (" (int->string (get failed)) (if (= (get failed) 1) " check" " checks") " failed)\n")))
           (if (= 0 (get failed)) 0 1))))))
@@ -374,7 +367,7 @@ library."
         (let ((n (list-length branches)))
           (begin
             (out "      path:\n")
-            (if (> n max-trace) (out (string-append "        (" (int->string (- n max-trace)) " branches before)\n")) #u)
+            (when (> n max-trace) (out (string-append "        (" (int->string (- n max-trace)) " branches before)\n")))
             (for-each (lambda ((b trace-entry)) (out (string-append "        " (datum->string (extract b source)) "  ->  " (show-value (extract b value)) "\n")))
                       (drop-trace branches (max 0 (- n max-trace)))))))))
 (define drop-trace (subr rf-st ((listof trace-entry acyclic) int) (listof trace-entry acyclic))

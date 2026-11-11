@@ -13,6 +13,11 @@
 
 (module-parameters ((m-sat (load-moduleof "sat.fx")) (m-rat (load-moduleof "rat.fx"))))
 
+;; Macros: each file defines its own, for now (docs/macros.md).
+(define-syntax loop
+  (syntax-rules ()
+    ((_ go eff ((x t i) ...) r body) (letrec ((go (subr eff (t ...) r) (lambda (x ...) body))) (go i ...)))))
+
 (hide (define kit-lists (load-module "../kit/lists.fx"))
       (import kit-lists map filter member? list=? list-sort))
 
@@ -117,11 +122,10 @@ them apart."
 "Terms sorted by id, without duplicates."
 (define* list-sort-terms (subr spin (ints) ints)
   (lambda (l)
-    (letrec ((dedup (subr spin (ints) ints)
-               (lambda (l) (cond ((or (null? l) (null? (cdr l))) l)
-                                 ((= (car l) (car (cdr l))) (dedup (cdr l)))
-                                 (else (cons (car l) (dedup (cdr l))))))))
-      (dedup (the ints (list-sort < l))))))
+    (loop dedup spin ((l ints (the ints (list-sort < l)))) ints
+      (cond ((or (null? l) (null? (cdr l))) l)
+            ((= (car l) (car (cdr l))) (dedup (cdr l)))
+            (else (cons (car l) (dedup (cdr l))))))))
 
 ;;; ------------------------------------------------------------ Boolean terms
 
@@ -148,18 +152,15 @@ hold zero, or a term and its negation."
 (define-type junction (productof (zero bool) (args ints)))
 (define* junction-args (subr cb-eff (string int int ints) junction)
   (lambda (op unit zero ts)
-    (let ((flat (letrec ((go (subr cb-eff (ints ints) ints)
-                           (lambda (ts acc)
-                             (cond ((null? ts) acc)
-                                   ((term-op? (car ts) op) (go (cdr ts) (go (term-args (car ts)) acc)))
-                                   (else (go (cdr ts) (cons (car ts) acc)))))))
-                  (go ts nil))))
+    (let ((flat (loop go cb-eff ((ts ints ts) (acc ints nil)) ints
+                  (cond ((null? ts) acc)
+                        ((term-op? (car ts) op) (go (cdr ts) (go (term-args (car ts)) acc)))
+                        (else (go (cdr ts) (cons (car ts) acc)))))))
       (if (member? zero flat =) (product (zero #t) (args nil))
           (let ((args (list-sort-terms (the ints (filter (lambda ((t int)) (not (= t unit))) flat)))))
             ;; t and (not t): look for each not's argument among the others.
-            (if (letrec ((go (subr cb-eff (ints) bool)
-                           (lambda (as) (and (pair? as) (or (and (not-term? (car as)) (member? (term-arg0 (car as)) args =)) (go (cdr as)))))))
-                  (go args))
+            (if (loop go cb-eff ((as ints args)) bool
+                  (and (pair? as) (or (and (not-term? (car as)) (member? (term-arg0 (car as)) args =)) (go (cdr as)))))
                 (product (zero #t) (args nil))
                 (product (zero #f) (args args))))))))
 (define* mk-junction (subr cb-eff (string int int ints) int)
@@ -206,11 +207,9 @@ theories)."
 
 (define* mk-distinct (subr cb-eff (ints) int)
   (lambda (ts)
-    (letrec ((go (subr cb-eff (ints ints) int)
-               (lambda (ts acc)
-                 (if (null? ts) (mk-and acc)
-                     (go (cdr ts) (the ints (append (the ints (map (lambda ((u int)) (mk-not (mk-eq (car ts) u))) (cdr ts))) acc)))))))
-      (go ts nil))))
+    (loop go cb-eff ((ts ints ts) (acc ints nil)) int
+      (if (null? ts) (mk-and acc)
+          (go (cdr ts) (the ints (append (the ints (map (lambda ((u int)) (mk-not (mk-eq (car ts) u))) (cdr ts))) acc)))))))
 
 "Cardinality: (card lo hi) of Boolean terms holds when at least lo and at
 most hi of them are true (hi `no-bound` for none). The terms are a multiset:

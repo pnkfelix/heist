@@ -277,14 +277,13 @@ to a lambda making `(sum tag (product (1 p1) … (n pn)))`."
            (if (pair? rest) (fx-let file head (fx-items (car rest)) (cdr rest) env) (k-none nil)))
           ((string=? head "product")
            (k-alloc (site "product" "")
-                    (letrec ((fields (subr fx-eff ((listof syn acyclic)) (listof field-init acyclic))
-                               (lambda (fs) (if (null? fs) nil
-                                                (let ((is (fx-items (car fs))))
-                                                  (if (and (pair? is) (pair? (cdr is)))
-                                                      (cons (product (label (fx-sym (car is))) (value (fx-core file (car (cdr is)) env)))
-                                                            (fields (cdr fs)))
-                                                      (fields (cdr fs))))))))
-                      (fields rest))))
+                    (iterate fields fx-eff ((fs (listof syn acyclic) rest)) (listof field-init acyclic)
+                      (if (null? fs) nil
+                          (let ((is (fx-items (car fs))))
+                            (if (and (pair? is) (pair? (cdr is)))
+                                (cons (product (label (fx-sym (car is))) (value (fx-core file (car (cdr is)) env)))
+                                      (fields (cdr fs)))
+                                (fields (cdr fs))))))))
           ((string=? head "extract") (if two? (k-field (fx-core file (car rest) env) (fx-sym (car (cdr rest)))) (k-none nil)))
           ((string=? head "sum")
            (if two?

@@ -26,6 +26,11 @@
                     (m-numbers (load-moduleof "numbers.fx" m-core))
                     (m-reader (load-moduleof "reader.fx" m-core m-numbers))))
 
+;; Macros: each file defines its own, for now (docs/macros.md).
+(define-syntax iterate
+  (syntax-rules ()
+    ((_ go eff ((x t i) ...) r body) (letrec ((go (subr eff (t ...) r) (lambda (x ...) body))) (go i ...)))))
+
 (hide (define kit-lists (load-module "../kit/lists.fx"))
       (import kit-lists map map2 for-each filter))
 (hide (define kit-strings (load-module "../kit/strings.fx"))
@@ -206,35 +211,33 @@ was told outside any push."
 deeply."
 (define define! (subr rf-eff (z3-state rf-value) unit)
   (lambda (s t)
-    (letrec ((loop (subr rf-eff (rf-vals) unit)
-               (lambda (stack)
-                 (if (null? stack) #u
-                     (let ((t (car stack)))
-                       (cond ((defined? s t) (loop (cdr stack)))
-                             ((constant? t)
-                              (begin
-                                (note-defined! s t)
-                                (if (and (>= (constant-range t) 0) (extract s z3?))
-                                    (declare-index! s t (constant-range t))
-                                    (smt-send s (string-append "(declare-const " (term-name t) " " (sort-name (term-sort (term-of t))) ")")))
-                                (loop (cdr stack))))
-                             (else
-                              (let ((pending (filter (lambda ((a rf-value)) (and (rf-term? a) (not (defined? s a)))) (targs t))))
-                                (if (pair? pending)
-                                    (loop (vals-append pending stack))
-                                    (begin
-                                      (note-defined! s t)
-                                      (smt-send s (string-append
-                                               "(define-fun " (term-name t) " () " (sort-name (term-sort (term-of t))) " "
-                                               (let ((atom (index-atom s t)))
-                                                 (if (string=? atom "")
-                                                     (string-append "(" (op-name (term-op (term-of t)))
-                                                                    (string-concatenate (map (lambda ((a rf-value)) (string-append " " (reference! s a))) (targs t)))
-                                                                    ")")
-                                                     atom))
-                                               ")"))
-                                      (loop (cdr stack))))))))))))
-      (loop (list t)))))
+    (iterate loop rf-eff ((stack rf-vals (list t))) unit
+      (if (null? stack) #u
+          (let ((t (car stack)))
+            (cond ((defined? s t) (loop (cdr stack)))
+                  ((constant? t)
+                   (begin
+                     (note-defined! s t)
+                     (if (and (>= (constant-range t) 0) (extract s z3?))
+                         (declare-index! s t (constant-range t))
+                         (smt-send s (string-append "(declare-const " (term-name t) " " (sort-name (term-sort (term-of t))) ")")))
+                     (loop (cdr stack))))
+                  (else
+                   (let ((pending (filter (lambda ((a rf-value)) (and (rf-term? a) (not (defined? s a)))) (targs t))))
+                     (if (pair? pending)
+                         (loop (vals-append pending stack))
+                         (begin
+                           (note-defined! s t)
+                           (smt-send s (string-append
+                                    "(define-fun " (term-name t) " () " (sort-name (term-sort (term-of t))) " "
+                                    (let ((atom (index-atom s t)))
+                                      (if (string=? atom "")
+                                          (string-append "(" (op-name (term-op (term-of t)))
+                                                         (string-concatenate (map (lambda ((a rf-value)) (string-append " " (reference! s a))) (targs t)))
+                                                         ")")
+                                          atom))
+                                    ")"))
+                           (loop (cdr stack))))))))))))
 
 (define index-name (subr rf-st (rf-value int) string)
   (lambda (k i) (string-append (term-name k) "_" (int->string i))))
@@ -243,17 +246,16 @@ deeply."
 one is true, and k defined from them."
 (define declare-index! (subr rf-eff (z3-state rf-value int) unit)
   (lambda (s k n)
-    (let ((names (letrec ((loop (subr rf-st (int strings) strings) (lambda (i acc) (if (< i 0) acc (loop (- i 1) (cons (index-name k i) acc))))))
-                   (loop (- n 1) nil))))
+    (let ((names (iterate loop rf-st ((i int (- n 1)) (acc strings nil)) strings
+                   (if (< i 0) acc (loop (- i 1) (cons (index-name k i) acc))))))
       (begin
         (for-each (lambda ((b string)) (smt-send s (string-append "(declare-const " b " Bool)"))) names)
         (smt-send s (string-append "(assert ((_ pbeq 1" (string-concatenate (map (lambda ((b string)) " 1") names)) ")"
                                (string-concatenate (map (lambda ((b string)) (string-append " " b)) names)) "))"))
         (smt-send s (string-append "(define-fun " (term-name k) " () Int "
-                               (letrec ((loop (subr rf-st (int string) string)
-                                          (lambda (i acc) (if (< i 0) acc
-                                                              (loop (- i 1) (string-append "(ite " (index-name k i) " " (int->string i) " " acc ")"))))))
-                                 (loop (- n 2) (int->string (- n 1))))
+                               (iterate loop rf-st ((i int (- n 2)) (acc string (int->string (- n 1)))) string
+                                 (if (< i 0) acc
+                                     (loop (- i 1) (string-append "(ite " (index-name k i) " " (int->string i) " " acc ")"))))
                                ")"))))))
 
 "The text for t, a comparison of an index constant with a number, when
@@ -300,9 +302,8 @@ declare-index! declared it; else \"\"."
 (define string-search? (subr rf-st (string string) bool)
   (lambda (part s)
     (let ((n (string-length part)))
-      (letrec ((loop (subr rf-st (int) bool)
-                 (lambda (i) (and (<= (+ i n) (string-length s)) (or (string=? (substring s i (+ i n)) part) (loop (+ i 1)))))))
-        (loop 0)))))
+      (iterate loop rf-st ((i int 0)) bool
+        (and (<= (+ i n) (string-length s)) (or (string=? (substring s i (+ i n)) part) (loop (+ i 1))))))))
 
 "Whether the check that answered unknown was stopped by the timeout."
 (define interrupted? (subr rf-eff (z3-state) bool)

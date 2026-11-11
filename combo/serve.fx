@@ -31,6 +31,11 @@
                     (m-sexp (load-moduleof "sexp.fx" m-sat m-rat))
                     (m-smt (load-moduleof "smt.fx" m-sat m-rat m-term m-bv m-arith m-eval m-simplex m-blast))
                     (m-smtlib (load-moduleof "smtlib.fx" m-sat m-rat m-term m-bv m-arith m-eval m-simplex m-blast m-sexp m-smt))))
+
+;; Macros: each file defines its own, for now (docs/macros.md).
+(define-syntax loop
+  (syntax-rules ()
+    ((_ go eff ((x t i) ...) r body) (letrec ((go (subr eff (t ...) r) (lambda (x ...) body))) (go i ...)))))
 (hide (define kit-strings (load-module "../kit/strings.fx"))
       (import kit-strings reverse-list->string))
 
@@ -41,15 +46,13 @@
 "`s` with backslashes, newlines and tabs escaped."
 (define* escape (subr spin (string) string)
   (lambda (s)
-    (list->string (letrec ((go (subr spin (int (listof char acyclic)) (listof char acyclic))
-                (lambda (i acc)
-                  (if (< i 0) acc
-                      (let ((c (string-ref s i)))
-                        (go (- i 1) (cond ((char=? c #\\) (cons #\\ (cons #\\ acc)))
-                                          ((char=? c #\newline) (cons #\\ (cons #\n acc)))
-                                          ((char=? c #\tab) (cons #\\ (cons #\t acc)))
-                                          (else (cons c acc)))))))))
-       (go (- (string-length s) 1) nil)))))
+    (list->string (loop go spin ((i int (- (string-length s) 1)) (acc (listof char acyclic) nil)) (listof char acyclic)
+                    (if (< i 0) acc
+                        (let ((c (string-ref s i)))
+                          (go (- i 1) (cond ((char=? c #\\) (cons #\\ (cons #\\ acc)))
+                                            ((char=? c #\newline) (cons #\\ (cons #\n acc)))
+                                            ((char=? c #\tab) (cons #\\ (cons #\t acc)))
+                                            (else (cons c acc))))))))))
 (define* unescape (subr spin (string) string)
   (lambda (s)
     (let ((n (string-length s)))
@@ -67,8 +70,8 @@
 (define* parse-request (subr spin (string) request)
   (lambda (line)
     (let* ((n (string-length line))
-           (sp (letrec ((go (subr spin (int) int) (lambda (i) (cond ((>= i n) -1) ((char=? (string-ref line i) #\space) i) (else (go (+ i 1)))))))
-                 (go 0)))
+           (sp (loop go spin ((i int 0)) int
+                 (cond ((>= i n) -1) ((char=? (string-ref line i) #\space) i) (else (go (+ i 1))))))
            (word (if (< sp 0) line (substring line 0 sp)))
            (rest (if (< sp 0) "" (substring line (+ sp 1) n))))
       (letrec ((split (subr spin (int int strings) strings)
@@ -94,19 +97,16 @@
 
 (define* find-session (subr cb-eff (string) named-session)
   (lambda (name)
-    (letrec ((go (subr cb-eff ((listof named-session acyclic)) named-session)
-               (lambda (l)
-                 (cond ((null? l)
-                        (let ((ns (product (name name) (session (make-session)) (reader (make-sexp-reader)))))
-                          (begin (set sessions (cons ns (get sessions))) ns)))
-                       ((string=? (extract (car l) name) name) (car l))
-                       (else (go (cdr l)))))))
-      (go (get sessions)))))
+    (loop go cb-eff ((l (listof named-session acyclic) (get sessions))) named-session
+      (cond ((null? l)
+             (let ((ns (product (name name) (session (make-session)) (reader (make-sexp-reader)))))
+               (begin (set sessions (cons ns (get sessions))) ns)))
+            ((string=? (extract (car l) name) name) (car l))
+            (else (go (cdr l)))))))
 (define* forget-session! (subr cb-eff (string) unit)
   (lambda (name)
-    (set sessions (letrec ((go (subr cb-eff ((listof named-session acyclic)) (listof named-session acyclic))
-                             (lambda (l) (cond ((null? l) nil) ((string=? (extract (car l) name) name) (cdr l)) (else (cons (car l) (go (cdr l))))))))
-                    (go (get sessions))))))
+    (set sessions (loop go cb-eff ((l (listof named-session acyclic) (get sessions))) (listof named-session acyclic)
+                    (cond ((null? l) nil) ((string=? (extract (car l) name) name) (cdr l)) (else (cons (car l) (go (cdr l)))))))))
 
 "Request `line` done."
 (define* serve-request! (subr serve-eff (string) unit)
@@ -130,6 +130,5 @@
   (lambda ()
     (begin
       (answer "ready" nil)
-      (letrec ((go (subr serve-eff () int)
-                 (lambda () (tagcase (read-line) (line l (begin (serve-request! l) (go))) (else y 0)))))
-        (go)))))
+      (loop go serve-eff () int
+        (tagcase (read-line) (line l (begin (serve-request! l) (go))) (else y 0))))))

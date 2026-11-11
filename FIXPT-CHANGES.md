@@ -8,7 +8,22 @@ do it, and what it cost. Kayak will need the same changes later
 
 ## Base
 
-- Fixpt `main` at 5983942d (2026-11-11), pulled from GitHub: binding
+- Fixpt `main` at eed406e0 (2026-11-11), pulled from GitHub: our macros
+  request's items, answered: a file with module parameters uses its own
+  macros (1(a)); `import-with-syntax` in a module file refused, "not
+  yet", where it panicked; a program's `import-with-syntax` of a file of
+  macros alone works; a macro's use may bind a keyword as the loop's
+  name. Also `hide` at a program's top level, and a `load-moduleof` fix
+  for Kayak. Heist needed no change to run; it now uses its macros in
+  the 43 files with module parameters where they pay, and in uses that
+  name a keyword, 47,980 characters saved (`docs/macros.md`). A keyword
+  alone as a part of a use is still refused, as a binder in the
+  pattern's list or as an expression (`keyword-args.fx`, in the request);
+  three loops stay as they were. `fixpt/` is Fixpt's tree exactly. After
+  `fixpt prewarm` and `bin/heist-compile --force all`, all 209 tests
+  pass, with dumps (9.6 s) and without (20.3 s); ratfink's corpus 123 of
+  124, playback 12 of 12, its FX-26 tests' reports unchanged.
+- Before: Fixpt `main` at 5983942d (2026-11-11), pulled from GitHub: binding
   shapes (`docs/research/binding-shapes.md`: each form's binding
   structure known before it is checked; `with`'s fallback for names
   defined nowhere retired; `modnames`); hygiene step 3 (a module file

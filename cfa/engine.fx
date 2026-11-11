@@ -665,14 +665,12 @@ list may end before (one of `s` shorter than another, ending there)."
         (k-case (e arms)
           (let ((subject (eval-core e c)))
             (union-all
-             (letrec ((go (subr cf-eff ((listof arm acyclic)) (listof vals acyclic))
-                        (lambda (as)
-                          (if (null? as) nil
-                              (let ((a (car as)))
-                                (begin
-                                  (bind-arm (extract a vars) (extract a fields) (payload-of subject (extract a tag)) c)
-                                  (cons (eval-core (extract a body) c) (go (cdr as)))))))))
-               (go arms)))))
+             (iterate go cf-eff ((as (listof arm acyclic) arms)) (listof vals acyclic)
+               (if (null? as) nil
+                   (let ((a (car as)))
+                     (begin
+                       (bind-arm (extract a vars) (extract a fields) (payload-of subject (extract a tag)) c)
+                       (cons (eval-core (extract a body) c) (go (cdr as))))))))))
         (k-app (call f args)
           (let* ((ops (eval-core f c)) (as (eval-all args c)))
             (begin
@@ -906,16 +904,14 @@ variable its body refers to (by its global name, or a loop's)."
            (bound (bound-all bodies nil)))
       (begin
         (set cf-split-sites (make-array (array-length (get cf-site-array)) #f))
-        (letrec ((go (subr cf-eff ((listof cf-bound acyclic)) unit)
-                   (lambda (bs)
-                     (if (null? bs) #u
-                         (let* ((l (extract (car bs) lambda)) (body (extract (array-ref (get cf-lambda-array) l) body)))
-                           (begin
-                             (when (member? (extract (car bs) var) (extract (refs-binds-of body (product (refs nil) (binds nil))) refs) =)
-                               (iterate mark cf-eff ((ss ints (sites-in body nil))) unit
-                                 (unless (null? ss) (array-set! (get cf-split-sites) (car ss) #t) (mark (cdr ss)))))
-                             (go (cdr bs))))))))
-          (go bound))))))
+        (iterate go cf-eff ((bs (listof cf-bound acyclic) bound)) unit
+          (unless (null? bs)
+            (let* ((l (extract (car bs) lambda)) (body (extract (array-ref (get cf-lambda-array) l) body)))
+              (begin
+                (when (member? (extract (car bs) var) (extract (refs-binds-of body (product (refs nil) (binds nil))) refs) =)
+                  (iterate mark cf-eff ((ss ints (sites-in body nil))) unit
+                    (unless (null? ss) (array-set! (get cf-split-sites) (car ss) #t) (mark (cdr ss)))))
+                (go (cdr bs))))))))))
 
 ;;; ------------------------------------------------------------ running
 

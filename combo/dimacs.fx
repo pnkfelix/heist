@@ -7,6 +7,11 @@
 ;;; clauses and assumptions in order; answers are text.
 
 (module-parameters ((m-sat (load-moduleof "sat.fx"))))
+
+;; Macros: each file defines its own, for now (docs/macros.md).
+(define-syntax loop
+  (syntax-rules ()
+    ((_ go eff ((x t i) ...) r body) (letrec ((go (subr eff (t ...) r) (lambda (x ...) body))) (go i ...)))))
 (hide (define kit-strings (load-module "../kit/strings.fx"))
       (import kit-strings string-concatenate))
 
@@ -34,9 +39,8 @@ some old benchmark files)."
                  (lambda (i) (cond ((>= i len) i) ((= (at i) 10) (+ i 1)) (else (skip-line (+ i 1))))))
                (word-end (subr cb-eff (int) int) (lambda (i) (if (and (< i len) (not (space? (at i)))) (word-end (+ i 1)) i)))
                (word (subr cb-eff (int int) string)
-                 (lambda (i j) (list->string (letrec ((go (subr cb-eff (int) (listof char acyclic))
-                                                         (lambda (k) (if (>= k j) nil (cons (integer->char (at k)) (go (+ k 1)))))))
-                                                (go i)))))
+                 (lambda (i j) (list->string (loop go cb-eff ((k int i)) (listof char acyclic)
+                                               (if (>= k j) nil (cons (integer->char (at k)) (go (+ k 1))))))))
                ;; An integer at i: its value and the position after it, or -1.
                (int-end (subr cb-eff (int) int)
                  (lambda (i) (let ((j (if (= (at i) 45) (+ i 1) i)))
@@ -66,14 +70,12 @@ some old benchmark files)."
                                     ((string=? format "inccnf") (go e nvars clause items))
                                     (else (dimacs-bad (string-append "read-dimacs: not a CNF header " format))))))
                            ((= c 97)                                          ; a
-                            (letrec ((lits (subr cb-eff (int ints) dimacs-read)
-                                       (lambda (i acc)
-                                         (let* ((i (skip-space i)) (e (int-end i)))
-                                           (if (< e 0) (bad-int i)
-                                               (let ((n (int-at i e)))
-                                                 (if (= n 0) (go e nvars clause (cons (d-assume (reverse acc)) items))
-                                                     (lits e (cons (int->lit n) acc)))))))))
-                              (lits (+ i 1) nil)))
+                            (loop lits cb-eff ((i int (+ i 1)) (acc ints nil)) dimacs-read
+                              (let* ((i (skip-space i)) (e (int-end i)))
+                                (if (< e 0) (bad-int i)
+                                    (let ((n (int-at i e)))
+                                      (if (= n 0) (go e nvars clause (cons (d-assume (reverse acc)) items))
+                                          (lits e (cons (int->lit n) acc))))))))
                            (else
                             (let ((e (int-end i)))
                               (if (< e 0) (bad-int i)

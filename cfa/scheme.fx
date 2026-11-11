@@ -283,9 +283,8 @@ a test may call as a predicate (read as a formula of its body)."
             (else (go (cdr l)))))))
 (define sc-user-preds (ref (listof (productof (name string) (lambda s7-lambda)) acyclic) @cf) (new nil))
 (define* sc-user-pred (subr (maxeff spin (read @cf)) (string) (listof s7-lambda acyclic))
-  (lambda (n) (letrec ((go (subr spin ((listof (productof (name string) (lambda s7-lambda)) acyclic)) (listof s7-lambda acyclic))
-                         (lambda (l) (cond ((null? l) nil) ((string=? (extract (car l) name) n) (list (extract (car l) lambda))) (else (go (cdr l)))))))
-                (go (get sc-user-preds)))))
+  (lambda (n) (iterate go spin ((l (listof (productof (name string) (lambda s7-lambda)) acyclic) (get sc-user-preds))) (listof s7-lambda acyclic)
+                (cond ((null? l) nil) ((string=? (extract (car l) name) n) (list (extract (car l) lambda))) (else (go (cdr l)))))))
 
 "A constant node's value, if it is one."
 (define* sc-const-of (subr spin (s7-node) (sumof (none unit) (const s7-value)))

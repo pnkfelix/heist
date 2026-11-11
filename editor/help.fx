@@ -25,6 +25,11 @@
                     (m-calls (load-moduleof "calls.fx" m-base m-buffer m-resolve m-syntax m-sexp m-index m-view m-frame))
                     (m-process (load-moduleof "process.fx" m-base m-buffer m-resolve m-syntax m-sexp m-index m-view m-frame m-calls))
                     (m-files (load-moduleof "files.fx" m-base m-buffer m-resolve m-syntax m-sexp m-index m-view m-frame m-calls m-process))))
+
+;; Macros: each file defines its own, for now (docs/macros.md).
+(define-syntax loop
+  (syntax-rules ()
+    ((_ go eff ((x t i) ...) r body) (letrec ((go (subr eff (t ...) r) (lambda (x ...) body))) (go i ...)))))
 (hide (define kit-lists (load-module "../kit/lists.fx"))
       (import kit-lists every list-sort))
 (hide (define kit-strings (load-module "../kit/strings.fx"))
@@ -40,18 +45,16 @@
 "What command `name` does, or \"\"."
 (define* doc-of (subr (maxeff (read @ed) spin) (string) string)
   (lambda (name)
-    (letrec ((go (subr spin ((listof command-doc acyclic)) string)
-               (lambda (ds) (cond ((null? ds) "")
-                                  ((string=? (extract (car ds) name) name) (extract (car ds) doc))
-                                  (else (go (cdr ds)))))))
-      (go (get command-docs)))))
+    (loop go spin ((ds (listof command-doc acyclic) (get command-docs))) string
+      (cond ((null? ds) "")
+            ((string=? (extract (car ds) name) name) (extract (car ds) doc))
+            (else (go (cdr ds)))))))
 
 "Every command's name."
 (define command-names (->* () strings)
   (lambda ()
-    (letrec ((go (subr spin ((listof named acyclic)) strings)
-               (lambda (cs) (if (null? cs) nil (cons (extract (car cs) name) (go (cdr cs)))))))
-      (go (append (commands) (get more-commands))))))
+    (loop go spin ((cs (listof named acyclic) (append (commands) (get more-commands)))) strings
+      (if (null? cs) nil (cons (extract (car cs) name) (go (cdr cs)))))))
 
 "The keys command `name` is on: everywhere, then in buffers of one name
 or kind (\"RET (in *grep*)\")."
@@ -115,12 +118,10 @@ them, sorted, each with its keys and what it does, in *Apropos*."
       (read-string f "Search for a command (word or list of words): " ""
                    (lambda ((fr (actor frame)) (f frame) (typed string))
                      (let* ((ws (words typed))
-                            (found (letrec ((go (subr spin (strings) strings)
-                                                  (lambda (ns)
-                                                    (cond ((null? ns) nil)
-                                                          ((every (lambda ((w string)) (>= (string-search (car ns) w 0) 0)) ws) (cons (car ns) (go (cdr ns))))
-                                                          (else (go (cdr ns)))))))
-                                     (go (list-sort string<? (command-names))))))
+                            (found (loop go spin ((ns strings (list-sort string<? (command-names)))) strings
+                                     (cond ((null? ns) nil)
+                                           ((every (lambda ((w string)) (>= (string-search (car ns) w 0) 0)) ws) (cons (car ns) (go (cdr ns))))
+                                           (else (go (cdr ns)))))))
                        (cond ((null? ws) (draw (with-echo f "No words to search for")))
                              ((null? found) (draw (with-echo f (string-append "No command matches " typed))))
                              (else (show-help fr f "*Apropos*" (apropos-text found))))))))))
@@ -166,14 +167,12 @@ their commands, in *Help*."
     (lambda ((fr (actor frame)) (f frame))
       (let* ((bname (extract (actor-state (extract (selected-window f) buffer)) name))
              (line (lambda ((ks string) (name string)) (string-append (padded ks 16) name "\n")))
-             (here (letrec ((go (subr spin ((listof (productof (buffer string) (keys string) (command string)) acyclic)) string)
-                              (lambda (m)
-                                (cond ((null? m) "")
-                                      ((or (string=? (extract (car m) buffer) bname)
-                                           (string=? (extract (car m) buffer) (buffer-kind bname)))
-                                       (string-append (line (extract (car m) keys) (extract (car m) command)) (go (cdr m))))
-                                      (else (go (cdr m)))))))
-                     (go (get buffer-keys))))
+             (here (loop go spin ((m (listof (productof (buffer string) (keys string) (command string)) acyclic) (get buffer-keys))) string
+                     (cond ((null? m) "")
+                           ((or (string=? (extract (car m) buffer) bname)
+                                (string=? (extract (car m) buffer) (buffer-kind bname)))
+                            (string-append (line (extract (car m) keys) (extract (car m) command)) (go (cdr m))))
+                           (else (go (cdr m))))))
              (global (letrec ((go (subr spin ((listof (productof (keys string) (command string)) acyclic)) string)
                                 (lambda (m) (if (null? m) ""
                                                 (string-append (line (extract (car m) keys) (extract (car m) command))

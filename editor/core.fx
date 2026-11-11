@@ -24,6 +24,12 @@
 
 (module-parameters ((ed region) (world effect)))
 
+;; Macros: each file defines its own, for now (docs/macros.md).
+(define-syntax loop
+  (syntax-rules ()
+    ((_ go eff ((x t i) ...) r body) (letrec ((go (subr eff (t ...) r) (lambda (x ...) body))) (go i ...)))))
+(define-syntax unless (syntax-rules () ((_ c e ...) (if c #u (begin e ...)))))
+
 "What a turn may do: read, allocate (an actor spawned, a closure made),
 loop, and nothing another could see."
 (define-effect turn-eff (maxeff spin nondet (read @globals) (read ed) (alloc ed)))
@@ -82,36 +88,33 @@ keys is laid out once, at its end; idle actors only when neither waits."
 
   (define activity-of (subr (maxeff (read ed) spin) (int) (listof running-activity acyclic))
     (lambda (id)
-      (letrec ((go (subr (maxeff (read ed) spin) ((listof running-activity acyclic)) (listof running-activity acyclic))
-                 (lambda (l) (cond ((null? l) nil)
-                                   ((= (extract (car l) id) id) (list (car l)))
-                                   (else (go (cdr l)))))))
-        (go (get activities)))))
+      (loop go (maxeff (read ed) spin) ((l (listof running-activity acyclic) (get activities))) (listof running-activity acyclic)
+        (cond ((null? l) nil)
+              ((= (extract (car l) id) id) (list (car l)))
+              (else (go (cdr l)))))))
 
   (define given-up? (subr (maxeff (read ed) spin) (int) bool)
     (lambda (id)
-      (letrec ((go (subr spin ((listof int acyclic)) bool) (lambda (l) (and (pair? l) (or (= (car l) id) (go (cdr l)))))))
-        (go (get given-up)))))
+      (loop go spin ((l (listof int acyclic) (get given-up))) bool
+        (and (pair? l) (or (= (car l) id) (go (cdr l)))))))
 
   (define forget-activity! (subr (maxeff (read ed) (write ed) spin) (int) unit)
     (lambda (id)
       (set activities
-           (letrec ((go (subr (maxeff (read ed) spin) ((listof running-activity acyclic)) (listof running-activity acyclic))
-                      (lambda (l) (cond ((null? l) nil)
-                                        ((= (extract (car l) id) id) (cdr l))
-                                        (else (cons (car l) (go (cdr l))))))))
-             (go (get activities))))))
+           (loop go (maxeff (read ed) spin) ((l (listof running-activity acyclic) (get activities))) (listof running-activity acyclic)
+             (cond ((null? l) nil)
+                   ((= (extract (car l) id) id) (cdr l))
+                   (else (cons (car l) (go (cdr l)))))))))
 
   ;; One more, or one fewer (`n`), of activity `id`'s messages; at none, it
   ;; is done.
   (define activity-add! (subr (maxeff (read ed) (write ed) spin) (int int) unit)
     (lambda (id n)
       (let ((a (activity-of id)))
-        (if (null? a)
-            #u
-            (let ((c (extract (car a) count)))
-              (begin (set c (+ (get c) n))
-                (if (<= (get c) 0) (forget-activity! id) #u)))))))
+        (unless (null? a)
+          (let ((c (extract (car a) count)))
+            (begin (set c (+ (get c) n))
+              (if (<= (get c) 0) (forget-activity! id) #u)))))))
 
   (define enqueue! (subr (maxeff (read ed) (write ed)) (int runner) unit)
     (lambda (c r) (array-set! qin c (cons r (array-ref qin c)))))
@@ -139,20 +142,17 @@ keys is laid out once, at its end; idle actors only when neither waits."
 
   (define run-cmds (subr cmd-eff (cmds) unit)
     (lambda (cs)
-      (letrec ((go (subr cmd-eff (cmds) unit)
-                 (lambda (cs) (if (null? cs) #u (begin ((car cs)) (go (cdr cs)))))))
-        (go cs))))
+      (loop go cmd-eff ((cs cmds cs)) unit
+        (unless (null? cs) ((car cs)) (go (cdr cs))))))
 
   ;; `es` without the envelopes of key `k`.
   (define without-key (poly ((s type)) (subr spin (string (msgs s)) (msgs s)))
     (plambda ((s type))
       (lambda (k es)
-        (letrec ((go (subr spin ((msgs s)) (msgs s))
-                   (lambda (es)
-                     (cond ((null? es) nil)
-                           ((string=? (extract (car es) key) k) (go (cdr es)))
-                           (else (cons (car es) (go (cdr es))))))))
-          (go es))))))
+        (loop go spin ((es (msgs s) es)) (msgs s)
+          (cond ((null? es) nil)
+                ((string=? (extract (car es) key) k) (go (cdr es)))
+                (else (cons (car es) (go (cdr es))))))))))
 
 "Each failing turn is told to `handler`: the actor's name, and the failure."
 (define on-turn-failure! (subr (write ed) ((subr cmd-eff (string string) unit)) unit)
@@ -196,15 +196,13 @@ It takes messages at once, and runs once the scheduler gets to them."
               #u                                    ; given up: dropped
               (begin
                 (if (>= act 0) (activity-add! act 1) #u)
-                (if (string=? k "")
-                    #u
-                    (begin (set (extract a in) ((proj without-key s) k (get (extract a in))))
-                      (set (extract a out) ((proj without-key s) k (get (extract a out))))))
+                (unless (string=? k "")
+                  (set (extract a in) ((proj without-key s) k (get (extract a in))))
+             (set (extract a out) ((proj without-key s) k (get (extract a out)))))
                 (set (extract a in) (cons e (get (extract a in))))
-                (if (get (extract a queued))
-                    #u
-                    (begin (set (extract a queued) #t)
-                      (enqueue! (get (extract a class)) (lambda () ((proj run-one s) a)))))))))))
+                (unless (get (extract a queued))
+                  (set (extract a queued) #t)
+             (enqueue! (get (extract a class)) (lambda () ((proj run-one s) a))))))))))
   ;; One turn of `a`: its oldest message, under `attempt`, its activity the
   ;; one what it sends belongs to.
   (run-one (poly ((s type)) (subr cmd-eff ((actor s)) unit))
@@ -276,28 +274,25 @@ from now on (C-g)."
 (define abort-activity! (subr cmd-eff (int) unit)
   (lambda (id)
     (begin (forget-activity! id)
-      (set given-up (cons id (letrec ((take (subr spin (int (listof int acyclic)) (listof int acyclic))
-                                        (lambda (n l) (if (or (= n 0) (null? l)) nil (cons (car l) (take (- n 1) (cdr l)))))))
-                               (take 63 (get given-up))))))))
+      (set given-up (cons id (loop take spin ((n int 63) (l (listof int acyclic) (get given-up))) (listof int acyclic)
+                               (if (or (= n 0) (null? l)) nil (cons (car l) (take (- n 1) (cdr l))))))))))
 
 "Run turns until none wait, or `limit` have run, or, with a limit (not
 -1), one of a display or idle actor has run, so that the caller can see
 to keys between them. The number run."
 (define run-turns! (subr cmd-eff (int) int)
   (lambda (limit)
-    (letrec ((go (subr cmd-eff (int) int)
-               (lambda (n)
-                 (if (= n limit)
-                     n
-                     (let ((c (first-class)))
-                       (if (< c 0)
-                           n
-                           (let ((r (dequeue-of! c)))
-                             (if (procedure? r)
-                                 (begin (r)
-                                   (if (and (>= limit 0) (> c interactive)) (+ n 1) (go (+ n 1))))
-                                 n))))))))
-      (go 0))))
+    (loop go cmd-eff ((n int 0)) int
+      (if (= n limit)
+          n
+          (let ((c (first-class)))
+            (if (< c 0)
+                n
+                (let ((r (dequeue-of! c)))
+                  (if (procedure? r)
+                      (begin (r)
+                        (if (and (>= limit 0) (> c interactive)) (+ n 1) (go (+ n 1))))
+                      n))))))))
 
 "Whether turns of an interactive actor wait."
 (define interactive-waiting? (subr (read ed) () bool)

@@ -13,6 +13,11 @@
                     (m-syntax (load-moduleof "syntax.fx" m-base m-buffer m-resolve))
                     (m-sexp (load-moduleof "sexp.fx" m-base m-buffer m-resolve m-syntax))
                     (m-index (load-moduleof "index.fx" m-base m-buffer m-resolve m-syntax m-sexp))))
+
+;; Macros: each file defines its own, for now (docs/macros.md).
+(define-syntax loop
+  (syntax-rules ()
+    ((_ go eff ((x t i) ...) r body) (letrec ((go (subr eff (t ...) r) (lambda (x ...) body))) (go i ...)))))
 (hide (define kit-strings (load-module "../kit/strings.fx"))
       (import kit-strings reverse-list->string))
 
@@ -30,14 +35,12 @@ cursor's row and column in it."
 taken to the next stop."
 (define* column-of (subr spin (string int) int)
   (lambda (s i)
-    (letrec ((go (subr spin (int int) int)
-               (lambda (j col)
-                 (if (>= j i)
-                     col
-                     (go (+ j 1) (if (char=? (string-ref s j) #\tab)
-                                     (* tab-width (+ 1 (quotient col tab-width)))
-                                     (+ col 1)))))))
-      (go 0 0))))
+    (loop go spin ((j int 0) (col int 0)) int
+      (if (>= j i)
+          col
+          (go (+ j 1) (if (char=? (string-ref s j) #\tab)
+                          (* tab-width (+ 1 (quotient col tab-width)))
+                          (+ col 1)))))))
 
 "`s` as it shows: each tab as spaces to the next stop."
 (define* expand-tabs (subr spin (string) string)
@@ -111,19 +114,17 @@ a search's match."
     (let ((hl (highlight-spans snap ls le text)))
       (if (pair? hl)
           hl
-          (letrec ((go (subr spin (text-faces) spans)
-                     (lambda (fs)
-                       (if (null? fs)
-                           nil
-                           (let* ((f (car fs))
-                                  (a (max ls (extract f start)))
-                                  (b (min le (extract f end))))
-                             (if (< a b)
-                                 (cons (product (start (column-of text (- a ls))) (end (column-of text (- b ls)))
-                                                (face (extract f face)))
-                                       (go (cdr fs)))
-                                 (go (cdr fs))))))))
-            (go (overlay-faces (faces-between fs ls (+ le 1)) (faces-between over ls (+ le 1)))))))))
+          (loop go spin ((fs text-faces (overlay-faces (faces-between fs ls (+ le 1)) (faces-between over ls (+ le 1))))) spans
+            (if (null? fs)
+                nil
+                (let* ((f (car fs))
+                       (a (max ls (extract f start)))
+                       (b (min le (extract f end))))
+                  (if (< a b)
+                      (cons (product (start (column-of text (- a ls))) (end (column-of text (- b ls)))
+                                     (face (extract f face)))
+                            (go (cdr fs)))
+                      (go (cdr fs))))))))))
 
 "Row `w` wide of a line shown as `shown` with spans `ss`, from column `hs`."
 (define* scrolled-row (subr spin (int string spans int) row)
@@ -132,15 +133,13 @@ a search's match."
         (make-row w shown ss)
         (make-row w
                   (if (> (string-length shown) hs) (substring shown hs (string-length shown)) "")
-                  (letrec ((go (subr spin (spans) spans)
-                             (lambda (ss)
-                               (cond ((null? ss) nil)
-                                     ((<= (extract (car ss) end) hs) (go (cdr ss)))
-                                     (else (cons (product (start (max 0 (- (extract (car ss) start) hs)))
-                                                          (end (- (extract (car ss) end) hs))
-                                                          (face (extract (car ss) face)))
-                                                 (go (cdr ss))))))))
-                    (go ss))))))
+                  (loop go spin ((ss spans ss)) spans
+                    (cond ((null? ss) nil)
+                          ((<= (extract (car ss) end) hs) (go (cdr ss)))
+                          (else (cons (product (start (max 0 (- (extract (car ss) start) hs)))
+                                               (end (- (extract (car ss) end) hs))
+                                               (face (extract (car ss) face)))
+                                      (go (cdr ss))))))))))
 
 "`v`'s rows for snapshot `snap`, scrolled to show point: the view after,
 and the command that reports it."
@@ -176,19 +175,17 @@ and the command that reports it."
            (shown-from (rope-line-start t top))
            (shown-faces (faces-between (extract ann faces) shown-from
                                        (rope-line-end t (min (- (rope-line-count t) 1) (+ top h)))))
-           (lines (letrec ((go (subr turn-eff (int) rows)
-                             (lambda (i)
-                               (if (>= i h)
-                                   nil
-                                   (let ((n (+ top i)))
-                                     (cons (if (< n (rope-line-count t))
-                                               (let* ((ls (rope-line-start t n))
-                                                      (le (rope-line-end t n))
-                                                      (text (rope-substring t ls le)))
-                                                 (scrolled-row w (expand-tabs text) (line-spans snap shown-faces over ls le text) hs))
-                                               (blank-row w))
-                                           (go (+ i 1))))))))
-                    (go 0)))
+           (lines (loop go turn-eff ((i int 0)) rows
+                    (if (>= i h)
+                        nil
+                        (let ((n (+ top i)))
+                          (cons (if (< n (rope-line-count t))
+                                    (let* ((ls (rope-line-start t n))
+                                           (le (rope-line-end t n))
+                                           (text (rope-substring t ls le)))
+                                      (scrolled-row w (expand-tabs text) (line-spans snap shown-faces over ls le text) hs))
+                                    (blank-row w))
+                                (go (+ i 1)))))))
            (mode (string-append (if (extract snap modified) "-**- " "---- ")
                                 (extract snap name)
                                 "   L" (int->string (+ pline 1))

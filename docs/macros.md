@@ -1,7 +1,7 @@
 # Macros in Heist's FX-26
 
-Since Fixpt 5983942d, a module file can use the macros it defines itself.
-Heist uses a macro where it makes a file shorter: its uses must save more
+Since Fixpt 5983942d, a module file can use the macros it defines
+itself; since eed406e0, one with module parameters too. Heist uses a macro where it makes a file shorter: its uses must save more
 characters than its definition costs. `tools/macros/` does the rewriting,
 and keeps to that rule.
 
@@ -27,9 +27,10 @@ which is a tag of s7st's values. A name in quoted data does not count.
 ## Where they are defined
 
 - **A module file** defines the macros it uses, after its header
-  comment, under the line `;; Macros: each file defines its own, for now`.
-  Fixpt can't yet import a macro into a module file:
-  `import-with-syntax` there panics (`docs/requests/fixpt-macros-from-heist.md`).
+  comment (and its `module-parameters`), under the line
+  `;; Macros: each file defines its own, for now`. Fixpt can't yet
+  import a macro into a module file: `import-with-syntax` there is
+  refused, "not yet" (`docs/requests/fixpt-macros-from-heist.md`, 1(b)).
   When it can, the definitions could move to kit.
 - **s7st and the CFA** are programs whose files share a top level, so
   `s7st/value.fx`, first in both, defines theirs for all of them. They
@@ -37,16 +38,11 @@ which is a tag of s7st's values. A name in quoted data does not count.
 
 ## What is not rewritten, and why
 
-- **Module files with module parameters** (43 of the 53 such files would
-  gain): Fixpt 5983942d refuses a file's own macros there, as "an
-  `include` around the use". These files hold most of what macros would
-  save: 44,625 characters, against 50,891 saved so far.
-  `tools/macros/rewrite.py --with-parameters` rewrites them once Fixpt
-  allows it.
-- **A use that names an FX-26 keyword** other than at the head of a list,
-  such as a variable or a label called `fields`, `cond` or `void`
-  (`acyclic`, `pure`, `type`, `region` and `effect` are fine). Fixpt
-  refuses such a name in a macro's use, though plain code may bind it.
+- **A use with an FX-26 keyword alone as one of its parts**, other than
+  a loop's name: a loop variable named `region`, or `fields` as a first
+  value or as `when`'s test. Fixpt eed406e0 refuses these
+  (`docs/requests/bench/macros/keyword-args.fx`), though it takes a
+  keyword inside a part's list, and plain code may bind it.
 - **A loop whose name is used as other than a call** in its body, such
   as a label.
 - **A form with a comment in a part the rewrite drops.**
@@ -64,7 +60,15 @@ python3 tools/macros/rewrite.py --write --program $(for f in $(cat s7st/program)
 python3 tools/macros/prims.py --write …        # s7st's registrations, the same files
 ```
 
+Saved: 50,891 characters on Fixpt 5983942d (module files without
+parameters, s7st and the CFA), and 47,980 more on eed406e0 (43 files
+with module parameters, and uses that name a keyword), 98,871 in all.
+
+A file or program that defines some of these macros already has its
+remaining uses rewritten with them, and the others' definitions added
+after its last `define-syntax` if they pay. A macro's own definition is
+never rewritten.
+
 The rewrite keeps every kept part's text as written (comments, strings,
-line breaks), shifting the lines of each part as its start moves. It
-leaves alone a file that defines a macro already. After a rewrite:
+line breaks), shifting the lines of each part as its start moves. After a rewrite:
 `bin/heist-compile --force all`, then the tests both ways.

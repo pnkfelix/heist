@@ -35,6 +35,12 @@
                     (m-eldoc (load-moduleof "eldoc.fx" m-base m-buffer m-resolve m-syntax m-sexp m-index m-view m-frame m-calls m-process m-files m-help))
                     (m-scheme (load-moduleof "scheme.fx" m-base m-buffer m-resolve m-syntax m-sexp m-index m-view m-frame m-calls m-process m-files m-help m-eldoc))))
 
+;; Macros: each file defines its own, for now (docs/macros.md).
+(define-syntax loop
+  (syntax-rules ()
+    ((_ go eff ((x t i) ...) r body) (letrec ((go (subr eff (t ...) r) (lambda (x ...) body))) (go i ...)))))
+(define-syntax unless (syntax-rules () ((_ c e ...) (if c #u (begin e ...)))))
+
 "The server's process, if it runs; whether it said it is ready; what it
 wrote after its last whole line."
 (define cfa-server (ref ints @ed) (new nil))
@@ -72,53 +78,47 @@ buffer, the revision and the point."
 (define* cfa-send! (subr cmd-eff (string strings) unit)
   (lambda (word fields)
     (let ((s (get cfa-server)))
-      (if (null? s) #u
-          (letrec ((join (subr spin (strings) string)
-                     (lambda (l) (cond ((null? l) "") ((null? (cdr l)) (s7-escape (car l)))
-                                       (else (string-append (s7-escape (car l)) "\t" (join (cdr l))))))))
-            (begin (process-write (car s) (string-append word " " (join fields) "\n")) #u))))))
+      (unless (null? s)
+        (letrec ((join (subr spin (strings) string)
+                   (lambda (l) (cond ((null? l) "") ((null? (cdr l)) (s7-escape (car l)))
+                                     (else (string-append (s7-escape (car l)) "\t" (join (cdr l))))))))
+          (begin (process-write (car s) (string-append word " " (join fields) "\n")) #u))))))
 (define* cfa-new-key! (subr cmd-eff () int)
   (lambda () (let ((k (get cfa-next-key))) (begin (set cfa-next-key (+ k 1)) k))))
 
 "Revision `rev` of `file`, text `text`, sent, unless it was last."
 (define* cfa-send-file! (subr cmd-eff (string int string) unit)
   (lambda (file rev text)
-    (if (letrec ((sent (subr spin ((listof cfa-sent-file acyclic)) bool)
-                       (lambda (l) (and (pair? l) (or (and (string=? (extract (car l) file) file) (= (extract (car l) revision) rev))
-                                                      (sent (cdr l)))))))
-          (sent (get cfa-sent)))
-        #u
-        (begin
-          (set cfa-sent (cons (product (file file) (revision rev))
-                              (letrec ((others (subr spin ((listof cfa-sent-file acyclic)) (listof cfa-sent-file acyclic))
-                                                 (lambda (l) (cond ((null? l) nil) ((string=? (extract (car l) file) file) (others (cdr l)))
-                                                                   (else (cons (car l) (others (cdr l))))))))
-                                (others (get cfa-sent)))))
-          (cfa-send! "file" (list file text))))))
+    (unless (loop sent spin ((l (listof cfa-sent-file acyclic) (get cfa-sent))) bool
+              (and (pair? l) (or (and (string=? (extract (car l) file) file) (= (extract (car l) revision) rev))
+                                 (sent (cdr l)))))
+      (set cfa-sent (cons (product (file file) (revision rev))
+                          (loop others spin ((l (listof cfa-sent-file acyclic) (get cfa-sent))) (listof cfa-sent-file acyclic)
+                            (cond ((null? l) nil) ((string=? (extract (car l) file) file) (others (cdr l)))
+                                  (else (cons (car l) (others (cdr l))))))))
+      (cfa-send! "file" (list file text)))))
 "Revision `rev` of buffer `b`, of `file`, sent, and its notes asked for."
 (define* cfa-send-revision! (subr cmd-eff ((actor buffer) string int string) unit)
   (lambda (b file rev text)
-    (if (letrec ((asked (subr spin ((listof cfa-pending acyclic)) bool)
-                        (lambda (l) (and (pair? l) (or (and (same-actor? (extract (car l) buffer) b) (= (extract (car l) revision) rev))
-                                                       (asked (cdr l)))))))
-          (asked (get cfa-requests)))
-        #u
-        (let ((key (cfa-new-key!)))
-          (begin
-            (cfa-send-file! file rev text)
-            (set cfa-requests (cons (product (key key) (buffer b) (revision rev)) (get cfa-requests)))
-            (cfa-send! "notes" (list (int->string key) file)))))))
+    (unless (loop asked spin ((l (listof cfa-pending acyclic) (get cfa-requests))) bool
+              (and (pair? l) (or (and (same-actor? (extract (car l) buffer) b) (= (extract (car l) revision) rev))
+                                 (asked (cdr l)))))
+      (let ((key (cfa-new-key!)))
+        (begin
+          (cfa-send-file! file rev text)
+          (set cfa-requests (cons (product (key key) (buffer b) (revision rev)) (get cfa-requests)))
+          (cfa-send! "notes" (list (int->string key) file)))))))
 "Every visited FX-26 and Scheme buffer's revision sent, if it was not."
 (define* cfa-send-buffers! (subr cmd-eff (buffer-infos) unit)
   (lambda (bs)
-    (if (null? bs) #u
-        (let ((file (extract (car bs) file)))
-          (begin
-            (if (cfa-file? file)
-                (let ((st (actor-state (extract (car bs) actor))))
-                  (cfa-send-revision! (extract (car bs) actor) file (extract st revision) (rope->string (extract st text))))
-                #u)
-            (cfa-send-buffers! (cdr bs)))))))
+    (unless (null? bs)
+      (let ((file (extract (car bs) file)))
+        (begin
+          (if (cfa-file? file)
+              (let ((st (actor-state (extract (car bs) actor))))
+                (cfa-send-revision! (extract (car bs) actor) file (extract st revision) (rope->string (extract st text))))
+              #u)
+          (cfa-send-buffers! (cdr bs)))))))
 
 "The note at `p` of buffer `b`'s notes of revision `rev`: the narrowest
 whose span holds `p` (or ends at it); \"\" if none, or none of `rev`."
@@ -143,21 +143,18 @@ whose span holds `p` (or ends at it); \"\" if none, or none of `rev`."
 (define* cfa-tell-askers! (subr cmd-eff () unit)
   (lambda ()
     (set cfa-askers
-         (letrec ((go (subr cmd-eff ((listof cfa-asking acyclic)) (listof cfa-asking acyclic))
-                    (lambda (l)
-                      (if (null? l) nil
-                          (let* ((a (car l))
-                                 (have (letrec ((h (subr spin ((listof cfa-buffer-notes acyclic)) bool)
-                                                  (lambda (ns) (and (pair? ns) (or (and (same-actor? (extract (car ns) buffer) (extract a buffer))
-                                                                                        (= (extract (car ns) revision) (extract a revision)))
-                                                                                   (h (cdr ns)))))))
-                                         (h (get cfa-notes)))))
-                            (if have
-                                (let ((n (cfa-note-at (extract a buffer) (extract a revision) (extract a point))))
-                                  (begin (tell! (extract a frame) (echo (if (string=? n "") "The CFA found nothing at point" n)))
-                                    (go (cdr l))))
-                                (cons a (go (cdr l)))))))))
-           (go (get cfa-askers))))))
+         (loop go cmd-eff ((l (listof cfa-asking acyclic) (get cfa-askers))) (listof cfa-asking acyclic)
+           (if (null? l) nil
+               (let* ((a (car l))
+                      (have (loop h spin ((ns (listof cfa-buffer-notes acyclic) (get cfa-notes))) bool
+                              (and (pair? ns) (or (and (same-actor? (extract (car ns) buffer) (extract a buffer))
+                                                       (= (extract (car ns) revision) (extract a revision)))
+                                                  (h (cdr ns)))))))
+                 (if have
+                     (let ((n (cfa-note-at (extract a buffer) (extract a revision) (extract a point))))
+                       (begin (tell! (extract a frame) (echo (if (string=? n "") "The CFA found nothing at point" n)))
+                         (go (cdr l))))
+                     (cons a (go (cdr l))))))))))
 
 "The places an answer's fields give from the `i`th: four fields each, file,
 start, end and name."
@@ -202,10 +199,9 @@ start, end and name."
                         (begin
                           (set cfa-requests (drop (get cfa-requests)))
                           (set cfa-notes (cons (product (buffer b) (revision (extract r revision)) (notes (s7-notes-of (s7-nth-field fields 2))))
-                                               (letrec ((others (subr spin ((listof cfa-buffer-notes acyclic)) (listof cfa-buffer-notes acyclic))
-                                                                  (lambda (l) (cond ((null? l) nil) ((same-actor? (extract (car l) buffer) b) (others (cdr l)))
-                                                                                    (else (cons (car l) (others (cdr l))))))))
-                                                 (others (get cfa-notes)))))
+                                               (loop others spin ((l (listof cfa-buffer-notes acyclic) (get cfa-notes))) (listof cfa-buffer-notes acyclic)
+                                                 (cond ((null? l) nil) ((same-actor? (extract (car l) buffer) b) (others (cdr l)))
+                                                       (else (cons (car l) (others (cdr l))))))))
                           (cfa-tell-askers!))))
              (none u #u))))
         ((string=? word "callees")
@@ -279,8 +275,9 @@ something not yet answered."
 (define* cfa-stop! (subr cmd-eff () unit)
   (lambda ()
     (let ((s (get cfa-server)))
-      (if (null? s) #u (begin (process-close-input (car s)) (process-signal (car s) 1) (abandon-process! (car s))
-                         (set cfa-server nil))))))
+      (unless (null? s)
+        (process-close-input (car s)) (process-signal (car s) 1) (abandon-process! (car s))
+   (set cfa-server nil)))))
 
 ;;; ------------------------------------------------------------ buffers
 

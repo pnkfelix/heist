@@ -13,6 +13,11 @@
                     (m-buffer (load-moduleof "buffer.fx" m-base))
                     (m-resolve (load-moduleof "resolve.fx" m-base m-buffer))
                     (m-syntax (load-moduleof "syntax.fx" m-base m-buffer m-resolve))))
+
+;; Macros: each file defines its own, for now (docs/macros.md).
+(define-syntax loop
+  (syntax-rules ()
+    ((_ go eff ((x t i) ...) r body) (letrec ((go (subr eff (t ...) r) (lambda (x ...) body))) (go i ...)))))
 (hide (define kit-lists (load-module "../kit/lists.fx"))
       (import kit-lists member?))
 
@@ -420,13 +425,12 @@ has any other whose name begins `def`."
 a body: -1 if it is not."
 (define* indent-spec (subr spin (string) int)
   (lambda (head)
-    (letrec ((go (subr spin ((listof (productof (name string) (count int)) acyclic)) int)
-               (lambda (l) (cond ((null? l) (if (or (member? head body-forms string=?)
-                                                    (and (>= (string-length head) 3) (string=? (substring head 0 3) "def")))
-                                                0 -1))
-                                 ((string=? (extract (car l) name) head) (extract (car l) count))
-                                 (else (go (cdr l)))))))
-      (go indent-specs))))
+    (loop go spin ((l (listof (productof (name string) (count int)) acyclic) indent-specs)) int
+      (cond ((null? l) (if (or (member? head body-forms string=?)
+                               (and (>= (string-length head) 3) (string=? (substring head 0 3) "def")))
+                           0 -1))
+            ((string=? (extract (car l) name) head) (extract (car l) count))
+            (else (go (cdr l)))))))
 
 "The column of position `p` in `t` (characters since its line's start)."
 (define* column-at (subr spin (rope int) int)
@@ -462,10 +466,9 @@ leave it (in a string)."
                      ((and (pair? (cdr cs))
                            (let* ((a (extract (car (cdr cs)) start))
                                   (second (rope-substring t a (min (extract (car (cdr cs)) end) (+ a 7)))))
-                             (letrec ((starts (subr spin (strings) bool)
-                                        (lambda (l) (and (pair? l)
-                                                         (or (= (string-search second (car l) 0) 0) (starts (cdr l)))))))
-                               (starts (list "(subr " "(->* " "(-> " "(poly " "(vsubr ")))))
+                             (loop starts spin ((l strings (list "(subr " "(->* " "(-> " "(poly " "(vsubr "))) bool
+                               (and (pair? l)
+                                    (or (= (string-search second (car l) 0) 0) (starts (cdr l)))))))
                       (+ col 2))
                      ;; `(cond` with its first clause on the next line: by two.
                      ((and (string=? head "cond")
@@ -491,9 +494,8 @@ text, or at the indentation if it was in the old."
       (if (< want 0)
           b
           (let* ((ls (rope-line-start t n)) (le (rope-line-end t n))
-                 (first (letrec ((go (subr spin (int) int)
-                                   (lambda (i) (if (and (< i le) (char-in? (rope-ref t i) " \t")) (go (+ i 1)) i))))
-                          (go ls)))
+                 (first (loop go spin ((i int ls)) int
+                          (if (and (< i le) (char-in? (rope-ref t i) " \t")) (go (+ i 1)) i)))
                  (have (- first ls))
                  (p (extract b point))
                  (p2 (if (< p first) (+ ls want) (+ p (- want have)))))

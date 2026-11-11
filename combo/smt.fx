@@ -23,6 +23,11 @@
                     (m-simplex (load-moduleof "simplex.fx" m-sat m-rat))
                     (m-blast (load-moduleof "blast.fx" m-sat m-rat m-term m-bv m-arith m-eval m-simplex))))
 
+;; Macros: each file defines its own, for now (docs/macros.md).
+(define-syntax loop
+  (syntax-rules ()
+    ((_ go eff ((x t i) ...) r body) (letrec ((go (subr eff (t ...) r) (lambda (x ...) body))) (go i ...)))))
+
 (hide (define kit-lists (load-module "../kit/lists.fx"))
       (import kit-lists member?))
 
@@ -64,10 +69,9 @@
 "The assertions in force, oldest first."
 (define* smt-assertions (subr cb-eff (smt) ints)
   (lambda (c)
-    (letrec ((go (subr cb-eff ((listof smt-frame acyclic) ints) ints)
-               (lambda (fs acc) (if (null? fs) (the ints (append (reverse (get (extract c base))) acc))
-                                    (go (cdr fs) (the ints (append (reverse (get (extract (car fs) assertions))) acc)))))))
-      (go (get (extract c frames)) nil))))
+    (loop go cb-eff ((fs (listof smt-frame acyclic) (get (extract c frames))) (acc ints nil)) ints
+      (if (null? fs) (the ints (append (reverse (get (extract c base))) acc))
+          (go (cdr fs) (the ints (append (reverse (get (extract (car fs) assertions))) acc)))))))
 
 "Assert a Boolean term."
 (define* smt-assert! (subr cb-eff (smt int) unit)
@@ -100,13 +104,11 @@
 (define* box-lits (subr cb-eff (blaster int) ints)
   (lambda (b bound)
     (if (< bound 0) nil
-        (letrec ((go (subr cb-eff (ints ints) ints)
-                   (lambda (ts acc)
-                     (if (null? ts) acc
-                         (let* ((hi (blast-bool! b (mk-le (car ts) (num-int bound int-sort))))
-                                (lo (blast-bool! b (mk-ge (car ts) (num-int (- 0 bound) int-sort)))))
-                           (go (cdr ts) (cons hi (cons lo acc))))))))
-          (go (blaster-int-terms b) nil)))))
+        (loop go cb-eff ((ts ints (blaster-int-terms b)) (acc ints nil)) ints
+          (if (null? ts) acc
+              (let* ((hi (blast-bool! b (mk-le (car ts) (num-int bound int-sort))))
+                     (lo (blast-bool! b (mk-ge (car ts) (num-int (- 0 bound) int-sort)))))
+                (go (cdr ts) (cons hi (cons lo acc)))))))))
 
 "Check the assertions in force, with the Boolean terms `assumptions`
 assumed too: sat-sat, sat-unsat or sat-unknown.
@@ -122,27 +124,24 @@ fuzzed formula away from its small solutions."
   (lambda (c assumptions)
     (let* ((s (extract c solver)) (b (extract c blaster))
            (alits (blast-list! b assumptions))
-           (acts (reverse (letrec ((go (subr cb-eff ((listof smt-frame acyclic)) ints)
-                                          (lambda (fs) (if (null? fs) nil (cons (extract (car fs) act) (go (cdr fs)))))))
-                                 (go (get (extract c frames)))))))
+           (acts (reverse (loop go cb-eff ((fs (listof smt-frame acyclic) (get (extract c frames)))) ints
+                            (if (null? fs) nil (cons (extract (car fs) act) (go (cdr fs))))))))
       (begin
         (set (extract c has-model) #f)
         (set (extract c failed) nil)
         (set (extract c problem) "")
         (sat-set-deadline! s (if (< (get (extract c timeout)) 0) -1 (+ (now-ns) (* (get (extract c timeout)) 1000000))))
-        (letrec ((go (subr cb-eff (ints) int)
-                   (lambda (bounds)
-                     (begin
-                       (if (blaster-has-simplex? b) (simplex-set-cuts! (blaster-simplex b) (not (= (car bounds) 256))) #u)
-                       (let* ((blits (box-lits b (car bounds)))
-                              (answer (sat-solve s (the ints (append acts (the ints (append alits blits)))))))
-                         (if (and (= answer sat-unsat) (>= (car bounds) 0)
-                                  (let ((failed (sat-final-conflict s)))
-                                    (letrec ((any (subr cb-eff (ints) bool) (lambda (ls) (and (pair? ls) (or (member? (car ls) failed =) (any (cdr ls)))))))
-                                      (any blits))))
-                             (go (cdr bounds))
-                             (finish-check! c answer assumptions alits)))))))
-          (go (if (null? (blaster-int-terms b)) (list -1) (list 256 65536 -1))))))))
+        (loop go cb-eff ((bounds ints (if (null? (blaster-int-terms b)) (list -1) (list 256 65536 -1)))) int
+          (begin
+            (if (blaster-has-simplex? b) (simplex-set-cuts! (blaster-simplex b) (not (= (car bounds) 256))) #u)
+            (let* ((blits (box-lits b (car bounds)))
+                   (answer (sat-solve s (the ints (append acts (the ints (append alits blits)))))))
+              (if (and (= answer sat-unsat) (>= (car bounds) 0)
+                       (let ((failed (sat-final-conflict s)))
+                         (loop any cb-eff ((ls ints blits)) bool
+                           (and (pair? ls) (or (member? (car ls) failed =) (any (cdr ls)))))))
+                  (go (cdr bounds))
+                  (finish-check! c answer assumptions alits)))))))))
 
 (define* finish-check! (subr cb-eff (smt int ints ints) int)
   (lambda (c answer assumptions alits)
@@ -154,11 +153,10 @@ fuzzed formula away from its small solutions."
               ((= answer sat-unsat)
                (let ((failed (sat-final-conflict s)))
                  (set (extract c failed)
-                      (letrec ((go (subr cb-eff (ints ints) ints)
-                                 (lambda (ts ls) (cond ((null? ts) nil)
-                                                       ((member? (car ls) failed =) (cons (car ts) (go (cdr ts) (cdr ls))))
-                                                       (else (go (cdr ts) (cdr ls)))))))
-                        (go assumptions alits)))))
+                      (loop go cb-eff ((ts ints assumptions) (ls ints alits)) ints
+                        (cond ((null? ts) nil)
+                              ((member? (car ls) failed =) (cons (car ts) (go (cdr ts) (cdr ls))))
+                              (else (go (cdr ts) (cdr ls))))))))
               (else (set (extract c reason) (if (< (get (extract c timeout)) 0) "unknown" "timeout"))))
         answer))))
 
