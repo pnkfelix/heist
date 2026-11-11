@@ -50,6 +50,7 @@ fn rust_trees(text: &str, base: i64) -> Vec<String> {
         s = fixpt_fx26::ids::form_reading(s, &Default::default(), &read[*i], &names, &loads);
         kth.form(&c2, s, &tops);
     }
+    let chars = chars.with_loaded(&c2);
     forms.iter().flat_map(|(_, g)| g).map(|(t, span, _)| show_top(&c2, &chars, t, *span, &kth)).collect()
 }
 
@@ -112,9 +113,29 @@ fn within_files(tree: &str) -> String {
     out
 }
 
+/// `tree` with each of the FX-26 expander's keys (`2^50` on: a part a
+/// macro's template wrote) as the template's place, which the Rust parser
+/// keeps in its spans.
+fn keys_placed(s: &mut Fx26Session, tree: &str) -> String {
+    let mut out = String::new();
+    let mut rest = tree;
+    while let Some(at) = rest.find(|c: char| c.is_ascii_digit()) {
+        let digits = rest[at..].find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len() - at);
+        let (word, after) = (&rest[at..at + digits], &rest[at + digits..]);
+        out.push_str(&rest[..at]);
+        match word.parse::<i64>() {
+            Ok(k) if k >= 1 << 50 && rest[..at].ends_with(' ') => out.push_str(&fixpt_fx26::syn::source_place(&mut s.scheme, k).to_string()),
+            _ => out.push_str(word),
+        }
+        rest = after;
+    }
+    out.push_str(rest);
+    out
+}
+
 fn same_trees(s: &mut Fx26Session, text: &str) {
     let (ours, base) = s.parse_with_own_parser_from(text).unwrap_or_else(|e| panic!("the FX-26 parser: {e}"));
-    let ours: Vec<String> = ours.iter().map(|t| within_files(&without_file_marks(t))).collect();
+    let ours: Vec<String> = ours.iter().map(|t| within_files(&without_file_marks(&keys_placed(s, t)))).collect();
     let rust: Vec<String> = rust_trees(text, base).iter().map(|t| within_files(t)).collect();
     assert_eq!(ours.len(), rust.len(), "different numbers of forms");
     for (a, b) in ours.iter().zip(&rust) {
@@ -194,6 +215,20 @@ fn module_parse_errors_agree() {
         "(with)",
         "(define m (module)) (with m)",
     ] {
+        let ours = s.parse_with_own_parser(text).expect_err("refused");
+        let mut c = Checker::new();
+        let forms = c.read_in(FileId(0), text).expect("reads");
+        let rust = forms.iter().find_map(|f| c.top(f).err()).expect("refused");
+        assert_eq!((ours.message, ours.span.start, ours.span.end), (rust.message, rust.span.start, rust.span.end), "{text}");
+    }
+}
+
+/// `()` where an expression is wanted, which each parser refuses alike
+/// (the Rust one indexed an empty list: Heist's).
+#[test]
+fn an_empty_list_is_no_expression_alike() {
+    let mut s = Fx26Session::with_backend(Backend::Bytecode).expect("starts");
+    for text in ["(f ())", "()", "(define x int ())"] {
         let ours = s.parse_with_own_parser(text).expect_err("refused");
         let mut c = Checker::new();
         let forms = c.read_in(FileId(0), text).expect("reads");

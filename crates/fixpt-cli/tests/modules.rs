@@ -17,8 +17,24 @@ const FIXPT: &str = env!("CARGO_BIN_EXE_fixpt");
 /// program's and a built-in one; and those also typed at the REPL, where
 /// each form is checked alone, the hidden globals of the files it loads
 /// before it (`TODO.md` §97: the front end written in FX-26 took a
-/// `load-input`'s for its value, not its file's module).
-const PROGRAMS: [&str; 6] = ["load", "functor-max", "width", "region-parameter", "load-input", "load-input-built-in"];
+/// `load-input`'s for its value, not its file's module). And files of module
+/// parameters typed by what a file makes (`load-moduleof`), whose loads a
+/// session makes as forms of their own first (Kayak's report, 2026-11-11:
+/// the expander written in FX-26 took such a file's value for its module);
+/// and such a file that uses its own macros (Heist's, the same day).
+const PROGRAMS: [&str; 11] = [
+    "load",
+    "functor-max",
+    "width",
+    "region-parameter",
+    "load-input",
+    "load-input-built-in",
+    "load-moduleof",
+    "restrict-parameter",
+    "module-parameters-modules",
+    "load-moduleof-define-type",
+    "own-macros-params",
+];
 const AT_THE_REPL: [&str; 4] = ["load", "functor-max", "load-input", "load-input-built-in"];
 
 /// Each run mode, as options.

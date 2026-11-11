@@ -220,23 +220,33 @@
         ;; Before each form, the hidden globals of the files it loads first
         ;; (`parse-loaded`), those its types name first (`type-loaded`).
         (let* ((written (car xs))
-               ;; A `define-syntax`: the checks of its templates, once, there.
-               (made (cond ((shape-definition? written)
-                            (begin (global-macro written) (shape-defined! written) nil))
-                           ((defines-syntax? written)
-                            (begin (global-macro written)
-                                   (macro-checks (define-macro pfail-at written nil))))
-                           ;; A file's macros, and the `include` of the rest.
-                           ((imports-syntax? written)
-                            (let ((inc (import-file-macros pfail-at written (get loaded))))
-                              (if (null? inc) (the top-list nil) (parse-made (car inc)))))
-                           (else (expanded-tops (expand-top pfail-at written)))))
+               (made (top-made written))
                (guarded (guard-defs made (cdr xs)))
                (before (shared-noted (shared-taken)))
                (r (form-reading (walk-state t) settings written (loads-of before)))
                (form (number-form t r (append-tops before guarded)))
                (rest (begin (macros-after! r) (shapes-after! r) (parse-tops t settings (cdr xs)))))
           (append-tops form rest)))))
+;; What top-level form `written` makes, parsed. A `define-syntax`: the
+;; checks of its templates, once, there. A `hide`: its forms', as if
+;; written there, a program exporting nothing to hide them from; one form
+;; still, of one reading.
+(define top-made (->* (syn) top-list)
+  (lambda (written)
+    (cond ((shape-definition? written)
+           (begin (global-macro written) (shape-defined! written) nil))
+          ((defines-syntax? written)
+           (begin (global-macro written)
+                  (macro-checks (define-macro pfail-at written nil))))
+          ;; A file's macros, and the `include` of the rest.
+          ((imports-syntax? written)
+           (let ((inc (import-file-macros pfail-at written (get loaded))))
+             (if (null? inc) (the top-list nil) (parse-made (car inc)))))
+          ((form-of? written 'hide) (tops-made (cdr (syn-items written ""))))
+          (else (expanded-tops (expand-top pfail-at written))))))
+(define tops-made (->* (syns-a) top-list)
+  (lambda (xs)
+    (if (null? xs) nil (let ((made (top-made (car xs)))) (append-tops made (tops-made (cdr xs)))))))
 ;; Each form a top-level form is expanded to (a use of a macro that makes
 ;; definitions, several), parsed, each as it is noted.
 (define expanded-tops (->* (syns-a) top-list)
@@ -553,7 +563,8 @@
               (same-files (cdr ns) fs)))))
 (define file-own-expanded (->* (loaded-file) loaded-file)
   (lambda (f)
-    (if (or (<= (extract f 2) 0) (extract f 8) (not (own-macros? (extract f 5))))
+    (if (or (<= (extract f 2) 0) (extract f 8)
+            (not (or (own-macros? (extract f 5)) (imports-syntax-in? (extract f 5)))))
         f
         (let* ((saved (file-scope-begin!))
                (r (prompt parse-tag (begin (set own-out (own-each (extract f 5))) (p-ok nil))
@@ -574,6 +585,11 @@
               (product (1 (extract f 1)) (2 (extract f 2)) (3 (extract f 3)) (4 (extract f 4))
                        (5 (get own-out)) (6 (extract f 6)) (7 (extract f 7)) (8 #f))))))))
 (define own-out (ref syns-a rs) (new nil))
+;; Whether forms `xs` import a file's macros (`import-with-syntax`), which a
+;; module file may not yet (`own-each`).
+(define imports-syntax-in? (->* (syns-a) bool)
+  (lambda (xs) (and (not (null? xs)) (or (form-of? (car xs) 'import-with-syntax)
+                                        (imports-syntax-in? (cdr xs))))))
 ;; Whether forms `xs` define a macro, hidden or not.
 (define own-macros? (->* (syns-a) bool)
   (lambda (xs)
@@ -589,6 +605,13 @@
         nil
         (let* ((x (car xs))
                (made (cond ((or (form-of? x 'module-parameters) (shape-definition? x)) (list x))
+                           ((form-of? x 'import-with-syntax)
+                            (begin (pfail-at (string-append "`import-with-syntax` in a module "
+                                                            "file: not yet; a program's top "
+                                                            "level imports a file's macros "
+                                                            "(`binding-shapes.md`, step 4)")
+                                             (syn-start x) (syn-end x))
+                                   nil))
                            ((own-macro? x) (begin (define-macro pfail-at x nil) (list x)))
                            ((form-of? x 'hide)
                             (let ((items (syn-items x "")))
