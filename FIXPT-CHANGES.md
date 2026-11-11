@@ -8,7 +8,14 @@ do it, and what it cost. Kayak will need the same changes later
 
 ## Base
 
-- Fixpt `main` at eed406e0 (2026-11-11), pulled from GitHub: our macros
+- Fixpt `main` at dd5a6665 (2026-11-11), pulled from GitHub: `fixpt
+  prewarm` also caches the bootstrap program as the native compilers'
+  tests compile it. Heist needed no change. `fixpt/` is Fixpt's tree
+  exactly. After `fixpt prewarm` and `bin/heist-compile --force all`, all
+  209 tests pass, with dumps (9.8 s) and without (20.9 s); ratfink's
+  corpus 123 of 124, playback 12 of 12, its FX-26 tests' reports
+  unchanged.
+- Before: Fixpt `main` at eed406e0 (2026-11-11), pulled from GitHub: our macros
   request's items, answered: a file with module parameters uses its own
   macros (1(a)); `import-with-syntax` in a module file refused, "not
   yet", where it panicked; a program's `import-with-syntax` of a file of
